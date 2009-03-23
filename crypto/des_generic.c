@@ -20,13 +20,7 @@
 #include <linux/crypto.h>
 #include <linux/types.h>
 
-#define DES_KEY_SIZE		8
-#define DES_EXPKEY_WORDS	32
-#define DES_BLOCK_SIZE		8
-
-#define DES3_EDE_KEY_SIZE	(3 * DES_KEY_SIZE)
-#define DES3_EDE_EXPKEY_WORDS	(3 * DES_EXPKEY_WORDS)
-#define DES3_EDE_BLOCK_SIZE	DES_BLOCK_SIZE
+#include <crypto/des.h>
 
 #define ROL(x, r) ((x) = rol32((x), (r)))
 #define ROR(x, r) ((x) = ror32((x), (r)))
@@ -634,7 +628,7 @@ static const u32 S8[64] = {
  *   Choice 1 has operated on the key.
  *
  */
-static unsigned long ekey(u32 *pe, const u8 *k)
+unsigned long des_ekey(u32 *pe, const u8 *k)
 {
 	/* K&R: long is at least 32 bits */
 	unsigned long a, b, c, d, w;
@@ -709,6 +703,7 @@ static unsigned long ekey(u32 *pe, const u8 *k)
 	/* Zero if weak key */
 	return w;
 }
+EXPORT_SYMBOL_GPL(des_ekey);
 
 /*
  * Decryption key expansion
@@ -792,7 +787,7 @@ static int des_setkey(struct crypto_tfm *tfm, const u8 *key,
 	int ret;
 
 	/* Expand to tmp */
-	ret = ekey(tmp, key);
+	ret = des_ekey(tmp, key);
 
 	if (unlikely(ret == 0) && (*flags & CRYPTO_TFM_REQ_WEAK_KEY)) {
 		*flags |= CRYPTO_TFM_RES_WEAK_KEY;
@@ -873,15 +868,16 @@ static int des3_ede_setkey(struct crypto_tfm *tfm, const u8 *key,
 	u32 *flags = &tfm->crt_flags;
 
 	if (unlikely(!((K[0] ^ K[2]) | (K[1] ^ K[3])) ||
-		     !((K[2] ^ K[4]) | (K[3] ^ K[5]))))
+		     !((K[2] ^ K[4]) | (K[3] ^ K[5]))) &&
+		     (*flags & CRYPTO_TFM_REQ_WEAK_KEY))
 	{
-		*flags |= CRYPTO_TFM_RES_BAD_KEY_SCHED;
+		*flags |= CRYPTO_TFM_RES_WEAK_KEY;
 		return -EINVAL;
 	}
 
-	ekey(expkey, key); expkey += DES_EXPKEY_WORDS; key += DES_KEY_SIZE;
+	des_ekey(expkey, key); expkey += DES_EXPKEY_WORDS; key += DES_KEY_SIZE;
 	dkey(expkey, key); expkey += DES_EXPKEY_WORDS; key += DES_KEY_SIZE;
-	ekey(expkey, key);
+	des_ekey(expkey, key);
 
 	return 0;
 }
@@ -982,7 +978,7 @@ static struct crypto_alg des3_ede_alg = {
 
 MODULE_ALIAS("des3_ede");
 
-static int __init init(void)
+static int __init des_generic_mod_init(void)
 {
 	int ret = 0;
 
@@ -997,14 +993,14 @@ out:
 	return ret;
 }
 
-static void __exit fini(void)
+static void __exit des_generic_mod_fini(void)
 {
 	crypto_unregister_alg(&des3_ede_alg);
 	crypto_unregister_alg(&des_alg);
 }
 
-module_init(init);
-module_exit(fini);
+module_init(des_generic_mod_init);
+module_exit(des_generic_mod_fini);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DES & Triple DES EDE Cipher Algorithms");

@@ -9,8 +9,6 @@
  * ----------------------------------------------------------------------- */
 
 /*
- * arch/i386/boot/video-bios.c
- *
  * Standard video BIOS modes
  *
  * We have two options for this; silent and scanned.
@@ -19,7 +17,7 @@
 #include "boot.h"
 #include "video.h"
 
-__videocard video_bios;
+static __videocard video_bios;
 
 /* Set a conventional BIOS mode */
 static int set_bios_mode(u8 mode);
@@ -50,6 +48,7 @@ static int set_bios_mode(u8 mode)
 	if (new_mode == mode)
 		return 0;	/* Mode change OK */
 
+#ifndef _WAKEUP
 	if (new_mode != boot_params.screen_info.orig_video_mode) {
 		/* Mode setting failed, but we didn't end up where we
 		   started.  That's bad.  Try to revert to the original
@@ -59,13 +58,18 @@ static int set_bios_mode(u8 mode)
 			     : "+a" (ax)
 			     : : "ebx", "ecx", "edx", "esi", "edi");
 	}
+#endif
 	return -1;
 }
 
 static int bios_probe(void)
 {
 	u8 mode;
+#ifdef _WAKEUP
+	u8 saved_mode = 0x03;
+#else
 	u8 saved_mode = boot_params.screen_info.orig_video_mode;
+#endif
 	u16 crtc;
 	struct mode_info *mi;
 	int nmodes = 0;
@@ -104,6 +108,7 @@ static int bios_probe(void)
 
 		mi = GET_HEAP(struct mode_info, 1);
 		mi->mode = VIDEO_FIRST_BIOS+mode;
+		mi->depth = 0;	/* text */
 		mi->x = rdfs16(0x44a);
 		mi->y = rdfs8(0x484)+1;
 		nmodes++;
@@ -114,9 +119,9 @@ static int bios_probe(void)
 	return nmodes;
 }
 
-__videocard video_bios =
+static __videocard video_bios =
 {
-	.card_name	= "BIOS (scanned)",
+	.card_name	= "BIOS",
 	.probe		= bios_probe,
 	.set_mode	= bios_set_mode,
 	.unsafe		= 1,

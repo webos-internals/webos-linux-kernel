@@ -76,8 +76,7 @@ struct rpc_rqst {
 	struct list_head	rq_list;
 
 	__u32 *			rq_buffer;	/* XDR encode buffer */
-	size_t			rq_bufsize,
-				rq_callsize,
+	size_t			rq_callsize,
 				rq_rcvsize;
 
 	struct xdr_buf		rq_private_buf;		/* The receive buffer
@@ -86,6 +85,10 @@ struct rpc_rqst {
 	unsigned long		rq_majortimeo;	/* major timeout alarm */
 	unsigned long		rq_timeout;	/* Current timeout value */
 	unsigned int		rq_retries;	/* # of retries */
+	unsigned int		rq_connect_cookie;
+						/* A cookie used to track the
+						   state of the transport
+						   connection */
 	
 	/*
 	 * Partial send handling
@@ -120,7 +123,7 @@ struct rpc_xprt {
 	struct kref		kref;		/* Reference count */
 	struct rpc_xprt_ops *	ops;		/* transport methods */
 
-	struct rpc_timeout	timeout;	/* timeout parms */
+	const struct rpc_timeout *timeout;	/* timeout parms */
 	struct sockaddr_storage	addr;		/* server address */
 	size_t			addrlen;	/* size of server address */
 	int			prot;		/* IP protocol */
@@ -152,6 +155,9 @@ struct rpc_xprt {
 	unsigned long		connect_timeout,
 				bind_timeout,
 				reestablish_timeout;
+	unsigned int		connect_cookie;	/* A cookie that gets bumped
+						   every time the transport
+						   is reconnected */
 
 	/*
 	 * Disconnection of idle transports
@@ -183,7 +189,7 @@ struct rpc_xprt {
 					bklog_u;	/* backlog queue utilization */
 	} stat;
 
-	char *			address_strings[RPC_DISPLAY_MAX];
+	const char		*address_strings[RPC_DISPLAY_MAX];
 };
 
 struct xprt_create {
@@ -191,7 +197,6 @@ struct xprt_create {
 	struct sockaddr *	srcaddr;	/* optional local address */
 	struct sockaddr *	dstaddr;	/* remote peer address */
 	size_t			addrlen;
-	struct rpc_timeout *	timeout;	/* optional timeout parameters */
 };
 
 struct xprt_class {
@@ -201,11 +206,6 @@ struct xprt_class {
 	struct module		*owner;
 	char			name[32];
 };
-
-/*
- * Transport operations used by ULPs
- */
-void			xprt_set_timeout(struct rpc_timeout *to, unsigned int retr, unsigned long incr);
 
 /*
  * Generic internal transport functions
@@ -238,14 +238,16 @@ int			xprt_unregister_transport(struct xprt_class *type);
 void			xprt_set_retrans_timeout_def(struct rpc_task *task);
 void			xprt_set_retrans_timeout_rtt(struct rpc_task *task);
 void			xprt_wake_pending_tasks(struct rpc_xprt *xprt, int status);
-void			xprt_wait_for_buffer_space(struct rpc_task *task);
+void			xprt_wait_for_buffer_space(struct rpc_task *task, rpc_action action);
 void			xprt_write_space(struct rpc_xprt *xprt);
 void			xprt_update_rtt(struct rpc_task *task);
 void			xprt_adjust_cwnd(struct rpc_task *task, int result);
 struct rpc_rqst *	xprt_lookup_rqst(struct rpc_xprt *xprt, __be32 xid);
 void			xprt_complete_rqst(struct rpc_task *task, int copied);
 void			xprt_release_rqst_cong(struct rpc_task *task);
-void			xprt_disconnect(struct rpc_xprt *xprt);
+void			xprt_disconnect_done(struct rpc_xprt *xprt);
+void			xprt_force_disconnect(struct rpc_xprt *xprt);
+void			xprt_conditional_disconnect(struct rpc_xprt *xprt, unsigned int cookie);
 
 /*
  * Reserved bit positions in xprt->state
@@ -256,6 +258,7 @@ void			xprt_disconnect(struct rpc_xprt *xprt);
 #define XPRT_CLOSE_WAIT		(3)
 #define XPRT_BOUND		(4)
 #define XPRT_BINDING		(5)
+#define XPRT_CLOSING		(6)
 
 static inline void xprt_set_connected(struct rpc_xprt *xprt)
 {

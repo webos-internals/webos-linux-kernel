@@ -14,7 +14,7 @@ choice
 	  There are five families of 32 bit PowerPC chips supported.
 	  The most common ones are the desktop and server CPUs (601, 603,
 	  604, 740, 750, 74xx) CPUs from Freescale and IBM, with their
-	  embedded 52xx/82xx/83xx/86xx counterparts.
+	  embedded 512x/52xx/82xx/83xx/86xx counterparts.
 	  The other embeeded parts, namely 4xx, 8xx, e200 (55xx) and e500
 	  (85xx) each form a family of their own that is not compatible
 	  with the others.
@@ -22,33 +22,35 @@ choice
 	  If unsure, select 52xx/6xx/7xx/74xx/82xx/83xx/86xx.
 
 config 6xx
-	bool "52xx/6xx/7xx/74xx/82xx/83xx/86xx"
+	bool "512x/52xx/6xx/7xx/74xx/82xx/83xx/86xx"
 	select PPC_FPU
 
 config PPC_85xx
 	bool "Freescale 85xx"
 	select E500
 	select FSL_SOC
-	select 85xx
-	select WANT_DEVICE_TREE
+	select MPC85xx
 
 config PPC_8xx
 	bool "Freescale 8xx"
 	select FSL_SOC
 	select 8xx
-	select WANT_DEVICE_TREE
 	select PPC_LIB_RHEAP
 
 config 40x
 	bool "AMCC 40x"
 	select PPC_DCR_NATIVE
-	select WANT_DEVICE_TREE
+	select PPC_UDBG_16550
+	select 4xx_SOC
+	select PPC_PCI_CHOICE
 
 config 44x
 	bool "AMCC 44x"
 	select PPC_DCR_NATIVE
-	select WANT_DEVICE_TREE
 	select PPC_UDBG_16550
+	select 4xx_SOC
+	select PPC_PCI_CHOICE
+	select PHYS_64BIT
 
 config E200
 	bool "Freescale e200"
@@ -85,23 +87,18 @@ config TUNE_CELL
 	  machines. When building a kernel that is supposed to run only
 	  on Cell, you should also select the POWER4_ONLY option.
 
-config 6xx
-	bool
-
 # this is temp to handle compat with arch=ppc
 config 8xx
 	bool
 
-# this is temp to handle compat with arch=ppc
-config 83xx
-	bool
-
-# this is temp to handle compat with arch=ppc
-config 85xx
-	bool
-
 config E500
+	select FSL_EMB_PERFMON
 	bool
+
+config PPC_E500MC
+	bool "e500mc Support"
+	select PPC_FPU
+	depends on E500
 
 config PPC_FPU
 	bool
@@ -122,20 +119,29 @@ config FSL_BOOKE
 	depends on E200 || E500
 	default y
 
+config FSL_EMB_PERFMON
+	bool "Freescale Embedded Perfmon"
+	depends on E500 || PPC_83xx
+	help
+	  This is the Performance Monitor support found on the e500 core
+	  and some e300 cores (c3 and c4).  Select this only if your
+	  core supports the Embedded Performance Monitor APU
+
 config PTE_64BIT
 	bool
-	depends on 44x || E500
-	default y if 44x
-	default y if E500 && PHYS_64BIT
+	depends on 44x || E500 || PPC_86xx
+	default y if PHYS_64BIT
 
 config PHYS_64BIT
-	bool 'Large physical address support' if E500
-	depends on 44x || E500
-	select RESOURCES_64BIT
-	default y if 44x
+	bool 'Large physical address support' if E500 || PPC_86xx
+	depends on (44x || E500 || PPC_86xx) && !PPC_83xx && !PPC_82xx
 	---help---
 	  This option enables kernel support for larger than 32-bit physical
-	  addresses.  This features is not be available on all e500 cores.
+	  addresses.  This feature may not be available on all cores.
+
+	  If you have more than 3.5GB of RAM or so, you also need to enable
+	  SWIOTLB under Kernel Options for this to work.  The actual number
+	  is platform-dependent.
 
 	  If in doubt, say N here.
 
@@ -155,9 +161,25 @@ config ALTIVEC
 
 	  If in doubt, say Y here.
 
+config VSX
+	bool "VSX Support"
+	depends on POWER4 && ALTIVEC && PPC_FPU
+	---help---
+
+	  This option enables kernel support for the Vector Scaler extensions
+	  to the PowerPC processor. The kernel currently supports saving and
+	  restoring VSX registers, and turning on the 'VSX enable' bit so user
+	  processes can execute VSX instructions.
+
+	  This option is only useful if you have a processor that supports
+	  VSX (P7 and above), but does not have any affect on a non-VSX
+	  CPUs (it does, however add code to the kernel).
+
+	  If in doubt, say Y here.
+
 config SPE
 	bool "SPE Support"
-	depends on E200 || E500
+	depends on E200 || (E500 && !PPC_E500MC)
 	default y
 	---help---
 	  This option enables kernel support for the Signal Processing
@@ -173,16 +195,24 @@ config SPE
 
 config PPC_STD_MMU
 	bool
-	depends on 6xx || POWER3 || POWER4 || PPC64
+	depends on 6xx || PPC64
 	default y
 
 config PPC_STD_MMU_32
 	def_bool y
 	depends on PPC_STD_MMU && PPC32
 
+config PPC_STD_MMU_64
+	def_bool y
+	depends on PPC_STD_MMU && PPC64
+
+config PPC_MMU_NOHASH
+	def_bool y
+	depends on !PPC_STD_MMU
+
 config PPC_MM_SLICES
 	bool
-	default y if HUGETLB_PAGE
+	default y if HUGETLB_PAGE || (PPC_STD_MMU_64 && PPC_64K_PAGES)
 	default n
 
 config VIRT_CPU_ACCOUNTING
@@ -201,7 +231,7 @@ config VIRT_CPU_ACCOUNTING
 	  If in doubt, say Y here.
 
 config SMP
-	depends on PPC_STD_MMU
+	depends on PPC_STD_MMU || FSL_BOOKE
 	bool "Symmetric multi-processing support"
 	---help---
 	  This enables support for systems with more than one CPU. If you have
@@ -220,15 +250,15 @@ config SMP
 	  If you don't know what to do here, say N.
 
 config NR_CPUS
-	int "Maximum number of CPUs (2-128)"
-	range 2 128
+	int "Maximum number of CPUs (2-1024)"
+	range 2 1024
 	depends on SMP
 	default "32" if PPC64
 	default "4"
 
 config NOT_COHERENT_CACHE
 	bool
-	depends on 4xx || 8xx || E200
+	depends on 4xx || 8xx || E200 || PPC_MPC512x
 	default y
 
 config CHECK_CACHE_COHERENCY

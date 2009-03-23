@@ -17,9 +17,9 @@
 #include <linux/init.h>
 #include <linux/fb.h>
 #include <linux/mm.h>
+#include <linux/of_device.h>
 
 #include <asm/io.h>
-#include <asm/of_device.h>
 #include <asm/fbio.h>
 
 #include "sbuslib.h"
@@ -34,10 +34,11 @@ static int cg6_blank(int, struct fb_info *);
 
 static void cg6_imageblit(struct fb_info *, const struct fb_image *);
 static void cg6_fillrect(struct fb_info *, const struct fb_fillrect *);
+static void cg6_copyarea(struct fb_info *info, const struct fb_copyarea *area);
 static int cg6_sync(struct fb_info *);
 static int cg6_mmap(struct fb_info *, struct vm_area_struct *);
 static int cg6_ioctl(struct fb_info *, unsigned int, unsigned long);
-static void cg6_copyarea(struct fb_info *info, const struct fb_copyarea *area);
+static int cg6_pan_display(struct fb_var_screeninfo *, struct fb_info *);
 
 /*
  *  Frame buffer operations
@@ -47,6 +48,7 @@ static struct fb_ops cg6_ops = {
 	.owner			= THIS_MODULE,
 	.fb_setcolreg		= cg6_setcolreg,
 	.fb_blank		= cg6_blank,
+	.fb_pan_display		= cg6_pan_display,
 	.fb_fillrect		= cg6_fillrect,
 	.fb_copyarea		= cg6_copyarea,
 	.fb_imageblit		= cg6_imageblit,
@@ -161,6 +163,7 @@ static struct fb_ops cg6_ops = {
 #define CG6_THC_MISC_INT_ENAB		(1 << 5)
 #define CG6_THC_MISC_INT		(1 << 4)
 #define CG6_THC_MISC_INIT		0x9f
+#define CG6_THC_CURSOFF			((65536-32) | ((65536-32) << 16))
 
 /* The contents are unknown */
 struct cg6_tec {
@@ -277,6 +280,33 @@ static int cg6_sync(struct fb_info *info)
 		udelay(10);
 	} while (--limit > 0);
 
+	return 0;
+}
+
+static void cg6_switch_from_graph(struct cg6_par *par)
+{
+	struct cg6_thc __iomem *thc = par->thc;
+	unsigned long flags;
+
+	spin_lock_irqsave(&par->lock, flags);
+
+	/* Hide the cursor. */
+	sbus_writel(CG6_THC_CURSOFF, &thc->thc_cursxy);
+
+	spin_unlock_irqrestore(&par->lock, flags);
+}
+
+static int cg6_pan_display(struct fb_var_screeninfo *var, struct fb_info *info)
+{
+	struct cg6_par *par = (struct cg6_par *)info->par;
+
+	/* We just use this to catch switches out of
+	 * graphics mode.
+	 */
+	cg6_switch_from_graph(par);
+
+	if (var->xoffset || var->yoffset || var->vmode)
+		return -EINVAL;
 	return 0;
 }
 
@@ -643,8 +673,12 @@ static void __devinit cg6_chip_init(struct fb_info *info)
 	struct cg6_par *par = (struct cg6_par *)info->par;
 	struct cg6_tec __iomem *tec = par->tec;
 	struct cg6_fbc __iomem *fbc = par->fbc;
+	struct cg6_thc __iomem *thc = par->thc;
 	u32 rev, conf, mode;
 	int i;
+
+	/* Hide the cursor. */
+	sbus_writel(CG6_THC_CURSOFF, &thc->thc_cursxy);
 
 	/* Turn off stuff in the Transform Engine. */
 	sbus_writel(0, &tec->tec_matrix);
@@ -728,7 +762,7 @@ static int __devinit cg6_probe(struct of_device *op,
 	par->physbase = op->resource[0].start;
 	par->which_io = op->resource[0].flags & IORESOURCE_BITS;
 
-	sbusfb_fill_var(&info->var, dp->node, 8);
+	sbusfb_fill_var(&info->var, dp, 8);
 	info->var.red.length = 8;
 	info->var.green.length = 8;
 	info->var.blue.length = 8;
@@ -767,7 +801,7 @@ static int __devinit cg6_probe(struct of_device *op,
 
 	cg6_bt_init(par);
 	cg6_chip_init(info);
-	cg6_blank(0, info);
+	cg6_blank(FB_BLANK_UNBLANK, info);
 
 	if (fb_alloc_cmap(&info->cmap, 256, 0))
 		goto out_unmap_regs;
@@ -781,7 +815,7 @@ static int __devinit cg6_probe(struct of_device *op,
 
 	dev_set_drvdata(&op->dev, info);
 
-	printk("%s: CGsix [%s] at %lx:%lx\n",
+	printk(KERN_INFO "%s: CGsix [%s] at %lx:%lx\n",
 	       dp->full_name, info->fix.id,
 	       par->which_io, par->physbase);
 
@@ -814,7 +848,7 @@ static int __devexit cg6_remove(struct of_device *op)
 	return 0;
 }
 
-static struct of_device_id cg6_match[] = {
+static const struct of_device_id cg6_match[] = {
 	{
 		.name = "cgsix",
 	},

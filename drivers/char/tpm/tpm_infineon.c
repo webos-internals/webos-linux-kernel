@@ -4,7 +4,7 @@
  * SLD 9630 TT 1.1 and SLB 9635 TT 1.2 Trusted Platform Module
  * Specifications at www.trustedcomputinggroup.org
  *
- * Copyright (C) 2005, Marcel Selhorst <selhorst@crypto.rub.de>
+ * Copyright (C) 2005, Marcel Selhorst <m.selhorst@sirrix.com>
  * Sirrix AG - security technologies, http://www.sirrix.com and
  * Applied Data Security Group, Ruhr-University Bochum, Germany
  * Project-Homepage: http://www.prosec.rub.de/tpm
@@ -611,7 +611,7 @@ static __devexit void tpm_inf_pnp_remove(struct pnp_dev *dev)
 	}
 }
 
-static struct pnp_driver tpm_inf_pnp = {
+static struct pnp_driver tpm_inf_pnp_driver = {
 	.name = "tpm_inf_pnp",
 	.driver = {
 		.owner = THIS_MODULE,
@@ -625,18 +625,18 @@ static struct pnp_driver tpm_inf_pnp = {
 
 static int __init init_inf(void)
 {
-	return pnp_register_driver(&tpm_inf_pnp);
+	return pnp_register_driver(&tpm_inf_pnp_driver);
 }
 
 static void __exit cleanup_inf(void)
 {
-	pnp_unregister_driver(&tpm_inf_pnp);
+	pnp_unregister_driver(&tpm_inf_pnp_driver);
 }
 
 module_init(init_inf);
 module_exit(cleanup_inf);
 
-MODULE_AUTHOR("Marcel Selhorst <selhorst@crypto.rub.de>");
+MODULE_AUTHOR("Marcel Selhorst <m.selhorst@sirrix.com>");
 MODULE_DESCRIPTION("Driver for Infineon TPM SLD 9630 TT 1.1 / SLB 9635 TT 1.2");
 MODULE_VERSION("1.9");
 MODULE_LICENSE("GPL");

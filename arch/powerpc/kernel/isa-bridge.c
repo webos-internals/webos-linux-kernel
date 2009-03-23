@@ -80,13 +80,13 @@ static void __devinit pci_process_ISA_OF_ranges(struct device_node *isa_node,
 	 *			(size depending on dev->n_addr_cells)
 	 *   cell 5:		the size of the range
 	 */
-	if ((range->isa_addr.a_hi && ISA_SPACE_MASK) != ISA_SPACE_IO) {
+	if ((range->isa_addr.a_hi & ISA_SPACE_MASK) != ISA_SPACE_IO) {
 		range++;
 		rlen -= sizeof(struct isa_range);
 		if (rlen < sizeof(struct isa_range))
 			goto inval_range;
 	}
-	if ((range->isa_addr.a_hi && ISA_SPACE_MASK) != ISA_SPACE_IO)
+	if ((range->isa_addr.a_hi & ISA_SPACE_MASK) != ISA_SPACE_IO)
 		goto inval_range;
 
 	isa_addr = range->isa_addr.a_lo;
@@ -99,7 +99,7 @@ static void __devinit pci_process_ISA_OF_ranges(struct device_node *isa_node,
 	 */
 	if ((pci_addr != 0) || (isa_addr != 0)) {
 		printk(KERN_ERR "unexpected isa to pci mapping: %s\n",
-		       __FUNCTION__);
+		       __func__);
 		return;
 	}
 
@@ -108,15 +108,12 @@ static void __devinit pci_process_ISA_OF_ranges(struct device_node *isa_node,
 	if (size > 0x10000)
 		size = 0x10000;
 
-	printk(KERN_ERR "no ISA IO ranges or unexpected isa range,"
-	       "mapping 64k\n");
-
 	__ioremap_at(phb_io_base_phys, (void *)ISA_IO_BASE,
 		     size, _PAGE_NO_CACHE|_PAGE_GUARDED);
 	return;
 
 inval_range:
-	printk(KERN_ERR "no ISA IO ranges or unexpected isa range,"
+	printk(KERN_ERR "no ISA IO ranges or unexpected isa range, "
 	       "mapping 64k\n");
 	__ioremap_at(phb_io_base_phys, (void *)ISA_IO_BASE,
 		     0x10000, _PAGE_NO_CACHE|_PAGE_GUARDED);
@@ -145,7 +142,7 @@ void __init isa_bridge_find_early(struct pci_controller *hose)
 	for_each_node_by_type(np, "isa") {
 		/* Look for our hose being a parent */
 		for (parent = of_get_parent(np); parent;) {
-			if (parent == hose->arch_data) {
+			if (parent == hose->dn) {
 				of_node_put(parent);
 				break;
 			}

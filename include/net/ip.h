@@ -29,6 +29,7 @@
 
 #include <net/inet_sock.h>
 #include <net/snmp.h>
+#include <net/flow.h>
 
 struct sock;
 
@@ -82,8 +83,6 @@ struct packet_type;
 struct rtable;
 struct sockaddr;
 
-extern void		ip_mc_dropsocket(struct sock *);
-extern void		ip_mc_dropdevice(struct net_device *dev);
 extern int		igmp_mc_proc_init(void);
 
 /*
@@ -102,6 +101,8 @@ extern int		ip_mc_output(struct sk_buff *skb);
 extern int		ip_fragment(struct sk_buff *skb, int (*output)(struct sk_buff *));
 extern int		ip_do_nat(struct sk_buff *skb);
 extern void		ip_send_check(struct iphdr *ip);
+extern int		__ip_local_out(struct sk_buff *skb);
+extern int		ip_local_out(struct sk_buff *skb);
 extern int		ip_queue_xmit(struct sk_buff *skb, int ipfragok);
 extern void		ip_init(void);
 extern int		ip_append_data(struct sock *sk,
@@ -109,7 +110,7 @@ extern int		ip_append_data(struct sock *sk,
 						   int odd, struct sk_buff *skb),
 				void *from, int len, int protolen,
 				struct ipcm_cookie *ipc,
-				struct rtable *rt,
+				struct rtable **rt,
 				unsigned int flags);
 extern int		ip_generic_getfrag(void *from, char *to, int offset, int len, int odd, struct sk_buff *skb);
 extern ssize_t		ip_append_page(struct sock *sk, struct page *page,
@@ -140,11 +141,19 @@ static inline void ip_tr_mc_map(__be32 addr, char *buf)
 
 struct ip_reply_arg {
 	struct kvec iov[1];   
+	int	    flags;
 	__wsum 	    csum;
 	int	    csumoffset; /* u16 offset of csum in iov[0].iov_base */
 				/* -1 if not needed */ 
 	int	    bound_dev_if;
 }; 
+
+#define IP_REPLY_ARG_NOSRCCHECK 1
+
+static inline __u8 ip_reply_arg_flowi_flags(const struct ip_reply_arg *arg)
+{
+	return (arg->flags & IP_REPLY_ARG_NOSRCCHECK) ? FLOWI_FLAG_ANYSRC : 0;
+}
 
 void ip_send_reply(struct sock *sk, struct sk_buff *skb, struct ip_reply_arg *arg,
 		   unsigned int len); 
@@ -156,31 +165,30 @@ struct ipv4_config
 };
 
 extern struct ipv4_config ipv4_config;
-DECLARE_SNMP_STAT(struct ipstats_mib, ip_statistics);
-#define IP_INC_STATS(field)		SNMP_INC_STATS(ip_statistics, field)
-#define IP_INC_STATS_BH(field)		SNMP_INC_STATS_BH(ip_statistics, field)
-#define IP_INC_STATS_USER(field) 	SNMP_INC_STATS_USER(ip_statistics, field)
-#define IP_ADD_STATS_BH(field, val)	SNMP_ADD_STATS_BH(ip_statistics, field, val)
-DECLARE_SNMP_STAT(struct linux_mib, net_statistics);
-#define NET_INC_STATS(field)		SNMP_INC_STATS(net_statistics, field)
-#define NET_INC_STATS_BH(field)		SNMP_INC_STATS_BH(net_statistics, field)
-#define NET_INC_STATS_USER(field) 	SNMP_INC_STATS_USER(net_statistics, field)
-#define NET_ADD_STATS_BH(field, adnd)	SNMP_ADD_STATS_BH(net_statistics, field, adnd)
-#define NET_ADD_STATS_USER(field, adnd)	SNMP_ADD_STATS_USER(net_statistics, field, adnd)
+#define IP_INC_STATS(net, field)	SNMP_INC_STATS((net)->mib.ip_statistics, field)
+#define IP_INC_STATS_BH(net, field)	SNMP_INC_STATS_BH((net)->mib.ip_statistics, field)
+#define IP_ADD_STATS_BH(net, field, val) SNMP_ADD_STATS_BH((net)->mib.ip_statistics, field, val)
+#define NET_INC_STATS(net, field)	SNMP_INC_STATS((net)->mib.net_statistics, field)
+#define NET_INC_STATS_BH(net, field)	SNMP_INC_STATS_BH((net)->mib.net_statistics, field)
+#define NET_INC_STATS_USER(net, field) 	SNMP_INC_STATS_USER((net)->mib.net_statistics, field)
+#define NET_ADD_STATS_BH(net, field, adnd) SNMP_ADD_STATS_BH((net)->mib.net_statistics, field, adnd)
+#define NET_ADD_STATS_USER(net, field, adnd) SNMP_ADD_STATS_USER((net)->mib.net_statistics, field, adnd)
 
 extern unsigned long snmp_fold_field(void *mib[], int offt);
-extern int snmp_mib_init(void *ptr[2], size_t mibsize, size_t mibalign);
+extern int snmp_mib_init(void *ptr[2], size_t mibsize);
 extern void snmp_mib_free(void *ptr[2]);
 
+extern struct local_ports {
+	seqlock_t	lock;
+	int		range[2];
+} sysctl_local_ports;
 extern void inet_get_local_port_range(int *low, int *high);
 
 extern int sysctl_ip_default_ttl;
 extern int sysctl_ip_nonlocal_bind;
 
-/* From ip_fragment.c */
-struct inet_frags_ctl;
-extern struct inet_frags_ctl ip4_frags_ctl;
-extern int sysctl_ipfrag_max_dist;
+extern struct ctl_path net_core_path[];
+extern struct ctl_path net_ipv4_ctl_path[];
 
 /* From inetpeer.c */
 extern int inet_peer_threshold;
@@ -193,6 +201,8 @@ extern int inet_peer_gc_maxtime;
 extern int sysctl_ip_dynaddr;
 
 extern void ipfrag_init(void);
+
+extern void ip_static_sysctl_init(void);
 
 #ifdef CONFIG_INET
 #include <net/dst.h>
@@ -213,7 +223,7 @@ int ip_dont_fragment(struct sock *sk, struct dst_entry *dst)
 {
 	return (inet_sk(sk)->pmtudisc == IP_PMTUDISC_DO ||
 		(inet_sk(sk)->pmtudisc == IP_PMTUDISC_WANT &&
-		 !(dst_metric(dst, RTAX_LOCK)&(1<<RTAX_MTU))));
+		 !(dst_metric_locked(dst, RTAX_MTU))));
 }
 
 extern void __ip_select_ident(struct iphdr *iph, struct dst_entry *dst, int more);
@@ -266,20 +276,22 @@ static inline void ip_eth_mc_map(__be32 naddr, char *buf)
  *	Leave P_Key as 0 to be filled in by driver.
  */
 
-static inline void ip_ib_mc_map(__be32 naddr, char *buf)
+static inline void ip_ib_mc_map(__be32 naddr, const unsigned char *broadcast, char *buf)
 {
 	__u32 addr;
+	unsigned char scope = broadcast[5] & 0xF;
+
 	buf[0]  = 0;		/* Reserved */
 	buf[1]  = 0xff;		/* Multicast QPN */
 	buf[2]  = 0xff;
 	buf[3]  = 0xff;
 	addr    = ntohl(naddr);
 	buf[4]  = 0xff;
-	buf[5]  = 0x12;		/* link local scope */
+	buf[5]  = 0x10 | scope;	/* scope from broadcast address */
 	buf[6]  = 0x40;		/* IPv4 signature */
 	buf[7]  = 0x1b;
-	buf[8]  = 0;		/* P_Key */
-	buf[9]  = 0;
+	buf[8]  = broadcast[8];		/* P_Key */
+	buf[9]  = broadcast[9];
 	buf[10] = 0;
 	buf[11] = 0;
 	buf[12] = 0;
@@ -317,7 +329,7 @@ static __inline__ void inet_reset_saddr(struct sock *sk)
 extern int	ip_call_ra_chain(struct sk_buff *skb);
 
 /*
- *	Functions provided by ip_fragment.o
+ *	Functions provided by ip_fragment.c
  */
 
 enum ip_defrag_users
@@ -332,15 +344,14 @@ enum ip_defrag_users
 };
 
 int ip_defrag(struct sk_buff *skb, u32 user);
-int ip_frag_mem(void);
-int ip_frag_nqueues(void);
+int ip_frag_mem(struct net *net);
+int ip_frag_nqueues(struct net *net);
 
 /*
  *	Functions provided by ip_forward.c
  */
  
 extern int ip_forward(struct sk_buff *skb);
-extern int ip_net_unreachable(struct sk_buff *skb);
  
 /*
  *	Functions provided by ip_options.c
@@ -349,10 +360,11 @@ extern int ip_net_unreachable(struct sk_buff *skb);
 extern void ip_options_build(struct sk_buff *skb, struct ip_options *opt, __be32 daddr, struct rtable *rt, int is_frag);
 extern int ip_options_echo(struct ip_options *dopt, struct sk_buff *skb);
 extern void ip_options_fragment(struct sk_buff *skb);
-extern int ip_options_compile(struct ip_options *opt, struct sk_buff *skb);
-extern int ip_options_get(struct ip_options **optp,
+extern int ip_options_compile(struct net *net,
+			      struct ip_options *opt, struct sk_buff *skb);
+extern int ip_options_get(struct net *net, struct ip_options **optp,
 			  unsigned char *data, int optlen);
-extern int ip_options_get_from_user(struct ip_options **optp,
+extern int ip_options_get_from_user(struct net *net, struct ip_options **optp,
 				    unsigned char __user *data, int optlen);
 extern void ip_options_undo(struct ip_options * opt);
 extern void ip_forward_options(struct sk_buff *skb);
@@ -363,7 +375,8 @@ extern int ip_options_rcv_srr(struct sk_buff *skb);
  */
 
 extern void	ip_cmsg_recv(struct msghdr *msg, struct sk_buff *skb);
-extern int	ip_cmsg_send(struct msghdr *msg, struct ipcm_cookie *ipc);
+extern int	ip_cmsg_send(struct net *net,
+			     struct msghdr *msg, struct ipcm_cookie *ipc);
 extern int	ip_setsockopt(struct sock *sk, int level, int optname, char __user *optval, int optlen);
 extern int	ip_getsockopt(struct sock *sk, int level, int optname, char __user *optval, int __user *optlen);
 extern int	compat_ip_setsockopt(struct sock *sk, int level,
@@ -384,13 +397,11 @@ extern void	ip_local_error(struct sock *sk, int err, __be32 daddr, __be16 dport,
 int ipv4_doint_and_flush(ctl_table *ctl, int write,
 			 struct file* filp, void __user *buffer,
 			 size_t *lenp, loff_t *ppos);
-int ipv4_doint_and_flush_strategy(ctl_table *table, int __user *name, int nlen,
+int ipv4_doint_and_flush_strategy(ctl_table *table,
 				  void __user *oldval, size_t __user *oldlenp,
 				  void __user *newval, size_t newlen);
 #ifdef CONFIG_PROC_FS
 extern int ip_misc_proc_init(void);
 #endif
-
-extern struct ctl_table ipv4_table[];
 
 #endif	/* _IP_H */

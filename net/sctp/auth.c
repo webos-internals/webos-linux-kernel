@@ -1,15 +1,15 @@
-/* SCTP kernel reference Implementation
+/* SCTP kernel implementation
  * (C) Copyright 2007 Hewlett-Packard Development Company, L.P.
  *
- * This file is part of the SCTP kernel reference Implementation
+ * This file is part of the SCTP kernel implementation
  *
- * The SCTP reference implementation is free software;
+ * This SCTP implementation is free software;
  * you can redistribute it and/or modify it under the terms of
  * the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
  *
- * The SCTP reference implementation is distributed in the hope that it
+ * This SCTP implementation is distributed in the hope that it
  * will be useful, but WITHOUT ANY WARRANTY; without even the implied
  *                 ************************
  * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
@@ -80,6 +80,10 @@ static struct sctp_auth_bytes *sctp_auth_create_key(__u32 key_len, gfp_t gfp)
 {
 	struct sctp_auth_bytes *key;
 
+	/* Verify that we are not going to overflow INT_MAX */
+	if ((INT_MAX - key_len) < sizeof(struct sctp_auth_bytes))
+		return NULL;
+
 	/* Allocate the shared key */
 	key = kmalloc(sizeof(struct sctp_auth_bytes) + key_len, gfp);
 	if (!key)
@@ -137,8 +141,8 @@ void sctp_auth_destroy_keys(struct list_head *keys)
 /* Compare two byte vectors as numbers.  Return values
  * are:
  * 	  0 - vectors are equal
- * 	< 0 - vector 1 is smaller then vector2
- * 	> 0 - vector 1 is greater then vector2
+ * 	< 0 - vector 1 is smaller than vector2
+ * 	> 0 - vector 1 is greater than vector2
  *
  * Algorithm is:
  * 	This is performed by selecting the numerically smaller key vector...
@@ -420,15 +424,15 @@ struct sctp_shared_key *sctp_auth_get_shkey(
 				const struct sctp_association *asoc,
 				__u16 key_id)
 {
-	struct sctp_shared_key *key = NULL;
+	struct sctp_shared_key *key;
 
 	/* First search associations set of endpoint pair shared keys */
 	key_for_each(key, &asoc->endpoint_shared_keys) {
 		if (key->key_id == key_id)
-			break;
+			return key;
 	}
 
-	return key;
+	return NULL;
 }
 
 /*
@@ -485,7 +489,7 @@ int sctp_auth_init_hmacs(struct sctp_endpoint *ep, gfp_t gfp)
 	return 0;
 
 out_err:
-	/* Clean up any successfull allocations */
+	/* Clean up any successful allocations */
 	sctp_auth_destroy_hmacs(ep->auth_hmacs);
 	return -ENOMEM;
 }
@@ -782,6 +786,9 @@ int sctp_auth_ep_set_hmacs(struct sctp_endpoint *ep,
 	for (i = 0; i < hmacs->shmac_num_idents; i++) {
 		id = hmacs->shmac_idents[i];
 
+		if (id > SCTP_AUTH_HMAC_ID_MAX)
+			return -EOPNOTSUPP;
+
 		if (SCTP_AUTH_HMAC_ID_SHA1 == id)
 			has_sha1 = 1;
 
@@ -838,11 +845,11 @@ int sctp_auth_set_key(struct sctp_endpoint *ep,
 	}
 
 	/* Create a new key data based on the info passed in */
-	key = sctp_auth_create_key(auth_key->sca_keylen, GFP_KERNEL);
+	key = sctp_auth_create_key(auth_key->sca_keylength, GFP_KERNEL);
 	if (!key)
 		goto nomem;
 
-	memcpy(key->data, &auth_key->sca_key[0], auth_key->sca_keylen);
+	memcpy(key->data, &auth_key->sca_key[0], auth_key->sca_keylength);
 
 	/* If we are replacing, remove the old keys data from the
 	 * key id.  If we are adding new key id, add it to the

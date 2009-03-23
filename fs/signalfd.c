@@ -27,6 +27,7 @@
 #include <linux/list.h>
 #include <linux/anon_inodes.h>
 #include <linux/signalfd.h>
+#include <linux/syscalls.h>
 
 struct signalfd_ctx {
 	sigset_t sigmask;
@@ -66,7 +67,7 @@ static int signalfd_copyinfo(struct signalfd_siginfo __user *uinfo,
 	BUILD_BUG_ON(sizeof(struct signalfd_siginfo) != 128);
 
 	/*
-	 * Unused memebers should be zero ...
+	 * Unused members should be zero ...
 	 */
 	err = __clear_user(uinfo, sizeof(*uinfo));
 
@@ -110,9 +111,14 @@ static int signalfd_copyinfo(struct signalfd_siginfo __user *uinfo,
 		err |= __put_user(kinfo->si_uid, &uinfo->ssi_uid);
 		err |= __put_user((long) kinfo->si_ptr, &uinfo->ssi_ptr);
 		break;
-	default: /* this is just in case for now ... */
+	default:
+		/*
+		 * This case catches also the signals queued by sigqueue().
+		 */
 		err |= __put_user(kinfo->si_pid, &uinfo->ssi_pid);
 		err |= __put_user(kinfo->si_uid, &uinfo->ssi_uid);
+		err |= __put_user((long) kinfo->si_ptr, &uinfo->ssi_ptr);
+		err |= __put_user(kinfo->si_int, &uinfo->ssi_int);
 		break;
 	}
 
@@ -199,13 +205,18 @@ static const struct file_operations signalfd_fops = {
 	.read		= signalfd_read,
 };
 
-asmlinkage long sys_signalfd(int ufd, sigset_t __user *user_mask, size_t sizemask)
+SYSCALL_DEFINE4(signalfd4, int, ufd, sigset_t __user *, user_mask,
+		size_t, sizemask, int, flags)
 {
-	int error;
 	sigset_t sigmask;
 	struct signalfd_ctx *ctx;
-	struct file *file;
-	struct inode *inode;
+
+	/* Check the SFD_* constants for consistency.  */
+	BUILD_BUG_ON(SFD_CLOEXEC != O_CLOEXEC);
+	BUILD_BUG_ON(SFD_NONBLOCK != O_NONBLOCK);
+
+	if (flags & ~(SFD_CLOEXEC | SFD_NONBLOCK))
+		return -EINVAL;
 
 	if (sizemask != sizeof(sigset_t) ||
 	    copy_from_user(&sigmask, user_mask, sizeof(sigmask)))
@@ -224,12 +235,12 @@ asmlinkage long sys_signalfd(int ufd, sigset_t __user *user_mask, size_t sizemas
 		 * When we call this, the initialization must be complete, since
 		 * anon_inode_getfd() will install the fd.
 		 */
-		error = anon_inode_getfd(&ufd, &inode, &file, "[signalfd]",
-					 &signalfd_fops, ctx);
-		if (error)
-			goto err_fdalloc;
+		ufd = anon_inode_getfd("[signalfd]", &signalfd_fops, ctx,
+				       flags & (O_CLOEXEC | O_NONBLOCK));
+		if (ufd < 0)
+			kfree(ctx);
 	} else {
-		file = fget(ufd);
+		struct file *file = fget(ufd);
 		if (!file)
 			return -EBADF;
 		ctx = file->private_data;
@@ -246,9 +257,10 @@ asmlinkage long sys_signalfd(int ufd, sigset_t __user *user_mask, size_t sizemas
 	}
 
 	return ufd;
-
-err_fdalloc:
-	kfree(ctx);
-	return error;
 }
 
+SYSCALL_DEFINE3(signalfd, int, ufd, sigset_t __user *, user_mask,
+		size_t, sizemask)
+{
+	return sys_signalfd4(ufd, user_mask, sizemask, 0);
+}

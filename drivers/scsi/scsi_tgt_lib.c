@@ -103,10 +103,11 @@ struct scsi_cmnd *scsi_host_get_command(struct Scsi_Host *shost,
 	if (!cmd)
 		goto release_rq;
 
-	memset(cmd, 0, sizeof(*cmd));
 	cmd->sc_data_direction = data_dir;
 	cmd->jiffies_at_alloc = jiffies;
 	cmd->request = rq;
+
+	cmd->cmnd = rq->cmd;
 
 	rq->special = cmd;
 	rq->cmd_type = REQ_TYPE_SPECIAL;
@@ -180,7 +181,7 @@ static void scsi_tgt_cmd_destroy(struct work_struct *work)
 		container_of(work, struct scsi_tgt_cmd, work);
 	struct scsi_cmnd *cmd = tcmd->rq->special;
 
-	dprintk("cmd %p %d %lu\n", cmd, cmd->sc_data_direction,
+	dprintk("cmd %p %d %u\n", cmd, cmd->sc_data_direction,
 		rq_data_dir(cmd->request));
 	scsi_unmap_user_pages(tcmd);
 	scsi_host_put_command(scsi_tgt_cmd_to_host(cmd), cmd);
@@ -320,19 +321,18 @@ int scsi_tgt_queue_command(struct scsi_cmnd *cmd, u64 itn_id,
 EXPORT_SYMBOL_GPL(scsi_tgt_queue_command);
 
 /*
- * This is run from a interrpt handler normally and the unmap
+ * This is run from a interrupt handler normally and the unmap
  * needs process context so we must queue
  */
 static void scsi_tgt_cmd_done(struct scsi_cmnd *cmd)
 {
 	struct scsi_tgt_cmd *tcmd = cmd->request->end_io_data;
 
-	dprintk("cmd %p %lu\n", cmd, rq_data_dir(cmd->request));
+	dprintk("cmd %p %u\n", cmd, rq_data_dir(cmd->request));
 
 	scsi_tgt_uspace_send_status(cmd, tcmd->itn_id, tcmd->tag);
 
-	if (cmd->request_buffer)
-		scsi_free_sgtable(cmd);
+	scsi_release_buffers(cmd);
 
 	queue_work(scsi_tgtd, &tcmd->work);
 }
@@ -342,7 +342,7 @@ static int scsi_tgt_transfer_response(struct scsi_cmnd *cmd)
 	struct Scsi_Host *shost = scsi_tgt_cmd_to_host(cmd);
 	int err;
 
-	dprintk("cmd %p %lu\n", cmd, rq_data_dir(cmd->request));
+	dprintk("cmd %p %u\n", cmd, rq_data_dir(cmd->request));
 
 	err = shost->hostt->transfer_response(cmd, scsi_tgt_cmd_done);
 	switch (err) {
@@ -351,30 +351,6 @@ static int scsi_tgt_transfer_response(struct scsi_cmnd *cmd)
 		return -EAGAIN;
 	}
 	return 0;
-}
-
-static int scsi_tgt_init_cmd(struct scsi_cmnd *cmd, gfp_t gfp_mask)
-{
-	struct request *rq = cmd->request;
-	int count;
-
-	cmd->use_sg = rq->nr_phys_segments;
-	cmd->request_buffer = scsi_alloc_sgtable(cmd, gfp_mask);
-	if (!cmd->request_buffer)
-		return -ENOMEM;
-
-	cmd->request_bufflen = rq->data_len;
-
-	dprintk("cmd %p cnt %d %lu\n", cmd, cmd->use_sg, rq_data_dir(rq));
-	count = blk_rq_map_sg(rq->q, rq, cmd->request_buffer);
-	if (likely(count <= cmd->use_sg)) {
-		cmd->use_sg = count;
-		return 0;
-	}
-
-	eprintk("cmd %p cnt %d\n", cmd, cmd->use_sg);
-	scsi_free_sgtable(cmd);
-	return -EINVAL;
 }
 
 /* TODO: test this crap and replace bio_map_user with new interface maybe */
@@ -386,7 +362,7 @@ static int scsi_map_user_pages(struct scsi_tgt_cmd *tcmd, struct scsi_cmnd *cmd,
 	int err;
 
 	dprintk("%lx %u\n", uaddr, len);
-	err = blk_rq_map_user(q, rq, (void *)uaddr, len);
+	err = blk_rq_map_user(q, rq, NULL, (void *)uaddr, len, GFP_KERNEL);
 	if (err) {
 		/*
 		 * TODO: need to fixup sg_tablesize, max_segment_size,
@@ -402,9 +378,16 @@ static int scsi_map_user_pages(struct scsi_tgt_cmd *tcmd, struct scsi_cmnd *cmd,
 	}
 
 	tcmd->bio = rq->bio;
-	err = scsi_tgt_init_cmd(cmd, GFP_KERNEL);
-	if (err)
+	err = scsi_init_io(cmd, GFP_KERNEL);
+	if (err) {
+		scsi_release_buffers(cmd);
 		goto unmap_rq;
+	}
+	/*
+	 * we use REQ_TYPE_BLOCK_PC so scsi_init_io doesn't set the
+	 * length for us.
+	 */
+	cmd->sdb.length = rq->data_len;
 
 	return 0;
 
@@ -477,7 +460,7 @@ int scsi_tgt_kspace_exec(int host_no, u64 itn_id, int result, u64 tag,
 
 	/* TODO: replace with a O(1) alg */
 	shost = scsi_host_lookup(host_no);
-	if (IS_ERR(shost)) {
+	if (!shost) {
 		printk(KERN_ERR "Could not find host no %d\n", host_no);
 		return -EINVAL;
 	}
@@ -496,8 +479,8 @@ int scsi_tgt_kspace_exec(int host_no, u64 itn_id, int result, u64 tag,
 	}
 	cmd = rq->special;
 
-	dprintk("cmd %p scb %x result %d len %d bufflen %u %lu %x\n",
-		cmd, cmd->cmnd[0], result, len, cmd->request_bufflen,
+	dprintk("cmd %p scb %x result %d len %d bufflen %u %u %x\n",
+		cmd, cmd->cmnd[0], result, len, scsi_bufflen(cmd),
 		rq_data_dir(rq), cmd->cmnd[0]);
 
 	if (result == TASK_ABORTED) {
@@ -567,7 +550,7 @@ int scsi_tgt_kspace_tsk_mgmt(int host_no, u64 itn_id, u64 mid, int result)
 	dprintk("%d %d %llx\n", host_no, result, (unsigned long long) mid);
 
 	shost = scsi_host_lookup(host_no);
-	if (IS_ERR(shost)) {
+	if (!shost) {
 		printk(KERN_ERR "Could not find host no %d\n", host_no);
 		return err;
 	}
@@ -617,10 +600,10 @@ int scsi_tgt_kspace_it_nexus_rsp(int host_no, u64 itn_id, int result)
 	struct Scsi_Host *shost;
 	int err = -EINVAL;
 
-	dprintk("%d %d %llx\n", host_no, result, (unsigned long long) mid);
+	dprintk("%d %d%llx\n", host_no, result, (unsigned long long)itn_id);
 
 	shost = scsi_host_lookup(host_no);
-	if (IS_ERR(shost)) {
+	if (!shost) {
 		printk(KERN_ERR "Could not find host no %d\n", host_no);
 		return err;
 	}
@@ -640,9 +623,7 @@ static int __init scsi_tgt_init(void)
 {
 	int err;
 
-	scsi_tgt_cmd_cache = kmem_cache_create("scsi_tgt_cmd",
-					       sizeof(struct scsi_tgt_cmd),
-					       0, 0, NULL);
+	scsi_tgt_cmd_cache =  KMEM_CACHE(scsi_tgt_cmd, 0);
 	if (!scsi_tgt_cmd_cache)
 		return -ENOMEM;
 

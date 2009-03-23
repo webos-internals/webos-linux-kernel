@@ -17,18 +17,18 @@
 #include <linux/input.h>
 #include <linux/platform_device.h>
 
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
-#include <asm/arch/board-ams-delta.h>
-#include <asm/arch/gpio.h>
-#include <asm/arch/keypad.h>
-#include <asm/arch/mux.h>
-#include <asm/arch/usb.h>
-#include <asm/arch/board.h>
-#include <asm/arch/common.h>
+#include <mach/board-ams-delta.h>
+#include <mach/gpio.h>
+#include <mach/keypad.h>
+#include <mach/mux.h>
+#include <mach/usb.h>
+#include <mach/board.h>
+#include <mach/common.h>
 
 static u8 ams_delta_latch1_reg;
 static u16 ams_delta_latch2_reg;
@@ -135,21 +135,21 @@ static void __init ams_delta_init_irq(void)
 }
 
 static struct map_desc ams_delta_io_desc[] __initdata = {
-	// AMS_DELTA_LATCH1
+	/* AMS_DELTA_LATCH1 */
 	{
 		.virtual	= AMS_DELTA_LATCH1_VIRT,
 		.pfn		= __phys_to_pfn(AMS_DELTA_LATCH1_PHYS),
 		.length		= 0x01000000,
 		.type		= MT_DEVICE
 	},
-	// AMS_DELTA_LATCH2
+	/* AMS_DELTA_LATCH2 */
 	{
 		.virtual	= AMS_DELTA_LATCH2_VIRT,
 		.pfn		= __phys_to_pfn(AMS_DELTA_LATCH2_PHYS),
 		.length		= 0x01000000,
 		.type		= MT_DEVICE
 	},
-	// AMS_DELTA_MODEM
+	/* AMS_DELTA_MODEM */
 	{
 		.virtual	= AMS_DELTA_MODEM_VIRT,
 		.pfn		= __phys_to_pfn(AMS_DELTA_MODEM_PHYS),
@@ -227,6 +227,7 @@ static void __init ams_delta_init(void)
 	omap_board_config = ams_delta_config;
 	omap_board_config_size = ARRAY_SIZE(ams_delta_config);
 	omap_serial_init();
+	omap_register_i2c_bus(1, 100, NULL, 0);
 
 	/* Clear latch2 (NAND, LCD, modem enable) */
 	ams_delta_latch2_write(~0, 0);

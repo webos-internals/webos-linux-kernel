@@ -48,7 +48,7 @@ enum pid_type
  */
 
 struct upid {
-	/* Try to keep pid_chain in the same cacheline as nr for find_pid */
+	/* Try to keep pid_chain in the same cacheline as nr for find_vpid */
 	int nr;
 	struct pid_namespace *ns;
 	struct hlist_node pid_chain;
@@ -57,10 +57,10 @@ struct upid {
 struct pid
 {
 	atomic_t count;
+	unsigned int level;
 	/* lists of tasks that use this pid */
 	struct hlist_head tasks[PIDTYPE_MAX];
 	struct rcu_head rcu;
-	int level;
 	struct upid numbers[1];
 };
 
@@ -79,10 +79,9 @@ static inline struct pid *get_pid(struct pid *pid)
 	return pid;
 }
 
-extern void FASTCALL(put_pid(struct pid *pid));
-extern struct task_struct *FASTCALL(pid_task(struct pid *pid, enum pid_type));
-extern struct task_struct *FASTCALL(get_pid_task(struct pid *pid,
-						enum pid_type));
+extern void put_pid(struct pid *pid);
+extern struct task_struct *pid_task(struct pid *pid, enum pid_type);
+extern struct task_struct *get_pid_task(struct pid *pid, enum pid_type);
 
 extern struct pid *get_task_pid(struct task_struct *task, enum pid_type type);
 
@@ -90,11 +89,13 @@ extern struct pid *get_task_pid(struct task_struct *task, enum pid_type type);
  * attach_pid() and detach_pid() must be called with the tasklist_lock
  * write-held.
  */
-extern int FASTCALL(attach_pid(struct task_struct *task,
-				enum pid_type type, struct pid *pid));
-extern void FASTCALL(detach_pid(struct task_struct *task, enum pid_type));
-extern void FASTCALL(transfer_pid(struct task_struct *old,
-				  struct task_struct *new, enum pid_type));
+extern void attach_pid(struct task_struct *task, enum pid_type type,
+			struct pid *pid);
+extern void detach_pid(struct task_struct *task, enum pid_type);
+extern void change_pid(struct task_struct *task, enum pid_type,
+			struct pid *pid);
+extern void transfer_pid(struct task_struct *old, struct task_struct *new,
+			 enum pid_type);
 
 struct pid_namespace;
 extern struct pid_namespace init_pid_ns;
@@ -104,32 +105,47 @@ extern struct pid_namespace init_pid_ns;
  * or rcu_read_lock() held.
  *
  * find_pid_ns() finds the pid in the namespace specified
- * find_pid() find the pid by its global id, i.e. in the init namespace
  * find_vpid() finr the pid by its virtual id, i.e. in the current namespace
  *
- * see also find_task_by_pid() set in include/linux/sched.h
+ * see also find_task_by_vpid() set in include/linux/sched.h
  */
-extern struct pid *FASTCALL(find_pid_ns(int nr, struct pid_namespace *ns));
+extern struct pid *find_pid_ns(int nr, struct pid_namespace *ns);
 extern struct pid *find_vpid(int nr);
-extern struct pid *find_pid(int nr);
 
 /*
  * Lookup a PID in the hash table, and return with it's count elevated.
  */
 extern struct pid *find_get_pid(int nr);
 extern struct pid *find_ge_pid(int nr, struct pid_namespace *);
+int next_pidmap(struct pid_namespace *pid_ns, int last);
 
 extern struct pid *alloc_pid(struct pid_namespace *ns);
-extern void FASTCALL(free_pid(struct pid *pid));
-extern void zap_pid_ns_processes(struct pid_namespace *pid_ns);
+extern void free_pid(struct pid *pid);
+
+/*
+ * ns_of_pid() returns the pid namespace in which the specified pid was
+ * allocated.
+ *
+ * NOTE:
+ * 	ns_of_pid() is expected to be called for a process (task) that has
+ * 	an attached 'struct pid' (see attach_pid(), detach_pid()) i.e @pid
+ * 	is expected to be non-NULL. If @pid is NULL, caller should handle
+ * 	the resulting NULL pid-ns.
+ */
+static inline struct pid_namespace *ns_of_pid(struct pid *pid)
+{
+	struct pid_namespace *ns = NULL;
+	if (pid)
+		ns = pid->numbers[pid->level].ns;
+	return ns;
+}
 
 /*
  * the helpers to get the pid's id seen from different namespaces
  *
  * pid_nr()    : global id, i.e. the id seen from the init namespace;
- * pid_vnr()   : virtual id, i.e. the id seen from the namespace this pid
- *               belongs to. this only makes sence when called in the
- *               context of the task that belongs to the same namespace;
+ * pid_vnr()   : virtual id, i.e. the id seen from the pid namespace of
+ *               current.
  * pid_nr_ns() : id seen from the ns specified.
  *
  * see also task_xid_nr() etc in include/linux/sched.h
@@ -144,24 +160,32 @@ static inline pid_t pid_nr(struct pid *pid)
 }
 
 pid_t pid_nr_ns(struct pid *pid, struct pid_namespace *ns);
-
-static inline pid_t pid_vnr(struct pid *pid)
-{
-	pid_t nr = 0;
-	if (pid)
-		nr = pid->numbers[pid->level].nr;
-	return nr;
-}
+pid_t pid_vnr(struct pid *pid);
 
 #define do_each_pid_task(pid, type, task)				\
 	do {								\
 		struct hlist_node *pos___;				\
-		if (pid != NULL)					\
+		if ((pid) != NULL)					\
 			hlist_for_each_entry_rcu((task), pos___,	\
-				&pid->tasks[type], pids[type].node) {
+				&(pid)->tasks[type], pids[type].node) {
 
+			/*
+			 * Both old and new leaders may be attached to
+			 * the same pid in the middle of de_thread().
+			 */
 #define while_each_pid_task(pid, type, task)				\
+				if (type == PIDTYPE_PID)		\
+					break;				\
 			}						\
 	} while (0)
 
+#define do_each_pid_thread(pid, type, task)				\
+	do_each_pid_task(pid, type, task) {				\
+		struct task_struct *tg___ = task;			\
+		do {
+
+#define while_each_pid_thread(pid, type, task)				\
+		} while_each_thread(tg___, task);			\
+		task = tg___;						\
+	} while_each_pid_task(pid, type, task)
 #endif /* _LINUX_PID_H */

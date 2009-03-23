@@ -21,11 +21,14 @@
 
 #include <linux/fs.h>
 #include <linux/cdev.h>
+#include <linux/idr.h>
+#include <linux/rwsem.h>
 #include <asm/atomic.h>
 
 enum fw_device_state {
 	FW_DEVICE_INITIALIZING,
 	FW_DEVICE_RUNNING,
+	FW_DEVICE_GONE,
 	FW_DEVICE_SHUTDOWN,
 };
 
@@ -35,15 +38,32 @@ struct fw_attribute_group {
 	struct attribute *attrs[11];
 };
 
+/*
+ * Note, fw_device.generation always has to be read before fw_device.node_id.
+ * Use SMP memory barriers to ensure this.  Otherwise requests will be sent
+ * to an outdated node_id if the generation was updated in the meantime due
+ * to a bus reset.
+ *
+ * Likewise, fw-core will take care to update .node_id before .generation so
+ * that whenever fw_device.generation is current WRT the actual bus generation,
+ * fw_device.node_id is guaranteed to be current too.
+ *
+ * The same applies to fw_device.card->node_id vs. fw_device.generation.
+ *
+ * fw_device.config_rom and fw_device.config_rom_length may be accessed during
+ * the lifetime of any fw_unit belonging to the fw_device, before device_del()
+ * was called on the last fw_unit.  Alternatively, they may be accessed while
+ * holding fw_device_rwsem.
+ */
 struct fw_device {
 	atomic_t state;
 	struct fw_node *node;
 	int node_id;
 	int generation;
 	unsigned max_speed;
+	bool cmc;
 	struct fw_card *card;
 	struct device device;
-	struct list_head link;
 	struct list_head client_list;
 	u32 *config_rom;
 	size_t config_rom_length;
@@ -52,38 +72,62 @@ struct fw_device {
 	struct fw_attribute_group attribute_group;
 };
 
-static inline struct fw_device *
-fw_device(struct device *dev)
+static inline struct fw_device *fw_device(struct device *dev)
 {
 	return container_of(dev, struct fw_device, device);
 }
 
-static inline int
-fw_device_is_shutdown(struct fw_device *device)
+static inline int fw_device_is_shutdown(struct fw_device *device)
 {
 	return atomic_read(&device->state) == FW_DEVICE_SHUTDOWN;
 }
 
-struct fw_device *fw_device_get(struct fw_device *device);
-void fw_device_put(struct fw_device *device);
+static inline struct fw_device *fw_device_get(struct fw_device *device)
+{
+	get_device(&device->device);
+
+	return device;
+}
+
+static inline void fw_device_put(struct fw_device *device)
+{
+	put_device(&device->device);
+}
+
+struct fw_device *fw_device_get_by_devt(dev_t devt);
 int fw_device_enable_phys_dma(struct fw_device *device);
 
 void fw_device_cdev_update(struct fw_device *device);
 void fw_device_cdev_remove(struct fw_device *device);
 
-struct fw_device *fw_device_from_devt(dev_t devt);
+extern struct rw_semaphore fw_device_rwsem;
+extern struct idr fw_device_idr;
 extern int fw_cdev_major;
 
+/*
+ * fw_unit.directory must not be accessed after device_del(&fw_unit.device).
+ */
 struct fw_unit {
 	struct device device;
 	u32 *directory;
 	struct fw_attribute_group attribute_group;
 };
 
-static inline struct fw_unit *
-fw_unit(struct device *dev)
+static inline struct fw_unit *fw_unit(struct device *dev)
 {
 	return container_of(dev, struct fw_unit, device);
+}
+
+static inline struct fw_unit *fw_unit_get(struct fw_unit *unit)
+{
+	get_device(&unit->device);
+
+	return unit;
+}
+
+static inline void fw_unit_put(struct fw_unit *unit)
+{
+	put_device(&unit->device);
 }
 
 #define CSR_OFFSET	0x40

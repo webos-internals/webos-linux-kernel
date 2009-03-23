@@ -69,18 +69,17 @@ static int generic_quotactl_valid(struct super_block *sb, int type, int cmd, qid
 	switch (cmd) {
 		case Q_GETFMT:
 		case Q_GETINFO:
-		case Q_QUOTAOFF:
 		case Q_SETINFO:
 		case Q_SETQUOTA:
 		case Q_GETQUOTA:
 			/* This is just informative test so we are satisfied without a lock */
-			if (!sb_has_quota_enabled(sb, type))
+			if (!sb_has_quota_active(sb, type))
 				return -ESRCH;
 	}
 
 	/* Check privileges */
 	if (cmd == Q_GETQUOTA) {
-		if (((type == USRQUOTA && current->euid != id) ||
+		if (((type == USRQUOTA && current_euid() != id) ||
 		     (type == GRPQUOTA && !in_egroup_p(id))) &&
 		    !capable(CAP_SYS_ADMIN))
 			return -EPERM;
@@ -131,7 +130,7 @@ static int xqm_quotactl_valid(struct super_block *sb, int type, int cmd, qid_t i
 
 	/* Check privileges */
 	if (cmd == Q_XGETQUOTA) {
-		if (((type == XQM_USRQUOTA && current->euid != id) ||
+		if (((type == XQM_USRQUOTA && current_euid() != id) ||
 		     (type == XQM_GRPQUOTA && !in_egroup_p(id))) &&
 		     !capable(CAP_SYS_ADMIN))
 			return -EPERM;
@@ -161,6 +160,9 @@ static void quota_sync_sb(struct super_block *sb, int type)
 	int cnt;
 
 	sb->s_qcop->quota_sync(sb, type);
+
+	if (sb_dqopt(sb)->flags & DQUOT_QUOTA_SYS_FILE)
+		return;
 	/* This is not very clever (and fast) but currently I don't know about
 	 * any other simple way of getting quota data to disk and we must get
 	 * them there for userspace to be visible... */
@@ -176,7 +178,7 @@ static void quota_sync_sb(struct super_block *sb, int type)
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
 		if (type != -1 && cnt != type)
 			continue;
-		if (!sb_has_quota_enabled(sb, cnt))
+		if (!sb_has_quota_active(sb, cnt))
 			continue;
 		mutex_lock_nested(&sb_dqopt(sb)->files[cnt]->i_mutex, I_MUTEX_QUOTA);
 		truncate_inode_pages(&sb_dqopt(sb)->files[cnt]->i_data, 0);
@@ -187,7 +189,7 @@ static void quota_sync_sb(struct super_block *sb, int type)
 
 void sync_dquots(struct super_block *sb, int type)
 {
-	int cnt, dirty;
+	int cnt;
 
 	if (sb) {
 		if (sb->s_qcop->quota_sync)
@@ -199,11 +201,17 @@ void sync_dquots(struct super_block *sb, int type)
 restart:
 	list_for_each_entry(sb, &super_blocks, s_list) {
 		/* This test just improves performance so it needn't be reliable... */
-		for (cnt = 0, dirty = 0; cnt < MAXQUOTAS; cnt++)
-			if ((type == cnt || type == -1) && sb_has_quota_enabled(sb, cnt)
-			    && info_any_dirty(&sb_dqopt(sb)->info[cnt]))
-				dirty = 1;
-		if (!dirty)
+		for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
+			if (type != -1 && type != cnt)
+				continue;
+			if (!sb_has_quota_active(sb, cnt))
+				continue;
+			if (!info_dirty(&sb_dqopt(sb)->info[cnt]) &&
+			    list_empty(&sb_dqopt(sb)->info[cnt].dqi_dirty_list))
+				continue;
+			break;
+		}
+		if (cnt == MAXQUOTAS)
 			continue;
 		sb->s_count++;
 		spin_unlock(&sb_lock);
@@ -229,18 +237,18 @@ static int do_quotactl(struct super_block *sb, int type, int cmd, qid_t id, void
 
 			if (IS_ERR(pathname = getname(addr)))
 				return PTR_ERR(pathname);
-			ret = sb->s_qcop->quota_on(sb, type, id, pathname);
+			ret = sb->s_qcop->quota_on(sb, type, id, pathname, 0);
 			putname(pathname);
 			return ret;
 		}
 		case Q_QUOTAOFF:
-			return sb->s_qcop->quota_off(sb, type);
+			return sb->s_qcop->quota_off(sb, type, 0);
 
 		case Q_GETFMT: {
 			__u32 fmt;
 
 			down_read(&sb_dqopt(sb)->dqptr_sem);
-			if (!sb_has_quota_enabled(sb, type)) {
+			if (!sb_has_quota_active(sb, type)) {
 				up_read(&sb_dqopt(sb)->dqptr_sem);
 				return -ESRCH;
 			}
@@ -341,11 +349,11 @@ static inline struct super_block *quotactl_block(const char __user *special)
 	char *tmp = getname(special);
 
 	if (IS_ERR(tmp))
-		return ERR_PTR(PTR_ERR(tmp));
+		return ERR_CAST(tmp);
 	bdev = lookup_bdev(tmp);
 	putname(tmp);
 	if (IS_ERR(bdev))
-		return ERR_PTR(PTR_ERR(bdev));
+		return ERR_CAST(bdev);
 	sb = get_super(bdev);
 	bdput(bdev);
 	if (!sb)
@@ -363,7 +371,8 @@ static inline struct super_block *quotactl_block(const char __user *special)
  * calls. Maybe we need to add the process quotas etc. in the future,
  * but we probably should use rlimits for that.
  */
-asmlinkage long sys_quotactl(unsigned int cmd, const char __user *special, qid_t id, void __user *addr)
+SYSCALL_DEFINE4(quotactl, unsigned int, cmd, const char __user *, special,
+		qid_t, id, void __user *, addr)
 {
 	uint cmds, type;
 	struct super_block *sb = NULL;

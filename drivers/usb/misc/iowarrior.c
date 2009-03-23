@@ -19,7 +19,6 @@
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/poll.h>
-#include <linux/version.h>
 #include <linux/usb/iowarrior.h>
 
 /* Version Information */
@@ -154,7 +153,7 @@ MODULE_DEVICE_TABLE(usb, iowarrior_ids);
  */
 static void iowarrior_callback(struct urb *urb)
 {
-	struct iowarrior *dev = (struct iowarrior *)urb->context;
+	struct iowarrior *dev = urb->context;
 	int intr_idx;
 	int read_idx;
 	int aux_idx;
@@ -218,7 +217,7 @@ exit:
 	retval = usb_submit_urb(urb, GFP_ATOMIC);
 	if (retval)
 		dev_err(&dev->interface->dev, "%s - usb_submit_urb failed with result %d\n",
-			__FUNCTION__, retval);
+			__func__, retval);
 
 }
 
@@ -230,7 +229,7 @@ static void iowarrior_write_callback(struct urb *urb)
 	struct iowarrior *dev;
 	int status = urb->status;
 
-	dev = (struct iowarrior *)urb->context;
+	dev = urb->context;
 	/* sync/async unlink faults aren't errors */
 	if (status &&
 	    !(status == -ENOENT ||
@@ -453,7 +452,7 @@ static ssize_t iowarrior_write(struct file *file,
 	default:
 		/* what do we have here ? An unsupported Product-ID ? */
 		dev_err(&dev->interface->dev, "%s - not supported for product=0x%x\n",
-			__FUNCTION__, dev->product_id);
+			__func__, dev->product_id);
 		retval = -EFAULT;
 		goto exit;
 		break;
@@ -474,8 +473,8 @@ exit:
 /**
  *	iowarrior_ioctl
  */
-static int iowarrior_ioctl(struct inode *inode, struct file *file,
-			   unsigned int cmd, unsigned long arg)
+static long iowarrior_ioctl(struct file *file, unsigned int cmd,
+							unsigned long arg)
 {
 	struct iowarrior *dev = NULL;
 	__u8 *buffer;
@@ -493,6 +492,7 @@ static int iowarrior_ioctl(struct inode *inode, struct file *file,
 		return -ENOMEM;
 
 	/* lock this object */
+	lock_kernel();
 	mutex_lock(&dev->mutex);
 
 	/* verify that the device wasn't unplugged */
@@ -584,6 +584,7 @@ static int iowarrior_ioctl(struct inode *inode, struct file *file,
 error_out:
 	/* unlock the device */
 	mutex_unlock(&dev->mutex);
+	unlock_kernel();
 	kfree(buffer);
 	return retval;
 }
@@ -604,7 +605,7 @@ static int iowarrior_open(struct inode *inode, struct file *file)
 
 	interface = usb_find_interface(&iowarrior_driver, subminor);
 	if (!interface) {
-		err("%s - error, can't find device for minor %d", __FUNCTION__,
+		err("%s - error, can't find device for minor %d", __func__,
 		    subminor);
 		return -ENODEV;
 	}
@@ -715,11 +716,11 @@ static unsigned iowarrior_poll(struct file *file, poll_table * wait)
  * would use "struct net_driver" instead, and a serial
  * device would use "struct tty_driver".
  */
-static struct file_operations iowarrior_fops = {
+static const struct file_operations iowarrior_fops = {
 	.owner = THIS_MODULE,
 	.write = iowarrior_write,
 	.read = iowarrior_read,
-	.ioctl = iowarrior_ioctl,
+	.unlocked_ioctl = iowarrior_ioctl,
 	.open = iowarrior_open,
 	.release = iowarrior_release,
 	.poll = iowarrior_poll,

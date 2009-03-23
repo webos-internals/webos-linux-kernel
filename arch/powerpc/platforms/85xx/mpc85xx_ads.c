@@ -52,9 +52,9 @@ static void cpm2_cascade(unsigned int irq, struct irq_desc *desc)
 {
 	int cascade_irq;
 
-	while ((cascade_irq = cpm2_get_irq()) >= 0) {
+	while ((cascade_irq = cpm2_get_irq()) >= 0)
 		generic_handle_irq(cascade_irq);
-	}
+
 	desc->chip->eoi(irq);
 }
 
@@ -70,13 +70,12 @@ static void __init mpc85xx_ads_pic_init(void)
 #endif
 
 	np = of_find_node_by_type(np, "open-pic");
-
-	if (np == NULL) {
+	if (!np) {
 		printk(KERN_ERR "Could not find open-pic node\n");
 		return;
 	}
 
-	if(of_address_to_resource(np, 0, &r)) {
+	if (of_address_to_resource(np, 0, &r)) {
 		printk(KERN_ERR "Could not map mpic register space\n");
 		of_node_put(np);
 		return;
@@ -100,6 +99,7 @@ static void __init mpc85xx_ads_pic_init(void)
 	irq = irq_of_parse_and_map(np, 0);
 
 	cpm2_pic_init(np);
+	of_node_put(np);
 	set_irq_chained_handler(irq, cpm2_cascade);
 #endif
 }
@@ -112,13 +112,15 @@ struct cpm_pin {
 	int port, pin, flags;
 };
 
-static struct cpm_pin mpc8560_ads_pins[] = {
+static const struct cpm_pin mpc8560_ads_pins[] = {
 	/* SCC1 */
 	{3, 29, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
 	{3, 30, CPM_PIN_OUTPUT | CPM_PIN_SECONDARY},
 	{3, 31, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
 
 	/* SCC2 */
+	{2, 12, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
+	{2, 13, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
 	{3, 26, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
 	{3, 27, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
 	{3, 28, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
@@ -145,7 +147,6 @@ static struct cpm_pin mpc8560_ads_pins[] = {
 	{1, 4, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
 	{1, 5, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
 	{1, 6, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
-	{1, 7, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
 	{1, 8, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
 	{1, 9, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
 	{1, 10, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
@@ -156,8 +157,9 @@ static struct cpm_pin mpc8560_ads_pins[] = {
 	{1, 15, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
 	{1, 16, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
 	{1, 17, CPM_PIN_INPUT | CPM_PIN_PRIMARY},
-	{2, 16, CPM_PIN_INPUT | CPM_PIN_SECONDARY}, /* CLK16 */
-	{2, 17, CPM_PIN_INPUT | CPM_PIN_SECONDARY}, /* CLK15 */
+	{2, 16, CPM_PIN_INPUT | CPM_PIN_PRIMARY}, /* CLK16 */
+	{2, 17, CPM_PIN_INPUT | CPM_PIN_PRIMARY}, /* CLK15 */
+	{2, 27, CPM_PIN_OUTPUT | CPM_PIN_PRIMARY},
 };
 
 static void __init init_ioports(void)
@@ -165,7 +167,7 @@ static void __init init_ioports(void)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(mpc8560_ads_pins); i++) {
-		struct cpm_pin *pin = &mpc8560_ads_pins[i];
+		const struct cpm_pin *pin = &mpc8560_ads_pins[i];
 		cpm2_set_pin(pin->port, pin->pin, pin->flags);
 	}
 
@@ -205,22 +207,17 @@ static void __init mpc85xx_ads_setup_arch(void)
 static void mpc85xx_ads_show_cpuinfo(struct seq_file *m)
 {
 	uint pvid, svid, phid1;
-	uint memsize = total_memory;
 
 	pvid = mfspr(SPRN_PVR);
 	svid = mfspr(SPRN_SVR);
 
 	seq_printf(m, "Vendor\t\t: Freescale Semiconductor\n");
-	seq_printf(m, "Machine\t\t: mpc85xx\n");
 	seq_printf(m, "PVR\t\t: 0x%x\n", pvid);
 	seq_printf(m, "SVR\t\t: 0x%x\n", svid);
 
 	/* Display cpu Pll setting */
 	phid1 = mfspr(SPRN_HID1);
 	seq_printf(m, "PLL setting\t: 0x%x\n", ((phid1 >> 24) & 0x3f));
-
-	/* Display the amount of memory */
-	seq_printf(m, "Memory\t\t: %d MB\n", memsize / (1024 * 1024));
 }
 
 static struct of_device_id __initdata of_bus_ids[] = {
@@ -228,18 +225,17 @@ static struct of_device_id __initdata of_bus_ids[] = {
 	{ .type = "soc", },
 	{ .name = "cpm", },
 	{ .name = "localbus", },
+	{ .compatible = "simple-bus", },
 	{},
 };
 
 static int __init declare_of_platform_devices(void)
 {
-	if (!machine_is(mpc85xx_ads))
-		return 0;
-
 	of_platform_bus_probe(NULL, of_bus_ids, NULL);
+
 	return 0;
 }
-device_initcall(declare_of_platform_devices);
+machine_device_initcall(mpc85xx_ads, declare_of_platform_devices);
 
 /*
  * Called very early, device-tree isn't unflattened

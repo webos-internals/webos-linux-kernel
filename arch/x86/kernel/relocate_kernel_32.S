@@ -9,142 +9,72 @@
 #include <linux/linkage.h>
 #include <asm/page.h>
 #include <asm/kexec.h>
+#include <asm/processor-flags.h>
 
 /*
  * Must be relocatable PIC code callable as a C function
  */
 
 #define PTR(x) (x << 2)
-#define PAGE_ALIGNED (1 << PAGE_SHIFT)
-#define PAGE_ATTR 0x63 /* _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY */
-#define PAE_PGD_ATTR 0x01 /* _PAGE_PRESENT */
+
+/* control_page + KEXEC_CONTROL_CODE_MAX_SIZE
+ * ~ control_page + PAGE_SIZE are used as data storage and stack for
+ * jumping back
+ */
+#define DATA(offset)		(KEXEC_CONTROL_CODE_MAX_SIZE+(offset))
+
+/* Minimal CPU state */
+#define ESP			DATA(0x0)
+#define CR0			DATA(0x4)
+#define CR3			DATA(0x8)
+#define CR4			DATA(0xc)
+
+/* other data */
+#define CP_VA_CONTROL_PAGE	DATA(0x10)
+#define CP_PA_PGD		DATA(0x14)
+#define CP_PA_SWAP_PAGE		DATA(0x18)
+#define CP_PA_BACKUP_PAGES_MAP	DATA(0x1c)
 
 	.text
-	.align PAGE_ALIGNED
 	.globl relocate_kernel
 relocate_kernel:
-	movl	8(%esp), %ebp /* list of pages */
+	/* Save the CPU context, used for jumping back */
 
-#ifdef CONFIG_X86_PAE
-	/* map the control page at its virtual address */
+	pushl	%ebx
+	pushl	%esi
+	pushl	%edi
+	pushl	%ebp
+	pushf
 
-	movl	PTR(VA_PGD)(%ebp), %edi
-	movl	PTR(VA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0xc0000000, %eax
-	shrl	$27, %eax
-	addl	%edi, %eax
+	movl	20+8(%esp), %ebp /* list of pages */
+	movl	PTR(VA_CONTROL_PAGE)(%ebp), %edi
+	movl	%esp, ESP(%edi)
+	movl	%cr0, %eax
+	movl	%eax, CR0(%edi)
+	movl	%cr3, %eax
+	movl	%eax, CR3(%edi)
+	movl	%cr4, %eax
+	movl	%eax, CR4(%edi)
 
-	movl	PTR(PA_PMD_0)(%ebp), %edx
-	orl	$PAE_PGD_ATTR, %edx
-	movl	%edx, (%eax)
-
-	movl	PTR(VA_PMD_0)(%ebp), %edi
-	movl	PTR(VA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0x3fe00000, %eax
-	shrl	$18, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_PTE_0)(%ebp), %edx
-	orl	$PAGE_ATTR, %edx
-	movl	%edx, (%eax)
-
-	movl	PTR(VA_PTE_0)(%ebp), %edi
-	movl	PTR(VA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0x001ff000, %eax
-	shrl	$9, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %edx
-	orl	$PAGE_ATTR, %edx
-	movl	%edx, (%eax)
-
-	/* identity map the control page at its physical address */
-
-	movl	PTR(VA_PGD)(%ebp), %edi
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0xc0000000, %eax
-	shrl	$27, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_PMD_1)(%ebp), %edx
-	orl	$PAE_PGD_ATTR, %edx
-	movl	%edx, (%eax)
-
-	movl	PTR(VA_PMD_1)(%ebp), %edi
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0x3fe00000, %eax
-	shrl	$18, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_PTE_1)(%ebp), %edx
-	orl	$PAGE_ATTR, %edx
-	movl	%edx, (%eax)
-
-	movl	PTR(VA_PTE_1)(%ebp), %edi
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0x001ff000, %eax
-	shrl	$9, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %edx
-	orl	$PAGE_ATTR, %edx
-	movl	%edx, (%eax)
-#else
-	/* map the control page at its virtual address */
-
-	movl	PTR(VA_PGD)(%ebp), %edi
-	movl	PTR(VA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0xffc00000, %eax
-	shrl	$20, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_PTE_0)(%ebp), %edx
-	orl	$PAGE_ATTR, %edx
-	movl	%edx, (%eax)
-
-	movl	PTR(VA_PTE_0)(%ebp), %edi
-	movl	PTR(VA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0x003ff000, %eax
-	shrl	$10, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %edx
-	orl	$PAGE_ATTR, %edx
-	movl	%edx, (%eax)
-
-	/* identity map the control page at its physical address */
-
-	movl	PTR(VA_PGD)(%ebp), %edi
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0xffc00000, %eax
-	shrl	$20, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_PTE_1)(%ebp), %edx
-	orl	$PAGE_ATTR, %edx
-	movl	%edx, (%eax)
-
-	movl	PTR(VA_PTE_1)(%ebp), %edi
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %eax
-	andl	$0x003ff000, %eax
-	shrl	$10, %eax
-	addl	%edi, %eax
-
-	movl	PTR(PA_CONTROL_PAGE)(%ebp), %edx
-	orl	$PAGE_ATTR, %edx
-	movl	%edx, (%eax)
-#endif
-
-relocate_new_kernel:
 	/* read the arguments and say goodbye to the stack */
-	movl  4(%esp), %ebx /* page_list */
-	movl  8(%esp), %ebp /* list of pages */
-	movl  12(%esp), %edx /* start address */
-	movl  16(%esp), %ecx /* cpu_has_pae */
+	movl  20+4(%esp), %ebx /* page_list */
+	movl  20+8(%esp), %ebp /* list of pages */
+	movl  20+12(%esp), %edx /* start address */
+	movl  20+16(%esp), %ecx /* cpu_has_pae */
+	movl  20+20(%esp), %esi /* preserve_context */
 
 	/* zero out flags, and disable interrupts */
 	pushl $0
 	popfl
+
+	/* save some information for jumping back */
+	movl	PTR(VA_CONTROL_PAGE)(%ebp), %edi
+	movl	%edi, CP_VA_CONTROL_PAGE(%edi)
+	movl	PTR(PA_PGD)(%ebp), %eax
+	movl	%eax, CP_PA_PGD(%edi)
+	movl	PTR(PA_SWAP_PAGE)(%ebp), %eax
+	movl	%eax, CP_PA_SWAP_PAGE(%edi)
+	movl	%ebx, CP_PA_BACKUP_PAGES_MAP(%edi)
 
 	/* get physical address of control page now */
 	/* this is impossible after page table switch */
@@ -155,7 +85,7 @@ relocate_new_kernel:
 	movl	%eax, %cr3
 
 	/* setup a new stack at the end of the physical control page */
-	lea	4096(%edi), %esp
+	lea	PAGE_SIZE(%edi), %esp
 
 	/* jump to identity mapped page */
 	movl    %edi, %eax
@@ -168,16 +98,16 @@ identity_mapped:
 	pushl   %edx
 
 	/* Set cr0 to a known state:
-	 * 31 0 == Paging disabled
-	 * 18 0 == Alignment check disabled
-	 * 16 0 == Write protect disabled
-	 * 3  0 == No task switch
-	 * 2  0 == Don't do FP software emulation.
-	 * 0  1 == Proctected mode enabled
+	 *  - Paging disabled
+	 *  - Alignment check disabled
+	 *  - Write protect disabled
+	 *  - No task switch
+	 *  - Don't do FP software emulation.
+	 *  - Proctected mode enabled
 	 */
 	movl	%cr0, %eax
-	andl	$~((1<<31)|(1<<18)|(1<<16)|(1<<3)|(1<<2)), %eax
-	orl	$(1<<0), %eax
+	andl	$~(X86_CR0_PG | X86_CR0_AM | X86_CR0_WP | X86_CR0_TS | X86_CR0_EM), %eax
+	orl	$(X86_CR0_PE), %eax
 	movl	%eax, %cr0
 
 	/* clear cr4 if applicable */
@@ -186,8 +116,7 @@ identity_mapped:
 	/* Set cr4 to a known state:
 	 * Setting everything to zero seems safe.
 	 */
-	movl	%cr4, %eax
-	andl	$0, %eax
+	xorl	%eax, %eax
 	movl	%eax, %cr4
 
 	jmp 1f
@@ -197,8 +126,90 @@ identity_mapped:
 	xorl	%eax, %eax
 	movl	%eax, %cr3
 
+	movl	CP_PA_SWAP_PAGE(%edi), %eax
+	pushl	%eax
+	pushl	%ebx
+	call	swap_pages
+	addl	$8, %esp
+
+	/* To be certain of avoiding problems with self-modifying code
+	 * I need to execute a serializing instruction here.
+	 * So I flush the TLB, it's handy, and not processor dependent.
+	 */
+	xorl	%eax, %eax
+	movl	%eax, %cr3
+
+	/* set all of the registers to known values */
+	/* leave %esp alone */
+
+	testl	%esi, %esi
+	jnz 1f
+	xorl	%edi, %edi
+	xorl	%eax, %eax
+	xorl	%ebx, %ebx
+	xorl    %ecx, %ecx
+	xorl    %edx, %edx
+	xorl    %esi, %esi
+	xorl    %ebp, %ebp
+	ret
+1:
+	popl	%edx
+	movl	CP_PA_SWAP_PAGE(%edi), %esp
+	addl	$PAGE_SIZE, %esp
+2:
+	call	*%edx
+
+	/* get the re-entry point of the peer system */
+	movl	0(%esp), %ebp
+	call	1f
+1:
+	popl	%ebx
+	subl	$(1b - relocate_kernel), %ebx
+	movl	CP_VA_CONTROL_PAGE(%ebx), %edi
+	lea	PAGE_SIZE(%ebx), %esp
+	movl	CP_PA_SWAP_PAGE(%ebx), %eax
+	movl	CP_PA_BACKUP_PAGES_MAP(%ebx), %edx
+	pushl	%eax
+	pushl	%edx
+	call	swap_pages
+	addl	$8, %esp
+	movl	CP_PA_PGD(%ebx), %eax
+	movl	%eax, %cr3
+	movl	%cr0, %eax
+	orl	$(1<<31), %eax
+	movl	%eax, %cr0
+	lea	PAGE_SIZE(%edi), %esp
+	movl	%edi, %eax
+	addl	$(virtual_mapped - relocate_kernel), %eax
+	pushl	%eax
+	ret
+
+virtual_mapped:
+	movl	CR4(%edi), %eax
+	movl	%eax, %cr4
+	movl	CR3(%edi), %eax
+	movl	%eax, %cr3
+	movl	CR0(%edi), %eax
+	movl	%eax, %cr0
+	movl	ESP(%edi), %esp
+	movl	%ebp, %eax
+
+	popf
+	popl	%ebp
+	popl	%edi
+	popl	%esi
+	popl	%ebx
+	ret
+
 	/* Do the copies */
-	movl	%ebx, %ecx
+swap_pages:
+	movl	8(%esp), %edx
+	movl	4(%esp), %ecx
+	pushl	%ebp
+	pushl	%ebx
+	pushl	%edi
+	pushl	%esi
+	movl	%ecx, %ebx
 	jmp	1f
 
 0:	/* top, read another word from the indirection page */
@@ -226,27 +237,31 @@ identity_mapped:
 	movl    %ecx,   %esi /* For every source page do a copy */
 	andl    $0xfffff000, %esi
 
+	movl	%edi, %eax
+	movl	%esi, %ebp
+
+	movl	%edx, %edi
 	movl    $1024, %ecx
 	rep ; movsl
+
+	movl	%ebp, %edi
+	movl	%eax, %esi
+	movl	$1024, %ecx
+	rep ; movsl
+
+	movl	%eax, %edi
+	movl	%edx, %esi
+	movl	$1024, %ecx
+	rep ; movsl
+
+	lea	PAGE_SIZE(%ebp), %esi
 	jmp     0b
-
 3:
-
-	/* To be certain of avoiding problems with self-modifying code
-	 * I need to execute a serializing instruction here.
-	 * So I flush the TLB, it's handy, and not processor dependent.
-	 */
-	xorl	%eax, %eax
-	movl	%eax, %cr3
-
-	/* set all of the registers to known values */
-	/* leave %esp alone */
-
-	xorl	%eax, %eax
-	xorl	%ebx, %ebx
-	xorl    %ecx, %ecx
-	xorl    %edx, %edx
-	xorl    %esi, %esi
-	xorl    %edi, %edi
-	xorl    %ebp, %ebp
+	popl	%esi
+	popl	%edi
+	popl	%ebx
+	popl	%ebp
 	ret
+
+	.globl kexec_control_code_size
+.set kexec_control_code_size, . - relocate_kernel

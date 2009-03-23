@@ -20,9 +20,10 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
-#include <asm/arch/spitz.h>
-#include <asm/arch/hardware.h>
-#include <asm/arch/pxa-regs.h>
+#include <mach/spitz.h>
+#include <mach/hardware.h>
+#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-gpio.h>
 
 #define KB_ROWS			7
 #define KB_COLS			11
@@ -100,9 +101,9 @@ struct spitzkbd {
 #define KB_ACTIVATE_DELAY	10
 
 /* Helper functions for reading the keyboard matrix
- * Note: We should really be using pxa_gpio_mode to alter GPDR but it
- *       requires a function call per GPIO bit which is excessive
- *       when we need to access 11 bits at once, multiple times.
+ * Note: We should really be using the generic gpio functions to alter
+ *       GPDR but it requires a function call per GPIO bit which is
+ *       excessive when we need to access 11 bits at once, multiple times.
  * These functions must be called within local_irq_save()/local_irq_restore()
  * or similar.
  */
@@ -342,7 +343,7 @@ static int spitzkbd_resume(struct platform_device *dev)
 #define spitzkbd_resume		NULL
 #endif
 
-static int __init spitzkbd_probe(struct platform_device *dev)
+static int __devinit spitzkbd_probe(struct platform_device *dev)
 {
 	struct spitzkbd *spitzkbd;
 	struct input_dev *input_dev;
@@ -443,7 +444,7 @@ static int __init spitzkbd_probe(struct platform_device *dev)
 	return err;
 }
 
-static int spitzkbd_remove(struct platform_device *dev)
+static int __devexit spitzkbd_remove(struct platform_device *dev)
 {
 	int i;
 	struct spitzkbd *spitzkbd = platform_get_drvdata(dev);
@@ -469,7 +470,7 @@ static int spitzkbd_remove(struct platform_device *dev)
 
 static struct platform_driver spitzkbd_driver = {
 	.probe		= spitzkbd_probe,
-	.remove		= spitzkbd_remove,
+	.remove		= __devexit_p(spitzkbd_remove),
 	.suspend	= spitzkbd_suspend,
 	.resume		= spitzkbd_resume,
 	.driver		= {
@@ -478,7 +479,7 @@ static struct platform_driver spitzkbd_driver = {
 	},
 };
 
-static int __devinit spitzkbd_init(void)
+static int __init spitzkbd_init(void)
 {
 	return platform_driver_register(&spitzkbd_driver);
 }
@@ -493,4 +494,5 @@ module_exit(spitzkbd_exit);
 
 MODULE_AUTHOR("Richard Purdie <rpurdie@rpsys.net>");
 MODULE_DESCRIPTION("Spitz Keyboard Driver");
-MODULE_LICENSE("GPLv2");
+MODULE_LICENSE("GPL v2");
+MODULE_ALIAS("platform:spitz-keyboard");

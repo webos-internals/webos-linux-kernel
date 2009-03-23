@@ -41,7 +41,7 @@ randomize_stack_top(unsigned long stack_top);
 #define elf_map				elf32_map
 
 #undef SET_PERSONALITY
-#define SET_PERSONALITY(ex, ibcs2)	elf32_set_personality()
+#define SET_PERSONALITY(ex)	elf32_set_personality()
 
 #define elf_read_implies_exec(ex, have_pt_gnu_stack)	(!(have_pt_gnu_stack))
 
@@ -222,7 +222,8 @@ elf32_set_personality (void)
 }
 
 static unsigned long
-elf32_map (struct file *filep, unsigned long addr, struct elf_phdr *eppnt, int prot, int type)
+elf32_map(struct file *filep, unsigned long addr, struct elf_phdr *eppnt,
+		int prot, int type, unsigned long unused)
 {
 	unsigned long pgoff = (eppnt->p_vaddr) & ~IA32_PAGE_MASK;
 

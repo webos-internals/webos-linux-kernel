@@ -77,28 +77,18 @@ static int ppc_spurious_interrupts;
 EXPORT_SYMBOL(__irq_offset_value);
 atomic_t ppc_n_lost_interrupts;
 
-#ifndef CONFIG_PPC_MERGE
-#define NR_MASK_WORDS	((NR_IRQS + 31) / 32)
-unsigned long ppc_cached_irq_mask[NR_MASK_WORDS];
-#endif
-
 #ifdef CONFIG_TAU_INT
 extern int tau_initialized;
 extern int tau_interrupts(int);
 #endif
 #endif /* CONFIG_PPC32 */
 
-#if defined(CONFIG_SMP) && !defined(CONFIG_PPC_MERGE)
-extern atomic_t ipi_recv;
-extern atomic_t ipi_sent;
-#endif
-
 #ifdef CONFIG_PPC64
 EXPORT_SYMBOL(irq_desc);
 
 int distribute_irqs = 1;
 
-static inline unsigned long get_hard_enabled(void)
+static inline notrace unsigned long get_hard_enabled(void)
 {
 	unsigned long enabled;
 
@@ -108,13 +98,13 @@ static inline unsigned long get_hard_enabled(void)
 	return enabled;
 }
 
-static inline void set_soft_enabled(unsigned long enable)
+static inline notrace void set_soft_enabled(unsigned long enable)
 {
 	__asm__ __volatile__("stb %0,%1(13)"
 	: : "r" (enable), "i" (offsetof(struct paca_struct, soft_enabled)));
 }
 
-void local_irq_restore(unsigned long en)
+notrace void raw_local_irq_restore(unsigned long en)
 {
 	/*
 	 * get_paca()->soft_enabled = en;
@@ -143,7 +133,6 @@ void local_irq_restore(unsigned long en)
 		 */
 		if (local_paca->lppaca_ptr->int_dword.any_int)
 			iseries_handle_interrupts();
-		return;
 	}
 
 	/*
@@ -175,6 +164,7 @@ void local_irq_restore(unsigned long en)
 
 	__hard_irq_enable();
 }
+EXPORT_SYMBOL(raw_local_irq_restore);
 #endif /* CONFIG_PPC64 */
 
 int show_interrupts(struct seq_file *p, void *v)
@@ -216,21 +206,14 @@ int show_interrupts(struct seq_file *p, void *v)
 skip:
 		spin_unlock_irqrestore(&desc->lock, flags);
 	} else if (i == NR_IRQS) {
-#ifdef CONFIG_PPC32
-#ifdef CONFIG_TAU_INT
+#if defined(CONFIG_PPC32) && defined(CONFIG_TAU_INT)
 		if (tau_initialized){
 			seq_puts(p, "TAU: ");
 			for_each_online_cpu(j)
 				seq_printf(p, "%10u ", tau_interrupts(j));
 			seq_puts(p, "  PowerPC             Thermal Assist (cpu temp)\n");
 		}
-#endif
-#if defined(CONFIG_SMP) && !defined(CONFIG_PPC_MERGE)
-		/* should this be per processor send/receive? */
-		seq_printf(p, "IPI (recv/sent): %10u/%u\n",
-				atomic_read(&ipi_recv), atomic_read(&ipi_sent));
-#endif
-#endif /* CONFIG_PPC32 */
+#endif /* CONFIG_PPC32 && CONFIG_TAU_INT*/
 		seq_printf(p, "BAD: %10u\n", ppc_spurious_interrupts);
 	}
 	return 0;
@@ -254,7 +237,7 @@ void fixup_irqs(cpumask_t map)
 			mask = map;
 		}
 		if (irq_desc[irq].chip->set_affinity)
-			irq_desc[irq].chip->set_affinity(irq, mask);
+			irq_desc[irq].chip->set_affinity(irq, &mask);
 		else if (irq_desc[irq].action && !(warned++))
 			printk("Cannot set affinity for irq %i\n", irq);
 	}
@@ -307,12 +290,29 @@ void do_IRQ(struct pt_regs *regs)
 		if (curtp != irqtp) {
 			struct irq_desc *desc = irq_desc + irq;
 			void *handler = desc->handle_irq;
+			unsigned long saved_sp_limit = current->thread.ksp_limit;
 			if (handler == NULL)
 				handler = &__do_IRQ;
 			irqtp->task = curtp->task;
 			irqtp->flags = 0;
+
+			/* Copy the softirq bits in preempt_count so that the
+			 * softirq checks work in the hardirq context.
+			 */
+			irqtp->preempt_count =
+				(irqtp->preempt_count & ~SOFTIRQ_MASK) |
+				(curtp->preempt_count & SOFTIRQ_MASK);
+
+			current->thread.ksp_limit = (unsigned long)irqtp +
+				_ALIGN_UP(sizeof(struct thread_info), 16);
 			call_handle_irq(irq, desc, irqtp, handler);
+			current->thread.ksp_limit = saved_sp_limit;
 			irqtp->task = NULL;
+
+
+			/* Set any flag that may have been set on the
+			 * alternate stack
+			 */
 			if (irqtp->flags)
 				set_bits(irqtp->flags, &curtp->flags);
 		} else
@@ -339,11 +339,42 @@ void __init init_IRQ(void)
 {
 	if (ppc_md.init_IRQ)
 		ppc_md.init_IRQ();
-#ifdef CONFIG_PPC64
+
+	exc_lvl_ctx_init();
+
 	irq_ctx_init();
-#endif
 }
 
+#if defined(CONFIG_BOOKE) || defined(CONFIG_40x)
+struct thread_info   *critirq_ctx[NR_CPUS] __read_mostly;
+struct thread_info    *dbgirq_ctx[NR_CPUS] __read_mostly;
+struct thread_info *mcheckirq_ctx[NR_CPUS] __read_mostly;
+
+void exc_lvl_ctx_init(void)
+{
+	struct thread_info *tp;
+	int i;
+
+	for_each_possible_cpu(i) {
+		memset((void *)critirq_ctx[i], 0, THREAD_SIZE);
+		tp = critirq_ctx[i];
+		tp->cpu = i;
+		tp->preempt_count = 0;
+
+#ifdef CONFIG_BOOKE
+		memset((void *)dbgirq_ctx[i], 0, THREAD_SIZE);
+		tp = dbgirq_ctx[i];
+		tp->cpu = i;
+		tp->preempt_count = 0;
+
+		memset((void *)mcheckirq_ctx[i], 0, THREAD_SIZE);
+		tp = mcheckirq_ctx[i];
+		tp->cpu = i;
+		tp->preempt_count = HARDIRQ_OFFSET;
+#endif
+	}
+}
+#endif
 
 #ifdef CONFIG_IRQSTACKS
 struct thread_info *softirq_ctx[NR_CPUS] __read_mostly;
@@ -358,7 +389,7 @@ void irq_ctx_init(void)
 		memset((void *)softirq_ctx[i], 0, THREAD_SIZE);
 		tp = softirq_ctx[i];
 		tp->cpu = i;
-		tp->preempt_count = SOFTIRQ_OFFSET;
+		tp->preempt_count = 0;
 
 		memset((void *)hardirq_ctx[i], 0, THREAD_SIZE);
 		tp = hardirq_ctx[i];
@@ -370,11 +401,15 @@ void irq_ctx_init(void)
 static inline void do_softirq_onstack(void)
 {
 	struct thread_info *curtp, *irqtp;
+	unsigned long saved_sp_limit = current->thread.ksp_limit;
 
 	curtp = current_thread_info();
 	irqtp = softirq_ctx[smp_processor_id()];
 	irqtp->task = curtp->task;
+	current->thread.ksp_limit = (unsigned long)irqtp +
+				    _ALIGN_UP(sizeof(struct thread_info), 16);
 	call_do_softirq(irqtp);
+	current->thread.ksp_limit = saved_sp_limit;
 	irqtp->task = NULL;
 }
 
@@ -402,12 +437,10 @@ void do_softirq(void)
  * IRQ controller and virtual interrupts
  */
 
-#ifdef CONFIG_PPC_MERGE
-
 static LIST_HEAD(irq_hosts);
 static DEFINE_SPINLOCK(irq_big_lock);
-static DEFINE_PER_CPU(unsigned int, irq_radix_reader);
-static unsigned int irq_radix_writer;
+static unsigned int revmap_trees_allocated;
+static DEFINE_MUTEX(revmap_trees_mutex);
 struct irq_map_entry irq_map[NR_IRQS];
 static unsigned int irq_virq_count = NR_IRQS;
 static struct irq_host *irq_default_host;
@@ -446,7 +479,7 @@ struct irq_host *irq_alloc_host(struct device_node *of_node,
 	host->revmap_type = revmap_type;
 	host->inval_irq = inval_irq;
 	host->ops = ops;
-	host->of_node = of_node;
+	host->of_node = of_node_get(of_node);
 
 	if (host->ops->match == NULL)
 		host->ops->match = default_irq_host_match;
@@ -548,57 +581,6 @@ void irq_set_virq_count(unsigned int count)
 	BUG_ON(count < NUM_ISA_INTERRUPTS);
 	if (count < NR_IRQS)
 		irq_virq_count = count;
-}
-
-/* radix tree not lockless safe ! we use a brlock-type mecanism
- * for now, until we can use a lockless radix tree
- */
-static void irq_radix_wrlock(unsigned long *flags)
-{
-	unsigned int cpu, ok;
-
-	spin_lock_irqsave(&irq_big_lock, *flags);
-	irq_radix_writer = 1;
-	smp_mb();
-	do {
-		barrier();
-		ok = 1;
-		for_each_possible_cpu(cpu) {
-			if (per_cpu(irq_radix_reader, cpu)) {
-				ok = 0;
-				break;
-			}
-		}
-		if (!ok)
-			cpu_relax();
-	} while(!ok);
-}
-
-static void irq_radix_wrunlock(unsigned long flags)
-{
-	smp_wmb();
-	irq_radix_writer = 0;
-	spin_unlock_irqrestore(&irq_big_lock, flags);
-}
-
-static void irq_radix_rdlock(unsigned long *flags)
-{
-	local_irq_save(*flags);
-	__get_cpu_var(irq_radix_reader) = 1;
-	smp_mb();
-	if (likely(irq_radix_writer == 0))
-		return;
-	__get_cpu_var(irq_radix_reader) = 0;
-	smp_wmb();
-	spin_lock(&irq_big_lock);
-	__get_cpu_var(irq_radix_reader) = 1;
-	spin_unlock(&irq_big_lock);
-}
-
-static void irq_radix_rdunlock(unsigned long flags)
-{
-	__get_cpu_var(irq_radix_reader) = 0;
-	local_irq_restore(flags);
 }
 
 static int irq_setup_virq(struct irq_host *host, unsigned int virq,
@@ -755,7 +737,6 @@ void irq_dispose_mapping(unsigned int virq)
 {
 	struct irq_host *host;
 	irq_hw_number_t hwirq;
-	unsigned long flags;
 
 	if (virq == NO_IRQ)
 		return;
@@ -788,12 +769,16 @@ void irq_dispose_mapping(unsigned int virq)
 			host->revmap_data.linear.revmap[hwirq] = NO_IRQ;
 		break;
 	case IRQ_HOST_MAP_TREE:
-		/* Check if radix tree allocated yet */
-		if (host->revmap_data.tree.gfp_mask == 0)
+		/*
+		 * Check if radix tree allocated yet, if not then nothing to
+		 * remove.
+		 */
+		smp_rmb();
+		if (revmap_trees_allocated < 1)
 			break;
-		irq_radix_wrlock(&flags);
+		mutex_lock(&revmap_trees_mutex);
 		radix_tree_delete(&host->revmap_data.tree, hwirq);
-		irq_radix_wrunlock(flags);
+		mutex_unlock(&revmap_trees_mutex);
 		break;
 	}
 
@@ -842,43 +827,62 @@ unsigned int irq_find_mapping(struct irq_host *host,
 EXPORT_SYMBOL_GPL(irq_find_mapping);
 
 
-unsigned int irq_radix_revmap(struct irq_host *host,
-			      irq_hw_number_t hwirq)
+unsigned int irq_radix_revmap_lookup(struct irq_host *host,
+				     irq_hw_number_t hwirq)
 {
-	struct radix_tree_root *tree;
 	struct irq_map_entry *ptr;
 	unsigned int virq;
-	unsigned long flags;
 
 	WARN_ON(host->revmap_type != IRQ_HOST_MAP_TREE);
 
-	/* Check if the radix tree exist yet. We test the value of
-	 * the gfp_mask for that. Sneaky but saves another int in the
-	 * structure. If not, we fallback to slow mode
+	/*
+	 * Check if the radix tree exists and has bee initialized.
+	 * If not, we fallback to slow mode
 	 */
-	tree = &host->revmap_data.tree;
-	if (tree->gfp_mask == 0)
+	if (revmap_trees_allocated < 2)
 		return irq_find_mapping(host, hwirq);
 
 	/* Now try to resolve */
-	irq_radix_rdlock(&flags);
-	ptr = radix_tree_lookup(tree, hwirq);
-	irq_radix_rdunlock(flags);
+	/*
+	 * No rcu_read_lock(ing) needed, the ptr returned can't go under us
+	 * as it's referencing an entry in the static irq_map table.
+	 */
+	ptr = radix_tree_lookup(&host->revmap_data.tree, hwirq);
 
-	/* Found it, return */
-	if (ptr) {
+	/*
+	 * If found in radix tree, then fine.
+	 * Else fallback to linear lookup - this should not happen in practice
+	 * as it means that we failed to insert the node in the radix tree.
+	 */
+	if (ptr)
 		virq = ptr - irq_map;
-		return virq;
-	}
+	else
+		virq = irq_find_mapping(host, hwirq);
 
-	/* If not there, try to insert it */
-	virq = irq_find_mapping(host, hwirq);
-	if (virq != NO_IRQ) {
-		irq_radix_wrlock(&flags);
-		radix_tree_insert(tree, hwirq, &irq_map[virq]);
-		irq_radix_wrunlock(flags);
-	}
 	return virq;
+}
+
+void irq_radix_revmap_insert(struct irq_host *host, unsigned int virq,
+			     irq_hw_number_t hwirq)
+{
+
+	WARN_ON(host->revmap_type != IRQ_HOST_MAP_TREE);
+
+	/*
+	 * Check if the radix tree exists yet.
+	 * If not, then the irq will be inserted into the tree when it gets
+	 * initialized.
+	 */
+	smp_rmb();
+	if (revmap_trees_allocated < 1)
+		return;
+
+	if (virq != NO_IRQ) {
+		mutex_lock(&revmap_trees_mutex);
+		radix_tree_insert(&host->revmap_data.tree, hwirq,
+				  &irq_map[virq]);
+		mutex_unlock(&revmap_trees_mutex);
+	}
 }
 
 unsigned int irq_linear_revmap(struct irq_host *host,
@@ -987,14 +991,44 @@ void irq_early_init(void)
 static int irq_late_init(void)
 {
 	struct irq_host *h;
-	unsigned long flags;
+	unsigned int i;
 
-	irq_radix_wrlock(&flags);
+	/*
+	 * No mutual exclusion with respect to accessors of the tree is needed
+	 * here as the synchronization is done via the state variable
+	 * revmap_trees_allocated.
+	 */
 	list_for_each_entry(h, &irq_hosts, link) {
 		if (h->revmap_type == IRQ_HOST_MAP_TREE)
-			INIT_RADIX_TREE(&h->revmap_data.tree, GFP_ATOMIC);
+			INIT_RADIX_TREE(&h->revmap_data.tree, GFP_KERNEL);
 	}
-	irq_radix_wrunlock(flags);
+
+	/*
+	 * Make sure the radix trees inits are visible before setting
+	 * the flag
+	 */
+	smp_wmb();
+	revmap_trees_allocated = 1;
+
+	/*
+	 * Insert the reverse mapping for those interrupts already present
+	 * in irq_map[].
+	 */
+	mutex_lock(&revmap_trees_mutex);
+	for (i = 0; i < irq_virq_count; i++) {
+		if (irq_map[i].host &&
+		    (irq_map[i].host->revmap_type == IRQ_HOST_MAP_TREE))
+			radix_tree_insert(&irq_map[i].host->revmap_data.tree,
+					  irq_map[i].hwirq, &irq_map[i]);
+	}
+	mutex_unlock(&revmap_trees_mutex);
+
+	/*
+	 * Make sure the radix trees insertions are visible before setting
+	 * the flag
+	 */
+	smp_wmb();
+	revmap_trees_allocated = 2;
 
 	return 0;
 }
@@ -1054,15 +1088,13 @@ static const struct file_operations virq_debug_fops = {
 static int __init irq_debugfs_init(void)
 {
 	if (debugfs_create_file("virq_mapping", S_IRUGO, powerpc_debugfs_root,
-				 NULL, &virq_debug_fops))
+				 NULL, &virq_debug_fops) == NULL)
 		return -ENOMEM;
 
 	return 0;
 }
 __initcall(irq_debugfs_init);
 #endif /* CONFIG_VIRQ_DEBUG */
-
-#endif /* CONFIG_PPC_MERGE */
 
 #ifdef CONFIG_PPC64
 static int __init setup_noirqdistrib(char *str)

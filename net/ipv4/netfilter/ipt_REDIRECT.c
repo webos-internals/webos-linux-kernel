@@ -23,17 +23,12 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Netfilter Core Team <coreteam@netfilter.org>");
-MODULE_DESCRIPTION("iptables REDIRECT target module");
+MODULE_DESCRIPTION("Xtables: Connection redirection to localhost");
 
 /* FIXME: Take multiple ranges --RR */
-static bool
-redirect_check(const char *tablename,
-	       const void *e,
-	       const struct xt_target *target,
-	       void *targinfo,
-	       unsigned int hook_mask)
+static bool redirect_tg_check(const struct xt_tgchk_param *par)
 {
-	const struct nf_nat_multi_range_compat *mr = targinfo;
+	const struct nf_nat_multi_range_compat *mr = par->targinfo;
 
 	if (mr->range[0].flags & IP_NAT_RANGE_MAP_IPS) {
 		pr_debug("redirect_check: bad MAP_IPS.\n");
@@ -47,27 +42,22 @@ redirect_check(const char *tablename,
 }
 
 static unsigned int
-redirect_target(struct sk_buff *skb,
-		const struct net_device *in,
-		const struct net_device *out,
-		unsigned int hooknum,
-		const struct xt_target *target,
-		const void *targinfo)
+redirect_tg(struct sk_buff *skb, const struct xt_target_param *par)
 {
 	struct nf_conn *ct;
 	enum ip_conntrack_info ctinfo;
 	__be32 newdst;
-	const struct nf_nat_multi_range_compat *mr = targinfo;
+	const struct nf_nat_multi_range_compat *mr = par->targinfo;
 	struct nf_nat_range newrange;
 
-	NF_CT_ASSERT(hooknum == NF_IP_PRE_ROUTING
-		     || hooknum == NF_IP_LOCAL_OUT);
+	NF_CT_ASSERT(par->hooknum == NF_INET_PRE_ROUTING ||
+		     par->hooknum == NF_INET_LOCAL_OUT);
 
 	ct = nf_ct_get(skb, &ctinfo);
 	NF_CT_ASSERT(ct && (ctinfo == IP_CT_NEW || ctinfo == IP_CT_RELATED));
 
 	/* Local packets: make them go to loopback */
-	if (hooknum == NF_IP_LOCAL_OUT)
+	if (par->hooknum == NF_INET_LOCAL_OUT)
 		newdst = htonl(0x7F000001);
 	else {
 		struct in_device *indev;
@@ -92,29 +82,29 @@ redirect_target(struct sk_buff *skb,
 		  mr->range[0].min, mr->range[0].max });
 
 	/* Hand modified range to generic setup. */
-	return nf_nat_setup_info(ct, &newrange, hooknum);
+	return nf_nat_setup_info(ct, &newrange, IP_NAT_MANIP_DST);
 }
 
-static struct xt_target redirect_reg __read_mostly = {
+static struct xt_target redirect_tg_reg __read_mostly = {
 	.name		= "REDIRECT",
-	.family		= AF_INET,
-	.target		= redirect_target,
+	.family		= NFPROTO_IPV4,
+	.target		= redirect_tg,
 	.targetsize	= sizeof(struct nf_nat_multi_range_compat),
 	.table		= "nat",
-	.hooks		= (1 << NF_IP_PRE_ROUTING) | (1 << NF_IP_LOCAL_OUT),
-	.checkentry	= redirect_check,
+	.hooks		= (1 << NF_INET_PRE_ROUTING) | (1 << NF_INET_LOCAL_OUT),
+	.checkentry	= redirect_tg_check,
 	.me		= THIS_MODULE,
 };
 
-static int __init ipt_redirect_init(void)
+static int __init redirect_tg_init(void)
 {
-	return xt_register_target(&redirect_reg);
+	return xt_register_target(&redirect_tg_reg);
 }
 
-static void __exit ipt_redirect_fini(void)
+static void __exit redirect_tg_exit(void)
 {
-	xt_unregister_target(&redirect_reg);
+	xt_unregister_target(&redirect_tg_reg);
 }
 
-module_init(ipt_redirect_init);
-module_exit(ipt_redirect_fini);
+module_init(redirect_tg_init);
+module_exit(redirect_tg_exit);

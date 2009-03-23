@@ -33,11 +33,11 @@
 
 /* ----------------------------------------------------------- */
 
-static unsigned int i2c_debug = 0;
+static unsigned int i2c_debug;
 module_param(i2c_debug, int, 0644);
 MODULE_PARM_DESC(i2c_debug,"enable debug messages [i2c]");
 
-static unsigned int i2c_scan = 0;
+static unsigned int i2c_scan;
 module_param(i2c_scan, int, 0444);
 MODULE_PARM_DESC(i2c_scan,"scan i2c bus at insmod time");
 
@@ -140,6 +140,8 @@ static inline int i2c_is_busy(enum i2c_status status)
 {
 	switch (status) {
 	case BUSY:
+	case TO_SCL:
+	case TO_ARB:
 		return true;
 	default:
 		return false;
@@ -322,12 +324,11 @@ static u32 functionality(struct i2c_adapter *adap)
 static int attach_inform(struct i2c_client *client)
 {
 	struct saa7134_dev *dev = client->adapter->algo_data;
-	int tuner = dev->tuner_type;
-	int conf  = dev->tda9887_conf;
-	struct tuner_setup tun_setup;
 
 	d1printk( "%s i2c attach [addr=0x%x,client=%s]\n",
 		client->driver->driver.name, client->addr, client->name);
+	if (client->addr == 0x20 && client->driver && client->driver->command)
+		dev->mpeg_i2c_client = client;
 
 	/* Am I an i2c remote control? */
 
@@ -335,6 +336,8 @@ static int attach_inform(struct i2c_client *client)
 		case 0x7a:
 		case 0x47:
 		case 0x71:
+		case 0x2d:
+		case 0x30:
 		{
 			struct IR_i2c *ir = i2c_get_clientdata(client);
 			d1printk("%s i2c IR detected (%s).\n",
@@ -343,38 +346,6 @@ static int attach_inform(struct i2c_client *client)
 			break;
 		}
 	}
-
-	if (!client->driver->command)
-		return 0;
-
-	if (saa7134_boards[dev->board].radio_type != UNSET) {
-
-		tun_setup.type = saa7134_boards[dev->board].radio_type;
-		tun_setup.addr = saa7134_boards[dev->board].radio_addr;
-
-		if ((tun_setup.addr == ADDR_UNSET) || (tun_setup.addr == client->addr)) {
-			tun_setup.mode_mask = T_RADIO;
-
-			client->driver->command(client, TUNER_SET_TYPE_ADDR, &tun_setup);
-		}
-	}
-
-	if (tuner != UNSET) {
-
-		tun_setup.type = tuner;
-		tun_setup.addr = saa7134_boards[dev->board].tuner_addr;
-		tun_setup.config = saa7134_boards[dev->board].tuner_config;
-		tun_setup.tuner_callback = saa7134_tuner_callback;
-
-		if ((tun_setup.addr == ADDR_UNSET)||(tun_setup.addr == client->addr)) {
-
-			tun_setup.mode_mask = T_ANALOG_TV;
-
-			client->driver->command(client,TUNER_SET_TYPE_ADDR, &tun_setup);
-		}
-	}
-
-	client->driver->command(client, TDA9887_SET_CONFIG, &conf);
 
 	return 0;
 }
@@ -432,6 +403,7 @@ static char *i2c_devs[128] = {
 	[ 0xa0 >> 1 ] = "eeprom",
 	[ 0xc0 >> 1 ] = "tuner (analog)",
 	[ 0x86 >> 1 ] = "tda9887",
+	[ 0x5a >> 1 ] = "remote control",
 };
 
 static void do_i2c_scan(char *name, struct i2c_client *c)
@@ -455,6 +427,16 @@ void saa7134_i2c_call_clients(struct saa7134_dev *dev,
 	BUG_ON(NULL == dev->i2c_adap.algo_data);
 	i2c_clients_command(&dev->i2c_adap, cmd, arg);
 }
+
+int saa7134_i2c_call_saa6752(struct saa7134_dev *dev,
+					      unsigned int cmd, void *arg)
+{
+	if (dev->mpeg_i2c_client == NULL)
+		return -EINVAL;
+	return dev->mpeg_i2c_client->driver->command(dev->mpeg_i2c_client,
+								cmd, arg);
+}
+EXPORT_SYMBOL_GPL(saa7134_i2c_call_saa6752);
 
 int saa7134_i2c_register(struct saa7134_dev *dev)
 {

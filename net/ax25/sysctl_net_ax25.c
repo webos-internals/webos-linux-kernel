@@ -24,30 +24,19 @@ static int min_idle[1],			max_idle[] = {65535000};
 static int min_n2[] = {1},		max_n2[] = {31};
 static int min_paclen[] = {1},		max_paclen[] = {512};
 static int min_proto[1],		max_proto[] = { AX25_PROTO_MAX };
+#ifdef CONFIG_AX25_DAMA_SLAVE
 static int min_ds_timeout[1],		max_ds_timeout[] = {65535000};
+#endif
 
 static struct ctl_table_header *ax25_table_header;
 
 static ctl_table *ax25_table;
 static int ax25_table_size;
 
-static ctl_table ax25_dir_table[] = {
-	{
-		.ctl_name	= NET_AX25,
-		.procname	= "ax25",
-		.mode		= 0555,
-	},
-	{ .ctl_name = 0 }
-};
-
-static ctl_table ax25_root_table[] = {
-	{
-		.ctl_name	= CTL_NET,
-		.procname	= "net",
-		.mode		= 0555,
-		.child		= ax25_dir_table
-	},
-	{ .ctl_name = 0 }
+static struct ctl_path ax25_path[] = {
+	{ .procname = "net", .ctl_name = CTL_NET, },
+	{ .procname = "ax25", .ctl_name = NET_AX25, },
+	{ }
 };
 
 static const ctl_table ax25_param_table[] = {
@@ -56,8 +45,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "ip_default_mode",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_ipdefmode,
 		.extra2		= &max_ipdefmode
 	},
@@ -66,8 +55,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "ax25_default_mode",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_axdefmode,
 		.extra2		= &max_axdefmode
 	},
@@ -76,8 +65,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "backoff_type",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_backoff,
 		.extra2		= &max_backoff
 	},
@@ -86,8 +75,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "connect_mode",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_conmode,
 		.extra2		= &max_conmode
 	},
@@ -96,8 +85,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "standard_window_size",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_window,
 		.extra2		= &max_window
 	},
@@ -106,8 +95,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "extended_window_size",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_ewindow,
 		.extra2		= &max_ewindow
 	},
@@ -116,8 +105,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "t1_timeout",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_t1,
 		.extra2		= &max_t1
 	},
@@ -126,8 +115,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "t2_timeout",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_t2,
 		.extra2		= &max_t2
 	},
@@ -136,8 +125,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "t3_timeout",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_t3,
 		.extra2		= &max_t3
 	},
@@ -146,8 +135,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "idle_timeout",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_idle,
 		.extra2		= &max_idle
 	},
@@ -156,8 +145,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "maximum_retry_count",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_n2,
 		.extra2		= &max_n2
 	},
@@ -166,8 +155,8 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "maximum_packet_length",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_paclen,
 		.extra2		= &max_paclen
 	},
@@ -176,21 +165,24 @@ static const ctl_table ax25_param_table[] = {
 		.procname	= "protocol",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_proto,
 		.extra2		= &max_proto
 	},
+#ifdef CONFIG_AX25_DAMA_SLAVE
 	{
 		.ctl_name	= NET_AX25_DAMA_SLAVE_TIMEOUT,
 		.procname	= "dama_slave_timeout",
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_ds_timeout,
 		.extra2		= &max_ds_timeout
 	},
+#endif
+
 	{ .ctl_name = 0 }	/* that's all, folks! */
 };
 
@@ -224,16 +216,6 @@ void ax25_register_sysctl(void)
 		ax25_table[n].procname     = ax25_dev->dev->name;
 		ax25_table[n].mode         = 0555;
 
-#ifndef CONFIG_AX25_DAMA_SLAVE
-		/*
-		 * We do not wish to have a representation of this parameter
-		 * in /proc/sys/ when configured *not* to include the
-		 * AX.25 DAMA slave code, do we?
-		 */
-
-		child[AX25_VALUES_DS_TIMEOUT].procname = NULL;
-#endif
-
 		child[AX25_MAX_VALUES].ctl_name = 0;	/* just in case... */
 
 		for (k = 0; k < AX25_MAX_VALUES; k++)
@@ -243,9 +225,7 @@ void ax25_register_sysctl(void)
 	}
 	spin_unlock_bh(&ax25_dev_lock);
 
-	ax25_dir_table[0].child = ax25_table;
-
-	ax25_table_header = register_sysctl_table(ax25_root_table);
+	ax25_table_header = register_sysctl_paths(ax25_path, ax25_table);
 }
 
 void ax25_unregister_sysctl(void)
@@ -253,7 +233,6 @@ void ax25_unregister_sysctl(void)
 	ctl_table *p;
 	unregister_sysctl_table(ax25_table_header);
 
-	ax25_dir_table[0].child = NULL;
 	for (p = ax25_table; p->ctl_name; p++)
 		kfree(p->child);
 	kfree(ax25_table);

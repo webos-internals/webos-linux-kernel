@@ -22,6 +22,7 @@
 #include <linux/mtd/super.h>
 #include <linux/ctype.h>
 #include <linux/namei.h>
+#include <linux/exportfs.h>
 #include "compr.h"
 #include "nodelist.h"
 
@@ -31,11 +32,12 @@ static struct kmem_cache *jffs2_inode_cachep;
 
 static struct inode *jffs2_alloc_inode(struct super_block *sb)
 {
-	struct jffs2_inode_info *ei;
-	ei = (struct jffs2_inode_info *)kmem_cache_alloc(jffs2_inode_cachep, GFP_KERNEL);
-	if (!ei)
+	struct jffs2_inode_info *f;
+
+	f = kmem_cache_alloc(jffs2_inode_cachep, GFP_KERNEL);
+	if (!f)
 		return NULL;
-	return &ei->vfs_inode;
+	return &f->vfs_inode;
 }
 
 static void jffs2_destroy_inode(struct inode *inode)
@@ -43,29 +45,74 @@ static void jffs2_destroy_inode(struct inode *inode)
 	kmem_cache_free(jffs2_inode_cachep, JFFS2_INODE_INFO(inode));
 }
 
-static void jffs2_i_init_once(struct kmem_cache *cachep, void *foo)
+static void jffs2_i_init_once(void *foo)
 {
-	struct jffs2_inode_info *ei = (struct jffs2_inode_info *) foo;
+	struct jffs2_inode_info *f = foo;
 
-	init_MUTEX(&ei->sem);
-	inode_init_once(&ei->vfs_inode);
+	mutex_init(&f->sem);
+	inode_init_once(&f->vfs_inode);
 }
 
 static int jffs2_sync_fs(struct super_block *sb, int wait)
 {
 	struct jffs2_sb_info *c = JFFS2_SB_INFO(sb);
 
-	down(&c->alloc_sem);
+	mutex_lock(&c->alloc_sem);
 	jffs2_flush_wbuf_pad(c);
-	up(&c->alloc_sem);
+	mutex_unlock(&c->alloc_sem);
 	return 0;
 }
+
+static struct inode *jffs2_nfs_get_inode(struct super_block *sb, uint64_t ino,
+					 uint32_t generation)
+{
+	/* We don't care about i_generation. We'll destroy the flash
+	   before we start re-using inode numbers anyway. And even
+	   if that wasn't true, we'd have other problems...*/
+	return jffs2_iget(sb, ino);
+}
+
+static struct dentry *jffs2_fh_to_dentry(struct super_block *sb, struct fid *fid,
+					 int fh_len, int fh_type)
+{
+        return generic_fh_to_dentry(sb, fid, fh_len, fh_type,
+                                    jffs2_nfs_get_inode);
+}
+
+static struct dentry *jffs2_fh_to_parent(struct super_block *sb, struct fid *fid,
+					 int fh_len, int fh_type)
+{
+        return generic_fh_to_parent(sb, fid, fh_len, fh_type,
+                                    jffs2_nfs_get_inode);
+}
+
+static struct dentry *jffs2_get_parent(struct dentry *child)
+{
+	struct jffs2_inode_info *f;
+	uint32_t pino;
+
+	BUG_ON(!S_ISDIR(child->d_inode->i_mode));
+
+	f = JFFS2_INODE_INFO(child->d_inode);
+
+	pino = f->inocache->pino_nlink;
+
+	JFFS2_DEBUG("Parent of directory ino #%u is #%u\n",
+		    f->inocache->ino, pino);
+
+	return d_obtain_alias(jffs2_iget(child->d_inode->i_sb, pino));
+}
+
+static struct export_operations jffs2_export_ops = {
+	.get_parent = jffs2_get_parent,
+	.fh_to_dentry = jffs2_fh_to_dentry,
+	.fh_to_parent = jffs2_fh_to_parent,
+};
 
 static const struct super_operations jffs2_super_operations =
 {
 	.alloc_inode =	jffs2_alloc_inode,
 	.destroy_inode =jffs2_destroy_inode,
-	.read_inode =	jffs2_read_inode,
 	.put_super =	jffs2_put_super,
 	.write_super =	jffs2_write_super,
 	.statfs =	jffs2_statfs,
@@ -96,14 +143,15 @@ static int jffs2_fill_super(struct super_block *sb, void *data, int silent)
 
 	/* Initialize JFFS2 superblock locks, the further initialization will
 	 * be done later */
-	init_MUTEX(&c->alloc_sem);
-	init_MUTEX(&c->erase_free_sem);
+	mutex_init(&c->alloc_sem);
+	mutex_init(&c->erase_free_sem);
 	init_waitqueue_head(&c->erase_wait);
 	init_waitqueue_head(&c->inocache_wq);
 	spin_lock_init(&c->erase_completion_lock);
 	spin_lock_init(&c->inocache_lock);
 
 	sb->s_op = &jffs2_super_operations;
+	sb->s_export_op = &jffs2_export_ops;
 	sb->s_flags = sb->s_flags | MS_NOATIME;
 	sb->s_xattr = jffs2_xattr_handlers;
 #ifdef CONFIG_JFFS2_FS_POSIX_ACL
@@ -126,9 +174,9 @@ static void jffs2_put_super (struct super_block *sb)
 
 	D2(printk(KERN_DEBUG "jffs2: jffs2_put_super()\n"));
 
-	down(&c->alloc_sem);
+	mutex_lock(&c->alloc_sem);
 	jffs2_flush_wbuf_pad(c);
-	up(&c->alloc_sem);
+	mutex_unlock(&c->alloc_sem);
 
 	jffs2_sum_exit(c);
 

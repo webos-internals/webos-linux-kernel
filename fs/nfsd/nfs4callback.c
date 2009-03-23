@@ -53,9 +53,6 @@
 #define NFSPROC4_CB_NULL 0
 #define NFSPROC4_CB_COMPOUND 1
 
-/* declarations */
-static const struct rpc_call_ops nfs4_cb_null_ops;
-
 /* Index of predefined Linux callback client operations */
 
 enum {
@@ -104,7 +101,7 @@ xdr_writemem(__be32 *p, const void *ptr, int nbytes)
 } while (0)
 #define RESERVE_SPACE(nbytes)   do {                            \
 	p = xdr_reserve_space(xdr, nbytes);                     \
-	if (!p) dprintk("NFSD: RESERVE_SPACE(%d) failed in function %s\n", (int) (nbytes), __FUNCTION__); \
+	if (!p) dprintk("NFSD: RESERVE_SPACE(%d) failed in function %s\n", (int) (nbytes), __func__); \
 	BUG_ON(!p);                                             \
 } while (0)
 
@@ -134,7 +131,7 @@ xdr_error:                                      \
 	p = xdr_inline_decode(xdr, nbytes); \
 	if (!p) { \
 		dprintk("NFSD: %s: reply buffer overflowed in line %d.\n", \
-			__FUNCTION__, __LINE__); \
+			__func__, __LINE__); \
 		return -EIO; \
 	} \
 } while (0)
@@ -225,7 +222,8 @@ encode_cb_recall(struct xdr_stream *xdr, struct nfs4_cb_recall *cb_rec)
 
 	RESERVE_SPACE(12+sizeof(cb_rec->cbr_stateid) + len);
 	WRITE32(OP_CB_RECALL);
-	WRITEMEM(&cb_rec->cbr_stateid, sizeof(stateid_t));
+	WRITE32(cb_rec->cbr_stateid.si_generation);
+	WRITEMEM(&cb_rec->cbr_stateid.si_opaque, sizeof(stateid_opaque_t));
 	WRITE32(cb_rec->cbr_trunc);
 	WRITE32(len);
 	WRITEMEM(cb_rec->cbr_fhval, len);
@@ -344,36 +342,28 @@ static struct rpc_version *	nfs_cb_version[] = {
 	&nfs_cb_version4,
 };
 
+static struct rpc_program cb_program;
+
+static struct rpc_stat cb_stats = {
+		.program	= &cb_program
+};
+
+#define NFS4_CALLBACK 0x40000000
+static struct rpc_program cb_program = {
+		.name 		= "nfs4_cb",
+		.number		= NFS4_CALLBACK,
+		.nrvers		= ARRAY_SIZE(nfs_cb_version),
+		.version	= nfs_cb_version,
+		.stats		= &cb_stats,
+		.pipe_dir_name  = "/nfsd4_cb",
+};
+
 /* Reference counting, callback cleanup, etc., all look racy as heck.
  * And why is cb_set an atomic? */
 
 static int do_probe_callback(void *data)
 {
 	struct nfs4_client *clp = data;
-	struct nfs4_callback *cb = &clp->cl_callback;
-	struct rpc_message msg = {
-		.rpc_proc       = &nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
-		.rpc_argp       = clp,
-	};
-	int status;
-
-	status = rpc_call_sync(cb->cb_client, &msg, RPC_TASK_SOFT);
-
-	if (status) {
-		rpc_shutdown_client(cb->cb_client);
-		cb->cb_client = NULL;
-	} else
-		atomic_set(&cb->cb_set, 1);
-	put_nfs4_client(clp);
-	return 0;
-}
-
-/*
- * Set up the callback client and put a NFSPROC4_CB_NULL on the wire...
- */
-void
-nfsd4_probe_callback(struct nfs4_client *clp)
-{
 	struct sockaddr_in	addr;
 	struct nfs4_callback    *cb = &clp->cl_callback;
 	struct rpc_timeout	timeparms = {
@@ -382,21 +372,29 @@ nfsd4_probe_callback(struct nfs4_client *clp)
 		.to_maxval	= (NFSD_LEASE_TIME/2) * HZ,
 		.to_exponential	= 1,
 	};
-	struct rpc_program *	program = &cb->cb_program;
 	struct rpc_create_args args = {
 		.protocol	= IPPROTO_TCP,
 		.address	= (struct sockaddr *)&addr,
 		.addrsize	= sizeof(addr),
 		.timeout	= &timeparms,
-		.program	= program,
+		.program	= &cb_program,
+		.prognumber	= cb->cb_prog,
 		.version	= nfs_cb_version[1]->number,
-		.authflavor	= RPC_AUTH_UNIX,	/* XXX: need AUTH_GSS... */
-		.flags		= (RPC_CLNT_CREATE_NOPING),
+		.authflavor	= clp->cl_flavor,
+		.flags		= (RPC_CLNT_CREATE_NOPING | RPC_CLNT_CREATE_QUIET),
+		.client_name    = clp->cl_principal,
 	};
-	struct task_struct *t;
+	struct rpc_message msg = {
+		.rpc_proc       = &nfs4_cb_procedures[NFSPROC4_CLNT_CB_NULL],
+		.rpc_argp       = clp,
+	};
+	struct rpc_clnt *client;
+	int status;
 
-	if (atomic_read(&cb->cb_set))
-		return;
+	if (!clp->cl_principal && (clp->cl_flavor >= RPC_AUTH_GSS_KRB5)) {
+		status = nfserr_cb_path_down;
+		goto out_err;
+	}
 
 	/* Initialize address */
 	memset(&addr, 0, sizeof(addr));
@@ -404,23 +402,41 @@ nfsd4_probe_callback(struct nfs4_client *clp)
 	addr.sin_port = htons(cb->cb_port);
 	addr.sin_addr.s_addr = htonl(cb->cb_addr);
 
-	/* Initialize rpc_program */
-	program->name = "nfs4_cb";
-	program->number = cb->cb_prog;
-	program->nrvers = ARRAY_SIZE(nfs_cb_version);
-	program->version = nfs_cb_version;
-	program->stats = &cb->cb_stat;
-
-	/* Initialize rpc_stat */
-	memset(program->stats, 0, sizeof(cb->cb_stat));
-	program->stats->program = program;
-
 	/* Create RPC client */
-	cb->cb_client = rpc_create(&args);
-	if (IS_ERR(cb->cb_client)) {
+	client = rpc_create(&args);
+	if (IS_ERR(client)) {
 		dprintk("NFSD: couldn't create callback client\n");
+		status = PTR_ERR(client);
 		goto out_err;
 	}
+
+	status = rpc_call_sync(client, &msg, RPC_TASK_SOFT);
+
+	if (status)
+		goto out_release_client;
+
+	cb->cb_client = client;
+	atomic_set(&cb->cb_set, 1);
+	put_nfs4_client(clp);
+	return 0;
+out_release_client:
+	rpc_shutdown_client(client);
+out_err:
+	dprintk("NFSD: warning: no callback path to client %.*s\n",
+		(int)clp->cl_name.len, clp->cl_name.data);
+	put_nfs4_client(clp);
+	return status;
+}
+
+/*
+ * Set up the callback client and put a NFSPROC4_CB_NULL on the wire...
+ */
+void
+nfsd4_probe_callback(struct nfs4_client *clp)
+{
+	struct task_struct *t;
+
+	BUG_ON(atomic_read(&clp->cl_callback.cb_set));
 
 	/* the task holds a reference to the nfs4_client struct */
 	atomic_inc(&clp->cl_count);
@@ -428,17 +444,9 @@ nfsd4_probe_callback(struct nfs4_client *clp)
 	t = kthread_run(do_probe_callback, clp, "nfs4_cb_probe");
 
 	if (IS_ERR(t))
-		goto out_release_clp;
+		atomic_dec(&clp->cl_count);
 
 	return;
-
-out_release_clp:
-	atomic_dec(&clp->cl_count);
-	rpc_shutdown_client(cb->cb_client);
-out_err:
-	cb->cb_client = NULL;
-	dprintk("NFSD: warning: no callback path to client %.*s\n",
-		(int)clp->cl_name.len, clp->cl_name.data);
 }
 
 /*
@@ -458,9 +466,6 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
 	int retries = 1;
 	int status = 0;
 
-	if ((!atomic_read(&clp->cl_callback.cb_set)) || !clnt)
-		return;
-
 	cbr->cbr_trunc = 0; /* XXX need to implement truncate optimization */
 	cbr->cbr_dp = dp;
 
@@ -469,6 +474,7 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
 		switch (status) {
 			case -EIO:
 				/* Network partition? */
+				atomic_set(&clp->cl_callback.cb_set, 0);
 			case -EBADHANDLE:
 			case -NFS4ERR_BAD_STATEID:
 				/* Race: client probably got cb_recall
@@ -481,11 +487,10 @@ nfsd4_cb_recall(struct nfs4_delegation *dp)
 		status = rpc_call_sync(clnt, &msg, RPC_TASK_SOFT);
 	}
 out_put_cred:
-	if (status == -EIO)
-		atomic_set(&clp->cl_callback.cb_set, 0);
-	/* Success or failure, now we're either waiting for lease expiration
-	 * or deleg_return. */
-	dprintk("NFSD: nfs4_cb_recall: dp %p dl_flock %p dl_count %d\n",dp, dp->dl_flock, atomic_read(&dp->dl_count));
+	/*
+	 * Success or failure, now we're either waiting for lease expiration
+	 * or deleg_return.
+	 */
 	put_nfs4_client(clp);
 	nfs4_put_delegation(dp);
 	return;

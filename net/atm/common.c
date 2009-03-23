@@ -113,7 +113,7 @@ static void vcc_write_space(struct sock *sk)
 		if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
 			wake_up_interruptible(sk->sk_sleep);
 
-		sk_wake_async(sk, 2, POLL_OUT);
+		sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
 	}
 
 	read_unlock(&sk->sk_callback_lock);
@@ -262,7 +262,7 @@ static int adjust_tp(struct atm_trafprm *tp,unsigned char aal)
 }
 
 
-static int check_ci(struct atm_vcc *vcc, short vpi, int vci)
+static int check_ci(const struct atm_vcc *vcc, short vpi, int vci)
 {
 	struct hlist_head *head = &vcc_hash[vci &
 					(VCC_HTABLE_SIZE - 1)];
@@ -290,7 +290,7 @@ static int check_ci(struct atm_vcc *vcc, short vpi, int vci)
 }
 
 
-static int find_ci(struct atm_vcc *vcc, short *vpi, int *vci)
+static int find_ci(const struct atm_vcc *vcc, short *vpi, int *vci)
 {
 	static short p;        /* poor man's per-device cache */
 	static int c;
@@ -646,7 +646,7 @@ static int atm_change_qos(struct atm_vcc *vcc,struct atm_qos *qos)
 }
 
 
-static int check_tp(struct atm_trafprm *tp)
+static int check_tp(const struct atm_trafprm *tp)
 {
 	/* @@@ Should be merged with adjust_tp */
 	if (!tp->traffic_class || tp->traffic_class == ATM_ANYCLASS) return 0;
@@ -663,7 +663,7 @@ static int check_tp(struct atm_trafprm *tp)
 }
 
 
-static int check_qos(struct atm_qos *qos)
+static int check_qos(const struct atm_qos *qos)
 {
 	int error;
 

@@ -226,7 +226,7 @@ static int get_phy_reg(struct ti_lynx *lynx, int addr)
         if (addr > 15) {
                 PRINT(KERN_ERR, lynx->id,
                       "%s: PHY register address %d out of range",
-		      __FUNCTION__, addr);
+		      __func__, addr);
                 return -1;
         }
 
@@ -238,7 +238,7 @@ static int get_phy_reg(struct ti_lynx *lynx, int addr)
 
                 if (i > 10000) {
                         PRINT(KERN_ERR, lynx->id, "%s: runaway loop, aborting",
-			      __FUNCTION__);
+			      __func__);
                         retval = -1;
                         break;
                 }
@@ -261,13 +261,13 @@ static int set_phy_reg(struct ti_lynx *lynx, int addr, int val)
 
         if (addr > 15) {
                 PRINT(KERN_ERR, lynx->id,
-                      "%s: PHY register address %d out of range", __FUNCTION__, addr);
+		      "%s: PHY register address %d out of range", __func__, addr);
                 return -1;
         }
 
         if (val > 0xff) {
                 PRINT(KERN_ERR, lynx->id,
-                      "%s: PHY register value %d out of range", __FUNCTION__, val);
+		      "%s: PHY register value %d out of range", __func__, val);
                 return -1;
         }
 
@@ -287,7 +287,7 @@ static int sel_phy_reg_page(struct ti_lynx *lynx, int page)
 
         if (page > 7) {
                 PRINT(KERN_ERR, lynx->id,
-                      "%s: PHY page %d out of range", __FUNCTION__, page);
+		      "%s: PHY page %d out of range", __func__, page);
                 return -1;
         }
 
@@ -309,7 +309,7 @@ static int sel_phy_reg_port(struct ti_lynx *lynx, int port)
 
         if (port > 15) {
                 PRINT(KERN_ERR, lynx->id,
-                      "%s: PHY port %d out of range", __FUNCTION__, port);
+		      "%s: PHY port %d out of range", __func__, port);
                 return -1;
         }
 
@@ -738,8 +738,7 @@ static int lynx_devctl(struct hpsb_host *host, enum devctl_cmd cmd, int arg)
                 spin_lock_irqsave(&lynx->async.queue_lock, flags);
 
                 reg_write(lynx, DMA_CHAN_CTRL(CHANNEL_ASYNC_SEND), 0);
-		list_splice(&lynx->async.queue, &packet_list);
-		INIT_LIST_HEAD(&lynx->async.queue);
+		list_splice_init(&lynx->async.queue, &packet_list);
 
                 if (list_empty(&lynx->async.pcl_queue)) {
                         spin_unlock_irqrestore(&lynx->async.queue_lock, flags);
@@ -1420,7 +1419,6 @@ static int __devinit add_card(struct pci_dev *dev,
 		i2c_ad = kzalloc(sizeof(*i2c_ad), GFP_KERNEL);
         	if (!i2c_ad) FAIL("failed to allocate I2C adapter memory");
 
-		i2c_ad->id = I2C_HW_B_PCILYNX;
 		strlcpy(i2c_ad->name, "PCILynx I2C", sizeof(i2c_ad->name));
                 i2c_adapter_data = bit_data;
                 i2c_ad->algo_data = &i2c_adapter_data;
@@ -1464,7 +1462,7 @@ static int __devinit add_card(struct pci_dev *dev,
 
                                 /* info_length, crc_length and 1394 magic number to check, if it is really a bus info block */
 				if (((be32_to_cpu(lynx->bus_info_block[0]) & 0xffff0000) == 0x04040000) &&
-				    (lynx->bus_info_block[1] == __constant_cpu_to_be32(0x31333934)))
+				    (lynx->bus_info_block[1] == IEEE1394_BUSID_MAGIC))
                                 {
                                         PRINT(KERN_DEBUG, lynx->id, "read a valid bus info block from");
                                 } else {

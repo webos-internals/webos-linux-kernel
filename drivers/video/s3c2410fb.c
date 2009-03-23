@@ -1,75 +1,15 @@
-/*
- * linux/drivers/video/s3c2410fb.c
- *	Copyright (c) Arnaud Patard, Ben Dooks
+/* linux/drivers/video/s3c2410fb.c
+ *	Copyright (c) 2004,2005 Arnaud Patard
+ *	Copyright (c) 2004-2008 Ben Dooks
+ *
+ * S3C2410 LCD Framebuffer Driver
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file COPYING in the main directory of this archive for
  * more details.
  *
- *	    S3C2410 LCD Controller Frame Buffer Driver
- *	    based on skeletonfb.c, sa1100fb.c and others
- *
- * ChangeLog
- * 2005-04-07: Arnaud Patard <arnaud.patard@rtp-net.org>
- *      - u32 state -> pm_message_t state
- *      - S3C2410_{VA,SZ}_LCD -> S3C24XX
- *
- * 2005-03-15: Arnaud Patard <arnaud.patard@rtp-net.org>
- *      - Removed the ioctl
- *      - use readl/writel instead of __raw_writel/__raw_readl
- *
- * 2004-12-04: Arnaud Patard <arnaud.patard@rtp-net.org>
- *      - Added the possibility to set on or off the
- *      debugging messages
- *      - Replaced 0 and 1 by on or off when reading the
- *      /sys files
- *
- * 2005-03-23: Ben Dooks <ben-linux@fluff.org>
- *	- added non 16bpp modes
- *	- updated platform information for range of x/y/bpp
- *	- add code to ensure palette is written correctly
- *	- add pixel clock divisor control
- *
- * 2004-11-11: Arnaud Patard <arnaud.patard@rtp-net.org>
- *	- Removed the use of currcon as it no more exists
- *	- Added LCD power sysfs interface
- *
- * 2004-11-03: Ben Dooks <ben-linux@fluff.org>
- *	- minor cleanups
- *	- add suspend/resume support
- *	- s3c2410fb_setcolreg() not valid in >8bpp modes
- *	- removed last CONFIG_FB_S3C2410_FIXED
- *	- ensure lcd controller stopped before cleanup
- *	- added sysfs interface for backlight power
- *	- added mask for gpio configuration
- *	- ensured IRQs disabled during GPIO configuration
- *	- disable TPAL before enabling video
- *
- * 2004-09-20: Arnaud Patard <arnaud.patard@rtp-net.org>
- *      - Suppress command line options
- *
- * 2004-09-15: Arnaud Patard <arnaud.patard@rtp-net.org>
- *	- code cleanup
- *
- * 2004-09-07: Arnaud Patard <arnaud.patard@rtp-net.org>
- *	- Renamed from h1940fb.c to s3c2410fb.c
- *	- Add support for different devices
- *	- Backlight support
- *
- * 2004-09-05: Herbert Pötzl <herbert@13thfloor.at>
- *	- added clock (de-)allocation code
- *	- added fixem fbmem option
- *
- * 2004-07-27: Arnaud Patard <arnaud.patard@rtp-net.org>
- *	- code cleanup
- *	- added a forgotten return in h1940fb_init
- *
- * 2004-07-19: Herbert Pötzl <herbert@13thfloor.at>
- *	- code cleanup and extended debugging
- *
- * 2004-07-15: Arnaud Patard <arnaud.patard@rtp-net.org>
- *	- First version
- */
+ * Driver based on skeletonfb.c, sa1100fb.c and others.
+*/
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -89,9 +29,9 @@
 #include <asm/div64.h>
 
 #include <asm/mach/map.h>
-#include <asm/arch/regs-lcd.h>
-#include <asm/arch/regs-gpio.h>
-#include <asm/arch/fb.h>
+#include <mach/regs-lcd.h>
+#include <mach/regs-gpio.h>
+#include <mach/fb.h>
 
 #ifdef CONFIG_PM
 #include <linux/pm.h>
@@ -109,6 +49,11 @@ static int debug	= 0;
 #define dprintk(msg...)	if (debug) { printk(KERN_DEBUG "s3c2410fb: " msg); }
 
 /* useful functions */
+
+static int is_s3c2412(struct s3c2410fb_info *fbi)
+{
+	return (fbi->drv_type == DRV_S3C2412);
+}
 
 /* s3c2410fb_set_lcdaddr
  *
@@ -425,9 +370,9 @@ static void s3c2410fb_activate_var(struct fb_info *info)
 	struct fb_var_screeninfo *var = &info->var;
 	int clkdiv = s3c2410fb_calc_pixclk(fbi, var->pixclock) / 2;
 
-	dprintk("%s: var->xres  = %d\n", __FUNCTION__, var->xres);
-	dprintk("%s: var->yres  = %d\n", __FUNCTION__, var->yres);
-	dprintk("%s: var->bpp   = %d\n", __FUNCTION__, var->bits_per_pixel);
+	dprintk("%s: var->xres  = %d\n", __func__, var->xres);
+	dprintk("%s: var->yres  = %d\n", __func__, var->yres);
+	dprintk("%s: var->bpp   = %d\n", __func__, var->bits_per_pixel);
 
 	if (type == S3C2410_LCDCON1_TFT) {
 		s3c2410fb_calculate_tft_lcd_regs(info, &fbi->regs);
@@ -501,7 +446,7 @@ static void schedule_palette_update(struct s3c2410fb_info *fbi,
 {
 	unsigned long flags;
 	unsigned long irqen;
-	void __iomem *regs = fbi->io;
+	void __iomem *irq_base = fbi->irq_base;
 
 	local_irq_save(flags);
 
@@ -511,9 +456,9 @@ static void schedule_palette_update(struct s3c2410fb_info *fbi,
 		fbi->palette_ready = 1;
 
 		/* enable IRQ */
-		irqen = readl(regs + S3C2410_LCDINTMSK);
+		irqen = readl(irq_base + S3C24XX_LCDINTMSK);
 		irqen &= ~S3C2410_LCDINT_FRSYNC;
-		writel(irqen, regs + S3C2410_LCDINTMSK);
+		writel(irqen, irq_base + S3C24XX_LCDINTMSK);
 	}
 
 	local_irq_restore(flags);
@@ -575,6 +520,27 @@ static int s3c2410fb_setcolreg(unsigned regno,
 	return 0;
 }
 
+/* s3c2410fb_lcd_enable
+ *
+ * shutdown the lcd controller
+ */
+static void s3c2410fb_lcd_enable(struct s3c2410fb_info *fbi, int enable)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+
+	if (enable)
+		fbi->regs.lcdcon1 |= S3C2410_LCDCON1_ENVID;
+	else
+		fbi->regs.lcdcon1 &= ~S3C2410_LCDCON1_ENVID;
+
+	writel(fbi->regs.lcdcon1, fbi->io + S3C2410_LCDCON1);
+
+	local_irq_restore(flags);
+}
+
+
 /*
  *      s3c2410fb_blank
  *	@blank_mode: the blank mode we want.
@@ -584,9 +550,6 @@ static int s3c2410fb_setcolreg(unsigned regno,
  *	blanking succeeded, != 0 if un-/blanking failed due to e.g. a
  *	video mode which doesn't support it. Implements VESA suspend
  *	and powerdown modes on hardware that supports disabling hsync/vsync:
- *	blank_mode == 2: suspend vsync
- *	blank_mode == 3: suspend hsync
- *	blank_mode == 4: powerdown
  *
  *	Returns negative errno on error, or zero on success.
  *
@@ -594,15 +557,23 @@ static int s3c2410fb_setcolreg(unsigned regno,
 static int s3c2410fb_blank(int blank_mode, struct fb_info *info)
 {
 	struct s3c2410fb_info *fbi = info->par;
-	void __iomem *regs = fbi->io;
+	void __iomem *tpal_reg = fbi->io;
 
 	dprintk("blank(mode=%d, info=%p)\n", blank_mode, info);
 
+	tpal_reg += is_s3c2412(fbi) ? S3C2412_TPAL : S3C2410_TPAL;
+
+	if (blank_mode == FB_BLANK_POWERDOWN) {
+		s3c2410fb_lcd_enable(fbi, 0);
+	} else {
+		s3c2410fb_lcd_enable(fbi, 1);
+	}
+
 	if (blank_mode == FB_BLANK_UNBLANK)
-		writel(0x0, regs + S3C2410_TPAL);
+		writel(0x0, tpal_reg);
 	else {
 		dprintk("setting TPAL to output 0x000000\n");
-		writel(S3C2410_TPAL_EN, regs + S3C2410_TPAL);
+		writel(S3C2410_TPAL_EN, tpal_reg);
 	}
 
 	return 0;
@@ -663,7 +634,7 @@ static int __init s3c2410fb_map_video_memory(struct fb_info *info)
 	dma_addr_t map_dma;
 	unsigned map_size = PAGE_ALIGN(info->fix.smem_len);
 
-	dprintk("map_video_memory(fbi=%p)\n", fbi);
+	dprintk("map_video_memory(fbi=%p) map_size %u\n", fbi, map_size);
 
 	info->screen_base = dma_alloc_writecombine(fbi->dev, map_size,
 						   &map_dma, GFP_KERNEL);
@@ -672,7 +643,7 @@ static int __init s3c2410fb_map_video_memory(struct fb_info *info)
 		/* prevent initial garbage on screen */
 		dprintk("map_video_memory: clear %p:%08x\n",
 			info->screen_base, map_size);
-		memset(info->screen_base, 0xf0, map_size);
+		memset(info->screen_base, 0x00, map_size);
 
 		info->fix.smem_start = map_dma;
 
@@ -709,6 +680,16 @@ static int s3c2410fb_init_registers(struct fb_info *info)
 	struct s3c2410fb_mach_info *mach_info = fbi->dev->platform_data;
 	unsigned long flags;
 	void __iomem *regs = fbi->io;
+	void __iomem *tpal;
+	void __iomem *lpcsel;
+
+	if (is_s3c2412(fbi)) {
+		tpal = regs + S3C2412_TPAL;
+		lpcsel = regs + S3C2412_TCONSEL;
+	} else {
+		tpal = regs + S3C2410_TPAL;
+		lpcsel = regs + S3C2410_LPCSEL;
+	}
 
 	/* Initialise LCD with values from haret */
 
@@ -724,12 +705,12 @@ static int s3c2410fb_init_registers(struct fb_info *info)
 	local_irq_restore(flags);
 
 	dprintk("LPCSEL    = 0x%08lx\n", mach_info->lpcsel);
-	writel(mach_info->lpcsel, regs + S3C2410_LPCSEL);
+	writel(mach_info->lpcsel, lpcsel);
 
-	dprintk("replacing TPAL %08x\n", readl(regs + S3C2410_TPAL));
+	dprintk("replacing TPAL %08x\n", readl(tpal));
 
 	/* ensure temporary palette disabled */
-	writel(0x00, regs + S3C2410_TPAL);
+	writel(0x00, tpal);
 
 	return 0;
 }
@@ -763,15 +744,15 @@ static void s3c2410fb_write_palette(struct s3c2410fb_info *fbi)
 static irqreturn_t s3c2410fb_irq(int irq, void *dev_id)
 {
 	struct s3c2410fb_info *fbi = dev_id;
-	void __iomem *regs = fbi->io;
-	unsigned long lcdirq = readl(regs + S3C2410_LCDINTPND);
+	void __iomem *irq_base = fbi->irq_base;
+	unsigned long lcdirq = readl(irq_base + S3C24XX_LCDINTPND);
 
 	if (lcdirq & S3C2410_LCDINT_FRSYNC) {
 		if (fbi->palette_ready)
 			s3c2410fb_write_palette(fbi);
 
-		writel(S3C2410_LCDINT_FRSYNC, regs + S3C2410_LCDINTPND);
-		writel(S3C2410_LCDINT_FRSYNC, regs + S3C2410_LCDSRCPND);
+		writel(S3C2410_LCDINT_FRSYNC, irq_base + S3C24XX_LCDINTPND);
+		writel(S3C2410_LCDINT_FRSYNC, irq_base + S3C24XX_LCDSRCPND);
 	}
 
 	return IRQ_HANDLED;
@@ -779,7 +760,8 @@ static irqreturn_t s3c2410fb_irq(int irq, void *dev_id)
 
 static char driver_name[] = "s3c2410fb";
 
-static int __init s3c2410fb_probe(struct platform_device *pdev)
+static int __init s3c24xxfb_probe(struct platform_device *pdev,
+				  enum s3c_drv_type drv_type)
 {
 	struct s3c2410fb_info *info;
 	struct s3c2410fb_display *display;
@@ -799,6 +781,12 @@ static int __init s3c2410fb_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	if (mach_info->default_display >= mach_info->num_displays) {
+		dev_err(&pdev->dev, "default is %d but only %d displays\n",
+			mach_info->default_display, mach_info->num_displays);
+		return -EINVAL;
+	}
+
 	display = mach_info->displays + mach_info->default_display;
 
 	irq = platform_get_irq(pdev, 0);
@@ -815,6 +803,7 @@ static int __init s3c2410fb_probe(struct platform_device *pdev)
 
 	info = fbinfo->par;
 	info->dev = &pdev->dev;
+	info->drv_type = drv_type;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (res == NULL) {
@@ -837,6 +826,8 @@ static int __init s3c2410fb_probe(struct platform_device *pdev)
 		ret = -ENXIO;
 		goto release_mem;
 	}
+
+	info->irq_base = info->io + ((drv_type == DRV_S3C2412) ? S3C2412_LCDINTBASE : S3C2410_LCDINTBASE);
 
 	dprintk("devinit\n");
 
@@ -921,7 +912,10 @@ static int __init s3c2410fb_probe(struct platform_device *pdev)
 	}
 
 	/* create device files */
-	device_create_file(&pdev->dev, &dev_attr_debug);
+	ret = device_create_file(&pdev->dev, &dev_attr_debug);
+	if (ret) {
+		printk(KERN_ERR "failed to add debug attribute\n");
+	}
 
 	printk(KERN_INFO "fb%d: %s frame buffer device\n",
 		fbinfo->node, fbinfo->fix.id);
@@ -946,21 +940,16 @@ dealloc_fb:
 	return ret;
 }
 
-/* s3c2410fb_stop_lcd
- *
- * shutdown the lcd controller
- */
-static void s3c2410fb_stop_lcd(struct s3c2410fb_info *fbi)
+static int __init s3c2410fb_probe(struct platform_device *pdev)
 {
-	unsigned long flags;
-
-	local_irq_save(flags);
-
-	fbi->regs.lcdcon1 &= ~S3C2410_LCDCON1_ENVID;
-	writel(fbi->regs.lcdcon1, fbi->io + S3C2410_LCDCON1);
-
-	local_irq_restore(flags);
+	return s3c24xxfb_probe(pdev, DRV_S3C2410);
 }
+
+static int __init s3c2412fb_probe(struct platform_device *pdev)
+{
+	return s3c24xxfb_probe(pdev, DRV_S3C2412);
+}
+
 
 /*
  *  Cleanup
@@ -973,7 +962,7 @@ static int s3c2410fb_remove(struct platform_device *pdev)
 
 	unregister_framebuffer(fbinfo);
 
-	s3c2410fb_stop_lcd(info);
+	s3c2410fb_lcd_enable(info, 0);
 	msleep(1);
 
 	s3c2410fb_unmap_video_memory(fbinfo);
@@ -1006,7 +995,7 @@ static int s3c2410fb_suspend(struct platform_device *dev, pm_message_t state)
 	struct fb_info	   *fbinfo = platform_get_drvdata(dev);
 	struct s3c2410fb_info *info = fbinfo->par;
 
-	s3c2410fb_stop_lcd(info);
+	s3c2410fb_lcd_enable(info, 0);
 
 	/* sleep before disabling the clock, we need to ensure
 	 * the LCD DMA engine is not going to get back on the bus
@@ -1047,14 +1036,31 @@ static struct platform_driver s3c2410fb_driver = {
 	},
 };
 
+static struct platform_driver s3c2412fb_driver = {
+	.probe		= s3c2412fb_probe,
+	.remove		= s3c2410fb_remove,
+	.suspend	= s3c2410fb_suspend,
+	.resume		= s3c2410fb_resume,
+	.driver		= {
+		.name	= "s3c2412-lcd",
+		.owner	= THIS_MODULE,
+	},
+};
+
 int __init s3c2410fb_init(void)
 {
-	return platform_driver_register(&s3c2410fb_driver);
+	int ret = platform_driver_register(&s3c2410fb_driver);
+
+	if (ret == 0)
+		ret = platform_driver_register(&s3c2412fb_driver);;
+
+	return ret;
 }
 
 static void __exit s3c2410fb_cleanup(void)
 {
 	platform_driver_unregister(&s3c2410fb_driver);
+	platform_driver_unregister(&s3c2412fb_driver);
 }
 
 module_init(s3c2410fb_init);
@@ -1064,3 +1070,5 @@ MODULE_AUTHOR("Arnaud Patard <arnaud.patard@rtp-net.org>, "
 	      "Ben Dooks <ben-linux@fluff.org>");
 MODULE_DESCRIPTION("Framebuffer driver for the s3c2410");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:s3c2410-lcd");
+MODULE_ALIAS("platform:s3c2412-lcd");

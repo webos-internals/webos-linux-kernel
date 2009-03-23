@@ -20,15 +20,14 @@ extern int number_of_cpusets;	/* How many cpusets are defined in system? */
 extern int cpuset_init_early(void);
 extern int cpuset_init(void);
 extern void cpuset_init_smp(void);
-extern cpumask_t cpuset_cpus_allowed(struct task_struct *p);
-extern cpumask_t cpuset_cpus_allowed_locked(struct task_struct *p);
+extern void cpuset_cpus_allowed(struct task_struct *p, struct cpumask *mask);
+extern void cpuset_cpus_allowed_locked(struct task_struct *p,
+				       struct cpumask *mask);
 extern nodemask_t cpuset_mems_allowed(struct task_struct *p);
 #define cpuset_current_mems_allowed (current->mems_allowed)
 void cpuset_init_current_mems_allowed(void);
 void cpuset_update_task_memory_state(void);
-#define cpuset_nodes_subset_current_mems_allowed(nodes) \
-		nodes_subset((nodes), current->mems_allowed)
-int cpuset_zonelist_valid_mems_allowed(struct zonelist *zl);
+int cpuset_nodemask_valid_mems_allowed(nodemask_t *nodemask);
 
 extern int __cpuset_zone_allowed_softwall(struct zone *z, gfp_t gfp_mask);
 extern int __cpuset_zone_allowed_hardwall(struct zone *z, gfp_t gfp_mask);
@@ -57,7 +56,9 @@ extern int cpuset_memory_pressure_enabled;
 extern void __cpuset_memory_pressure_bump(void);
 
 extern const struct file_operations proc_cpuset_operations;
-extern char *cpuset_task_status_allowed(struct task_struct *task, char *buffer);
+struct seq_file;
+extern void cpuset_task_status_allowed(struct seq_file *m,
+					struct task_struct *task);
 
 extern void cpuset_lock(void);
 extern void cpuset_unlock(void);
@@ -74,9 +75,11 @@ static inline int cpuset_do_slab_mem_spread(void)
 	return current->flags & PF_SPREAD_SLAB;
 }
 
-extern void cpuset_track_online_nodes(void);
-
 extern int current_cpuset_is_being_rebound(void);
+
+extern void rebuild_sched_domains(void);
+
+extern void cpuset_print_task_mems_allowed(struct task_struct *p);
 
 #else /* !CONFIG_CPUSETS */
 
@@ -84,13 +87,15 @@ static inline int cpuset_init_early(void) { return 0; }
 static inline int cpuset_init(void) { return 0; }
 static inline void cpuset_init_smp(void) {}
 
-static inline cpumask_t cpuset_cpus_allowed(struct task_struct *p)
+static inline void cpuset_cpus_allowed(struct task_struct *p,
+				       struct cpumask *mask)
 {
-	return cpu_possible_map;
+	*mask = cpu_possible_map;
 }
-static inline cpumask_t cpuset_cpus_allowed_locked(struct task_struct *p)
+static inline void cpuset_cpus_allowed_locked(struct task_struct *p,
+					      struct cpumask *mask)
 {
-	return cpu_possible_map;
+	*mask = cpu_possible_map;
 }
 
 static inline nodemask_t cpuset_mems_allowed(struct task_struct *p)
@@ -101,9 +106,8 @@ static inline nodemask_t cpuset_mems_allowed(struct task_struct *p)
 #define cpuset_current_mems_allowed (node_states[N_HIGH_MEMORY])
 static inline void cpuset_init_current_mems_allowed(void) {}
 static inline void cpuset_update_task_memory_state(void) {}
-#define cpuset_nodes_subset_current_mems_allowed(nodes) (1)
 
-static inline int cpuset_zonelist_valid_mems_allowed(struct zonelist *zl)
+static inline int cpuset_nodemask_valid_mems_allowed(nodemask_t *nodemask)
 {
 	return 1;
 }
@@ -126,10 +130,9 @@ static inline int cpuset_mems_allowed_intersects(const struct task_struct *tsk1,
 
 static inline void cpuset_memory_pressure_bump(void) {}
 
-static inline char *cpuset_task_status_allowed(struct task_struct *task,
-							char *buffer)
+static inline void cpuset_task_status_allowed(struct seq_file *m,
+						struct task_struct *task)
 {
-	return buffer;
 }
 
 static inline void cpuset_lock(void) {}
@@ -150,11 +153,18 @@ static inline int cpuset_do_slab_mem_spread(void)
 	return 0;
 }
 
-static inline void cpuset_track_online_nodes(void) {}
-
 static inline int current_cpuset_is_being_rebound(void)
 {
 	return 0;
+}
+
+static inline void rebuild_sched_domains(void)
+{
+	partition_sched_domains(1, NULL, NULL);
+}
+
+static inline void cpuset_print_task_mems_allowed(struct task_struct *p)
+{
 }
 
 #endif /* !CONFIG_CPUSETS */

@@ -155,9 +155,6 @@ static int generic_probe(struct usb_device *udev)
 {
 	int err, c;
 
-	/* put device-specific files into sysfs */
-	usb_create_sysfs_dev_files(udev);
-
 	/* Choose and set the configuration.  This registers the interfaces
 	 * with the driver core and lets interface drivers bind to them.
 	 */
@@ -189,8 +186,6 @@ static void generic_disconnect(struct usb_device *udev)
 	 * unconfigure the device */
 	if (udev->actconfig)
 		usb_set_configuration(udev, -1);
-
-	usb_remove_sysfs_dev_files(udev);
 }
 
 #ifdef	CONFIG_PM
@@ -205,18 +200,18 @@ static int generic_suspend(struct usb_device *udev, pm_message_t msg)
 	 * interfaces manually by doing a bus (or "global") suspend.
 	 */
 	if (!udev->parent)
-		rc = hcd_bus_suspend(udev);
+		rc = hcd_bus_suspend(udev, msg);
 
 	/* Non-root devices don't need to do anything for FREEZE or PRETHAW */
 	else if (msg.event == PM_EVENT_FREEZE || msg.event == PM_EVENT_PRETHAW)
 		rc = 0;
 	else
-		rc = usb_port_suspend(udev);
+		rc = usb_port_suspend(udev, msg);
 
 	return rc;
 }
 
-static int generic_resume(struct usb_device *udev)
+static int generic_resume(struct usb_device *udev, pm_message_t msg)
 {
 	int rc;
 
@@ -226,9 +221,9 @@ static int generic_resume(struct usb_device *udev)
 	 * interfaces manually by doing a bus (or "global") resume.
 	 */
 	if (!udev->parent)
-		rc = hcd_bus_resume(udev);
+		rc = hcd_bus_resume(udev, msg);
 	else
-		rc = usb_port_resume(udev);
+		rc = usb_port_resume(udev, msg);
 	return rc;
 }
 

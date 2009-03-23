@@ -178,15 +178,15 @@ struct pci_ops bcm1480_pci_ops = {
 
 static struct resource bcm1480_mem_resource = {
 	.name	= "BCM1480 PCI MEM",
-	.start	= 0x30000000UL,
-	.end	= 0x3fffffffUL,
+	.start	= A_BCM1480_PHYS_PCI_MEM_MATCH_BYTES,
+	.end	= A_BCM1480_PHYS_PCI_MEM_MATCH_BYTES + 0xfffffffUL,
 	.flags	= IORESOURCE_MEM,
 };
 
 static struct resource bcm1480_io_resource = {
 	.name	= "BCM1480 PCI I/O",
-	.start	= 0x2c000000UL,
-	.end	= 0x2dffffffUL,
+	.start	= A_BCM1480_PHYS_PCI_IO_MATCH_BYTES,
+	.end	= A_BCM1480_PHYS_PCI_IO_MATCH_BYTES + 0x1ffffffUL,
 	.flags	= IORESOURCE_IO,
 };
 
@@ -194,6 +194,7 @@ struct pci_controller bcm1480_controller = {
 	.pci_ops	= &bcm1480_pci_ops,
 	.mem_resource	= &bcm1480_mem_resource,
 	.io_resource	= &bcm1480_io_resource,
+	.io_offset      = A_BCM1480_PHYS_PCI_IO_MATCH_BYTES,
 };
 
 
@@ -201,7 +202,6 @@ static int __init bcm1480_pcibios_init(void)
 {
 	uint32_t cmdreg;
 	uint64_t reg;
-	extern int pci_probe_only;
 
 	/* CFE will assign PCI resources */
 	pci_probe_only = 1;
@@ -249,10 +249,10 @@ static int __init bcm1480_pcibios_init(void)
 	 * XXX ehs: Should this happen in PCI Device mode?
 	 */
 
-	set_io_port_base((unsigned long)
-		ioremap(A_BCM1480_PHYS_PCI_IO_MATCH_BYTES, 65536));
-	isa_slot_offset = (unsigned long)
-		ioremap(A_BCM1480_PHYS_PCI_MEM_MATCH_BYTES, 1024*1024);
+	bcm1480_controller.io_map_base = (unsigned long)
+		ioremap(A_BCM1480_PHYS_PCI_IO_MATCH_BYTES, 65536);
+	bcm1480_controller.io_map_base -= bcm1480_controller.io_offset;
+	set_io_port_base(bcm1480_controller.io_map_base);
 
 	register_pci_controller(&bcm1480_controller);
 

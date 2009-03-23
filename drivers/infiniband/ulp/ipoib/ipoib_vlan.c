@@ -28,8 +28,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: ipoib_vlan.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/module.h>
@@ -63,6 +61,7 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 
 	ppriv = netdev_priv(pdev);
 
+	rtnl_lock();
 	mutex_lock(&ppriv->vlan_mutex);
 
 	/*
@@ -89,7 +88,15 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 		goto err;
 	}
 
+	priv->max_ib_mtu = ppriv->max_ib_mtu;
+	/* MTU will be reset when mcast join happens */
+	priv->dev->mtu   = IPOIB_UD_MTU(priv->max_ib_mtu);
+	priv->mcast_mtu  = priv->admin_mtu = priv->dev->mtu;
 	set_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags);
+
+	result = ipoib_set_dev_features(priv, ppriv->ca);
+	if (result)
+		goto device_init_failed;
 
 	priv->pkey = pkey;
 
@@ -105,7 +112,7 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 		goto device_init_failed;
 	}
 
-	result = register_netdev(priv->dev);
+	result = register_netdevice(priv->dev);
 	if (result) {
 		ipoib_warn(priv, "failed to initialize; error %i", result);
 		goto register_failed;
@@ -128,12 +135,13 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 	list_add_tail(&priv->list, &ppriv->child_intfs);
 
 	mutex_unlock(&ppriv->vlan_mutex);
+	rtnl_unlock();
 
 	return 0;
 
 sysfs_failed:
 	ipoib_delete_debug_files(priv->dev);
-	unregister_netdev(priv->dev);
+	unregister_netdevice(priv->dev);
 
 register_failed:
 	ipoib_dev_cleanup(priv->dev);
@@ -143,6 +151,7 @@ device_init_failed:
 
 err:
 	mutex_unlock(&ppriv->vlan_mutex);
+	rtnl_unlock();
 	return result;
 }
 
@@ -156,10 +165,11 @@ int ipoib_vlan_delete(struct net_device *pdev, unsigned short pkey)
 
 	ppriv = netdev_priv(pdev);
 
+	rtnl_lock();
 	mutex_lock(&ppriv->vlan_mutex);
 	list_for_each_entry_safe(priv, tpriv, &ppriv->child_intfs, list) {
 		if (priv->pkey == pkey) {
-			unregister_netdev(priv->dev);
+			unregister_netdevice(priv->dev);
 			ipoib_dev_cleanup(priv->dev);
 			list_del(&priv->list);
 			free_netdev(priv->dev);
@@ -169,6 +179,7 @@ int ipoib_vlan_delete(struct net_device *pdev, unsigned short pkey)
 		}
 	}
 	mutex_unlock(&ppriv->vlan_mutex);
+	rtnl_unlock();
 
 	return ret;
 }

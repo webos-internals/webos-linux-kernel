@@ -30,7 +30,6 @@
  *  to keep track of what period we are in.
  */
 
-#include <sound/driver.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/moduleparam.h>
@@ -93,8 +92,8 @@
 
 #if DEBUG_CALLS
 #define snd_als300_dbgcalls(format, args...) printk(format, ##args)
-#define snd_als300_dbgcallenter() printk(KERN_ERR "--> %s\n", __FUNCTION__)
-#define snd_als300_dbgcallleave() printk(KERN_ERR "<-- %s\n", __FUNCTION__)
+#define snd_als300_dbgcallenter() printk(KERN_ERR "--> %s\n", __func__)
+#define snd_als300_dbgcallleave() printk(KERN_ERR "<-- %s\n", __func__)
 #else
 #define snd_als300_dbgcalls(format, args...)
 #define snd_als300_dbgcallenter()

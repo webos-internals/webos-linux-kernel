@@ -1,6 +1,6 @@
 /* ----------------------------------------------------------------------- *
- *   
- *   Copyright 2000 H. Peter Anvin - All Rights Reserved
+ *
+ *   Copyright 2000-2008 H. Peter Anvin - All Rights Reserved
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -17,6 +17,10 @@
  * and then read in chunks of 16 bytes.  A larger size means multiple
  * reads of consecutive levels.
  *
+ * The lower 32 bits of the file position is used as the incoming %eax,
+ * and the upper 32 bits of the file position as the incoming %ecx,
+ * the latter intended for "counting" eax levels like eax=4.
+ *
  * This driver uses /dev/cpu/%d/cpuid where %d is the minor number, and on
  * an SMP box will direct the access to CPU %d.
  */
@@ -29,49 +33,38 @@
 #include <linux/init.h>
 #include <linux/poll.h>
 #include <linux/smp.h>
+#include <linux/smp_lock.h>
 #include <linux/major.h>
 #include <linux/fs.h>
-#include <linux/smp_lock.h>
 #include <linux/device.h>
 #include <linux/cpu.h>
 #include <linux/notifier.h>
+#include <linux/uaccess.h>
 
 #include <asm/processor.h>
 #include <asm/msr.h>
-#include <asm/uaccess.h>
 #include <asm/system.h>
 
 static struct class *cpuid_class;
 
-struct cpuid_command {
-	u32 reg;
-	u32 *data;
+struct cpuid_regs {
+	u32 eax, ebx, ecx, edx;
 };
 
 static void cpuid_smp_cpuid(void *cmd_block)
 {
-	struct cpuid_command *cmd = (struct cpuid_command *)cmd_block;
+	struct cpuid_regs *cmd = (struct cpuid_regs *)cmd_block;
 
-	cpuid(cmd->reg, &cmd->data[0], &cmd->data[1], &cmd->data[2],
-		      &cmd->data[3]);
-}
-
-static inline void do_cpuid(int cpu, u32 reg, u32 * data)
-{
-	struct cpuid_command cmd;
-
-	cmd.reg = reg;
-	cmd.data = data;
-
-	smp_call_function_single(cpu, cpuid_smp_cpuid, &cmd, 1, 1);
+	cpuid_count(cmd->eax, cmd->ecx,
+		    &cmd->eax, &cmd->ebx, &cmd->ecx, &cmd->edx);
 }
 
 static loff_t cpuid_seek(struct file *file, loff_t offset, int orig)
 {
 	loff_t ret;
+	struct inode *inode = file->f_mapping->host;
 
-	lock_kernel();
-
+	mutex_lock(&inode->i_mutex);
 	switch (orig) {
 	case 0:
 		file->f_pos = offset;
@@ -84,44 +77,60 @@ static loff_t cpuid_seek(struct file *file, loff_t offset, int orig)
 	default:
 		ret = -EINVAL;
 	}
-
-	unlock_kernel();
+	mutex_unlock(&inode->i_mutex);
 	return ret;
 }
 
 static ssize_t cpuid_read(struct file *file, char __user *buf,
-			  size_t count, loff_t * ppos)
+			  size_t count, loff_t *ppos)
 {
 	char __user *tmp = buf;
-	u32 data[4];
-	u32 reg = *ppos;
+	struct cpuid_regs cmd;
 	int cpu = iminor(file->f_path.dentry->d_inode);
+	u64 pos = *ppos;
+	ssize_t bytes = 0;
+	int err = 0;
 
 	if (count % 16)
 		return -EINVAL;	/* Invalid chunk size */
 
 	for (; count; count -= 16) {
-		do_cpuid(cpu, reg, data);
-		if (copy_to_user(tmp, &data, 16))
-			return -EFAULT;
+		cmd.eax = pos;
+		cmd.ecx = pos >> 32;
+		err = smp_call_function_single(cpu, cpuid_smp_cpuid, &cmd, 1);
+		if (err)
+			break;
+		if (copy_to_user(tmp, &cmd, 16)) {
+			err = -EFAULT;
+			break;
+		}
 		tmp += 16;
-		*ppos = reg++;
+		bytes += 16;
+		*ppos = ++pos;
 	}
 
-	return tmp - buf;
+	return bytes ? bytes : err;
 }
 
 static int cpuid_open(struct inode *inode, struct file *file)
 {
-	unsigned int cpu = iminor(file->f_path.dentry->d_inode);
-	struct cpuinfo_x86 *c = &cpu_data(cpu);
+	unsigned int cpu;
+	struct cpuinfo_x86 *c;
+	int ret = 0;
 
-	if (cpu >= NR_CPUS || !cpu_online(cpu))
-		return -ENXIO;	/* No such CPU */
+	lock_kernel();
+
+	cpu = iminor(file->f_path.dentry->d_inode);
+	if (cpu >= nr_cpu_ids || !cpu_online(cpu)) {
+		ret = -ENXIO;	/* No such CPU */
+		goto out;
+	}
+	c = &cpu_data(cpu);
 	if (c->cpuid_level < 0)
-		return -EIO;	/* CPUID not supported */
-
-	return 0;
+		ret = -EIO;	/* CPUID not supported */
+out:
+	unlock_kernel();
+	return ret;
 }
 
 /*
@@ -138,7 +147,7 @@ static __cpuinit int cpuid_device_create(int cpu)
 {
 	struct device *dev;
 
-	dev = device_create(cpuid_class, NULL, MKDEV(CPUID_MAJOR, cpu),
+	dev = device_create(cpuid_class, NULL, MKDEV(CPUID_MAJOR, cpu), NULL,
 			    "cpu%d", cpu);
 	return IS_ERR(dev) ? PTR_ERR(dev) : 0;
 }
@@ -157,20 +166,18 @@ static int __cpuinit cpuid_class_cpu_callback(struct notifier_block *nfb,
 
 	switch (action) {
 	case CPU_UP_PREPARE:
-	case CPU_UP_PREPARE_FROZEN:
 		err = cpuid_device_create(cpu);
 		break;
 	case CPU_UP_CANCELED:
 	case CPU_UP_CANCELED_FROZEN:
 	case CPU_DEAD:
-	case CPU_DEAD_FROZEN:
 		cpuid_device_destroy(cpu);
 		break;
 	}
 	return err ? NOTIFY_BAD : NOTIFY_OK;
 }
 
-static struct notifier_block __cpuinitdata cpuid_class_cpu_notifier =
+static struct notifier_block __refdata cpuid_class_cpu_notifier =
 {
 	.notifier_call = cpuid_class_cpu_callback,
 };
@@ -193,7 +200,7 @@ static int __init cpuid_init(void)
 	}
 	for_each_online_cpu(i) {
 		err = cpuid_device_create(i);
-		if (err != 0) 
+		if (err != 0)
 			goto out_class;
 	}
 	register_hotcpu_notifier(&cpuid_class_cpu_notifier);
@@ -208,7 +215,7 @@ out_class:
 	}
 	class_destroy(cpuid_class);
 out_chrdev:
-	unregister_chrdev(CPUID_MAJOR, "cpu/cpuid");	
+	unregister_chrdev(CPUID_MAJOR, "cpu/cpuid");
 out:
 	return err;
 }

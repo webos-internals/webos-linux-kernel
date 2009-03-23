@@ -33,7 +33,7 @@
 #include <linux/workqueue.h>
 
 /* user_lock_res->l_flags flags. */
-#define USER_LOCK_ATTACHED      (0x00000001) /* have we initialized
+#define USER_LOCK_ATTACHED      (0x00000001) /* we have initialized
 					       * the lvb */
 #define USER_LOCK_BUSY          (0x00000002) /* we are currently in
 					       * dlm_lock */
@@ -83,7 +83,8 @@ void user_dlm_write_lvb(struct inode *inode,
 void user_dlm_read_lvb(struct inode *inode,
 		       char *val,
 		       unsigned int len);
-struct dlm_ctxt *user_dlm_register_context(struct qstr *name);
+struct dlm_ctxt *user_dlm_register_context(struct qstr *name,
+					   struct dlm_protocol_version *proto);
 void user_dlm_unregister_context(struct dlm_ctxt *dlm);
 
 struct dlmfs_inode_private {

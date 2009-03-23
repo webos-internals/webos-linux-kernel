@@ -85,7 +85,6 @@ xfs_trans_iget(
 {
 	int			error;
 	xfs_inode_t		*ip;
-	xfs_inode_log_item_t	*iip;
 
 	/*
 	 * If the transaction pointer is NULL, just call the normal
@@ -111,13 +110,13 @@ xfs_trans_iget(
 		 */
 		ASSERT(ip->i_itemp != NULL);
 		ASSERT(lock_flags & XFS_ILOCK_EXCL);
-		ASSERT(ismrlocked(&ip->i_lock, MR_UPDATE));
+		ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 		ASSERT((!(lock_flags & XFS_IOLOCK_EXCL)) ||
-		       ismrlocked(&ip->i_iolock, MR_UPDATE));
+		       xfs_isilocked(ip, XFS_IOLOCK_EXCL));
 		ASSERT((!(lock_flags & XFS_IOLOCK_EXCL)) ||
 		       (ip->i_itemp->ili_flags & XFS_ILI_IOLOCKED_EXCL));
 		ASSERT((!(lock_flags & XFS_IOLOCK_SHARED)) ||
-		       ismrlocked(&ip->i_iolock, (MR_UPDATE | MR_ACCESS)));
+		       xfs_isilocked(ip, XFS_IOLOCK_EXCL|XFS_IOLOCK_SHARED));
 		ASSERT((!(lock_flags & XFS_IOLOCK_SHARED)) ||
 		       (ip->i_itemp->ili_flags & XFS_ILI_IOLOCKED_ANY));
 
@@ -138,34 +137,7 @@ xfs_trans_iget(
 	}
 	ASSERT(ip != NULL);
 
-	/*
-	 * Get a log_item_desc to point at the new item.
-	 */
-	if (ip->i_itemp == NULL)
-		xfs_inode_item_init(ip, mp);
-	iip = ip->i_itemp;
-	(void) xfs_trans_add_item(tp, (xfs_log_item_t *)(iip));
-
-	xfs_trans_inode_broot_debug(ip);
-
-	/*
-	 * If the IO lock has been acquired, mark that in
-	 * the inode log item so we'll know to unlock it
-	 * when the transaction commits.
-	 */
-	ASSERT(iip->ili_flags == 0);
-	if (lock_flags & XFS_IOLOCK_EXCL) {
-		iip->ili_flags |= XFS_ILI_IOLOCKED_EXCL;
-	} else if (lock_flags & XFS_IOLOCK_SHARED) {
-		iip->ili_flags |= XFS_ILI_IOLOCKED_SHARED;
-	}
-
-	/*
-	 * Initialize i_transp so we can find it with xfs_inode_incore()
-	 * above.
-	 */
-	ip->i_transp = tp;
-
+	xfs_trans_ijoin(tp, ip, lock_flags);
 	*ipp = ip;
 	return 0;
 }
@@ -185,7 +157,7 @@ xfs_trans_ijoin(
 	xfs_inode_log_item_t	*iip;
 
 	ASSERT(ip->i_transp == NULL);
-	ASSERT(ismrlocked(&ip->i_lock, MR_UPDATE));
+	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 	ASSERT(lock_flags & XFS_ILOCK_EXCL);
 	if (ip->i_itemp == NULL)
 		xfs_inode_item_init(ip, ip->i_mount);
@@ -232,7 +204,7 @@ xfs_trans_ihold(
 {
 	ASSERT(ip->i_transp == tp);
 	ASSERT(ip->i_itemp != NULL);
-	ASSERT(ismrlocked(&ip->i_lock, MR_UPDATE));
+	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 
 	ip->i_itemp->ili_flags |= XFS_ILI_HOLD;
 }
@@ -257,7 +229,7 @@ xfs_trans_log_inode(
 
 	ASSERT(ip->i_transp == tp);
 	ASSERT(ip->i_itemp != NULL);
-	ASSERT(ismrlocked(&ip->i_lock, MR_UPDATE));
+	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 
 	lidp = xfs_trans_find_item(tp, (xfs_log_item_t*)(ip->i_itemp));
 	ASSERT(lidp != NULL);
@@ -291,7 +263,7 @@ xfs_trans_inode_broot_debug(
 	iip = ip->i_itemp;
 	if (iip->ili_root_size != 0) {
 		ASSERT(iip->ili_orig_root != NULL);
-		kmem_free(iip->ili_orig_root, iip->ili_root_size);
+		kmem_free(iip->ili_orig_root);
 		iip->ili_root_size = 0;
 		iip->ili_orig_root = NULL;
 	}

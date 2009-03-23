@@ -72,6 +72,8 @@ static const struct hc_driver ps3_ehci_hc_driver = {
 	.bus_suspend		= ehci_bus_suspend,
 	.bus_resume		= ehci_bus_resume,
 #endif
+	.relinquish_port	= ehci_relinquish_port,
+	.port_handed_over	= ehci_port_handed_over,
 };
 
 static int ps3_ehci_probe(struct ps3_system_bus_device *dev)
@@ -124,10 +126,9 @@ static int ps3_ehci_probe(struct ps3_system_bus_device *dev)
 		goto fail_irq;
 	}
 
-	dev->core.power.power_state = PMSG_ON;
 	dev->core.dma_mask = &dummy_mask; /* FIXME: for improper usb code */
 
-	hcd = usb_create_hcd(&ps3_ehci_hc_driver, &dev->core, dev->core.bus_id);
+	hcd = usb_create_hcd(&ps3_ehci_hc_driver, &dev->core, dev_name(&dev->core));
 
 	if (!hcd) {
 		dev_dbg(&dev->core, "%s:%d: usb_create_hcd failed\n", __func__,
@@ -204,6 +205,7 @@ static int ps3_ehci_remove(struct ps3_system_bus_device *dev)
 
 	tmp = hcd->irq;
 
+	ehci_shutdown(hcd);
 	usb_remove_hcd(hcd);
 
 	ps3_system_bus_set_driver_data(dev, NULL);

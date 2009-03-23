@@ -1,7 +1,7 @@
 /*
- * ATSTK1002 daughterboard-specific init code
+ * ATSTK1002/ATSTK1006 daughterboard-specific init code
  *
- * Copyright (C) 2005-2006 Atmel Corporation
+ * Copyright (C) 2005-2007 Atmel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -11,24 +11,99 @@
 #include <linux/etherdevice.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/leds.h>
 #include <linux/platform_device.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/at73c213.h>
+#include <linux/atmel-mci.h>
 
 #include <video/atmel_lcdc.h>
 
 #include <asm/io.h>
 #include <asm/setup.h>
-#include <asm/arch/at32ap7000.h>
-#include <asm/arch/board.h>
-#include <asm/arch/init.h>
-#include <asm/arch/portmux.h>
+
+#include <mach/at32ap700x.h>
+#include <mach/board.h>
+#include <mach/init.h>
+#include <mach/portmux.h>
 
 #include "atstk1000.h"
 
+/* Oscillator frequencies. These are board specific */
+unsigned long at32_board_osc_rates[3] = {
+	[0] = 32768,	/* 32.768 kHz on RTC osc */
+	[1] = 20000000,	/* 20 MHz on osc0 */
+	[2] = 12000000,	/* 12 MHz on osc1 */
+};
+
+/*
+ * The ATSTK1006 daughterboard is very similar to the ATSTK1002. Both
+ * have the AT32AP7000 chip on board; the difference is that the
+ * STK1006 has 128 MB SDRAM (the STK1002 uses the 8 MB SDRAM chip on
+ * the STK1000 motherboard) and 256 MB NAND flash (the STK1002 has
+ * none.)
+ *
+ * The RAM difference is handled by the boot loader, so the only
+ * difference we end up handling here is the NAND flash.
+ */
+#ifdef CONFIG_BOARD_ATSTK1006
+#include <linux/mtd/partitions.h>
+#include <mach/smc.h>
+
+static struct smc_timing nand_timing __initdata = {
+	.ncs_read_setup		= 0,
+	.nrd_setup		= 10,
+	.ncs_write_setup	= 0,
+	.nwe_setup		= 10,
+
+	.ncs_read_pulse		= 30,
+	.nrd_pulse		= 15,
+	.ncs_write_pulse	= 30,
+	.nwe_pulse		= 15,
+
+	.read_cycle		= 30,
+	.write_cycle		= 30,
+
+	.ncs_read_recover	= 0,
+	.nrd_recover		= 15,
+	.ncs_write_recover	= 0,
+	/* WE# high -> RE# low min 60 ns */
+	.nwe_recover		= 50,
+};
+
+static struct smc_config nand_config __initdata = {
+	.bus_width		= 1,
+	.nrd_controlled		= 1,
+	.nwe_controlled		= 1,
+	.nwait_mode		= 0,
+	.byte_write		= 0,
+	.tdf_cycles		= 2,
+	.tdf_mode		= 0,
+};
+
+static struct mtd_partition nand_partitions[] = {
+	{
+		.name		= "main",
+		.offset		= 0x00000000,
+		.size		= MTDPART_SIZ_FULL,
+	},
+};
+
+static struct mtd_partition *nand_part_info(int size, int *num_partitions)
+{
+	*num_partitions = ARRAY_SIZE(nand_partitions);
+	return nand_partitions;
+}
+
+static struct atmel_nand_data atstk1006_nand_data __initdata = {
+	.cle		= 21,
+	.ale		= 22,
+	.rdy_pin	= GPIO_PIN_PB(30),
+	.enable_pin	= GPIO_PIN_PB(29),
+	.partition_info	= nand_part_info,
+};
+#endif
 
 struct eth_addr {
 	u8 addr[6];
@@ -49,18 +124,16 @@ static struct eth_platform_data __initdata eth_data[2] = {
 	},
 };
 
-#ifndef CONFIG_BOARD_ATSTK1002_SW1_CUSTOM
-#ifndef CONFIG_BOARD_ATSTK1002_SW3_CUSTOM
+#ifdef CONFIG_BOARD_ATSTK1000_EXTDAC
 static struct at73c213_board_info at73c213_data = {
 	.ssc_id		= 0,
 	.shortname	= "AVR32 STK1000 external DAC",
 };
 #endif
-#endif
 
-#ifndef CONFIG_BOARD_ATSTK1002_SW1_CUSTOM
+#ifndef CONFIG_BOARD_ATSTK100X_SW1_CUSTOM
 static struct spi_board_info spi0_board_info[] __initdata = {
-#ifndef CONFIG_BOARD_ATSTK1002_SW3_CUSTOM
+#ifdef CONFIG_BOARD_ATSTK1000_EXTDAC
 	{
 		/* AT73C213 */
 		.modalias	= "at73c213",
@@ -80,7 +153,7 @@ static struct spi_board_info spi0_board_info[] __initdata = {
 };
 #endif
 
-#ifdef CONFIG_BOARD_ATSTK1002_SPI1
+#ifdef CONFIG_BOARD_ATSTK100X_SPI1
 static struct spi_board_info spi1_board_info[] __initdata = { {
 	/* patch in custom entries here */
 } };
@@ -141,68 +214,8 @@ static void __init set_hw_addr(struct platform_device *pdev)
 	clk_put(pclk);
 }
 
-#ifdef CONFIG_BOARD_ATSTK1002_J2_LED
-
-static struct gpio_led stk_j2_led[] = {
-#ifdef CONFIG_BOARD_ATSTK1002_J2_LED8
-#define LEDSTRING "J2 jumpered to LED8"
-	{ .name = "led0:amber", .gpio = GPIO_PIN_PB( 8), },
-	{ .name = "led1:amber", .gpio = GPIO_PIN_PB( 9), },
-	{ .name = "led2:amber", .gpio = GPIO_PIN_PB(10), },
-	{ .name = "led3:amber", .gpio = GPIO_PIN_PB(13), },
-	{ .name = "led4:amber", .gpio = GPIO_PIN_PB(14), },
-	{ .name = "led5:amber", .gpio = GPIO_PIN_PB(15), },
-	{ .name = "led6:amber", .gpio = GPIO_PIN_PB(16), },
-	{ .name = "led7:amber", .gpio = GPIO_PIN_PB(30),
-			.default_trigger = "heartbeat", },
-#else	/* RGB */
-#define LEDSTRING "J2 jumpered to RGB LEDs"
-	{ .name = "r1:red",     .gpio = GPIO_PIN_PB( 8), },
-	{ .name = "g1:green",   .gpio = GPIO_PIN_PB(10), },
-	{ .name = "b1:blue",    .gpio = GPIO_PIN_PB(14), },
-
-	{ .name = "r2:red",     .gpio = GPIO_PIN_PB( 9),
-			.default_trigger = "heartbeat", },
-	{ .name = "g2:green",   .gpio = GPIO_PIN_PB(13), },
-	{ .name = "b2:blue",    .gpio = GPIO_PIN_PB(15),
-			.default_trigger = "heartbeat", },
-	/* PB16, PB30 unused */
-#endif
-};
-
-static struct gpio_led_platform_data stk_j2_led_data = {
-	.num_leds	= ARRAY_SIZE(stk_j2_led),
-	.leds		= stk_j2_led,
-};
-
-static struct platform_device stk_j2_led_dev = {
-	.name		= "leds-gpio",
-	.id		= 2,	/* gpio block J2 */
-	.dev		= {
-		.platform_data	= &stk_j2_led_data,
-	},
-};
-
-static void setup_j2_leds(void)
-{
-	unsigned	i;
-
-	for (i = 0; i < ARRAY_SIZE(stk_j2_led); i++)
-		at32_select_gpio(stk_j2_led[i].gpio, AT32_GPIOF_OUTPUT);
-
-	printk("STK1002: " LEDSTRING "\n");
-	platform_device_register(&stk_j2_led_dev);
-}
-
-#else
-static void setup_j2_leds(void)
-{
-}
-#endif
-
-#ifndef CONFIG_BOARD_ATSTK1002_SW1_CUSTOM
-#ifndef CONFIG_BOARD_ATSTK1002_SW3_CUSTOM
-static void __init at73c213_set_clk(struct at73c213_board_info *info)
+#ifdef CONFIG_BOARD_ATSTK1000_EXTDAC
+static void __init atstk1002_setup_extdac(void)
 {
 	struct clk *gclk;
 	struct clk *pll;
@@ -219,8 +232,8 @@ static void __init at73c213_set_clk(struct at73c213_board_info *info)
 		goto err_set_clk;
 	}
 
-	at32_select_periph(GPIO_PIN_PA(30), GPIO_PERIPH_A, 0);
-	info->dac_clk = gclk;
+	at32_select_periph(GPIO_PIOA_BASE, (1 << 30), GPIO_PERIPH_A, 0);
+	at73c213_data.dac_clk = gclk;
 
 err_set_clk:
 	clk_put(pll);
@@ -229,12 +242,16 @@ err_pll:
 err_gclk:
 	return;
 }
-#endif
-#endif
+#else
+static void __init atstk1002_setup_extdac(void)
+{
+
+}
+#endif /* CONFIG_BOARD_ATSTK1000_EXTDAC */
 
 void __init setup_board(void)
 {
-#ifdef	CONFIG_BOARD_ATSTK1002_SW2_CUSTOM
+#ifdef	CONFIG_BOARD_ATSTK100X_SW2_CUSTOM
 	at32_map_usart(0, 1);	/* USART 0/B: /dev/ttyS1, IRDA */
 #else
 	at32_map_usart(1, 0);	/* USART 1/A: /dev/ttyS0, DB9 */
@@ -245,33 +262,40 @@ void __init setup_board(void)
 	at32_setup_serial_console(0);
 }
 
+#ifndef CONFIG_BOARD_ATSTK100X_SW2_CUSTOM
+
+static struct mci_platform_data __initdata mci0_data = {
+	.slot[0] = {
+		.bus_width	= 4,
+
+/* MMC card detect requires MACB0 *NOT* be used */
+#ifdef CONFIG_BOARD_ATSTK1002_SW6_CUSTOM
+		.detect_pin	= GPIO_PIN_PC(14), /* gpio30/sdcd */
+		.wp_pin		= GPIO_PIN_PC(15), /* gpio31/sdwp */
+#else
+		.detect_pin	= -ENODEV,
+		.wp_pin		= -ENODEV,
+#endif	/* SW6 for sd{cd,wp} routing */
+	},
+};
+
+#endif	/* SW2 for MMC signal routing */
+
 static int __init atstk1002_init(void)
 {
 	/*
 	 * ATSTK1000 uses 32-bit SDRAM interface. Reserve the
 	 * SDRAM-specific pins so that nobody messes with them.
 	 */
-	at32_reserve_pin(GPIO_PIN_PE(0));	/* DATA[16]	*/
-	at32_reserve_pin(GPIO_PIN_PE(1));	/* DATA[17]	*/
-	at32_reserve_pin(GPIO_PIN_PE(2));	/* DATA[18]	*/
-	at32_reserve_pin(GPIO_PIN_PE(3));	/* DATA[19]	*/
-	at32_reserve_pin(GPIO_PIN_PE(4));	/* DATA[20]	*/
-	at32_reserve_pin(GPIO_PIN_PE(5));	/* DATA[21]	*/
-	at32_reserve_pin(GPIO_PIN_PE(6));	/* DATA[22]	*/
-	at32_reserve_pin(GPIO_PIN_PE(7));	/* DATA[23]	*/
-	at32_reserve_pin(GPIO_PIN_PE(8));	/* DATA[24]	*/
-	at32_reserve_pin(GPIO_PIN_PE(9));	/* DATA[25]	*/
-	at32_reserve_pin(GPIO_PIN_PE(10));	/* DATA[26]	*/
-	at32_reserve_pin(GPIO_PIN_PE(11));	/* DATA[27]	*/
-	at32_reserve_pin(GPIO_PIN_PE(12));	/* DATA[28]	*/
-	at32_reserve_pin(GPIO_PIN_PE(13));	/* DATA[29]	*/
-	at32_reserve_pin(GPIO_PIN_PE(14));	/* DATA[30]	*/
-	at32_reserve_pin(GPIO_PIN_PE(15));	/* DATA[31]	*/
-	at32_reserve_pin(GPIO_PIN_PE(26));	/* SDCS		*/
+	at32_reserve_pin(GPIO_PIOE_BASE, ATMEL_EBI_PE_DATA_ALL);
 
-	at32_add_system_devices();
+#ifdef CONFIG_BOARD_ATSTK1006
+	smc_set_timing(&nand_config, &nand_timing);
+	smc_set_configuration(3, &nand_config);
+	at32_add_device_nand(0, &atstk1006_nand_data);
+#endif
 
-#ifdef	CONFIG_BOARD_ATSTK1002_SW2_CUSTOM
+#ifdef	CONFIG_BOARD_ATSTK100X_SW2_CUSTOM
 	at32_add_device_usart(1);
 #else
 	at32_add_device_usart(0);
@@ -281,30 +305,29 @@ static int __init atstk1002_init(void)
 #ifndef CONFIG_BOARD_ATSTK1002_SW6_CUSTOM
 	set_hw_addr(at32_add_device_eth(0, &eth_data[0]));
 #endif
-#ifndef CONFIG_BOARD_ATSTK1002_SW1_CUSTOM
+#ifndef CONFIG_BOARD_ATSTK100X_SW1_CUSTOM
 	at32_add_device_spi(0, spi0_board_info, ARRAY_SIZE(spi0_board_info));
 #endif
-#ifdef CONFIG_BOARD_ATSTK1002_SPI1
+#ifdef CONFIG_BOARD_ATSTK100X_SPI1
 	at32_add_device_spi(1, spi1_board_info, ARRAY_SIZE(spi1_board_info));
+#endif
+#ifndef CONFIG_BOARD_ATSTK100X_SW2_CUSTOM
+	at32_add_device_mci(0, &mci0_data);
 #endif
 #ifdef CONFIG_BOARD_ATSTK1002_SW5_CUSTOM
 	set_hw_addr(at32_add_device_eth(1, &eth_data[1]));
 #else
 	at32_add_device_lcdc(0, &atstk1000_lcdc_data,
-			     fbmem_start, fbmem_size);
+			     fbmem_start, fbmem_size,
+			     ATMEL_LCDC_PRI_24BIT | ATMEL_LCDC_PRI_CONTROL);
 #endif
 	at32_add_device_usba(0, NULL);
-#ifndef CONFIG_BOARD_ATSTK1002_SW3_CUSTOM
+#ifndef CONFIG_BOARD_ATSTK100X_SW3_CUSTOM
 	at32_add_device_ssc(0, ATMEL_SSC_TX);
 #endif
 
-	setup_j2_leds();
-
-#ifndef CONFIG_BOARD_ATSTK1002_SW3_CUSTOM
-#ifndef CONFIG_BOARD_ATSTK1002_SW1_CUSTOM
-	at73c213_set_clk(&at73c213_data);
-#endif
-#endif
+	atstk1000_setup_j2_leds();
+	atstk1002_setup_extdac();
 
 	return 0;
 }

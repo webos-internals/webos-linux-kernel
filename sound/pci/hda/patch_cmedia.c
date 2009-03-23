@@ -21,7 +21,6 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-#include <sound/driver.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
@@ -186,7 +185,6 @@ static struct snd_kcontrol_new cmi9880_basic_mixer[] = {
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		/* The multiple "Capture Source" controls confuse alsamixer
 		 * So call somewhat different..
-		 * FIXME: the controls appear in the "playback" view!
 		 */
 		/* .name = "Capture Source", */
 		.name = "Input Source",
@@ -331,6 +329,11 @@ static int cmi9880_build_controls(struct hda_codec *codec)
 		err = snd_hda_create_spdif_out_ctls(codec, spec->multiout.dig_out_nid);
 		if (err < 0)
 			return err;
+		err = snd_hda_create_spdif_share_sw(codec,
+						    &spec->multiout);
+		if (err < 0)
+			return err;
+		spec->multiout.share_spdif = 1;
 	}
 	if (spec->dig_in_nid) {
 		err = snd_hda_create_spdif_in_ctls(codec, spec->dig_in_nid);
@@ -434,7 +437,8 @@ static int cmi9880_playback_pcm_open(struct hda_pcm_stream *hinfo,
 				     struct snd_pcm_substream *substream)
 {
 	struct cmi_spec *spec = codec->spec;
-	return snd_hda_multi_out_analog_open(codec, &spec->multiout, substream);
+	return snd_hda_multi_out_analog_open(codec, &spec->multiout, substream,
+					     hinfo);
 }
 
 static int cmi9880_playback_pcm_prepare(struct hda_pcm_stream *hinfo,
@@ -508,7 +512,7 @@ static int cmi9880_capture_pcm_cleanup(struct hda_pcm_stream *hinfo,
 {
 	struct cmi_spec *spec = codec->spec;
 
-	snd_hda_codec_setup_stream(codec, spec->adc_nids[substream->number], 0, 0, 0);
+	snd_hda_codec_cleanup_stream(codec, spec->adc_nids[substream->number]);
 	return 0;
 }
 
@@ -573,6 +577,7 @@ static int cmi9880_build_pcms(struct hda_codec *codec)
 		codec->num_pcms++;
 		info++;
 		info->name = "CMI9880 Digital";
+		info->pcm_type = HDA_PCM_TYPE_SPDIF;
 		if (spec->multiout.dig_out_nid) {
 			info->stream[SNDRV_PCM_STREAM_PLAYBACK] = cmi9880_pcm_digital_playback;
 			info->stream[SNDRV_PCM_STREAM_PLAYBACK].nid = spec->multiout.dig_out_nid;
@@ -605,6 +610,8 @@ static const char *cmi9880_models[CMI_MODELS] = {
 
 static struct snd_pci_quirk cmi9880_cfg_tbl[] = {
 	SND_PCI_QUIRK(0x1043, 0x813d, "ASUS P5AD2", CMI_FULL_DIG),
+	SND_PCI_QUIRK(0x1854, 0x002b, "LG LS75", CMI_MINIMAL),
+	SND_PCI_QUIRK(0x1854, 0x0032, "LG", CMI_FULL_DIG),
 	{} /* terminator */
 };
 
@@ -728,8 +735,32 @@ static int patch_cmi9880(struct hda_codec *codec)
 /*
  * patch entries
  */
-struct hda_codec_preset snd_hda_preset_cmedia[] = {
+static struct hda_codec_preset snd_hda_preset_cmedia[] = {
 	{ .id = 0x13f69880, .name = "CMI9880", .patch = patch_cmi9880 },
  	{ .id = 0x434d4980, .name = "CMI9880", .patch = patch_cmi9880 },
 	{} /* terminator */
 };
+
+MODULE_ALIAS("snd-hda-codec-id:13f69880");
+MODULE_ALIAS("snd-hda-codec-id:434d4980");
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("C-Media HD-audio codec");
+
+static struct hda_codec_preset_list cmedia_list = {
+	.preset = snd_hda_preset_cmedia,
+	.owner = THIS_MODULE,
+};
+
+static int __init patch_cmedia_init(void)
+{
+	return snd_hda_add_codec_preset(&cmedia_list);
+}
+
+static void __exit patch_cmedia_exit(void)
+{
+	snd_hda_delete_codec_preset(&cmedia_list);
+}
+
+module_init(patch_cmedia_init)
+module_exit(patch_cmedia_exit)

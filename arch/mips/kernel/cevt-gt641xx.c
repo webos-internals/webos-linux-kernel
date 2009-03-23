@@ -25,8 +25,6 @@
 #include <asm/gt64120.h>
 #include <asm/time.h>
 
-#include <irq.h>
-
 static DEFINE_SPINLOCK(gt641xx_timer_lock);
 static unsigned int gt641xx_base_clock;
 
@@ -98,7 +96,6 @@ static void gt641xx_timer0_event_handler(struct clock_event_device *dev)
 static struct clock_event_device gt641xx_timer0_clockevent = {
 	.name		= "gt641xx-timer0",
 	.features	= CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
-	.cpumask	= CPU_MASK_CPU0,
 	.irq		= GT641XX_TIMER0_IRQ,
 	.set_next_event	= gt641xx_timer0_set_next_event,
 	.set_mode	= gt641xx_timer0_set_mode,
@@ -134,6 +131,7 @@ static int __init gt641xx_timer0_clockevent_init(void)
 	clockevent_set_clock(cd, gt641xx_base_clock);
 	cd->max_delta_ns = clockevent_delta2ns(0x7fffffff, cd);
 	cd->min_delta_ns = clockevent_delta2ns(0x300, cd);
+	cd->cpumask = cpumask_of(0);
 
 	clockevents_register_device(&gt641xx_timer0_clockevent);
 

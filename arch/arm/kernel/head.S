@@ -29,9 +29,6 @@
 #define KERNEL_RAM_VADDR	(PAGE_OFFSET + TEXT_OFFSET)
 #define KERNEL_RAM_PADDR	(PHYS_OFFSET + TEXT_OFFSET)
 
-#define ATAG_CORE 0x54410001
-#define ATAG_CORE_SIZE ((2*4 + 3*4) >> 2)
-
 
 /*
  * swapper_pg_dir is the virtual address of the initial page table.
@@ -78,7 +75,6 @@
  * circumstances, zImage) is for.
  */
 	.section ".text.head", "ax"
-	.type	stext, %function
 ENTRY(stext)
 	msr	cpsr_c, #PSR_F_BIT | PSR_I_BIT | SVC_MODE @ ensure svc mode
 						@ and irqs disabled
@@ -103,9 +99,9 @@ ENTRY(stext)
 						@ mmu has been enabled
 	adr	lr, __enable_mmu		@ return (PIC) address
 	add	pc, r10, #PROCINFO_INITFUNC
+ENDPROC(stext)
 
 #if defined(CONFIG_SMP)
-	.type   secondary_startup, #function
 ENTRY(secondary_startup)
 	/*
 	 * Common entry point for secondary CPUs.
@@ -131,6 +127,7 @@ ENTRY(secondary_startup)
 	adr	lr, __enable_mmu		@ return address
 	add	pc, r10, #PROCINFO_INITFUNC	@ initialise processor
 						@ (return control reg)
+ENDPROC(secondary_startup)
 
 	/*
 	 * r6  = &secondary_data
@@ -139,6 +136,7 @@ ENTRY(__secondary_switched)
 	ldr	sp, [r7, #4]			@ get secondary_data.stack
 	mov	fp, #0
 	b	secondary_start_kernel
+ENDPROC(__secondary_switched)
 
 	.type	__secondary_data, %object
 __secondary_data:
@@ -154,7 +152,6 @@ __secondary_data:
  * this is just loading the page table pointer and domain access
  * registers.
  */
-	.type	__enable_mmu, %function
 __enable_mmu:
 #ifdef CONFIG_ALIGNMENT_TRAP
 	orr	r0, r0, #CR_A
@@ -177,6 +174,7 @@ __enable_mmu:
 	mcr	p15, 0, r5, c3, c0, 0		@ load domain access register
 	mcr	p15, 0, r4, c2, c0, 0		@ load page table pointer
 	b	__turn_mmu_on
+ENDPROC(__enable_mmu)
 
 /*
  * Enable the MMU.  This completely changes the structure of the visible
@@ -190,7 +188,6 @@ __enable_mmu:
  * other registers depend on the function called upon completion
  */
 	.align	5
-	.type	__turn_mmu_on, %function
 __turn_mmu_on:
 	mov	r0, r0
 	mcr	p15, 0, r0, c1, c0, 0		@ write control reg
@@ -198,7 +195,7 @@ __turn_mmu_on:
 	mov	r3, r3
 	mov	r3, r3
 	mov	pc, r13
-
+ENDPROC(__turn_mmu_on)
 
 
 /*
@@ -214,7 +211,6 @@ __turn_mmu_on:
  *  r0, r3, r6, r7 corrupted
  *  r4 = physical page table address
  */
-	.type	__create_page_tables, %function
 __create_page_tables:
 	pgtbl	r4				@ page table address
 
@@ -328,6 +324,7 @@ __create_page_tables:
 #endif
 #endif
 	mov	pc, lr
+ENDPROC(__create_page_tables)
 	.ltorg
 
 #include "head-common.S"

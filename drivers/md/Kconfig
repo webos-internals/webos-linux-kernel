@@ -30,6 +30,20 @@ config BLK_DEV_MD
 
 	  If unsure, say N.
 
+config MD_AUTODETECT
+	bool "Autodetect RAID arrays during kernel boot"
+	depends on BLK_DEV_MD=y
+	default y
+	---help---
+	  If you say Y here, then the kernel will try to autodetect raid
+	  arrays as part of its boot process. 
+
+	  If you don't use raid and say Y, this autodetection can cause 
+	  a several-second delay in the boot time due to various
+	  synchronisation steps that are part of this step.
+
+	  If unsure, say Y.
+
 config MD_LINEAR
 	tristate "Linear (append) mode"
 	depends on BLK_DEV_MD
@@ -204,7 +218,7 @@ config BLK_DEV_DM
 
 config DM_DEBUG
 	boolean "Device mapper debugging support"
-	depends on BLK_DEV_DM && EXPERIMENTAL
+	depends on BLK_DEV_DM
 	---help---
 	  Enable this for messages that may help debug device-mapper problems.
 
@@ -212,7 +226,7 @@ config DM_DEBUG
 
 config DM_CRYPT
 	tristate "Crypt target support"
-	depends on BLK_DEV_DM && EXPERIMENTAL
+	depends on BLK_DEV_DM
 	select CRYPTO
 	select CRYPTO_CBC
 	---help---
@@ -230,48 +244,35 @@ config DM_CRYPT
 	  If unsure, say N.
 
 config DM_SNAPSHOT
-       tristate "Snapshot target (EXPERIMENTAL)"
-       depends on BLK_DEV_DM && EXPERIMENTAL
+       tristate "Snapshot target"
+       depends on BLK_DEV_DM
        ---help---
          Allow volume managers to take writable snapshots of a device.
 
 config DM_MIRROR
-       tristate "Mirror target (EXPERIMENTAL)"
-       depends on BLK_DEV_DM && EXPERIMENTAL
+       tristate "Mirror target"
+       depends on BLK_DEV_DM
        ---help---
          Allow volume managers to mirror logical volumes, also
          needed for live data migration tools such as 'pvmove'.
 
 config DM_ZERO
-	tristate "Zero target (EXPERIMENTAL)"
-	depends on BLK_DEV_DM && EXPERIMENTAL
+	tristate "Zero target"
+	depends on BLK_DEV_DM
 	---help---
 	  A target that discards writes, and returns all zeroes for
 	  reads.  Useful in some recovery situations.
 
 config DM_MULTIPATH
-	tristate "Multipath target (EXPERIMENTAL)"
-	depends on BLK_DEV_DM && EXPERIMENTAL
+	tristate "Multipath target"
+	depends on BLK_DEV_DM
+	# nasty syntax but means make DM_MULTIPATH independent
+	# of SCSI_DH if the latter isn't defined but if
+	# it is, DM_MULTIPATH must depend on it.  We get a build
+	# error if SCSI_DH=m and DM_MULTIPATH=y
+	depends on SCSI_DH || !SCSI_DH
 	---help---
 	  Allow volume managers to support multipath hardware.
-
-config DM_MULTIPATH_EMC
-	tristate "EMC CX/AX multipath support (EXPERIMENTAL)"
-	depends on DM_MULTIPATH && BLK_DEV_DM && EXPERIMENTAL
-	---help---
-	  Multipath support for EMC CX/AX series hardware.
-
-config DM_MULTIPATH_RDAC
-	tristate "LSI/Engenio RDAC multipath support (EXPERIMENTAL)"
-	depends on DM_MULTIPATH && BLK_DEV_DM && SCSI && EXPERIMENTAL
-	---help---
-	  Multipath support for LSI/Engenio RDAC.
-
-config DM_MULTIPATH_HP
-        tristate "HP MSA multipath support (EXPERIMENTAL)"
-        depends on DM_MULTIPATH && BLK_DEV_DM && SCSI && EXPERIMENTAL
-        ---help---
-          Multipath support for HP MSA (Active/Passive) series hardware.
 
 config DM_DELAY
 	tristate "I/O delaying target (EXPERIMENTAL)"

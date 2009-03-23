@@ -9,7 +9,7 @@
  * Modified:
  *               Copyright 2005 National ICT Australia (NICTA)
  *               Copyright 2004-2006 Analog Devices Inc
- *		 Copyright 2007 HV Sistemas S.L.
+ *		 Copyright 2007,2008 HV Sistemas S.L.
  *
  * Bugs:         Enter bugs at http://blackfin.uclinux.org/
  *
@@ -38,8 +38,8 @@
 #if defined(CONFIG_USB_ISP1362_HCD) || defined(CONFIG_USB_ISP1362_HCD_MODULE)
 #include <linux/usb/isp1362.h>
 #endif
-#include <linux/pata_platform.h>
 #include <linux/irq.h>
+
 #include <asm/dma.h>
 #include <asm/bfin5xx_spi.h>
 #include <asm/reboot.h>
@@ -64,13 +64,18 @@ static struct platform_device rtc_device = {
 static struct resource dm9000_resources[] = {
 	[0] = {
 		.start	= 0x20300000,
-		.end	= 0x20300000 + 8,
+		.end	= 0x20300002,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
+		.start	= 0x20300004,
+		.end	= 0x20300006,
+		.flags	= IORESOURCE_MEM,
+	},
+	[2] = {
 		.start	= IRQ_PF10,
 		.end	= IRQ_PF10,
-		.flags	= (IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE),
+		.flags	= (IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE | IRQF_SHARED | IRQF_TRIGGER_HIGH),
 	},
 };
 
@@ -135,18 +140,22 @@ static struct platform_device net2272_bfin_device = {
 #if defined(CONFIG_MTD_M25P80) || defined(CONFIG_MTD_M25P80_MODULE)
 static struct mtd_partition bfin_spi_flash_partitions[] = {
 	{
-		.name = "bootloader",
-		.size = 0x00060000,
+		.name = "bootloader (spi)",
+		.size = 0x40000,
 		.offset = 0,
 		.mask_flags = MTD_CAP_ROM
 	}, {
-		.name = "kernel",
-		.size = 0x100000,
-		.offset = 0x60000
+		.name = "fpga (spi)",
+		.size =   0x30000,
+		.offset = 0x40000
 	}, {
-		.name = "file system",
-		.size = 0x6a0000,
-		.offset = 0x00160000,
+		.name = "linux kernel (spi)",
+		.size =   0x150000,
+		.offset =  0x70000
+	}, {
+		.name = "jffs2 root file system (spi)",
+		.size =   0x640000,
+		.offset = 0x1c0000,
 	}
 };
 
@@ -303,7 +312,106 @@ static struct platform_device bfin_uart_device = {
 };
 #endif
 
-static struct platform_device *stamp_devices[] __initdata = {
+#if defined(CONFIG_BFIN_SIR) || defined(CONFIG_BFIN_SIR_MODULE)
+#ifdef CONFIG_BFIN_SIR0
+static struct resource bfin_sir0_resources[] = {
+	{
+		.start = 0xFFC00400,
+		.end = 0xFFC004FF,
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.start = IRQ_UART0_RX,
+		.end = IRQ_UART0_RX+1,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = CH_UART0_RX,
+		.end = CH_UART0_RX+1,
+		.flags = IORESOURCE_DMA,
+	},
+};
+
+static struct platform_device bfin_sir0_device = {
+	.name = "bfin_sir",
+	.id = 0,
+	.num_resources = ARRAY_SIZE(bfin_sir0_resources),
+	.resource = bfin_sir0_resources,
+};
+#endif
+#endif
+
+#if defined(CONFIG_SERIAL_8250) || defined(CONFIG_SERIAL_8250_MODULE)
+
+#include <linux/serial_8250.h>
+#include <linux/serial.h>
+
+/*
+ * Configuration for two 16550 UARTS in FPGA at addresses 0x20200000 and 0x202000010.
+ * running at half system clock, both with interrupt output or-ed to PF8. Change to
+ * suit different FPGA configuration, or to suit real 16550 UARTS connected to the bus
+ */
+
+static struct plat_serial8250_port serial8250_platform_data [] = {
+	{
+		.membase = (void *)0x20200000,
+		.mapbase = 0x20200000,
+		.irq = IRQ_PF8,
+		.flags = UPF_BOOT_AUTOCONF | UART_CONFIG_TYPE,
+		.iotype = UPIO_MEM,
+		.regshift = 1,
+		.uartclk = 66666667,
+	}, {
+		.membase = (void *)0x20200010,
+		.mapbase = 0x20200010,
+		.irq = IRQ_PF8,
+		.flags = UPF_BOOT_AUTOCONF | UART_CONFIG_TYPE,
+		.iotype = UPIO_MEM,
+		.regshift = 1,
+		.uartclk = 66666667,
+	}, {
+	}
+};
+
+static struct platform_device serial8250_device = {
+	.id		= PLAT8250_DEV_PLATFORM,
+	.name		= "serial8250",
+	.dev		= {
+		.platform_data = serial8250_platform_data,
+	},
+};
+
+#endif
+
+#if defined(CONFIG_KEYBOARD_OPENCORES) || defined(CONFIG_KEYBOARD_OPENCORES_MODULE)
+
+/*
+ * Configuration for one OpenCores keyboard controller in FPGA at address 0x20200030,
+ * interrupt output wired to PF9. Change to suit different FPGA configuration
+ */
+
+static struct resource opencores_kbd_resources[] = {
+	[0] = {
+		.start	= 0x20200030,
+		.end	= 0x20300030 + 2,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= IRQ_PF9,
+		.end	= IRQ_PF9,
+		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE,
+	},
+};
+
+static struct platform_device opencores_kbd_device = {
+	.id		= -1,
+	.name		= "opencores-kbd",
+	.resource	= opencores_kbd_resources,
+	.num_resources	= ARRAY_SIZE(opencores_kbd_resources),
+};
+#endif
+
+static struct platform_device *h8606_devices[] __initdata = {
 #if defined(CONFIG_RTC_DRV_BFIN) || defined(CONFIG_RTC_DRV_BFIN_MODULE)
 	&rtc_device,
 #endif
@@ -327,13 +435,27 @@ static struct platform_device *stamp_devices[] __initdata = {
 #if defined(CONFIG_SERIAL_BFIN) || defined(CONFIG_SERIAL_BFIN_MODULE)
 	&bfin_uart_device,
 #endif
+
+#if defined(CONFIG_SERIAL_8250) || defined(CONFIG_SERIAL_8250_MODULE)
+	&serial8250_device,
+#endif
+
+#if defined(CONFIG_BFIN_SIR) || defined(CONFIG_BFIN_SIR_MODULE)
+#ifdef CONFIG_BFIN_SIR0
+	&bfin_sir0_device,
+#endif
+#endif
+
+#if defined(CONFIG_KEYBOARD_OPENCORES) || defined(CONFIG_KEYBOARD_OPENCORES_MODULE)
+	&opencores_kbd_device,
+#endif
 };
 
 static int __init H8606_init(void)
 {
 	printk(KERN_INFO "HV Sistemas H8606 board support by http://www.hvsistemas.com\n");
-	printk(KERN_INFO "%s(): registering device resources\n", __FUNCTION__);
-	platform_add_devices(stamp_devices, ARRAY_SIZE(stamp_devices));
+	printk(KERN_INFO "%s(): registering device resources\n", __func__);
+	platform_add_devices(h8606_devices, ARRAY_SIZE(h8606_devices));
 #if defined(CONFIG_SPI_BFIN) || defined(CONFIG_SPI_BFIN_MODULE)
 	spi_register_board_info(bfin_spi_board_info, ARRAY_SIZE(bfin_spi_board_info));
 #endif

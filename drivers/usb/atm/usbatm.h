@@ -24,7 +24,6 @@
 #ifndef	_USBATM_H_
 #define	_USBATM_H_
 
-#include <asm/semaphore.h>
 #include <linux/atm.h>
 #include <linux/atmdev.h>
 #include <linux/completion.h>
@@ -41,9 +40,15 @@
 */
 
 #ifdef DEBUG
-#define UDSL_ASSERT(x)	BUG_ON(!(x))
+#define UDSL_ASSERT(instance, x)	BUG_ON(!(x))
 #else
-#define UDSL_ASSERT(x)	do { if (!(x)) warn("failed assertion '%s' at line %d", __stringify(x), __LINE__); } while(0)
+#define UDSL_ASSERT(instance, x)					\
+	do {	\
+		if (!(x))						\
+			dev_warn(&(instance)->usb_intf->dev,		\
+				 "failed assertion '%s' at line %d",	\
+				 __stringify(x), __LINE__);		\
+	} while(0)
 #endif
 
 #define usb_err(instance, format, arg...)	\
@@ -176,7 +181,7 @@ struct usbatm_data {
 	int disconnected;
 
 	/* heavy init */
-	int thread_pid;
+	struct task_struct *thread;
 	struct completion thread_started;
 	struct completion thread_exited;
 

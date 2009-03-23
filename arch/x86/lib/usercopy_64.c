@@ -15,7 +15,7 @@
 #define __do_strncpy_from_user(dst,src,count,res)			   \
 do {									   \
 	long __d0, __d1, __d2;						   \
-	might_sleep();							   \
+	might_fault();							   \
 	__asm__ __volatile__(						   \
 		"	testq %1,%1\n"					   \
 		"	jz 2f\n"					   \
@@ -31,11 +31,8 @@ do {									   \
 		"3:	movq %5,%0\n"					   \
 		"	jmp 2b\n"					   \
 		".previous\n"						   \
-		".section __ex_table,\"a\"\n"				   \
-		"	.align 8\n"					   \
-		"	.quad 0b,3b\n"					   \
-		".previous"						   \
-		: "=r"(res), "=c"(count), "=&a" (__d0), "=&S" (__d1),	   \
+		_ASM_EXTABLE(0b,3b)					   \
+		: "=&r"(res), "=&c"(count), "=&a" (__d0), "=&S" (__d1),	   \
 		  "=&D" (__d2)						   \
 		: "i"(-EFAULT), "0"(count), "1"(count), "3"(src), "4"(dst) \
 		: "memory");						   \
@@ -67,7 +64,7 @@ EXPORT_SYMBOL(strncpy_from_user);
 unsigned long __clear_user(void __user *addr, unsigned long size)
 {
 	long __d0;
-	might_sleep();
+	might_fault();
 	/* no memory constraint because it doesn't change any memory gcc knows
 	   about */
 	asm volatile(
@@ -87,12 +84,9 @@ unsigned long __clear_user(void __user *addr, unsigned long size)
 		"3:	lea 0(%[size1],%[size8],8),%[size8]\n"
 		"	jmp 2b\n"
 		".previous\n"
-		".section __ex_table,\"a\"\n"
-		"       .align 8\n"
-		"	.quad 0b,3b\n"
-		"	.quad 1b,2b\n"
-		".previous"
-		: [size8] "=c"(size), [dst] "=&D" (__d0)
+		_ASM_EXTABLE(0b,3b)
+		_ASM_EXTABLE(1b,2b)
+		: [size8] "=&c"(size), [dst] "=&D" (__d0)
 		: [size1] "r"(size & 7), "[size8]" (size / 8), "[dst]"(addr),
 		  [zero] "r" (0UL), [eight] "r" (8UL));
 	return size;
@@ -164,3 +158,26 @@ unsigned long copy_in_user(void __user *to, const void __user *from, unsigned le
 }
 EXPORT_SYMBOL(copy_in_user);
 
+/*
+ * Try to copy last bytes and clear the rest if needed.
+ * Since protection fault in copy_from/to_user is not a normal situation,
+ * it is not necessary to optimize tail handling.
+ */
+unsigned long
+copy_user_handle_tail(char *to, char *from, unsigned len, unsigned zerorest)
+{
+	char c;
+	unsigned zero_len;
+
+	for (; len; --len) {
+		if (__get_user_nocheck(c, from++, sizeof(char)))
+			break;
+		if (__put_user_nocheck(c, to++, sizeof(char)))
+			break;
+	}
+
+	for (c = 0, zero_len = len; zerorest && zero_len; --zero_len)
+		if (__put_user_nocheck(c, to++, sizeof(char)))
+			break;
+	return len;
+}

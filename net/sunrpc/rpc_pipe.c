@@ -76,6 +76,16 @@ rpc_timeout_upcall_queue(struct work_struct *work)
 	rpc_purge_list(rpci, &free_list, destroy_msg, -ETIMEDOUT);
 }
 
+/**
+ * rpc_queue_upcall
+ * @inode: inode of upcall pipe on which to queue given message
+ * @msg: message to queue
+ *
+ * Call with an @inode created by rpc_mkpipe() to queue an upcall.
+ * A userspace process may then later read the upcall by performing a
+ * read on an open file for this inode.  It is up to the caller to
+ * initialize the fields of @msg (other than @msg->list) appropriately.
+ */
 int
 rpc_queue_upcall(struct inode *inode, struct rpc_pipe_msg *msg)
 {
@@ -103,6 +113,7 @@ out:
 	wake_up(&rpci->waitq);
 	return res;
 }
+EXPORT_SYMBOL_GPL(rpc_queue_upcall);
 
 static inline void
 rpc_inode_setowner(struct inode *inode, void *private)
@@ -115,13 +126,14 @@ rpc_close_pipes(struct inode *inode)
 {
 	struct rpc_inode *rpci = RPC_I(inode);
 	struct rpc_pipe_ops *ops;
+	int need_release;
 
 	mutex_lock(&inode->i_mutex);
 	ops = rpci->ops;
 	if (ops != NULL) {
 		LIST_HEAD(free_list);
-
 		spin_lock(&inode->i_lock);
+		need_release = rpci->nreaders != 0 || rpci->nwriters != 0;
 		rpci->nreaders = 0;
 		list_splice_init(&rpci->in_upcall, &free_list);
 		list_splice_init(&rpci->pipe, &free_list);
@@ -130,7 +142,7 @@ rpc_close_pipes(struct inode *inode)
 		spin_unlock(&inode->i_lock);
 		rpc_purge_list(rpci, &free_list, ops->destroy_msg, -EPIPE);
 		rpci->nwriters = 0;
-		if (ops->release_pipe)
+		if (need_release && ops->release_pipe)
 			ops->release_pipe(inode);
 		cancel_delayed_work_sync(&rpci->queue_timeout);
 	}
@@ -158,16 +170,24 @@ static int
 rpc_pipe_open(struct inode *inode, struct file *filp)
 {
 	struct rpc_inode *rpci = RPC_I(inode);
+	int first_open;
 	int res = -ENXIO;
 
 	mutex_lock(&inode->i_mutex);
-	if (rpci->ops != NULL) {
-		if (filp->f_mode & FMODE_READ)
-			rpci->nreaders ++;
-		if (filp->f_mode & FMODE_WRITE)
-			rpci->nwriters ++;
-		res = 0;
+	if (rpci->ops == NULL)
+		goto out;
+	first_open = rpci->nreaders == 0 && rpci->nwriters == 0;
+	if (first_open && rpci->ops->open_pipe) {
+		res = rpci->ops->open_pipe(inode);
+		if (res)
+			goto out;
 	}
+	if (filp->f_mode & FMODE_READ)
+		rpci->nreaders++;
+	if (filp->f_mode & FMODE_WRITE)
+		rpci->nwriters++;
+	res = 0;
+out:
 	mutex_unlock(&inode->i_mutex);
 	return res;
 }
@@ -177,6 +197,7 @@ rpc_pipe_release(struct inode *inode, struct file *filp)
 {
 	struct rpc_inode *rpci = RPC_I(inode);
 	struct rpc_pipe_msg *msg;
+	int last_close;
 
 	mutex_lock(&inode->i_mutex);
 	if (rpci->ops == NULL)
@@ -203,7 +224,8 @@ rpc_pipe_release(struct inode *inode, struct file *filp)
 					rpci->ops->destroy_msg, -EAGAIN);
 		}
 	}
-	if (rpci->ops->release_pipe)
+	last_close = rpci->nwriters == 0 && rpci->nreaders == 0;
+	if (last_close && rpci->ops->release_pipe)
 		rpci->ops->release_pipe(inode);
 out:
 	mutex_unlock(&inode->i_mutex);
@@ -385,6 +407,7 @@ enum {
 	RPCAUTH_nfs,
 	RPCAUTH_portmap,
 	RPCAUTH_statd,
+	RPCAUTH_nfsd4_cb,
 	RPCAUTH_RootEOF
 };
 
@@ -416,6 +439,10 @@ static struct rpc_filelist files[] = {
 	},
 	[RPCAUTH_statd] = {
 		.name = "statd",
+		.mode = S_IFDIR | S_IRUGO | S_IXUGO,
+	},
+	[RPCAUTH_nfsd4_cb] = {
+		.name = "nfsd4_cb",
 		.mode = S_IFDIR | S_IRUGO | S_IXUGO,
 	},
 };
@@ -468,13 +495,13 @@ rpc_lookup_parent(char *path, struct nameidata *nd)
 	mnt = rpc_get_mount();
 	if (IS_ERR(mnt)) {
 		printk(KERN_WARNING "%s: %s failed to mount "
-			       "pseudofilesystem \n", __FILE__, __FUNCTION__);
+			       "pseudofilesystem \n", __FILE__, __func__);
 		return PTR_ERR(mnt);
 	}
 
 	if (vfs_path_lookup(mnt->mnt_root, mnt, path, LOOKUP_PARENT, nd)) {
 		printk(KERN_WARNING "%s: %s failed to find path %s\n",
-				__FILE__, __FUNCTION__, path);
+				__FILE__, __func__, path);
 		rpc_put_mount();
 		return -ENOENT;
 	}
@@ -484,7 +511,7 @@ rpc_lookup_parent(char *path, struct nameidata *nd)
 static void
 rpc_release_path(struct nameidata *nd)
 {
-	path_release(nd);
+	path_put(&nd->path);
 	rpc_put_mount();
 }
 
@@ -495,8 +522,6 @@ rpc_get_inode(struct super_block *sb, int mode)
 	if (!inode)
 		return NULL;
 	inode->i_mode = mode;
-	inode->i_uid = inode->i_gid = 0;
-	inode->i_blocks = 0;
 	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
 	switch(mode & S_IFMT) {
 		case S_IFDIR:
@@ -512,8 +537,8 @@ rpc_get_inode(struct super_block *sb, int mode)
 /*
  * FIXME: This probably has races.
  */
-static void
-rpc_depopulate(struct dentry *parent, int start, int eof)
+static void rpc_depopulate(struct dentry *parent,
+			   unsigned long start, unsigned long eof)
 {
 	struct inode *dir = parent->d_inode;
 	struct list_head *pos, *next;
@@ -593,7 +618,7 @@ rpc_populate(struct dentry *parent,
 out_bad:
 	mutex_unlock(&dir->i_mutex);
 	printk(KERN_WARNING "%s: %s failed to populate directory %s\n",
-			__FILE__, __FUNCTION__, parent->d_name.name);
+			__FILE__, __func__, parent->d_name.name);
 	return -ENOMEM;
 }
 
@@ -612,7 +637,7 @@ __rpc_mkdir(struct inode *dir, struct dentry *dentry)
 	return 0;
 out_err:
 	printk(KERN_WARNING "%s: %s failed to allocate inode for dentry %s\n",
-			__FILE__, __FUNCTION__, dentry->d_name.name);
+			__FILE__, __func__, dentry->d_name.name);
 	return -ENOMEM;
 }
 
@@ -657,13 +682,23 @@ rpc_lookup_negative(char *path, struct nameidata *nd)
 
 	if ((error = rpc_lookup_parent(path, nd)) != 0)
 		return ERR_PTR(error);
-	dentry = rpc_lookup_create(nd->dentry, nd->last.name, nd->last.len, 1);
+	dentry = rpc_lookup_create(nd->path.dentry, nd->last.name, nd->last.len,
+				   1);
 	if (IS_ERR(dentry))
 		rpc_release_path(nd);
 	return dentry;
 }
 
-
+/**
+ * rpc_mkdir - Create a new directory in rpc_pipefs
+ * @path: path from the rpc_pipefs root to the new directory
+ * @rpc_client: rpc client to associate with this directory
+ *
+ * This creates a directory at the given @path associated with
+ * @rpc_clnt, which will contain a file named "info" with some basic
+ * information about the client, together with any "pipes" that may
+ * later be created using rpc_mkpipe().
+ */
 struct dentry *
 rpc_mkdir(char *path, struct rpc_clnt *rpc_client)
 {
@@ -675,7 +710,7 @@ rpc_mkdir(char *path, struct rpc_clnt *rpc_client)
 	dentry = rpc_lookup_negative(path, &nd);
 	if (IS_ERR(dentry))
 		return dentry;
-	dir = nd.dentry->d_inode;
+	dir = nd.path.dentry->d_inode;
 	if ((error = __rpc_mkdir(dir, dentry)) != 0)
 		goto err_dput;
 	RPC_I(dentry->d_inode)->private = rpc_client;
@@ -694,11 +729,15 @@ err_depopulate:
 err_dput:
 	dput(dentry);
 	printk(KERN_WARNING "%s: %s() failed to create directory %s (errno = %d)\n",
-			__FILE__, __FUNCTION__, path, error);
+			__FILE__, __func__, path, error);
 	dentry = ERR_PTR(error);
 	goto out;
 }
 
+/**
+ * rpc_rmdir - Remove a directory created with rpc_mkdir()
+ * @dentry: directory to remove
+ */
 int
 rpc_rmdir(struct dentry *dentry)
 {
@@ -717,6 +756,26 @@ rpc_rmdir(struct dentry *dentry)
 	return error;
 }
 
+/**
+ * rpc_mkpipe - make an rpc_pipefs file for kernel<->userspace communication
+ * @parent: dentry of directory to create new "pipe" in
+ * @name: name of pipe
+ * @private: private data to associate with the pipe, for the caller's use
+ * @ops: operations defining the behavior of the pipe: upcall, downcall,
+ *	release_pipe, open_pipe, and destroy_msg.
+ * @flags: rpc_inode flags
+ *
+ * Data is made available for userspace to read by calls to
+ * rpc_queue_upcall().  The actual reads will result in calls to
+ * @ops->upcall, which will be called with the file pointer,
+ * message, and userspace buffer to copy to.
+ *
+ * Writes can come at any time, and do not necessarily have to be
+ * responses to upcalls.  They will result in calls to @msg->downcall.
+ *
+ * The @private argument passed here will be available to all these methods
+ * from the file pointer, via RPC_I(file->f_dentry->d_inode)->private.
+ */
 struct dentry *
 rpc_mkpipe(struct dentry *parent, const char *name, void *private, struct rpc_pipe_ops *ops, int flags)
 {
@@ -759,11 +818,20 @@ err_dput:
 	dput(dentry);
 	dentry = ERR_PTR(-ENOMEM);
 	printk(KERN_WARNING "%s: %s() failed to create pipe %s/%s (errno = %d)\n",
-			__FILE__, __FUNCTION__, parent->d_name.name, name,
+			__FILE__, __func__, parent->d_name.name, name,
 			-ENOMEM);
 	goto out;
 }
+EXPORT_SYMBOL_GPL(rpc_mkpipe);
 
+/**
+ * rpc_unlink - remove a pipe
+ * @dentry: dentry for the pipe, as returned from rpc_mkpipe
+ *
+ * After this call, lookups will no longer find the pipe, and any
+ * attempts to read or write using preexisting opens of the pipe will
+ * return -EPIPE.
+ */
 int
 rpc_unlink(struct dentry *dentry)
 {
@@ -785,6 +853,7 @@ rpc_unlink(struct dentry *dentry)
 	dput(parent);
 	return error;
 }
+EXPORT_SYMBOL_GPL(rpc_unlink);
 
 /*
  * populate the filesystem
@@ -842,7 +911,7 @@ static struct file_system_type rpc_pipe_fs_type = {
 };
 
 static void
-init_once(struct kmem_cache * cachep, void *foo)
+init_once(void *foo)
 {
 	struct rpc_inode *rpci = (struct rpc_inode *) foo;
 

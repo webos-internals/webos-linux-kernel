@@ -72,6 +72,7 @@
 #include <linux/delay.h>
 #include <asm/firmware.h>
 #include <asm/vio.h>
+#include <asm/firmware.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_host.h>
@@ -88,6 +89,7 @@ static int max_id = 64;
 static int max_channel = 3;
 static int init_timeout = 5;
 static int max_requests = IBMVSCSI_MAX_REQUESTS_DEFAULT;
+static int max_events = IBMVSCSI_MAX_REQUESTS_DEFAULT + 2;
 
 static struct scsi_transport_template *ibmvscsi_transport_template;
 
@@ -106,7 +108,7 @@ module_param_named(max_channel, max_channel, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(max_channel, "Largest channel value");
 module_param_named(init_timeout, init_timeout, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(init_timeout, "Initialization timeout in seconds");
-module_param_named(max_requests, max_requests, int, S_IRUGO | S_IWUSR);
+module_param_named(max_requests, max_requests, int, S_IRUGO);
 MODULE_PARM_DESC(max_requests, "Maximum requests for this adapter");
 
 /* ------------------------------------------------------------
@@ -426,8 +428,11 @@ static int map_sg_data(struct scsi_cmnd *cmd,
 					   SG_ALL * sizeof(struct srp_direct_buf),
 					   &evt_struct->ext_list_token, 0);
 		if (!evt_struct->ext_list) {
-			sdev_printk(KERN_ERR, cmd->device,
-				    "Can't allocate memory for indirect table\n");
+			if (!firmware_has_feature(FW_FEATURE_CMO))
+				sdev_printk(KERN_ERR, cmd->device,
+				            "Can't allocate memory "
+				            "for indirect table\n");
+			scsi_dma_unmap(cmd);
 			return 0;
 		}
 	}
@@ -629,6 +634,16 @@ static int ibmvscsi_send_srp_event(struct srp_event_struct *evt_struct,
 		list_del(&evt_struct->list);
 		del_timer(&evt_struct->timer);
 
+		/* If send_crq returns H_CLOSED, return SCSI_MLQUEUE_HOST_BUSY.
+		 * Firmware will send a CRQ with a transport event (0xFF) to
+		 * tell this client what has happened to the transport.  This
+		 * will be handled in ibmvscsi_handle_crq()
+		 */
+		if (rc == H_CLOSED) {
+			dev_warn(hostdata->dev, "send warning. "
+			         "Receive queue closed, will retry.\n");
+			goto send_busy;
+		}
 		dev_err(hostdata->dev, "send error %d\n", rc);
 		atomic_inc(&hostdata->request_limit);
 		goto send_error;
@@ -676,7 +691,7 @@ static void handle_cmd_rsp(struct srp_event_struct *evt_struct)
 	}
 	
 	if (cmnd) {
-		cmnd->result = rsp->status;
+		cmnd->result |= rsp->status;
 		if (((cmnd->result >> 1) & 0x1f) == CHECK_CONDITION)
 			memcpy(cmnd->sense_buffer,
 			       rsp->data,
@@ -720,6 +735,7 @@ static int ibmvscsi_queuecommand(struct scsi_cmnd *cmnd,
 	u16 lun = lun_from_dev(cmnd->device);
 	u8 out_fmt, in_fmt;
 
+	cmnd->result = (DID_OK << 16);
 	evt_struct = get_event_struct(&hostdata->pool);
 	if (!evt_struct)
 		return SCSI_MLQUEUE_HOST_BUSY;
@@ -728,11 +744,13 @@ static int ibmvscsi_queuecommand(struct scsi_cmnd *cmnd,
 	srp_cmd = &evt_struct->iu.srp.cmd;
 	memset(srp_cmd, 0x00, SRP_MAX_IU_LEN);
 	srp_cmd->opcode = SRP_CMD;
-	memcpy(srp_cmd->cdb, cmnd->cmnd, sizeof(cmnd->cmnd));
+	memcpy(srp_cmd->cdb, cmnd->cmnd, sizeof(srp_cmd->cdb));
 	srp_cmd->lun = ((u64) lun) << 48;
 
 	if (!map_data_for_srp_cmd(cmnd, evt_struct, srp_cmd, hostdata->dev)) {
-		sdev_printk(KERN_ERR, cmnd->device, "couldn't convert cmd to srp_cmd\n");
+		if (!firmware_has_feature(FW_FEATURE_CMO))
+			sdev_printk(KERN_ERR, cmnd->device,
+			            "couldn't convert cmd to srp_cmd\n");
 		free_event_struct(&hostdata->pool, evt_struct);
 		return SCSI_MLQUEUE_HOST_BUSY;
 	}
@@ -740,7 +758,7 @@ static int ibmvscsi_queuecommand(struct scsi_cmnd *cmnd,
 	init_event_struct(evt_struct,
 			  handle_cmd_rsp,
 			  VIOSRP_SRP_FORMAT,
-			  cmnd->timeout_per_command/HZ);
+			  cmnd->request->timeout/HZ);
 
 	evt_struct->cmnd = cmnd;
 	evt_struct->cmnd_done = done;
@@ -843,8 +861,11 @@ static void send_mad_adapter_info(struct ibmvscsi_host_data *hostdata)
 					    sizeof(hostdata->madapter_info),
 					    DMA_BIDIRECTIONAL);
 
-	if (dma_mapping_error(req->buffer)) {
-		dev_err(hostdata->dev, "Unable to map request_buffer for adapter_info!\n");
+	if (dma_mapping_error(hostdata->dev, req->buffer)) {
+		if (!firmware_has_feature(FW_FEATURE_CMO))
+			dev_err(hostdata->dev,
+			        "Unable to map request_buffer for "
+			        "adapter_info!\n");
 		free_event_struct(&hostdata->pool, evt_struct);
 		return;
 	}
@@ -976,57 +997,73 @@ static int ibmvscsi_eh_abort_handler(struct scsi_cmnd *cmd)
 	int rsp_rc;
 	unsigned long flags;
 	u16 lun = lun_from_dev(cmd->device);
+	unsigned long wait_switch = 0;
 
 	/* First, find this command in our sent list so we can figure
 	 * out the correct tag
 	 */
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	found_evt = NULL;
-	list_for_each_entry(tmp_evt, &hostdata->sent, list) {
-		if (tmp_evt->cmnd == cmd) {
-			found_evt = tmp_evt;
-			break;
+	wait_switch = jiffies + (init_timeout * HZ);
+	do {
+		found_evt = NULL;
+		list_for_each_entry(tmp_evt, &hostdata->sent, list) {
+			if (tmp_evt->cmnd == cmd) {
+				found_evt = tmp_evt;
+				break;
+			}
 		}
-	}
 
-	if (!found_evt) {
-		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
-		return SUCCESS;
-	}
+		if (!found_evt) {
+			spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+			return SUCCESS;
+		}
 
-	evt = get_event_struct(&hostdata->pool);
-	if (evt == NULL) {
-		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
-		sdev_printk(KERN_ERR, cmd->device, "failed to allocate abort event\n");
-		return FAILED;
-	}
+		evt = get_event_struct(&hostdata->pool);
+		if (evt == NULL) {
+			spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+			sdev_printk(KERN_ERR, cmd->device,
+				"failed to allocate abort event\n");
+			return FAILED;
+		}
 	
-	init_event_struct(evt,
-			  sync_completion,
-			  VIOSRP_SRP_FORMAT,
-			  init_timeout);
+		init_event_struct(evt,
+				  sync_completion,
+				  VIOSRP_SRP_FORMAT,
+				  init_timeout);
 
-	tsk_mgmt = &evt->iu.srp.tsk_mgmt;
+		tsk_mgmt = &evt->iu.srp.tsk_mgmt;
 	
-	/* Set up an abort SRP command */
-	memset(tsk_mgmt, 0x00, sizeof(*tsk_mgmt));
-	tsk_mgmt->opcode = SRP_TSK_MGMT;
-	tsk_mgmt->lun = ((u64) lun) << 48;
-	tsk_mgmt->tsk_mgmt_func = SRP_TSK_ABORT_TASK;
-	tsk_mgmt->task_tag = (u64) found_evt;
+		/* Set up an abort SRP command */
+		memset(tsk_mgmt, 0x00, sizeof(*tsk_mgmt));
+		tsk_mgmt->opcode = SRP_TSK_MGMT;
+		tsk_mgmt->lun = ((u64) lun) << 48;
+		tsk_mgmt->tsk_mgmt_func = SRP_TSK_ABORT_TASK;
+		tsk_mgmt->task_tag = (u64) found_evt;
 
-	sdev_printk(KERN_INFO, cmd->device, "aborting command. lun 0x%lx, tag 0x%lx\n",
-		    tsk_mgmt->lun, tsk_mgmt->task_tag);
+		evt->sync_srp = &srp_rsp;
 
-	evt->sync_srp = &srp_rsp;
-	init_completion(&evt->comp);
-	rsp_rc = ibmvscsi_send_srp_event(evt, hostdata, init_timeout * 2);
+		init_completion(&evt->comp);
+		rsp_rc = ibmvscsi_send_srp_event(evt, hostdata, init_timeout * 2);
+
+		if (rsp_rc != SCSI_MLQUEUE_HOST_BUSY)
+			break;
+
+		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+		msleep(10);
+		spin_lock_irqsave(hostdata->host->host_lock, flags);
+	} while (time_before(jiffies, wait_switch));
+
 	spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+
 	if (rsp_rc != 0) {
 		sdev_printk(KERN_ERR, cmd->device,
 			    "failed to send abort() event. rc=%d\n", rsp_rc);
 		return FAILED;
 	}
+
+	sdev_printk(KERN_INFO, cmd->device,
+                    "aborting command. lun 0x%llx, tag 0x%llx\n",
+		    (((u64) lun) << 48), (u64) found_evt);
 
 	wait_for_completion(&evt->comp);
 
@@ -1046,7 +1083,7 @@ static int ibmvscsi_eh_abort_handler(struct scsi_cmnd *cmd)
 	if (rsp_rc) {
 		if (printk_ratelimit())
 			sdev_printk(KERN_WARNING, cmd->device,
-				    "abort code %d for task tag 0x%lx\n",
+				    "abort code %d for task tag 0x%llx\n",
 				    rsp_rc, tsk_mgmt->task_tag);
 		return FAILED;
 	}
@@ -1066,12 +1103,12 @@ static int ibmvscsi_eh_abort_handler(struct scsi_cmnd *cmd)
 
 	if (found_evt == NULL) {
 		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
-		sdev_printk(KERN_INFO, cmd->device, "aborted task tag 0x%lx completed\n",
+		sdev_printk(KERN_INFO, cmd->device, "aborted task tag 0x%llx completed\n",
 			    tsk_mgmt->task_tag);
 		return SUCCESS;
 	}
 
-	sdev_printk(KERN_INFO, cmd->device, "successfully aborted task tag 0x%lx\n",
+	sdev_printk(KERN_INFO, cmd->device, "successfully aborted task tag 0x%llx\n",
 		    tsk_mgmt->task_tag);
 
 	cmd->result = (DID_ABORT << 16);
@@ -1099,40 +1136,55 @@ static int ibmvscsi_eh_device_reset_handler(struct scsi_cmnd *cmd)
 	int rsp_rc;
 	unsigned long flags;
 	u16 lun = lun_from_dev(cmd->device);
+	unsigned long wait_switch = 0;
 
 	spin_lock_irqsave(hostdata->host->host_lock, flags);
-	evt = get_event_struct(&hostdata->pool);
-	if (evt == NULL) {
-		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
-		sdev_printk(KERN_ERR, cmd->device, "failed to allocate reset event\n");
-		return FAILED;
-	}
+	wait_switch = jiffies + (init_timeout * HZ);
+	do {
+		evt = get_event_struct(&hostdata->pool);
+		if (evt == NULL) {
+			spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+			sdev_printk(KERN_ERR, cmd->device,
+				"failed to allocate reset event\n");
+			return FAILED;
+		}
 	
-	init_event_struct(evt,
-			  sync_completion,
-			  VIOSRP_SRP_FORMAT,
-			  init_timeout);
+		init_event_struct(evt,
+				  sync_completion,
+				  VIOSRP_SRP_FORMAT,
+				  init_timeout);
 
-	tsk_mgmt = &evt->iu.srp.tsk_mgmt;
+		tsk_mgmt = &evt->iu.srp.tsk_mgmt;
 
-	/* Set up a lun reset SRP command */
-	memset(tsk_mgmt, 0x00, sizeof(*tsk_mgmt));
-	tsk_mgmt->opcode = SRP_TSK_MGMT;
-	tsk_mgmt->lun = ((u64) lun) << 48;
-	tsk_mgmt->tsk_mgmt_func = SRP_TSK_LUN_RESET;
+		/* Set up a lun reset SRP command */
+		memset(tsk_mgmt, 0x00, sizeof(*tsk_mgmt));
+		tsk_mgmt->opcode = SRP_TSK_MGMT;
+		tsk_mgmt->lun = ((u64) lun) << 48;
+		tsk_mgmt->tsk_mgmt_func = SRP_TSK_LUN_RESET;
 
-	sdev_printk(KERN_INFO, cmd->device, "resetting device. lun 0x%lx\n",
-		    tsk_mgmt->lun);
+		evt->sync_srp = &srp_rsp;
 
-	evt->sync_srp = &srp_rsp;
-	init_completion(&evt->comp);
-	rsp_rc = ibmvscsi_send_srp_event(evt, hostdata, init_timeout * 2);
+		init_completion(&evt->comp);
+		rsp_rc = ibmvscsi_send_srp_event(evt, hostdata, init_timeout * 2);
+
+		if (rsp_rc != SCSI_MLQUEUE_HOST_BUSY)
+			break;
+
+		spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+		msleep(10);
+		spin_lock_irqsave(hostdata->host->host_lock, flags);
+	} while (time_before(jiffies, wait_switch));
+
 	spin_unlock_irqrestore(hostdata->host->host_lock, flags);
+
 	if (rsp_rc != 0) {
 		sdev_printk(KERN_ERR, cmd->device,
 			    "failed to send reset event. rc=%d\n", rsp_rc);
 		return FAILED;
 	}
+
+	sdev_printk(KERN_INFO, cmd->device, "resetting device. lun 0x%llx\n",
+		    (((u64) lun) << 48));
 
 	wait_for_completion(&evt->comp);
 
@@ -1152,7 +1204,7 @@ static int ibmvscsi_eh_device_reset_handler(struct scsi_cmnd *cmd)
 	if (rsp_rc) {
 		if (printk_ratelimit())
 			sdev_printk(KERN_WARNING, cmd->device,
-				    "reset code %d for task tag 0x%lx\n",
+				    "reset code %d for task tag 0x%llx\n",
 				    rsp_rc, tsk_mgmt->task_tag);
 		return FAILED;
 	}
@@ -1306,6 +1358,8 @@ void ibmvscsi_handle_crq(struct viosrp_crq *crq,
 
 	del_timer(&evt_struct->timer);
 
+	if ((crq->status != VIOSRP_OK && crq->status != VIOSRP_OK2) && evt_struct->cmnd)
+		evt_struct->cmnd->result = DID_ERROR << 16;
 	if (evt_struct->done)
 		evt_struct->done(evt_struct);
 	else
@@ -1355,8 +1409,10 @@ static int ibmvscsi_do_host_config(struct ibmvscsi_host_data *hostdata,
 						    length,
 						    DMA_BIDIRECTIONAL);
 
-	if (dma_mapping_error(host_config->buffer)) {
-		dev_err(hostdata->dev, "dma_mapping error getting host config\n");
+	if (dma_mapping_error(hostdata->dev, host_config->buffer)) {
+		if (!firmware_has_feature(FW_FEATURE_CMO))
+			dev_err(hostdata->dev,
+			        "dma_mapping error getting host config\n");
 		free_event_struct(&hostdata->pool, evt_struct);
 		return -1;
 	}
@@ -1386,8 +1442,10 @@ static int ibmvscsi_slave_configure(struct scsi_device *sdev)
 	unsigned long lock_flags = 0;
 
 	spin_lock_irqsave(shost->host_lock, lock_flags);
-	if (sdev->type == TYPE_DISK)
+	if (sdev->type == TYPE_DISK) {
 		sdev->allow_restart = 1;
+		blk_queue_rq_timeout(sdev->request_queue, 60 * HZ);
+	}
 	scsi_adjust_queue_depth(sdev, 0, shost->cmd_per_lun);
 	spin_unlock_irqrestore(shost->host_lock, lock_flags);
 	return 0;
@@ -1413,9 +1471,10 @@ static int ibmvscsi_change_queue_depth(struct scsi_device *sdev, int qdepth)
 /* ------------------------------------------------------------
  * sysfs attributes
  */
-static ssize_t show_host_srp_version(struct class_device *class_dev, char *buf)
+static ssize_t show_host_srp_version(struct device *dev,
+				     struct device_attribute *attr, char *buf)
 {
-	struct Scsi_Host *shost = class_to_shost(class_dev);
+	struct Scsi_Host *shost = class_to_shost(dev);
 	struct ibmvscsi_host_data *hostdata = shost_priv(shost);
 	int len;
 
@@ -1424,7 +1483,7 @@ static ssize_t show_host_srp_version(struct class_device *class_dev, char *buf)
 	return len;
 }
 
-static struct class_device_attribute ibmvscsi_host_srp_version = {
+static struct device_attribute ibmvscsi_host_srp_version = {
 	.attr = {
 		 .name = "srp_version",
 		 .mode = S_IRUGO,
@@ -1432,10 +1491,11 @@ static struct class_device_attribute ibmvscsi_host_srp_version = {
 	.show = show_host_srp_version,
 };
 
-static ssize_t show_host_partition_name(struct class_device *class_dev,
+static ssize_t show_host_partition_name(struct device *dev,
+					struct device_attribute *attr,
 					char *buf)
 {
-	struct Scsi_Host *shost = class_to_shost(class_dev);
+	struct Scsi_Host *shost = class_to_shost(dev);
 	struct ibmvscsi_host_data *hostdata = shost_priv(shost);
 	int len;
 
@@ -1444,7 +1504,7 @@ static ssize_t show_host_partition_name(struct class_device *class_dev,
 	return len;
 }
 
-static struct class_device_attribute ibmvscsi_host_partition_name = {
+static struct device_attribute ibmvscsi_host_partition_name = {
 	.attr = {
 		 .name = "partition_name",
 		 .mode = S_IRUGO,
@@ -1452,10 +1512,11 @@ static struct class_device_attribute ibmvscsi_host_partition_name = {
 	.show = show_host_partition_name,
 };
 
-static ssize_t show_host_partition_number(struct class_device *class_dev,
+static ssize_t show_host_partition_number(struct device *dev,
+					  struct device_attribute *attr,
 					  char *buf)
 {
-	struct Scsi_Host *shost = class_to_shost(class_dev);
+	struct Scsi_Host *shost = class_to_shost(dev);
 	struct ibmvscsi_host_data *hostdata = shost_priv(shost);
 	int len;
 
@@ -1464,7 +1525,7 @@ static ssize_t show_host_partition_number(struct class_device *class_dev,
 	return len;
 }
 
-static struct class_device_attribute ibmvscsi_host_partition_number = {
+static struct device_attribute ibmvscsi_host_partition_number = {
 	.attr = {
 		 .name = "partition_number",
 		 .mode = S_IRUGO,
@@ -1472,9 +1533,10 @@ static struct class_device_attribute ibmvscsi_host_partition_number = {
 	.show = show_host_partition_number,
 };
 
-static ssize_t show_host_mad_version(struct class_device *class_dev, char *buf)
+static ssize_t show_host_mad_version(struct device *dev,
+				     struct device_attribute *attr, char *buf)
 {
-	struct Scsi_Host *shost = class_to_shost(class_dev);
+	struct Scsi_Host *shost = class_to_shost(dev);
 	struct ibmvscsi_host_data *hostdata = shost_priv(shost);
 	int len;
 
@@ -1483,7 +1545,7 @@ static ssize_t show_host_mad_version(struct class_device *class_dev, char *buf)
 	return len;
 }
 
-static struct class_device_attribute ibmvscsi_host_mad_version = {
+static struct device_attribute ibmvscsi_host_mad_version = {
 	.attr = {
 		 .name = "mad_version",
 		 .mode = S_IRUGO,
@@ -1491,9 +1553,10 @@ static struct class_device_attribute ibmvscsi_host_mad_version = {
 	.show = show_host_mad_version,
 };
 
-static ssize_t show_host_os_type(struct class_device *class_dev, char *buf)
+static ssize_t show_host_os_type(struct device *dev,
+				 struct device_attribute *attr, char *buf)
 {
-	struct Scsi_Host *shost = class_to_shost(class_dev);
+	struct Scsi_Host *shost = class_to_shost(dev);
 	struct ibmvscsi_host_data *hostdata = shost_priv(shost);
 	int len;
 
@@ -1501,7 +1564,7 @@ static ssize_t show_host_os_type(struct class_device *class_dev, char *buf)
 	return len;
 }
 
-static struct class_device_attribute ibmvscsi_host_os_type = {
+static struct device_attribute ibmvscsi_host_os_type = {
 	.attr = {
 		 .name = "os_type",
 		 .mode = S_IRUGO,
@@ -1509,9 +1572,10 @@ static struct class_device_attribute ibmvscsi_host_os_type = {
 	.show = show_host_os_type,
 };
 
-static ssize_t show_host_config(struct class_device *class_dev, char *buf)
+static ssize_t show_host_config(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
-	struct Scsi_Host *shost = class_to_shost(class_dev);
+	struct Scsi_Host *shost = class_to_shost(dev);
 	struct ibmvscsi_host_data *hostdata = shost_priv(shost);
 
 	/* returns null-terminated host config data */
@@ -1521,7 +1585,7 @@ static ssize_t show_host_config(struct class_device *class_dev, char *buf)
 		return 0;
 }
 
-static struct class_device_attribute ibmvscsi_host_config = {
+static struct device_attribute ibmvscsi_host_config = {
 	.attr = {
 		 .name = "config",
 		 .mode = S_IRUGO,
@@ -1529,7 +1593,7 @@ static struct class_device_attribute ibmvscsi_host_config = {
 	.show = show_host_config,
 };
 
-static struct class_device_attribute *ibmvscsi_attrs[] = {
+static struct device_attribute *ibmvscsi_attrs[] = {
 	&ibmvscsi_host_srp_version,
 	&ibmvscsi_host_partition_name,
 	&ibmvscsi_host_partition_number,
@@ -1552,14 +1616,33 @@ static struct scsi_host_template driver_template = {
 	.eh_host_reset_handler = ibmvscsi_eh_host_reset_handler,
 	.slave_configure = ibmvscsi_slave_configure,
 	.change_queue_depth = ibmvscsi_change_queue_depth,
-	.cmd_per_lun = 16,
+	.cmd_per_lun = IBMVSCSI_CMDS_PER_LUN_DEFAULT,
 	.can_queue = IBMVSCSI_MAX_REQUESTS_DEFAULT,
 	.this_id = -1,
 	.sg_tablesize = SG_ALL,
 	.use_clustering = ENABLE_CLUSTERING,
-	.use_sg_chaining = ENABLE_SG_CHAINING,
 	.shost_attrs = ibmvscsi_attrs,
 };
+
+/**
+ * ibmvscsi_get_desired_dma - Calculate IO memory desired by the driver
+ *
+ * @vdev: struct vio_dev for the device whose desired IO mem is to be returned
+ *
+ * Return value:
+ *	Number of bytes of IO data the driver will need to perform well.
+ */
+static unsigned long ibmvscsi_get_desired_dma(struct vio_dev *vdev)
+{
+	/* iu_storage data allocated in initialize_event_pool */
+	unsigned long desired_io = max_events * sizeof(union viosrp_iu);
+
+	/* add io space for sg data */
+	desired_io += (IBMVSCSI_MAX_SECTORS_DEFAULT * 512 *
+	                     IBMVSCSI_CMDS_PER_LUN_DEFAULT);
+
+	return desired_io;
+}
 
 /**
  * Called by bus code for each adapter
@@ -1576,7 +1659,6 @@ static int ibmvscsi_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 
 	vdev->dev.driver_data = NULL;
 
-	driver_template.can_queue = max_requests;
 	host = scsi_host_alloc(&driver_template, sizeof(*hostdata));
 	if (!host) {
 		dev_err(&vdev->dev, "couldn't allocate host data\n");
@@ -1590,14 +1672,14 @@ static int ibmvscsi_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	hostdata->host = host;
 	hostdata->dev = dev;
 	atomic_set(&hostdata->request_limit, -1);
-	hostdata->host->max_sectors = 32 * 8; /* default max I/O 32 pages */
+	hostdata->host->max_sectors = IBMVSCSI_MAX_SECTORS_DEFAULT;
 
-	rc = ibmvscsi_ops->init_crq_queue(&hostdata->queue, hostdata, max_requests);
+	rc = ibmvscsi_ops->init_crq_queue(&hostdata->queue, hostdata, max_events);
 	if (rc != 0 && rc != H_RESOURCE) {
 		dev_err(&vdev->dev, "couldn't initialize crq. rc=%d\n", rc);
 		goto init_crq_failed;
 	}
-	if (initialize_event_pool(&hostdata->pool, max_requests, hostdata) != 0) {
+	if (initialize_event_pool(&hostdata->pool, max_events, hostdata) != 0) {
 		dev_err(&vdev->dev, "couldn't initialize event pool\n");
 		goto init_pool_failed;
 	}
@@ -1649,7 +1731,7 @@ static int ibmvscsi_probe(struct vio_dev *vdev, const struct vio_device_id *id)
       add_host_failed:
 	release_event_pool(&hostdata->pool, hostdata);
       init_pool_failed:
-	ibmvscsi_ops->release_crq_queue(&hostdata->queue, hostdata, max_requests);
+	ibmvscsi_ops->release_crq_queue(&hostdata->queue, hostdata, max_events);
       init_crq_failed:
 	scsi_host_put(host);
       scsi_host_alloc_failed:
@@ -1661,7 +1743,7 @@ static int ibmvscsi_remove(struct vio_dev *vdev)
 	struct ibmvscsi_host_data *hostdata = vdev->dev.driver_data;
 	release_event_pool(&hostdata->pool, hostdata);
 	ibmvscsi_ops->release_crq_queue(&hostdata->queue, hostdata,
-					max_requests);
+					max_events);
 
 	srp_remove_host(hostdata->host);
 	scsi_remove_host(hostdata->host);
@@ -1684,6 +1766,7 @@ static struct vio_driver ibmvscsi_driver = {
 	.id_table = ibmvscsi_device_table,
 	.probe = ibmvscsi_probe,
 	.remove = ibmvscsi_remove,
+	.get_desired_dma = ibmvscsi_get_desired_dma,
 	.driver = {
 		.name = "ibmvscsi",
 		.owner = THIS_MODULE,
@@ -1696,6 +1779,10 @@ static struct srp_function_template ibmvscsi_transport_functions = {
 int __init ibmvscsi_module_init(void)
 {
 	int ret;
+
+	/* Ensure we have two requests to do error recovery */
+	driver_template.can_queue = max_requests;
+	max_events = max_requests + 2;
 
 	if (firmware_has_feature(FW_FEATURE_ISERIES))
 		ibmvscsi_ops = &iseriesvscsi_ops;

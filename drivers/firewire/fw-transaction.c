@@ -18,8 +18,12 @@
  * Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
+#include <linux/completion.h>
+#include <linux/idr.h>
 #include <linux/kernel.h>
+#include <linux/kref.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
@@ -28,7 +32,6 @@
 #include <linux/list.h>
 #include <linux/kthread.h>
 #include <asm/uaccess.h>
-#include <asm/semaphore.h>
 
 #include "fw-transaction.h"
 #include "fw-topology.h"
@@ -53,6 +56,9 @@
 #define HEADER_GET_OFFSET_HIGH(q)	(((q) >> 0) & 0xffff)
 #define HEADER_GET_DATA_LENGTH(q)	(((q) >> 16) & 0xffff)
 #define HEADER_GET_EXTENDED_TCODE(q)	(((q) >> 0) & 0xffff)
+
+#define HEADER_DESTINATION_IS_BROADCAST(q) \
+	(((q) & HEADER_DESTINATION(0x3f)) == HEADER_DESTINATION(0x3f))
 
 #define PHY_CONFIG_GAP_COUNT(gap_count)	(((gap_count) << 16) | (1 << 22))
 #define PHY_CONFIG_ROOT_ID(node_id)	((((node_id) & 0x3f) << 24) | (1 << 23))
@@ -147,13 +153,13 @@ transmit_complete_callback(struct fw_packet *packet,
 
 static void
 fw_fill_request(struct fw_packet *packet, int tcode, int tlabel,
-		int node_id, int source_id, int generation, int speed,
+		int destination_id, int source_id, int generation, int speed,
 		unsigned long long offset, void *payload, size_t length)
 {
 	int ext_tcode;
 
 	if (tcode > 0x10) {
-		ext_tcode = tcode - 0x10;
+		ext_tcode = tcode & ~0x10;
 		tcode = TCODE_LOCK_REQUEST;
 	} else
 		ext_tcode = 0;
@@ -162,7 +168,7 @@ fw_fill_request(struct fw_packet *packet, int tcode, int tlabel,
 		HEADER_RETRY(RETRY_X) |
 		HEADER_TLABEL(tlabel) |
 		HEADER_TCODE(tcode) |
-		HEADER_DESTINATION(node_id);
+		HEADER_DESTINATION(destination_id);
 	packet->header[1] =
 		HEADER_OFFSET_HIGH(offset >> 32) | HEADER_SOURCE(source_id);
 	packet->header[2] =
@@ -202,6 +208,7 @@ fw_fill_request(struct fw_packet *packet, int tcode, int tlabel,
 	packet->speed = speed;
 	packet->generation = generation;
 	packet->ack = 0;
+	packet->payload_bus = 0;
 }
 
 /**
@@ -242,13 +249,13 @@ fw_fill_request(struct fw_packet *packet, int tcode, int tlabel,
  */
 void
 fw_send_request(struct fw_card *card, struct fw_transaction *t,
-		int tcode, int node_id, int generation, int speed,
+		int tcode, int destination_id, int generation, int speed,
 		unsigned long long offset,
 		void *payload, size_t length,
 		fw_transaction_callback_t callback, void *callback_data)
 {
 	unsigned long flags;
-	int tlabel, source;
+	int tlabel;
 
 	/*
 	 * Bump the flush timer up 100ms first of all so we
@@ -264,7 +271,6 @@ fw_send_request(struct fw_card *card, struct fw_transaction *t,
 
 	spin_lock_irqsave(&card->lock, flags);
 
-	source = card->node_id;
 	tlabel = card->current_tlabel;
 	if (card->tlabel_mask & (1 << tlabel)) {
 		spin_unlock_irqrestore(&card->lock, flags);
@@ -275,61 +281,98 @@ fw_send_request(struct fw_card *card, struct fw_transaction *t,
 	card->current_tlabel = (card->current_tlabel + 1) & 0x1f;
 	card->tlabel_mask |= (1 << tlabel);
 
-	list_add_tail(&t->link, &card->transaction_list);
-
-	spin_unlock_irqrestore(&card->lock, flags);
-
-	/* Initialize rest of transaction, fill out packet and send it. */
-	t->node_id = node_id;
+	t->node_id = destination_id;
 	t->tlabel = tlabel;
 	t->callback = callback;
 	t->callback_data = callback_data;
 
 	fw_fill_request(&t->packet, tcode, t->tlabel,
-			node_id, source, generation,
+			destination_id, card->node_id, generation,
 			speed, offset, payload, length);
 	t->packet.callback = transmit_complete_callback;
+
+	list_add_tail(&t->link, &card->transaction_list);
+
+	spin_unlock_irqrestore(&card->lock, flags);
 
 	card->driver->send_request(card, &t->packet);
 }
 EXPORT_SYMBOL(fw_send_request);
 
-static void
-transmit_phy_packet_callback(struct fw_packet *packet,
-			     struct fw_card *card, int status)
+struct transaction_callback_data {
+	struct completion done;
+	void *payload;
+	int rcode;
+};
+
+static void transaction_callback(struct fw_card *card, int rcode,
+				 void *payload, size_t length, void *data)
 {
-	kfree(packet);
+	struct transaction_callback_data *d = data;
+
+	if (rcode == RCODE_COMPLETE)
+		memcpy(d->payload, payload, length);
+	d->rcode = rcode;
+	complete(&d->done);
 }
 
-static void send_phy_packet(struct fw_card *card, u32 data, int generation)
+/**
+ * fw_run_transaction - send request and sleep until transaction is completed
+ *
+ * Returns the RCODE.
+ */
+int fw_run_transaction(struct fw_card *card, int tcode, int destination_id,
+		int generation, int speed, unsigned long long offset,
+		void *data, size_t length)
 {
-	struct fw_packet *packet;
+	struct transaction_callback_data d;
+	struct fw_transaction t;
 
-	packet = kzalloc(sizeof(*packet), GFP_ATOMIC);
-	if (packet == NULL)
-		return;
+	init_completion(&d.done);
+	d.payload = data;
+	fw_send_request(card, &t, tcode, destination_id, generation, speed,
+			offset, data, length, transaction_callback, &d);
+	wait_for_completion(&d.done);
 
-	packet->header[0] = data;
-	packet->header[1] = ~data;
-	packet->header_length = 8;
-	packet->payload_length = 0;
-	packet->speed = SCODE_100;
-	packet->generation = generation;
-	packet->callback = transmit_phy_packet_callback;
-
-	card->driver->send_request(card, packet);
+	return d.rcode;
 }
+EXPORT_SYMBOL(fw_run_transaction);
+
+static DEFINE_MUTEX(phy_config_mutex);
+static DECLARE_COMPLETION(phy_config_done);
+
+static void transmit_phy_packet_callback(struct fw_packet *packet,
+					 struct fw_card *card, int status)
+{
+	complete(&phy_config_done);
+}
+
+static struct fw_packet phy_config_packet = {
+	.header_length	= 8,
+	.payload_length	= 0,
+	.speed		= SCODE_100,
+	.callback	= transmit_phy_packet_callback,
+};
 
 void fw_send_phy_config(struct fw_card *card,
 			int node_id, int generation, int gap_count)
 {
-	u32 q;
+	long timeout = DIV_ROUND_UP(HZ, 10);
+	u32 data = PHY_IDENTIFIER(PHY_PACKET_CONFIG) |
+		   PHY_CONFIG_ROOT_ID(node_id) |
+		   PHY_CONFIG_GAP_COUNT(gap_count);
 
-	q = PHY_IDENTIFIER(PHY_PACKET_CONFIG) |
-		PHY_CONFIG_ROOT_ID(node_id) |
-		PHY_CONFIG_GAP_COUNT(gap_count);
+	mutex_lock(&phy_config_mutex);
 
-	send_phy_packet(card, q, generation);
+	phy_config_packet.header[0] = data;
+	phy_config_packet.header[1] = ~data;
+	phy_config_packet.generation = generation;
+	INIT_COMPLETION(phy_config_done);
+
+	card->driver->send_request(card, &phy_config_packet);
+	wait_for_completion_timeout(&phy_config_done, timeout);
+
+	mutex_unlock(&phy_config_mutex);
 }
 
 void fw_flush_transactions(struct fw_card *card)
@@ -389,21 +432,21 @@ lookup_enclosing_address_handler(struct list_head *list,
 static DEFINE_SPINLOCK(address_handler_lock);
 static LIST_HEAD(address_handler_list);
 
-const struct fw_address_region fw_low_memory_region =
-	{ .start = 0x000000000000ULL, .end = 0x000100000000ULL,  };
 const struct fw_address_region fw_high_memory_region =
 	{ .start = 0x000100000000ULL, .end = 0xffffe0000000ULL,  };
+EXPORT_SYMBOL(fw_high_memory_region);
+
+#if 0
+const struct fw_address_region fw_low_memory_region =
+	{ .start = 0x000000000000ULL, .end = 0x000100000000ULL,  };
 const struct fw_address_region fw_private_region =
 	{ .start = 0xffffe0000000ULL, .end = 0xfffff0000000ULL,  };
 const struct fw_address_region fw_csr_region =
-	{ .start = 0xfffff0000000ULL, .end = 0xfffff0000800ULL,  };
+	{ .start = CSR_REGISTER_BASE,
+	  .end   = CSR_REGISTER_BASE | CSR_CONFIG_ROM_END,  };
 const struct fw_address_region fw_unit_space_region =
 	{ .start = 0xfffff0000900ULL, .end = 0x1000000000000ULL, };
-EXPORT_SYMBOL(fw_low_memory_region);
-EXPORT_SYMBOL(fw_high_memory_region);
-EXPORT_SYMBOL(fw_private_region);
-EXPORT_SYMBOL(fw_csr_region);
-EXPORT_SYMBOL(fw_unit_space_region);
+#endif  /*  0  */
 
 /**
  * Allocate a range of addresses in the node space of the OHCI
@@ -540,6 +583,8 @@ fw_fill_response(struct fw_packet *response, u32 *request_header,
 		BUG();
 		return;
 	}
+
+	response->payload_bus = 0;
 }
 EXPORT_SYMBOL(fw_fill_response);
 
@@ -574,7 +619,8 @@ allocate_request(struct fw_packet *p)
 		break;
 
 	default:
-		BUG();
+		fw_error("ERROR - corrupt request received - %08x %08x %08x\n",
+			 p->header[0], p->header[1], p->header[2]);
 		return NULL;
 	}
 
@@ -606,12 +652,9 @@ allocate_request(struct fw_packet *p)
 void
 fw_send_response(struct fw_card *card, struct fw_request *request, int rcode)
 {
-	/*
-	 * Broadcast packets are reported as ACK_COMPLETE, so this
-	 * check is sufficient to ensure we don't send response to
-	 * broadcast packets or posted writes.
-	 */
-	if (request->ack != ACK_PENDING) {
+	/* unified transaction or broadcast transaction: don't respond */
+	if (request->ack != ACK_PENDING ||
+	    HEADER_DESTINATION_IS_BROADCAST(request->request_header[0])) {
 		kfree(request);
 		return;
 	}
@@ -650,7 +693,7 @@ fw_core_handle_request(struct fw_card *card, struct fw_packet *p)
 		 HEADER_GET_OFFSET_HIGH(p->header[1]) << 32) | p->header[2];
 	tcode       = HEADER_GET_TCODE(p->header[0]);
 	destination = HEADER_GET_DESTINATION(p->header[0]);
-	source      = HEADER_GET_SOURCE(p->header[0]);
+	source      = HEADER_GET_SOURCE(p->header[1]);
 
 	spin_lock_irqsave(&address_handler_lock, flags);
 	handler = lookup_enclosing_address_handler(&address_handler_list,
@@ -736,12 +779,19 @@ fw_core_handle_response(struct fw_card *card, struct fw_packet *p)
 		break;
 	}
 
+	/*
+	 * The response handler may be executed while the request handler
+	 * is still pending.  Cancel the request handler.
+	 */
+	card->driver->cancel_packet(card, &t->packet);
+
 	t->callback(card, rcode, data, data_length, t->callback_data);
 }
 EXPORT_SYMBOL(fw_core_handle_response);
 
 static const struct fw_address_region topology_map_region =
-	{ .start = 0xfffff0001000ull, .end = 0xfffff0001400ull, };
+	{ .start = CSR_REGISTER_BASE | CSR_TOPOLOGY_MAP,
+	  .end   = CSR_REGISTER_BASE | CSR_TOPOLOGY_MAP_END, };
 
 static void
 handle_topology_map(struct fw_card *card, struct fw_request *request,
@@ -751,7 +801,7 @@ handle_topology_map(struct fw_card *card, struct fw_request *request,
 		    void *payload, size_t length, void *callback_data)
 {
 	int i, start, end;
-	u32 *map;
+	__be32 *map;
 
 	if (!TCODE_IS_READ_REQUEST(tcode)) {
 		fw_send_response(card, request, RCODE_TYPE_ERROR);
@@ -779,7 +829,8 @@ static struct fw_address_handler topology_map = {
 };
 
 static const struct fw_address_region registers_region =
-	{ .start = 0xfffff0000000ull, .end = 0xfffff0000400ull, };
+	{ .start = CSR_REGISTER_BASE,
+	  .end   = CSR_REGISTER_BASE | CSR_CONFIG_ROM, };
 
 static void
 handle_registers(struct fw_card *card, struct fw_request *request,
@@ -788,15 +839,16 @@ handle_registers(struct fw_card *card, struct fw_request *request,
 		 unsigned long long offset,
 		 void *payload, size_t length, void *callback_data)
 {
-	int reg = offset - CSR_REGISTER_BASE;
+	int reg = offset & ~CSR_REGISTER_BASE;
 	unsigned long long bus_time;
 	__be32 *data = payload;
+	int rcode = RCODE_COMPLETE;
 
 	switch (reg) {
 	case CSR_CYCLE_TIME:
 	case CSR_BUS_TIME:
 		if (!TCODE_IS_READ_REQUEST(tcode) || length != 4) {
-			fw_send_response(card, request, RCODE_TYPE_ERROR);
+			rcode = RCODE_TYPE_ERROR;
 			break;
 		}
 
@@ -805,7 +857,17 @@ handle_registers(struct fw_card *card, struct fw_request *request,
 			*data = cpu_to_be32(bus_time);
 		else
 			*data = cpu_to_be32(bus_time >> 25);
-		fw_send_response(card, request, RCODE_COMPLETE);
+		break;
+
+	case CSR_BROADCAST_CHANNEL:
+		if (tcode == TCODE_READ_QUADLET_REQUEST)
+			*data = cpu_to_be32(card->broadcast_channel);
+		else if (tcode == TCODE_WRITE_QUADLET_REQUEST)
+			card->broadcast_channel =
+			    (be32_to_cpu(*data) & BROADCAST_CHANNEL_VALID) |
+			    BROADCAST_CHANNEL_INITIAL;
+		else
+			rcode = RCODE_TYPE_ERROR;
 		break;
 
 	case CSR_BUS_MANAGER_ID:
@@ -824,10 +886,13 @@ handle_registers(struct fw_card *card, struct fw_request *request,
 
 	case CSR_BUSY_TIMEOUT:
 		/* FIXME: Implement this. */
+
 	default:
-		fw_send_response(card, request, RCODE_ADDRESS_ERROR);
+		rcode = RCODE_ADDRESS_ERROR;
 		break;
 	}
+
+	fw_send_response(card, request, rcode);
 }
 
 static struct fw_address_handler registers = {
@@ -907,6 +972,7 @@ static void __exit fw_core_cleanup(void)
 {
 	unregister_chrdev(fw_cdev_major, "firewire");
 	bus_unregister(&fw_bus_type);
+	idr_destroy(&fw_device_idr);
 }
 
 module_init(fw_core_init);

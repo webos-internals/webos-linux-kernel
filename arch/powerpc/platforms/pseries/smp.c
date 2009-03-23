@@ -12,7 +12,6 @@
  *      2 of the License, or (at your option) any later version.
  */
 
-#undef DEBUG
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -38,7 +37,6 @@
 #include <asm/paca.h>
 #include <asm/time.h>
 #include <asm/machdep.h>
-#include "xics.h"
 #include <asm/cputable.h>
 #include <asm/firmware.h>
 #include <asm/system.h>
@@ -46,20 +44,16 @@
 #include <asm/pSeries_reconfig.h>
 #include <asm/mpic.h>
 #include <asm/vdso_datapage.h>
+#include <asm/cputhreads.h>
 
 #include "plpar_wrappers.h"
 #include "pseries.h"
+#include "xics.h"
 
-#ifdef DEBUG
-#include <asm/udbg.h>
-#define DBG(fmt...) udbg_printf(fmt)
-#else
-#define DBG(fmt...)
-#endif
 
 /*
- * The primary thread of each non-boot processor is recorded here before
- * smp init.
+ * The Primary thread of each non-boot processor was started from the OF client
+ * interface by prom_hold_cpus and is spinning on secondary_hold_spinloop.
  */
 static cpumask_t of_spin_map;
 
@@ -111,36 +105,6 @@ static inline int __devinit smp_startup_cpu(unsigned int lcpu)
 }
 
 #ifdef CONFIG_XICS
-static inline void smp_xics_do_message(int cpu, int msg)
-{
-	set_bit(msg, &xics_ipi_message[cpu].value);
-	mb();
-	xics_cause_IPI(cpu);
-}
-
-static void smp_xics_message_pass(int target, int msg)
-{
-	unsigned int i;
-
-	if (target < NR_CPUS) {
-		smp_xics_do_message(target, msg);
-	} else {
-		for_each_online_cpu(i) {
-			if (target == MSG_ALL_BUT_SELF
-			    && i == smp_processor_id())
-				continue;
-			smp_xics_do_message(i, msg);
-		}
-	}
-}
-
-static int __init smp_xics_probe(void)
-{
-	xics_request_IPIs();
-
-	return cpus_weight(cpu_possible_map);
-}
-
 static void __devinit smp_xics_setup_cpu(int cpu)
 {
 	if (cpu != boot_cpuid)
@@ -197,12 +161,11 @@ static void __devinit smp_pSeries_kick_cpu(int nr)
 static int smp_pSeries_cpu_bootable(unsigned int nr)
 {
 	/* Special case - we inhibit secondary thread startup
-	 * during boot if the user requests it.  Odd-numbered
-	 * cpus are assumed to be secondary threads.
+	 * during boot if the user requests it.
 	 */
 	if (system_state < SYSTEM_RUNNING &&
 	    cpu_has_feature(CPU_FTR_SMT) &&
-	    !smt_enabled_at_boot && nr % 2 != 0)
+	    !smt_enabled_at_boot && cpu_thread_in_core(nr) != 0)
 		return 0;
 
 	return 1;
@@ -230,16 +193,12 @@ static void __init smp_init_pseries(void)
 {
 	int i;
 
-	DBG(" -> smp_init_pSeries()\n");
+	pr_debug(" -> smp_init_pSeries()\n");
 
 	/* Mark threads which are still spinning in hold loops. */
 	if (cpu_has_feature(CPU_FTR_SMT)) {
 		for_each_present_cpu(i) { 
-			if (i % 2 == 0)
-				/*
-				 * Even-numbered logical cpus correspond to
-				 * primary threads.
-				 */
+			if (cpu_thread_in_core(i) == 0)
 				cpu_set(i, of_spin_map);
 		}
 	} else {
@@ -254,7 +213,7 @@ static void __init smp_init_pseries(void)
 		smp_ops->take_timebase = pSeries_take_timebase;
 	}
 
-	DBG(" <- smp_init_pSeries()\n");
+	pr_debug(" <- smp_init_pSeries()\n");
 }
 
 #ifdef CONFIG_MPIC

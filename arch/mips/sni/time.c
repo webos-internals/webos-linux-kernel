@@ -80,7 +80,7 @@ static void __init sni_a20r_timer_setup(void)
 	struct irqaction *action = &a20r_irqaction;
 	unsigned int cpu = smp_processor_id();
 
-	cd->cpumask             = cpumask_of_cpu(cpu);
+	cd->cpumask             = cpumask_of(cpu);
 	clockevents_register_device(cd);
 	action->dev_id = cd;
 	setup_irq(SNI_A20R_IRQ_TIMER, &a20r_irqaction);
@@ -178,6 +178,7 @@ void __init plat_time_init(void)
 		sni_a20r_timer_setup();
 		break;
 	}
+	setup_pit_timer();
 }
 
 unsigned long read_persistent_clock(void)

@@ -17,33 +17,34 @@ extern void __lockfunc __release_kernel_lock(void);
 		__release_kernel_lock();	\
 } while (0)
 
-/*
- * Non-SMP kernels will never block on the kernel lock,
- * so we are better off returning a constant zero from
- * reacquire_kernel_lock() so that the compiler can see
- * it at compile-time.
- */
-#if defined(CONFIG_SMP) && !defined(CONFIG_PREEMPT_BKL)
-# define return_value_on_smp return
-#else
-# define return_value_on_smp
-#endif
-
 static inline int reacquire_kernel_lock(struct task_struct *task)
 {
 	if (unlikely(task->lock_depth >= 0))
-		return_value_on_smp __reacquire_kernel_lock();
+		return __reacquire_kernel_lock();
 	return 0;
 }
 
 extern void __lockfunc lock_kernel(void)	__acquires(kernel_lock);
 extern void __lockfunc unlock_kernel(void)	__releases(kernel_lock);
 
+/*
+ * Various legacy drivers don't really need the BKL in a specific
+ * function, but they *do* need to know that the BKL became available.
+ * This function just avoids wrapping a bunch of lock/unlock pairs
+ * around code which doesn't really need it.
+ */
+static inline void cycle_kernel_lock(void)
+{
+	lock_kernel();
+	unlock_kernel();
+}
+
 #else
 
 #define lock_kernel()				do { } while(0)
 #define unlock_kernel()				do { } while(0)
 #define release_kernel_lock(task)		do { } while(0)
+#define cycle_kernel_lock()			do { } while(0)
 #define reacquire_kernel_lock(task)		0
 #define kernel_locked()				1
 

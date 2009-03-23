@@ -1,4 +1,4 @@
-/* 
+/*
  * User address space access functions.
  * The non inlined parts of asm-i386/uaccess.h are here.
  *
@@ -14,6 +14,13 @@
 #include <asm/uaccess.h>
 #include <asm/mmx.h>
 
+#ifdef CONFIG_X86_INTEL_USERCOPY
+/*
+ * Alignment at which movsl is preferred for bulk memory copies.
+ */
+struct movsl_mask movsl_mask __read_mostly;
+#endif
+
 static inline int __movsl_is_ok(unsigned long a1, unsigned long a2, unsigned long n)
 {
 #ifdef CONFIG_X86_INTEL_USERCOPY
@@ -22,17 +29,17 @@ static inline int __movsl_is_ok(unsigned long a1, unsigned long a2, unsigned lon
 #endif
 	return 1;
 }
-#define movsl_is_ok(a1,a2,n) \
-	__movsl_is_ok((unsigned long)(a1),(unsigned long)(a2),(n))
+#define movsl_is_ok(a1, a2, n) \
+	__movsl_is_ok((unsigned long)(a1), (unsigned long)(a2), (n))
 
 /*
  * Copy a null terminated string from userspace.
  */
 
-#define __do_strncpy_from_user(dst,src,count,res)			   \
+#define __do_strncpy_from_user(dst, src, count, res)			   \
 do {									   \
 	int __d0, __d1, __d2;						   \
-	might_sleep();							   \
+	might_fault();							   \
 	__asm__ __volatile__(						   \
 		"	testl %1,%1\n"					   \
 		"	jz 2f\n"					   \
@@ -48,11 +55,8 @@ do {									   \
 		"3:	movl %5,%0\n"					   \
 		"	jmp 2b\n"					   \
 		".previous\n"						   \
-		".section __ex_table,\"a\"\n"				   \
-		"	.align 4\n"					   \
-		"	.long 0b,3b\n"					   \
-		".previous"						   \
-		: "=d"(res), "=c"(count), "=&a" (__d0), "=&S" (__d1),	   \
+		_ASM_EXTABLE(0b,3b)					   \
+		: "=&d"(res), "=&c"(count), "=&a" (__d0), "=&S" (__d1),	   \
 		  "=&D" (__d2)						   \
 		: "i"(-EFAULT), "0"(count), "1"(count), "3"(src), "4"(dst) \
 		: "memory");						   \
@@ -64,7 +68,7 @@ do {									   \
  *         least @count bytes long.
  * @src:   Source address, in user space.
  * @count: Maximum number of bytes to copy, including the trailing NUL.
- * 
+ *
  * Copies a NUL-terminated string from userspace to kernel space.
  * Caller must check the specified block with access_ok() before calling
  * this function.
@@ -93,7 +97,7 @@ EXPORT_SYMBOL(__strncpy_from_user);
  *         least @count bytes long.
  * @src:   Source address, in user space.
  * @count: Maximum number of bytes to copy, including the trailing NUL.
- * 
+ *
  * Copies a NUL-terminated string from userspace to kernel space.
  *
  * On success, returns the length of the string (not including the trailing
@@ -122,8 +126,8 @@ EXPORT_SYMBOL(strncpy_from_user);
 #define __do_clear_user(addr,size)					\
 do {									\
 	int __d0;							\
-	might_sleep();							\
-  	__asm__ __volatile__(						\
+	might_fault();							\
+	__asm__ __volatile__(						\
 		"0:	rep; stosl\n"					\
 		"	movl %2,%0\n"					\
 		"1:	rep; stosb\n"					\
@@ -132,11 +136,8 @@ do {									\
 		"3:	lea 0(%2,%0,4),%0\n"				\
 		"	jmp 2b\n"					\
 		".previous\n"						\
-		".section __ex_table,\"a\"\n"				\
-		"	.align 4\n"					\
-		"	.long 0b,3b\n"					\
-		"	.long 1b,2b\n"					\
-		".previous"						\
+		_ASM_EXTABLE(0b,3b)					\
+		_ASM_EXTABLE(1b,2b)					\
 		: "=&c"(size), "=&D" (__d0)				\
 		: "r"(size & 3), "0"(size / 4), "1"(addr), "a"(0));	\
 } while (0)
@@ -154,7 +155,7 @@ do {									\
 unsigned long
 clear_user(void __user *to, unsigned long n)
 {
-	might_sleep();
+	might_fault();
 	if (access_ok(VERIFY_WRITE, to, n))
 		__do_clear_user(to, n);
 	return n;
@@ -196,7 +197,7 @@ long strnlen_user(const char __user *s, long n)
 	unsigned long mask = -__addr_ok(s);
 	unsigned long res, tmp;
 
-	might_sleep();
+	might_fault();
 
 	__asm__ __volatile__(
 		"	testl %0, %0\n"
@@ -217,7 +218,7 @@ long strnlen_user(const char __user *s, long n)
 		"	.align 4\n"
 		"	.long 0b,2b\n"
 		".previous"
-		:"=r" (n), "=D" (s), "=a" (res), "=c" (tmp)
+		:"=&r" (n), "=&D" (s), "=&a" (res), "=&c" (tmp)
 		:"0" (n), "1" (s), "2" (0), "3" (mask)
 		:"cc");
 	return res & mask;
@@ -339,17 +340,17 @@ __copy_user_zeroing_intel(void *to, const void __user *from, unsigned long size)
 	__asm__ __volatile__(
 		       "        .align 2,0x90\n"
 		       "0:      movl 32(%4), %%eax\n"
-		       "        cmpl $67, %0\n"      
-		       "        jbe 2f\n"            
+		       "        cmpl $67, %0\n"
+		       "        jbe 2f\n"
 		       "1:      movl 64(%4), %%eax\n"
-		       "        .align 2,0x90\n"     
-		       "2:      movl 0(%4), %%eax\n" 
-		       "21:     movl 4(%4), %%edx\n" 
-		       "        movl %%eax, 0(%3)\n" 
-		       "        movl %%edx, 4(%3)\n" 
-		       "3:      movl 8(%4), %%eax\n" 
-		       "31:     movl 12(%4),%%edx\n" 
-		       "        movl %%eax, 8(%3)\n" 
+		       "        .align 2,0x90\n"
+		       "2:      movl 0(%4), %%eax\n"
+		       "21:     movl 4(%4), %%edx\n"
+		       "        movl %%eax, 0(%3)\n"
+		       "        movl %%edx, 4(%3)\n"
+		       "3:      movl 8(%4), %%eax\n"
+		       "31:     movl 12(%4),%%edx\n"
+		       "        movl %%eax, 8(%3)\n"
 		       "        movl %%edx, 12(%3)\n"
 		       "4:      movl 16(%4), %%eax\n"
 		       "41:     movl 20(%4), %%edx\n"
@@ -375,38 +376,38 @@ __copy_user_zeroing_intel(void *to, const void __user *from, unsigned long size)
 		       "91:     movl 60(%4), %%edx\n"
 		       "        movl %%eax, 56(%3)\n"
 		       "        movl %%edx, 60(%3)\n"
-		       "        addl $-64, %0\n"     
-		       "        addl $64, %4\n"      
-		       "        addl $64, %3\n"      
-		       "        cmpl $63, %0\n"      
-		       "        ja  0b\n"            
-		       "5:      movl  %0, %%eax\n"   
-		       "        shrl  $2, %0\n"      
-		       "        andl $3, %%eax\n"    
-		       "        cld\n"               
-		       "6:      rep; movsl\n"   
+		       "        addl $-64, %0\n"
+		       "        addl $64, %4\n"
+		       "        addl $64, %3\n"
+		       "        cmpl $63, %0\n"
+		       "        ja  0b\n"
+		       "5:      movl  %0, %%eax\n"
+		       "        shrl  $2, %0\n"
+		       "        andl $3, %%eax\n"
+		       "        cld\n"
+		       "6:      rep; movsl\n"
 		       "        movl %%eax,%0\n"
-		       "7:      rep; movsb\n"	
-		       "8:\n"			
+		       "7:      rep; movsb\n"
+		       "8:\n"
 		       ".section .fixup,\"ax\"\n"
-		       "9:      lea 0(%%eax,%0,4),%0\n"	
-		       "16:     pushl %0\n"	
-		       "        pushl %%eax\n"	
+		       "9:      lea 0(%%eax,%0,4),%0\n"
+		       "16:     pushl %0\n"
+		       "        pushl %%eax\n"
 		       "        xorl %%eax,%%eax\n"
-		       "        rep; stosb\n"	
-		       "        popl %%eax\n"	
-		       "        popl %0\n"	
-		       "        jmp 8b\n"	
-		       ".previous\n"		
+		       "        rep; stosb\n"
+		       "        popl %%eax\n"
+		       "        popl %0\n"
+		       "        jmp 8b\n"
+		       ".previous\n"
 		       ".section __ex_table,\"a\"\n"
-		       "	.align 4\n"	   
-		       "	.long 0b,16b\n"	 
+		       "	.align 4\n"
+		       "	.long 0b,16b\n"
 		       "	.long 1b,16b\n"
 		       "	.long 2b,16b\n"
 		       "	.long 21b,16b\n"
-		       "	.long 3b,16b\n"	
+		       "	.long 3b,16b\n"
 		       "	.long 31b,16b\n"
-		       "	.long 4b,16b\n"	
+		       "	.long 4b,16b\n"
 		       "	.long 41b,16b\n"
 		       "	.long 10b,16b\n"
 		       "	.long 51b,16b\n"
@@ -418,9 +419,9 @@ __copy_user_zeroing_intel(void *to, const void __user *from, unsigned long size)
 		       "	.long 81b,16b\n"
 		       "	.long 14b,16b\n"
 		       "	.long 91b,16b\n"
-		       "	.long 6b,9b\n"	
-		       "        .long 7b,16b\n" 
-		       ".previous"		
+		       "	.long 6b,9b\n"
+		       "        .long 7b,16b\n"
+		       ".previous"
 		       : "=&c"(size), "=&D" (d0), "=&S" (d1)
 		       :  "1"(to), "2"(from), "0"(size)
 		       : "eax", "edx", "memory");
@@ -435,7 +436,7 @@ __copy_user_zeroing_intel(void *to, const void __user *from, unsigned long size)
 static unsigned long __copy_user_zeroing_intel_nocache(void *to,
 				const void __user *from, unsigned long size)
 {
-        int d0, d1;
+	int d0, d1;
 
 	__asm__ __volatile__(
 	       "        .align 2,0x90\n"
@@ -532,7 +533,7 @@ static unsigned long __copy_user_zeroing_intel_nocache(void *to,
 static unsigned long __copy_user_intel_nocache(void *to,
 				const void __user *from, unsigned long size)
 {
-        int d0, d1;
+	int d0, d1;
 
 	__asm__ __volatile__(
 	       "        .align 2,0x90\n"
@@ -635,7 +636,7 @@ unsigned long __copy_user_zeroing_intel_nocache(void *to,
 #endif /* CONFIG_X86_INTEL_USERCOPY */
 
 /* Generic arbitrary sized copy.  */
-#define __copy_user(to,from,size)					\
+#define __copy_user(to, from, size)					\
 do {									\
 	int __d0, __d1, __d2;						\
 	__asm__ __volatile__(						\
@@ -671,7 +672,7 @@ do {									\
 		: "memory");						\
 } while (0)
 
-#define __copy_user_zeroing(to,from,size)				\
+#define __copy_user_zeroing(to, from, size)				\
 do {									\
 	int __d0, __d1, __d2;						\
 	__asm__ __volatile__(						\
@@ -718,7 +719,7 @@ unsigned long __copy_to_user_ll(void __user *to, const void *from,
 {
 #ifndef CONFIG_X86_WP_WORKS_OK
 	if (unlikely(boot_cpu_data.wp_works_ok == 0) &&
-			((unsigned long )to) < TASK_SIZE) {
+			((unsigned long)to) < TASK_SIZE) {
 		/*
 		 * When we are in an atomic section (see
 		 * mm/filemap.c:file_read_actor), return the full
@@ -727,26 +728,26 @@ unsigned long __copy_to_user_ll(void __user *to, const void *from,
 		if (in_atomic())
 			return n;
 
-		/* 
+		/*
 		 * CPU does not honor the WP bit when writing
 		 * from supervisory mode, and due to preemption or SMP,
 		 * the page tables can change at any time.
 		 * Do it manually.	Manfred <manfred@colorfullife.com>
 		 */
 		while (n) {
-		      	unsigned long offset = ((unsigned long)to)%PAGE_SIZE;
+			unsigned long offset = ((unsigned long)to)%PAGE_SIZE;
 			unsigned long len = PAGE_SIZE - offset;
 			int retval;
 			struct page *pg;
 			void *maddr;
-			
+
 			if (len > n)
 				len = n;
 
 survive:
 			down_read(&current->mm->mmap_sem);
 			retval = get_user_pages(current, current->mm,
-					(unsigned long )to, 1, 1, 0, &pg, NULL);
+					(unsigned long)to, 1, 1, 0, &pg, NULL);
 
 			if (retval == -ENOMEM && is_global_init(current)) {
 				up_read(&current->mm->mmap_sem);
@@ -756,8 +757,8 @@ survive:
 
 			if (retval != 1) {
 				up_read(&current->mm->mmap_sem);
-		       		break;
-		       	}
+				break;
+			}
 
 			maddr = kmap_atomic(pg, KM_USER0);
 			memcpy(maddr + offset, from, len);
@@ -808,29 +809,31 @@ unsigned long __copy_from_user_ll_nocache(void *to, const void __user *from,
 					unsigned long n)
 {
 #ifdef CONFIG_X86_INTEL_USERCOPY
-	if ( n > 64 && cpu_has_xmm2)
-                n = __copy_user_zeroing_intel_nocache(to, from, n);
+	if (n > 64 && cpu_has_xmm2)
+		n = __copy_user_zeroing_intel_nocache(to, from, n);
 	else
 		__copy_user_zeroing(to, from, n);
 #else
-        __copy_user_zeroing(to, from, n);
+	__copy_user_zeroing(to, from, n);
 #endif
 	return n;
 }
+EXPORT_SYMBOL(__copy_from_user_ll_nocache);
 
 unsigned long __copy_from_user_ll_nocache_nozero(void *to, const void __user *from,
 					unsigned long n)
 {
 #ifdef CONFIG_X86_INTEL_USERCOPY
-	if ( n > 64 && cpu_has_xmm2)
-                n = __copy_user_intel_nocache(to, from, n);
+	if (n > 64 && cpu_has_xmm2)
+		n = __copy_user_intel_nocache(to, from, n);
 	else
 		__copy_user(to, from, n);
 #else
-        __copy_user(to, from, n);
+	__copy_user(to, from, n);
 #endif
 	return n;
 }
+EXPORT_SYMBOL(__copy_from_user_ll_nocache_nozero);
 
 /**
  * copy_to_user: - Copy a block of data into user space.

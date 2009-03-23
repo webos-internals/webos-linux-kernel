@@ -10,7 +10,7 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/hardware/sa1111.h>
 #include <asm/mach-types.h>
 
@@ -42,7 +42,7 @@ jornada720_pcmcia_configure_socket(struct soc_pcmcia_socket *skt, const socket_s
   unsigned int pa_dwr_mask, pa_dwr_set;
   int ret;
 
-printk("%s(): config socket %d vcc %d vpp %d\n", __FUNCTION__,
+printk("%s(): config socket %d vcc %d vpp %d\n", __func__,
 	skt->nr, state->Vcc, state->Vpp);
 
   switch (skt->nr) {
@@ -74,7 +74,7 @@ printk("%s(): config socket %d vcc %d vpp %d\n", __FUNCTION__,
 
   if (state->Vpp != state->Vcc && state->Vpp != 0) {
     printk(KERN_ERR "%s(): slot cannot support VPP %u\n",
-	   __FUNCTION__, state->Vpp);
+	   __func__, state->Vpp);
     return -1;
   }
 
@@ -101,7 +101,7 @@ static struct pcmcia_low_level jornada720_pcmcia_ops = {
   .socket_suspend	= sa1111_pcmcia_socket_suspend,
 };
 
-int __init pcmcia_jornada720_init(struct device *dev)
+int __devinit pcmcia_jornada720_init(struct device *dev)
 {
 	int ret = -ENODEV;
 

@@ -47,7 +47,7 @@
 #include "waveartist.h"
 
 #ifdef CONFIG_ARM
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/mach-types.h>
 #endif
 
@@ -835,7 +835,7 @@ static struct audio_driver waveartist_audio_driver = {
 static irqreturn_t
 waveartist_intr(int irq, void *dev_id)
 {
-	wavnc_info *devc = (wavnc_info *)dev_id;
+	wavnc_info *devc = dev_id;
 	int	   irqstatus, status;
 
 	spin_lock(&waveartist_lock);
@@ -1483,16 +1483,14 @@ static void __exit unload_waveartist(struct address_info *hw)
 #define VNC_HANDSET_DETECT	0x40
 #define VNC_DISABLE_AUTOSWITCH	0x80
 
-extern spinlock_t gpio_lock;
-
 static inline void
 vnc_mute_spkr(wavnc_info *devc)
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&gpio_lock, flags);
-	cpld_modify(CPLD_UNMUTE, devc->spkr_mute_state ? 0 : CPLD_UNMUTE);
-	spin_unlock_irqrestore(&gpio_lock, flags);
+	spin_lock_irqsave(&nw_gpio_lock, flags);
+	nw_cpld_modify(CPLD_UNMUTE, devc->spkr_mute_state ? 0 : CPLD_UNMUTE);
+	spin_unlock_irqrestore(&nw_gpio_lock, flags);
 }
 
 static void

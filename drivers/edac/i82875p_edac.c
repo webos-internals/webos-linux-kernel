@@ -18,6 +18,7 @@
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/slab.h>
+#include <linux/edac.h>
 #include "edac_core.h"
 
 #define I82875P_REVISION	" Ver: 2.0.2 " __DATE__
@@ -181,8 +182,6 @@ static struct pci_dev *mci_pdev;	/* init dev: in case that AGP code has
 					 * already registered driver
 					 */
 
-static int i82875p_registered = 1;
-
 static struct edac_pci_ctl_info *i82875p_pci;
 
 static void i82875p_get_error_info(struct mem_ctl_info *mci,
@@ -294,6 +293,7 @@ static int i82875p_setup_overfl_dev(struct pci_dev *pdev,
 				"%s(): pci_bus_add_device() Failed\n",
 				__func__);
 		}
+		pci_bus_assign_resources(dev->bus);
 	}
 
 	*ovrfl_pdev = dev;
@@ -311,9 +311,7 @@ static int i82875p_setup_overfl_dev(struct pci_dev *pdev,
 	}
 
 	/* cache is irrelevant for PCI bus reads/writes */
-	window = ioremap_nocache(pci_resource_start(dev, 0),
-				 pci_resource_len(dev, 0));
-
+	window = pci_ioremap_bar(dev, 0);
 	if (window == NULL) {
 		i82875p_printk(KERN_ERR, "%s(): Failed to ioremap bar6\n",
 			__func__);
@@ -393,6 +391,7 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 	struct i82875p_error_info discard;
 
 	debugf0("%s()\n", __func__);
+
 	ovrfl_pdev = pci_get_device(PCI_VEND_DEV(INTEL, 82875_6), NULL);
 
 	if (i82875p_setup_overfl_dev(pdev, &ovrfl_pdev, &ovrfl_window))
@@ -406,6 +405,9 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 		rc = -ENOMEM;
 		goto fail0;
 	}
+
+	/* Keeps mci available after edac_mc_del_mc() till edac_mc_free() */
+	kobject_get(&mci->edac_mci_kobj);
 
 	debugf3("%s(): init mci\n", __func__);
 	mci->dev = &pdev->dev;
@@ -449,6 +451,7 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 	return 0;
 
 fail1:
+	kobject_put(&mci->edac_mci_kobj);
 	edac_mc_free(mci);
 
 fail0:
@@ -532,6 +535,10 @@ static int __init i82875p_init(void)
 	int pci_rc;
 
 	debugf3("%s()\n", __func__);
+
+       /* Ensure that the OPSTATE is set correctly for POLL or NMI */
+       opstate_init();
+
 	pci_rc = pci_register_driver(&i82875p_driver);
 
 	if (pci_rc < 0)
@@ -572,12 +579,11 @@ static void __exit i82875p_exit(void)
 {
 	debugf3("%s()\n", __func__);
 
+	i82875p_remove_one(mci_pdev);
+	pci_dev_put(mci_pdev);
+
 	pci_unregister_driver(&i82875p_driver);
 
-	if (!i82875p_registered) {
-		i82875p_remove_one(mci_pdev);
-		pci_dev_put(mci_pdev);
-	}
 }
 
 module_init(i82875p_init);
@@ -586,3 +592,6 @@ module_exit(i82875p_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Linux Networx (http://lnxi.com) Thayne Harbaugh");
 MODULE_DESCRIPTION("MC support for Intel 82875 memory hub controllers");
+
+module_param(edac_op_state, int, 0444);
+MODULE_PARM_DESC(edac_op_state, "EDAC Error Reporting state: 0=Poll,1=NMI");

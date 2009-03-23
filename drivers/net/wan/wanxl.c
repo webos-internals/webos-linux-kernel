@@ -161,7 +161,6 @@ static inline void wanxl_cable_intr(port_t *port)
 static inline void wanxl_tx_intr(port_t *port)
 {
 	struct net_device *dev = port->dev;
-	struct net_device_stats *stats = hdlc_stats(dev);
 	while (1) {
                 desc_t *desc = &get_status(port)->tx_descs[port->tx_in];
 		struct sk_buff *skb = port->tx_skbs[port->tx_in];
@@ -173,13 +172,13 @@ static inline void wanxl_tx_intr(port_t *port)
 			return;
 
 		case PACKET_UNDERRUN:
-			stats->tx_errors++;
-			stats->tx_fifo_errors++;
+			dev->stats.tx_errors++;
+			dev->stats.tx_fifo_errors++;
 			break;
 
 		default:
-			stats->tx_packets++;
-			stats->tx_bytes += skb->len;
+			dev->stats.tx_packets++;
+			dev->stats.tx_bytes += skb->len;
 		}
                 desc->stat = PACKET_EMPTY; /* Free descriptor */
 		pci_unmap_single(port->card->pdev, desc->address, skb->len,
@@ -205,10 +204,9 @@ static inline void wanxl_rx_intr(card_t *card)
 			port_t *port = &card->ports[desc->stat &
 						    PACKET_PORT_MASK];
 			struct net_device *dev = port->dev;
-			struct net_device_stats *stats = hdlc_stats(dev);
 
 			if (!skb)
-				stats->rx_dropped++;
+				dev->stats.rx_dropped++;
 			else {
 				pci_unmap_single(card->pdev, desc->address,
 						 BUFFER_LENGTH,
@@ -220,9 +218,8 @@ static inline void wanxl_rx_intr(card_t *card)
 				       skb->len);
 				debug_frame(skb);
 #endif
-				stats->rx_packets++;
-				stats->rx_bytes += skb->len;
-				dev->last_rx = jiffies;
+				dev->stats.rx_packets++;
+				dev->stats.rx_bytes += skb->len;
 				skb->protocol = hdlc_type_trans(skb, dev);
 				netif_rx(skb);
 				skb = NULL;
@@ -413,12 +410,12 @@ static int wanxl_open(struct net_device *dev)
 	writel(1 << (DOORBELL_TO_CARD_OPEN_0 + port->node), dbr);
 
 	timeout = jiffies + HZ;
-	do
+	do {
 		if (get_status(port)->open) {
 			netif_start_queue(dev);
 			return 0;
 		}
-	while (time_after(timeout, jiffies));
+	} while (time_after(timeout, jiffies));
 
 	printk(KERN_ERR "%s: unable to open port\n", dev->name);
 	/* ask the card to close the port, should it be still alive */
@@ -440,10 +437,10 @@ static int wanxl_close(struct net_device *dev)
 	       port->card->plx + PLX_DOORBELL_TO_CARD);
 
 	timeout = jiffies + HZ;
-	do
+	do {
 		if (!get_status(port)->open)
 			break;
-	while (time_after(timeout, jiffies));
+	} while (time_after(timeout, jiffies));
 
 	if (get_status(port)->open)
 		printk(KERN_ERR "%s: unable to close port\n", dev->name);
@@ -468,13 +465,13 @@ static int wanxl_close(struct net_device *dev)
 
 static struct net_device_stats *wanxl_get_stats(struct net_device *dev)
 {
-	struct net_device_stats *stats = hdlc_stats(dev);
 	port_t *port = dev_to_port(dev);
 
-	stats->rx_over_errors = get_status(port)->rx_overruns;
-	stats->rx_frame_errors = get_status(port)->rx_frame_errors;
-	stats->rx_errors = stats->rx_over_errors + stats->rx_frame_errors;
-        return stats;
+	dev->stats.rx_over_errors = get_status(port)->rx_overruns;
+	dev->stats.rx_frame_errors = get_status(port)->rx_frame_errors;
+	dev->stats.rx_errors = dev->stats.rx_over_errors +
+		dev->stats.rx_frame_errors;
+	return &dev->stats;
 }
 
 
@@ -715,7 +712,7 @@ static int __devinit wanxl_pci_init_one(struct pci_dev *pdev,
 	}
 
 	for (i = 0; i < sizeof(firmware); i += 4)
-		writel(htonl(*(u32*)(firmware + i)), mem + PDM_OFFSET + i);
+		writel(ntohl(*(__be32*)(firmware + i)), mem + PDM_OFFSET + i);
 
 	for (i = 0; i < ports; i++)
 		writel(card->status_address +
@@ -743,7 +740,7 @@ static int __devinit wanxl_pci_init_one(struct pci_dev *pdev,
 	}while (time_after(timeout, jiffies));
 
 	if (!stat) {
-		printk(KERN_WARNING "wanXL %s: timeout while initializing card"
+		printk(KERN_WARNING "wanXL %s: timeout while initializing card "
 		       "firmware\n", pci_name(pdev));
 		wanxl_pci_remove_one(pdev);
 		return -ENODEV;

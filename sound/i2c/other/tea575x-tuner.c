@@ -18,9 +18,8 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
- */      
+ */
 
-#include <sound/driver.h>
 #include <asm/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -85,13 +84,12 @@ static void snd_tea575x_set_freq(struct snd_tea575x *tea)
  * Linux Video interface
  */
 
-static int snd_tea575x_ioctl(struct inode *inode, struct file *file,
+static long snd_tea575x_ioctl(struct file *file,
 			     unsigned int cmd, unsigned long data)
 {
-	struct video_device *dev = video_devdata(file);
-	struct snd_tea575x *tea = video_get_drvdata(dev);
+	struct snd_tea575x *tea = video_drvdata(file);
 	void __user *arg = (void __user *)data;
-	
+
 	switch(cmd) {
 		case VIDIOCGCAP:
 		{
@@ -112,9 +110,9 @@ static int snd_tea575x_ioctl(struct inode *inode, struct file *file,
 		case VIDIOCGTUNER:
 		{
 			struct video_tuner v;
-			if (copy_from_user(&v, arg,sizeof(v))!=0) 
+			if (copy_from_user(&v, arg,sizeof(v))!=0)
 				return -EFAULT;
-			if (v.tuner)	/* Only 1 tuner */ 
+			if (v.tuner)	/* Only 1 tuner */
 				return -EINVAL;
 			v.rangelow = (87*16000);
 			v.rangehigh = (108*16000);
@@ -146,20 +144,24 @@ static int snd_tea575x_ioctl(struct inode *inode, struct file *file,
 			snd_tea575x_set_freq(tea);
 			return 0;
 		case VIDIOCGAUDIO:
-		{	
+		{
 			struct video_audio v;
 			memset(&v, 0, sizeof(v));
 			strcpy(v.name, "Radio");
 			if(copy_to_user(arg,&v, sizeof(v)))
 				return -EFAULT;
-			return 0;			
+			return 0;
 		}
 		case VIDIOCSAUDIO:
 		{
 			struct video_audio v;
-			if(copy_from_user(&v, arg, sizeof(v))) 
-				return -EFAULT;	
-			if(v.audio) 
+			if(copy_from_user(&v, arg, sizeof(v)))
+				return -EFAULT;
+			if (tea->ops->mute)
+				tea->ops->mute(tea,
+					       (v.flags &
+						VIDEO_AUDIO_MUTE) ? 1 : 0);
+			if(v.audio)
 				return -EINVAL;
 			return 0;
 		}
@@ -170,6 +172,21 @@ static int snd_tea575x_ioctl(struct inode *inode, struct file *file,
 
 static void snd_tea575x_release(struct video_device *vfd)
 {
+}
+
+static int snd_tea575x_exclusive_open(struct file *file)
+{
+	struct snd_tea575x *tea = video_drvdata(file);
+
+	return test_and_set_bit(0, &tea->in_use) ? -EBUSY : 0;
+}
+
+static int snd_tea575x_exclusive_release(struct file *file)
+{
+	struct snd_tea575x *tea = video_drvdata(file);
+
+	clear_bit(0, &tea->in_use);
+	return 0;
 }
 
 /*
@@ -186,15 +203,14 @@ void snd_tea575x_init(struct snd_tea575x *tea)
 	}
 
 	memset(&tea->vd, 0, sizeof(tea->vd));
-	tea->vd.owner = tea->card->module;
 	strcpy(tea->vd.name, tea->tea5759 ? "TEA5759 radio" : "TEA5757 radio");
-	tea->vd.type = VID_TYPE_TUNER;
 	tea->vd.release = snd_tea575x_release;
 	video_set_drvdata(&tea->vd, tea);
 	tea->vd.fops = &tea->fops;
+	tea->in_use = 0;
 	tea->fops.owner = tea->card->module;
-	tea->fops.open = video_exclusive_open;
-	tea->fops.release = video_exclusive_release;
+	tea->fops.open = snd_tea575x_exclusive_open;
+	tea->fops.release = snd_tea575x_exclusive_release;
 	tea->fops.ioctl = snd_tea575x_ioctl;
 	if (video_register_device(&tea->vd, VFL_TYPE_RADIO, tea->dev_nr - 1) < 0) {
 		snd_printk(KERN_ERR "unable to register tea575x tuner\n");
@@ -206,6 +222,10 @@ void snd_tea575x_init(struct snd_tea575x *tea)
 	tea->freq = 90500 * 16;		/* 90.5Mhz default */
 
 	snd_tea575x_set_freq(tea);
+
+	/* mute on init */
+	if (tea->ops->mute)
+		tea->ops->mute(tea, 1);
 }
 
 void snd_tea575x_exit(struct snd_tea575x *tea)
@@ -220,11 +240,11 @@ static int __init alsa_tea575x_module_init(void)
 {
 	return 0;
 }
-        
+
 static void __exit alsa_tea575x_module_exit(void)
 {
 }
-        
+
 module_init(alsa_tea575x_module_init)
 module_exit(alsa_tea575x_module_exit)
 

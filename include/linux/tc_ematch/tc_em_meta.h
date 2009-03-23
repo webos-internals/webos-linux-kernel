@@ -1,6 +1,7 @@
 #ifndef __LINUX_TC_EM_META_H
 #define __LINUX_TC_EM_META_H
 
+#include <linux/types.h>
 #include <linux/pkt_cls.h>
 
 enum
@@ -81,6 +82,7 @@ enum
  	TCF_META_ID_SK_SNDTIMEO,
  	TCF_META_ID_SK_SENDMSG_OFF,
  	TCF_META_ID_SK_WRITE_PENDING,
+	TCF_META_ID_VLAN_TAG,
 	__TCF_META_ID_MAX
 };
 #define TCF_META_ID_MAX (__TCF_META_ID_MAX - 1)

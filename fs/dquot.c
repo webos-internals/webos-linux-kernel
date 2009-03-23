@@ -9,8 +9,6 @@
  * implementation is based on one of the several variants of the LINUX
  * inode-subsystem with added complexity of the diskquota system.
  * 
- * Version: $Id: dquot.c,v 6.3 1996/11/17 18:35:34 mvw Exp mvw $
- * 
  * Author:	Marco van Wieringen <mvw@planets.elm.net>
  *
  * Fixes:   Dmitry Gorodchanin <pgmdsg@ibi.com>, 11 Feb 96
@@ -89,14 +87,17 @@
 #define __DQUOT_PARANOIA
 
 /*
- * There are two quota SMP locks. dq_list_lock protects all lists with quotas
- * and quota formats and also dqstats structure containing statistics about the
- * lists. dq_data_lock protects data from dq_dqb and also mem_dqinfo structures
- * and also guards consistency of dquot->dq_dqb with inode->i_blocks, i_bytes.
+ * There are three quota SMP locks. dq_list_lock protects all lists with quotas
+ * and quota formats, dqstats structure containing statistics about the lists
+ * dq_data_lock protects data from dq_dqb and also mem_dqinfo structures and
+ * also guards consistency of dquot->dq_dqb with inode->i_blocks, i_bytes.
  * i_blocks and i_bytes updates itself are guarded by i_lock acquired directly
- * in inode_add_bytes() and inode_sub_bytes().
+ * in inode_add_bytes() and inode_sub_bytes(). dq_state_lock protects
+ * modifications of quota state (on quotaon and quotaoff) and readers who care
+ * about latest values take it as well.
  *
- * The spinlock ordering is hence: dq_data_lock > dq_list_lock > i_lock
+ * The spinlock ordering is hence: dq_data_lock > dq_list_lock > i_lock,
+ *   dq_list_lock > dq_state_lock
  *
  * Note that some things (eg. sb pointer, type, id) doesn't change during
  * the life of the dquot structure and so needn't to be protected by a lock
@@ -105,12 +106,7 @@
  * operation is just reading pointers from inode (or not using them at all) the
  * read lock is enough. If pointers are altered function must hold write lock
  * (these locking rules also apply for S_NOQUOTA flag in the inode - note that
- * for altering the flag i_mutex is also needed).  If operation is holding
- * reference to dquot in other way (e.g. quotactl ops) it must be guarded by
- * dqonoff_mutex.
- * This locking assures that:
- *   a) update/access to dquot pointers in inode is serialized
- *   b) everyone is guarded against invalidate_dquots()
+ * for altering the flag i_mutex is also needed).
  *
  * Each dquot has its dq_lock mutex. Locked dquots might not be referenced
  * from inodes (dquot_alloc_space() and such don't check the dq_lock).
@@ -124,10 +120,17 @@
  * Lock ordering (including related VFS locks) is the following:
  *   i_mutex > dqonoff_sem > journal_lock > dqptr_sem > dquot->dq_lock >
  *   dqio_mutex
+ * The lock ordering of dqptr_sem imposed by quota code is only dqonoff_sem >
+ * dqptr_sem. But filesystem has to count with the fact that functions such as
+ * dquot_alloc_space() acquire dqptr_sem and they usually have to be called
+ * from inside a transaction to keep filesystem consistency after a crash. Also
+ * filesystems usually want to do some IO on dquot from ->mark_dirty which is
+ * called with dqptr_sem held.
  * i_mutex on quota files is special (it's below dqio_mutex)
  */
 
 static DEFINE_SPINLOCK(dq_list_lock);
+static DEFINE_SPINLOCK(dq_state_lock);
 DEFINE_SPINLOCK(dq_data_lock);
 
 static char *quotatypes[] = INITQFNAMES;
@@ -213,8 +216,6 @@ static struct hlist_head *dquot_hash;
 
 struct dqstats dqstats;
 
-static void dqput(struct dquot *dquot);
-
 static inline unsigned int
 hashfn(const struct super_block *sb, unsigned int id, int type)
 {
@@ -289,7 +290,15 @@ static void wait_on_dquot(struct dquot *dquot)
 	mutex_unlock(&dquot->dq_lock);
 }
 
-#define mark_dquot_dirty(dquot) ((dquot)->dq_sb->dq_op->mark_dirty(dquot))
+static inline int dquot_dirty(struct dquot *dquot)
+{
+	return test_bit(DQ_MOD_B, &dquot->dq_flags);
+}
+
+static inline int mark_dquot_dirty(struct dquot *dquot)
+{
+	return dquot->dq_sb->dq_op->mark_dirty(dquot);
+}
 
 int dquot_mark_dquot_dirty(struct dquot *dquot)
 {
@@ -409,11 +418,22 @@ out_dqlock:
 	return ret;
 }
 
+void dquot_destroy(struct dquot *dquot)
+{
+	kmem_cache_free(dquot_cachep, dquot);
+}
+EXPORT_SYMBOL(dquot_destroy);
+
+static inline void do_destroy_dquot(struct dquot *dquot)
+{
+	dquot->dq_sb->dq_op->destroy_dquot(dquot);
+}
+
 /* Invalidate all dquots on the list. Note that this function is called after
  * quota is disabled and pointers from inodes removed so there cannot be new
  * quota users. There can still be some users of quotas due to inodes being
  * just deleted or pruned by prune_icache() (those are not attached to any
- * list). We have to wait for such users.
+ * list) or parallel quotactl call. We have to wait for such users.
  */
 static void invalidate_dquots(struct super_block *sb, int type)
 {
@@ -457,9 +477,44 @@ restart:
 		remove_dquot_hash(dquot);
 		remove_free_dquot(dquot);
 		remove_inuse(dquot);
-		kmem_cache_free(dquot_cachep, dquot);
+		do_destroy_dquot(dquot);
 	}
 	spin_unlock(&dq_list_lock);
+}
+
+/* Call callback for every active dquot on given filesystem */
+int dquot_scan_active(struct super_block *sb,
+		      int (*fn)(struct dquot *dquot, unsigned long priv),
+		      unsigned long priv)
+{
+	struct dquot *dquot, *old_dquot = NULL;
+	int ret = 0;
+
+	mutex_lock(&sb_dqopt(sb)->dqonoff_mutex);
+	spin_lock(&dq_list_lock);
+	list_for_each_entry(dquot, &inuse_list, dq_inuse) {
+		if (!test_bit(DQ_ACTIVE_B, &dquot->dq_flags))
+			continue;
+		if (dquot->dq_sb != sb)
+			continue;
+		/* Now we have active dquot so we can just increase use count */
+		atomic_inc(&dquot->dq_count);
+		dqstats.lookups++;
+		spin_unlock(&dq_list_lock);
+		dqput(old_dquot);
+		old_dquot = dquot;
+		ret = fn(dquot, priv);
+		if (ret < 0)
+			goto out;
+		spin_lock(&dq_list_lock);
+		/* We are safe to continue now because our dquot could not
+		 * be moved out of the inuse list while we hold the reference */
+	}
+	spin_unlock(&dq_list_lock);
+out:
+	dqput(old_dquot);
+	mutex_unlock(&sb_dqopt(sb)->dqonoff_mutex);
+	return ret;
 }
 
 int vfs_quota_sync(struct super_block *sb, int type)
@@ -473,7 +528,7 @@ int vfs_quota_sync(struct super_block *sb, int type)
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
 		if (type != -1 && cnt != type)
 			continue;
-		if (!sb_has_quota_enabled(sb, cnt))
+		if (!sb_has_quota_active(sb, cnt))
 			continue;
 		spin_lock(&dq_list_lock);
 		dirty = &dqopt->info[cnt].dqi_dirty_list;
@@ -498,8 +553,8 @@ int vfs_quota_sync(struct super_block *sb, int type)
 	}
 
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
-		if ((cnt == type || type == -1) && sb_has_quota_enabled(sb, cnt)
-			&& info_dirty(&dqopt->info[cnt]))
+		if ((cnt == type || type == -1) && sb_has_quota_active(sb, cnt)
+		    && info_dirty(&dqopt->info[cnt]))
 			sb->dq_op->write_info(sb, cnt);
 	spin_lock(&dq_list_lock);
 	dqstats.syncs++;
@@ -521,7 +576,7 @@ static void prune_dqcache(int count)
 		remove_dquot_hash(dquot);
 		remove_free_dquot(dquot);
 		remove_inuse(dquot);
-		kmem_cache_free(dquot_cachep, dquot);
+		do_destroy_dquot(dquot);
 		count--;
 		head = free_dquots.prev;
 	}
@@ -550,10 +605,11 @@ static struct shrinker dqcache_shrinker = {
 /*
  * Put reference to dquot
  * NOTE: If you change this function please check whether dqput_blocks() works right...
- * MUST be called with either dqptr_sem or dqonoff_mutex held
  */
-static void dqput(struct dquot *dquot)
+void dqput(struct dquot *dquot)
 {
+	int ret;
+
 	if (!dquot)
 		return;
 #ifdef __DQUOT_PARANOIA
@@ -576,7 +632,7 @@ we_slept:
 		/* We have more than one user... nothing to do */
 		atomic_dec(&dquot->dq_count);
 		/* Releasing dquot during quotaoff phase? */
-		if (!sb_has_quota_enabled(dquot->dq_sb, dquot->dq_type) &&
+		if (!sb_has_quota_active(dquot->dq_sb, dquot->dq_type) &&
 		    atomic_read(&dquot->dq_count) == 1)
 			wake_up(&dquot->dq_wait_unused);
 		spin_unlock(&dq_list_lock);
@@ -586,7 +642,19 @@ we_slept:
 	if (test_bit(DQ_ACTIVE_B, &dquot->dq_flags) && dquot_dirty(dquot)) {
 		spin_unlock(&dq_list_lock);
 		/* Commit dquot before releasing */
-		dquot->dq_sb->dq_op->write_dquot(dquot);
+		ret = dquot->dq_sb->dq_op->write_dquot(dquot);
+		if (ret < 0) {
+			printk(KERN_ERR "VFS: cannot write quota structure on "
+				"device %s (error %d). Quota may get out of "
+				"sync!\n", dquot->dq_sb->s_id, ret);
+			/*
+			 * We clear dirty bit anyway, so that we avoid
+			 * infinite loop here
+			 */
+			spin_lock(&dq_list_lock);
+			clear_dquot_dirty(dquot);
+			spin_unlock(&dq_list_lock);
+		}
 		goto we_slept;
 	}
 	/* Clear flag in case dquot was inactive (something bad happened) */
@@ -605,11 +673,17 @@ we_slept:
 	spin_unlock(&dq_list_lock);
 }
 
+struct dquot *dquot_alloc(struct super_block *sb, int type)
+{
+	return kmem_cache_zalloc(dquot_cachep, GFP_NOFS);
+}
+EXPORT_SYMBOL(dquot_alloc);
+
 static struct dquot *get_empty_dquot(struct super_block *sb, int type)
 {
 	struct dquot *dquot;
 
-	dquot = kmem_cache_zalloc(dquot_cachep, GFP_NOFS);
+	dquot = sb->dq_op->alloc_dquot(sb, type);
 	if(!dquot)
 		return NODQUOT;
 
@@ -628,17 +702,29 @@ static struct dquot *get_empty_dquot(struct super_block *sb, int type)
 
 /*
  * Get reference to dquot
- * MUST be called with either dqptr_sem or dqonoff_mutex held
+ *
+ * Locking is slightly tricky here. We are guarded from parallel quotaoff()
+ * destroying our dquot by:
+ *   a) checking for quota flags under dq_list_lock and
+ *   b) getting a reference to dquot before we release dq_list_lock
  */
-static struct dquot *dqget(struct super_block *sb, unsigned int id, int type)
+struct dquot *dqget(struct super_block *sb, unsigned int id, int type)
 {
 	unsigned int hashent = hashfn(sb, id, type);
-	struct dquot *dquot, *empty = NODQUOT;
+	struct dquot *dquot = NODQUOT, *empty = NODQUOT;
 
-        if (!sb_has_quota_enabled(sb, type))
+        if (!sb_has_quota_active(sb, type))
 		return NODQUOT;
 we_slept:
 	spin_lock(&dq_list_lock);
+	spin_lock(&dq_state_lock);
+	if (!sb_has_quota_active(sb, type)) {
+		spin_unlock(&dq_state_lock);
+		spin_unlock(&dq_list_lock);
+		goto out;
+	}
+	spin_unlock(&dq_state_lock);
+
 	if ((dquot = find_dquot(hashent, sb, id, type)) == NODQUOT) {
 		if (empty == NODQUOT) {
 			spin_unlock(&dq_list_lock);
@@ -647,6 +733,7 @@ we_slept:
 			goto we_slept;
 		}
 		dquot = empty;
+		empty = NODQUOT;
 		dquot->dq_id = id;
 		/* all dquots go on the inuse_list */
 		put_inuse(dquot);
@@ -661,8 +748,6 @@ we_slept:
 		dqstats.cache_hits++;
 		dqstats.lookups++;
 		spin_unlock(&dq_list_lock);
-		if (empty)
-			kmem_cache_free(dquot_cachep, empty);
 	}
 	/* Wait for dq_lock - after this we know that either dquot_release() is already
 	 * finished or it will be canceled due to dq_count > 1 test */
@@ -670,11 +755,15 @@ we_slept:
 	/* Read the dquot and instantiate it (everything done only if needed) */
 	if (!test_bit(DQ_ACTIVE_B, &dquot->dq_flags) && sb->dq_op->acquire_dquot(dquot) < 0) {
 		dqput(dquot);
-		return NODQUOT;
+		dquot = NODQUOT;
+		goto out;
 	}
 #ifdef __DQUOT_PARANOIA
 	BUG_ON(!dquot->dq_sb);	/* Has somebody invalidated entry under us? */
 #endif
+out:
+	if (empty)
+		do_destroy_dquot(empty);
 
 	return dquot;
 }
@@ -696,9 +785,8 @@ static int dqinit_needed(struct inode *inode, int type)
 /* This routine is guarded by dqonoff_mutex mutex */
 static void add_dquot_ref(struct super_block *sb, int type)
 {
-	struct inode *inode;
+	struct inode *inode, *old_inode = NULL;
 
-restart:
 	spin_lock(&inode_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
 		if (!atomic_read(&inode->i_writecount))
@@ -711,12 +799,18 @@ restart:
 		__iget(inode);
 		spin_unlock(&inode_lock);
 
+		iput(old_inode);
 		sb->dq_op->initialize(inode, type);
-		iput(inode);
-		/* As we may have blocked we had better restart... */
-		goto restart;
+		/* We hold a reference to 'inode' so it couldn't have been
+		 * removed from s_inodes list while we dropped the inode_lock.
+		 * We cannot iput the inode now as we can be holding the last
+		 * reference and we cannot iput it under inode_lock. So we
+		 * keep the reference and iput it later. */
+		old_inode = inode;
+		spin_lock(&inode_lock);
 	}
 	spin_unlock(&inode_lock);
+	iput(old_inode);
 }
 
 /* Return 0 if dqput() won't block (note that 1 doesn't necessarily mean blocking) */
@@ -795,7 +889,7 @@ static void drop_dquot_ref(struct super_block *sb, int type)
 	}
 }
 
-static inline void dquot_incr_inodes(struct dquot *dquot, unsigned long number)
+static inline void dquot_incr_inodes(struct dquot *dquot, qsize_t number)
 {
 	dquot->dq_dqb.dqb_curinodes += number;
 }
@@ -805,9 +899,10 @@ static inline void dquot_incr_space(struct dquot *dquot, qsize_t number)
 	dquot->dq_dqb.dqb_curspace += number;
 }
 
-static inline void dquot_decr_inodes(struct dquot *dquot, unsigned long number)
+static inline void dquot_decr_inodes(struct dquot *dquot, qsize_t number)
 {
-	if (dquot->dq_dqb.dqb_curinodes > number)
+	if (sb_dqopt(dquot->dq_sb)->flags & DQUOT_NEGATIVE_USAGE ||
+	    dquot->dq_dqb.dqb_curinodes >= number)
 		dquot->dq_dqb.dqb_curinodes -= number;
 	else
 		dquot->dq_dqb.dqb_curinodes = 0;
@@ -818,11 +913,12 @@ static inline void dquot_decr_inodes(struct dquot *dquot, unsigned long number)
 
 static inline void dquot_decr_space(struct dquot *dquot, qsize_t number)
 {
-	if (dquot->dq_dqb.dqb_curspace > number)
+	if (sb_dqopt(dquot->dq_sb)->flags & DQUOT_NEGATIVE_USAGE ||
+	    dquot->dq_dqb.dqb_curspace >= number)
 		dquot->dq_dqb.dqb_curspace -= number;
 	else
 		dquot->dq_dqb.dqb_curspace = 0;
-	if (toqb(dquot->dq_dqb.dqb_curspace) <= dquot->dq_dqb.dqb_bsoftlimit)
+	if (dquot->dq_dqb.dqb_curspace <= dquot->dq_dqb.dqb_bsoftlimit)
 		dquot->dq_dqb.dqb_btime = (time_t) 0;
 	clear_bit(DQ_BLKS_B, &dquot->dq_flags);
 }
@@ -849,7 +945,7 @@ static inline int need_print_warning(struct dquot *dquot)
 
 	switch (dquot->dq_type) {
 		case USRQUOTA:
-			return current->fsuid == dquot->dq_id;
+			return current_fsuid() == dquot->dq_id;
 		case GRPQUOTA:
 			return in_group_p(dquot->dq_id);
 	}
@@ -862,13 +958,15 @@ static void print_warning(struct dquot *dquot, const int warntype)
 	char *msg = NULL;
 	struct tty_struct *tty;
 
-	if (!need_print_warning(dquot))
+	if (warntype == QUOTA_NL_IHARDBELOW ||
+	    warntype == QUOTA_NL_ISOFTBELOW ||
+	    warntype == QUOTA_NL_BHARDBELOW ||
+	    warntype == QUOTA_NL_BSOFTBELOW || !need_print_warning(dquot))
 		return;
 
-	mutex_lock(&tty_mutex);
 	tty = get_current_tty();
 	if (!tty)
-		goto out_lock;
+		return;
 	tty_write_message(tty, dquot->dq_sb->s_id);
 	if (warntype == QUOTA_NL_ISOFTWARN || warntype == QUOTA_NL_BSOFTWARN)
 		tty_write_message(tty, ": warning, ");
@@ -896,8 +994,7 @@ static void print_warning(struct dquot *dquot, const int warntype)
 			break;
 	}
 	tty_write_message(tty, msg);
-out_lock:
-	mutex_unlock(&tty_mutex);
+	tty_kref_put(tty);
 }
 #endif
 
@@ -955,7 +1052,7 @@ static void send_warning(const struct dquot *dquot, const char warntype)
 		MINOR(dquot->dq_sb->s_dev));
 	if (ret)
 		goto attr_err_out;
-	ret = nla_put_u64(skb, QUOTA_NL_A_CAUSED_ID, current->user->uid);
+	ret = nla_put_u64(skb, QUOTA_NL_A_CAUSED_ID, current_uid());
 	if (ret)
 		goto attr_err_out;
 	genlmsg_end(skb, msg_head);
@@ -997,10 +1094,11 @@ static inline char ignore_hardlimit(struct dquot *dquot)
 }
 
 /* needs dq_data_lock */
-static int check_idq(struct dquot *dquot, ulong inodes, char *warntype)
+static int check_idq(struct dquot *dquot, qsize_t inodes, char *warntype)
 {
 	*warntype = QUOTA_NL_NOWARN;
-	if (inodes <= 0 || test_bit(DQ_FAKE_B, &dquot->dq_flags))
+	if (!sb_has_quota_limits_enabled(dquot->dq_sb, dquot->dq_type) ||
+	    test_bit(DQ_FAKE_B, &dquot->dq_flags))
 		return QUOTA_OK;
 
 	if (dquot->dq_dqb.dqb_ihardlimit &&
@@ -1032,11 +1130,12 @@ static int check_idq(struct dquot *dquot, ulong inodes, char *warntype)
 static int check_bdq(struct dquot *dquot, qsize_t space, int prealloc, char *warntype)
 {
 	*warntype = QUOTA_NL_NOWARN;
-	if (space <= 0 || test_bit(DQ_FAKE_B, &dquot->dq_flags))
+	if (!sb_has_quota_limits_enabled(dquot->dq_sb, dquot->dq_type) ||
+	    test_bit(DQ_FAKE_B, &dquot->dq_flags))
 		return QUOTA_OK;
 
 	if (dquot->dq_dqb.dqb_bhardlimit &&
-	   toqb(dquot->dq_dqb.dqb_curspace + space) > dquot->dq_dqb.dqb_bhardlimit &&
+	    dquot->dq_dqb.dqb_curspace + space > dquot->dq_dqb.dqb_bhardlimit &&
             !ignore_hardlimit(dquot)) {
 		if (!prealloc)
 			*warntype = QUOTA_NL_BHARDWARN;
@@ -1044,7 +1143,7 @@ static int check_bdq(struct dquot *dquot, qsize_t space, int prealloc, char *war
 	}
 
 	if (dquot->dq_dqb.dqb_bsoftlimit &&
-	   toqb(dquot->dq_dqb.dqb_curspace + space) > dquot->dq_dqb.dqb_bsoftlimit &&
+	    dquot->dq_dqb.dqb_curspace + space > dquot->dq_dqb.dqb_bsoftlimit &&
 	    dquot->dq_dqb.dqb_btime && get_seconds() >= dquot->dq_dqb.dqb_btime &&
             !ignore_hardlimit(dquot)) {
 		if (!prealloc)
@@ -1053,7 +1152,7 @@ static int check_bdq(struct dquot *dquot, qsize_t space, int prealloc, char *war
 	}
 
 	if (dquot->dq_dqb.dqb_bsoftlimit &&
-	   toqb(dquot->dq_dqb.dqb_curspace + space) > dquot->dq_dqb.dqb_bsoftlimit &&
+	    dquot->dq_dqb.dqb_curspace + space > dquot->dq_dqb.dqb_bsoftlimit &&
 	    dquot->dq_dqb.dqb_btime == 0) {
 		if (!prealloc) {
 			*warntype = QUOTA_NL_BSOFTWARN;
@@ -1070,60 +1169,129 @@ static int check_bdq(struct dquot *dquot, qsize_t space, int prealloc, char *war
 	return QUOTA_OK;
 }
 
+static int info_idq_free(struct dquot *dquot, qsize_t inodes)
+{
+	if (test_bit(DQ_FAKE_B, &dquot->dq_flags) ||
+	    dquot->dq_dqb.dqb_curinodes <= dquot->dq_dqb.dqb_isoftlimit ||
+	    !sb_has_quota_limits_enabled(dquot->dq_sb, dquot->dq_type))
+		return QUOTA_NL_NOWARN;
+
+	if (dquot->dq_dqb.dqb_curinodes - inodes <= dquot->dq_dqb.dqb_isoftlimit)
+		return QUOTA_NL_ISOFTBELOW;
+	if (dquot->dq_dqb.dqb_curinodes >= dquot->dq_dqb.dqb_ihardlimit &&
+	    dquot->dq_dqb.dqb_curinodes - inodes < dquot->dq_dqb.dqb_ihardlimit)
+		return QUOTA_NL_IHARDBELOW;
+	return QUOTA_NL_NOWARN;
+}
+
+static int info_bdq_free(struct dquot *dquot, qsize_t space)
+{
+	if (test_bit(DQ_FAKE_B, &dquot->dq_flags) ||
+	    dquot->dq_dqb.dqb_curspace <= dquot->dq_dqb.dqb_bsoftlimit)
+		return QUOTA_NL_NOWARN;
+
+	if (dquot->dq_dqb.dqb_curspace - space <= dquot->dq_dqb.dqb_bsoftlimit)
+		return QUOTA_NL_BSOFTBELOW;
+	if (dquot->dq_dqb.dqb_curspace >= dquot->dq_dqb.dqb_bhardlimit &&
+	    dquot->dq_dqb.dqb_curspace - space < dquot->dq_dqb.dqb_bhardlimit)
+		return QUOTA_NL_BHARDBELOW;
+	return QUOTA_NL_NOWARN;
+}
 /*
  *	Initialize quota pointers in inode
- *	Transaction must be started at entry
+ *	We do things in a bit complicated way but by that we avoid calling
+ *	dqget() and thus filesystem callbacks under dqptr_sem.
  */
 int dquot_initialize(struct inode *inode, int type)
 {
 	unsigned int id = 0;
 	int cnt, ret = 0;
+	struct dquot *got[MAXQUOTAS] = { NODQUOT, NODQUOT };
+	struct super_block *sb = inode->i_sb;
 
 	/* First test before acquiring mutex - solves deadlocks when we
          * re-enter the quota code and are already holding the mutex */
 	if (IS_NOQUOTA(inode))
 		return 0;
-	down_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
+
+	/* First get references to structures we might need. */
+	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
+		if (type != -1 && cnt != type)
+			continue;
+		switch (cnt) {
+		case USRQUOTA:
+			id = inode->i_uid;
+			break;
+		case GRPQUOTA:
+			id = inode->i_gid;
+			break;
+		}
+		got[cnt] = dqget(sb, id, cnt);
+	}
+
+	down_write(&sb_dqopt(sb)->dqptr_sem);
 	/* Having dqptr_sem we know NOQUOTA flags can't be altered... */
 	if (IS_NOQUOTA(inode))
 		goto out_err;
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
 		if (type != -1 && cnt != type)
 			continue;
+		/* Avoid races with quotaoff() */
+		if (!sb_has_quota_active(sb, cnt))
+			continue;
 		if (inode->i_dquot[cnt] == NODQUOT) {
-			switch (cnt) {
-				case USRQUOTA:
-					id = inode->i_uid;
-					break;
-				case GRPQUOTA:
-					id = inode->i_gid;
-					break;
-			}
-			inode->i_dquot[cnt] = dqget(inode->i_sb, id, cnt);
+			inode->i_dquot[cnt] = got[cnt];
+			got[cnt] = NODQUOT;
 		}
 	}
 out_err:
-	up_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
+	up_write(&sb_dqopt(sb)->dqptr_sem);
+	/* Drop unused references */
+	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
+		dqput(got[cnt]);
 	return ret;
 }
 
 /*
  * 	Release all quotas referenced by inode
- *	Transaction must be started at an entry
  */
 int dquot_drop(struct inode *inode)
 {
 	int cnt;
+	struct dquot *put[MAXQUOTAS];
 
 	down_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
-		if (inode->i_dquot[cnt] != NODQUOT) {
-			dqput(inode->i_dquot[cnt]);
-			inode->i_dquot[cnt] = NODQUOT;
-		}
+		put[cnt] = inode->i_dquot[cnt];
+		inode->i_dquot[cnt] = NODQUOT;
 	}
 	up_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
+
+	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
+		dqput(put[cnt]);
 	return 0;
+}
+
+/* Wrapper to remove references to quota structures from inode */
+void vfs_dq_drop(struct inode *inode)
+{
+	/* Here we can get arbitrary inode from clear_inode() so we have
+	 * to be careful. OTOH we don't need locking as quota operations
+	 * are allowed to change only at mount time */
+	if (!IS_NOQUOTA(inode) && inode->i_sb && inode->i_sb->dq_op
+	    && inode->i_sb->dq_op->drop) {
+		int cnt;
+		/* Test before calling to rule out calls from proc and such
+                 * where we are not allowed to block. Note that this is
+		 * actually reliable test even without the lock - the caller
+		 * must assure that nobody can come after the DQUOT_DROP and
+		 * add quota pointers back anyway */
+		for (cnt = 0; cnt < MAXQUOTAS; cnt++)
+			if (inode->i_dquot[cnt] != NODQUOT)
+				break;
+		if (cnt < MAXQUOTAS)
+			inode->i_sb->dq_op->drop(inode);
+	}
 }
 
 /*
@@ -1187,7 +1355,7 @@ warn_put_all:
 /*
  * This operation can block, but only after everything is updated
  */
-int dquot_alloc_inode(const struct inode *inode, unsigned long number)
+int dquot_alloc_inode(const struct inode *inode, qsize_t number)
 {
 	int cnt, ret = NO_QUOTA;
 	char warntype[MAXQUOTAS];
@@ -1235,6 +1403,7 @@ warn_put_all:
 int dquot_free_space(struct inode *inode, qsize_t number)
 {
 	unsigned int cnt;
+	char warntype[MAXQUOTAS];
 
 	/* First test before acquiring mutex - solves deadlocks when we
          * re-enter the quota code and are already holding the mutex */
@@ -1243,6 +1412,7 @@ out_sub:
 		inode_sub_bytes(inode, number);
 		return QUOTA_OK;
 	}
+
 	down_read(&sb_dqopt(inode->i_sb)->dqptr_sem);
 	/* Now recheck reliably when holding dqptr_sem */
 	if (IS_NOQUOTA(inode)) {
@@ -1253,6 +1423,7 @@ out_sub:
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
 		if (inode->i_dquot[cnt] == NODQUOT)
 			continue;
+		warntype[cnt] = info_bdq_free(inode->i_dquot[cnt], number);
 		dquot_decr_space(inode->i_dquot[cnt], number);
 	}
 	inode_sub_bytes(inode, number);
@@ -1261,6 +1432,7 @@ out_sub:
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
 		if (inode->i_dquot[cnt])
 			mark_dquot_dirty(inode->i_dquot[cnt]);
+	flush_warnings(inode->i_dquot, warntype);
 	up_read(&sb_dqopt(inode->i_sb)->dqptr_sem);
 	return QUOTA_OK;
 }
@@ -1268,14 +1440,16 @@ out_sub:
 /*
  * This operation can block, but only after everything is updated
  */
-int dquot_free_inode(const struct inode *inode, unsigned long number)
+int dquot_free_inode(const struct inode *inode, qsize_t number)
 {
 	unsigned int cnt;
+	char warntype[MAXQUOTAS];
 
 	/* First test before acquiring mutex - solves deadlocks when we
          * re-enter the quota code and are already holding the mutex */
 	if (IS_NOQUOTA(inode))
 		return QUOTA_OK;
+
 	down_read(&sb_dqopt(inode->i_sb)->dqptr_sem);
 	/* Now recheck reliably when holding dqptr_sem */
 	if (IS_NOQUOTA(inode)) {
@@ -1286,6 +1460,7 @@ int dquot_free_inode(const struct inode *inode, unsigned long number)
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
 		if (inode->i_dquot[cnt] == NODQUOT)
 			continue;
+		warntype[cnt] = info_idq_free(inode->i_dquot[cnt], number);
 		dquot_decr_inodes(inode->i_dquot[cnt], number);
 	}
 	spin_unlock(&dq_data_lock);
@@ -1293,6 +1468,7 @@ int dquot_free_inode(const struct inode *inode, unsigned long number)
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
 		if (inode->i_dquot[cnt])
 			mark_dquot_dirty(inode->i_dquot[cnt]);
+	flush_warnings(inode->i_dquot, warntype);
 	up_read(&sb_dqopt(inode->i_sb)->dqptr_sem);
 	return QUOTA_OK;
 }
@@ -1308,29 +1484,21 @@ int dquot_transfer(struct inode *inode, struct iattr *iattr)
 	qsize_t space;
 	struct dquot *transfer_from[MAXQUOTAS];
 	struct dquot *transfer_to[MAXQUOTAS];
-	int cnt, ret = NO_QUOTA, chuid = (iattr->ia_valid & ATTR_UID) && inode->i_uid != iattr->ia_uid,
-	    chgid = (iattr->ia_valid & ATTR_GID) && inode->i_gid != iattr->ia_gid;
-	char warntype[MAXQUOTAS];
+	int cnt, ret = QUOTA_OK;
+	int chuid = iattr->ia_valid & ATTR_UID && inode->i_uid != iattr->ia_uid,
+	    chgid = iattr->ia_valid & ATTR_GID && inode->i_gid != iattr->ia_gid;
+	char warntype_to[MAXQUOTAS];
+	char warntype_from_inodes[MAXQUOTAS], warntype_from_space[MAXQUOTAS];
 
 	/* First test before acquiring mutex - solves deadlocks when we
          * re-enter the quota code and are already holding the mutex */
 	if (IS_NOQUOTA(inode))
 		return QUOTA_OK;
-	/* Clear the arrays */
+	/* Initialize the arrays */
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
-		transfer_to[cnt] = transfer_from[cnt] = NODQUOT;
-		warntype[cnt] = QUOTA_NL_NOWARN;
-	}
-	down_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
-	/* Now recheck reliably when holding dqptr_sem */
-	if (IS_NOQUOTA(inode)) {	/* File without quota accounting? */
-		up_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
-		return QUOTA_OK;
-	}
-	/* First build the transfer_to list - here we can block on
-	 * reading/instantiating of dquots.  We know that the transaction for
-	 * us was already started so we don't violate lock ranking here */
-	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
+		transfer_from[cnt] = NODQUOT;
+		transfer_to[cnt] = NODQUOT;
+		warntype_to[cnt] = QUOTA_NL_NOWARN;
 		switch (cnt) {
 			case USRQUOTA:
 				if (!chuid)
@@ -1344,6 +1512,13 @@ int dquot_transfer(struct inode *inode, struct iattr *iattr)
 				break;
 		}
 	}
+
+	down_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
+	/* Now recheck reliably when holding dqptr_sem */
+	if (IS_NOQUOTA(inode)) {	/* File without quota accounting? */
+		up_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
+		goto put_all;
+	}
 	spin_lock(&dq_data_lock);
 	space = inode_get_bytes(inode);
 	/* Build the transfer_from list and check the limits */
@@ -1351,9 +1526,10 @@ int dquot_transfer(struct inode *inode, struct iattr *iattr)
 		if (transfer_to[cnt] == NODQUOT)
 			continue;
 		transfer_from[cnt] = inode->i_dquot[cnt];
-		if (check_idq(transfer_to[cnt], 1, warntype+cnt) == NO_QUOTA ||
-		    check_bdq(transfer_to[cnt], space, 0, warntype+cnt) == NO_QUOTA)
-			goto warn_put_all;
+		if (check_idq(transfer_to[cnt], 1, warntype_to + cnt) ==
+		    NO_QUOTA || check_bdq(transfer_to[cnt], space, 0,
+		    warntype_to + cnt) == NO_QUOTA)
+			goto over_quota;
 	}
 
 	/*
@@ -1368,6 +1544,10 @@ int dquot_transfer(struct inode *inode, struct iattr *iattr)
 
 		/* Due to IO error we might not have transfer_from[] structure */
 		if (transfer_from[cnt]) {
+			warntype_from_inodes[cnt] =
+				info_idq_free(transfer_from[cnt], 1);
+			warntype_from_space[cnt] =
+				info_bdq_free(transfer_from[cnt], space);
 			dquot_decr_inodes(transfer_from[cnt], 1);
 			dquot_decr_space(transfer_from[cnt], space);
 		}
@@ -1377,27 +1557,50 @@ int dquot_transfer(struct inode *inode, struct iattr *iattr)
 
 		inode->i_dquot[cnt] = transfer_to[cnt];
 	}
-	ret = QUOTA_OK;
-warn_put_all:
 	spin_unlock(&dq_data_lock);
+	up_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
+
 	/* Dirtify all the dquots - this can block when journalling */
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
 		if (transfer_from[cnt])
 			mark_dquot_dirty(transfer_from[cnt]);
-		if (transfer_to[cnt])
+		if (transfer_to[cnt]) {
 			mark_dquot_dirty(transfer_to[cnt]);
+			/* The reference we got is transferred to the inode */
+			transfer_to[cnt] = NODQUOT;
+		}
 	}
-	flush_warnings(transfer_to, warntype);
-	
+warn_put_all:
+	flush_warnings(transfer_to, warntype_to);
+	flush_warnings(transfer_from, warntype_from_inodes);
+	flush_warnings(transfer_from, warntype_from_space);
+put_all:
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
-		if (ret == QUOTA_OK && transfer_from[cnt] != NODQUOT)
-			dqput(transfer_from[cnt]);
-		if (ret == NO_QUOTA && transfer_to[cnt] != NODQUOT)
-			dqput(transfer_to[cnt]);
+		dqput(transfer_from[cnt]);
+		dqput(transfer_to[cnt]);
 	}
-	up_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
 	return ret;
+over_quota:
+	spin_unlock(&dq_data_lock);
+	up_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
+	/* Clear dquot pointers we don't want to dqput() */
+	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
+		transfer_from[cnt] = NODQUOT;
+	ret = NO_QUOTA;
+	goto warn_put_all;
 }
+
+/* Wrapper for transferring ownership of an inode */
+int vfs_dq_transfer(struct inode *inode, struct iattr *iattr)
+{
+	if (sb_any_quota_active(inode->i_sb) && !IS_NOQUOTA(inode)) {
+		vfs_dq_init(inode);
+		if (inode->i_sb->dq_op->transfer(inode, iattr) == NO_QUOTA)
+			return 1;
+	}
+	return 0;
+}
+
 
 /*
  * Write info of quota file to disk
@@ -1428,51 +1631,70 @@ struct dquot_operations dquot_operations = {
 	.acquire_dquot	= dquot_acquire,
 	.release_dquot	= dquot_release,
 	.mark_dirty	= dquot_mark_dquot_dirty,
-	.write_info	= dquot_commit_info
+	.write_info	= dquot_commit_info,
+	.alloc_dquot	= dquot_alloc,
+	.destroy_dquot	= dquot_destroy,
 };
-
-static inline void set_enable_flags(struct quota_info *dqopt, int type)
-{
-	switch (type) {
-		case USRQUOTA:
-			dqopt->flags |= DQUOT_USR_ENABLED;
-			break;
-		case GRPQUOTA:
-			dqopt->flags |= DQUOT_GRP_ENABLED;
-			break;
-	}
-}
-
-static inline void reset_enable_flags(struct quota_info *dqopt, int type)
-{
-	switch (type) {
-		case USRQUOTA:
-			dqopt->flags &= ~DQUOT_USR_ENABLED;
-			break;
-		case GRPQUOTA:
-			dqopt->flags &= ~DQUOT_GRP_ENABLED;
-			break;
-	}
-}
 
 /*
  * Turn quota off on a device. type == -1 ==> quotaoff for all types (umount)
  */
-int vfs_quota_off(struct super_block *sb, int type)
+int vfs_quota_disable(struct super_block *sb, int type, unsigned int flags)
 {
-	int cnt;
+	int cnt, ret = 0;
 	struct quota_info *dqopt = sb_dqopt(sb);
 	struct inode *toputinode[MAXQUOTAS];
 
+	/* Cannot turn off usage accounting without turning off limits, or
+	 * suspend quotas and simultaneously turn quotas off. */
+	if ((flags & DQUOT_USAGE_ENABLED && !(flags & DQUOT_LIMITS_ENABLED))
+	    || (flags & DQUOT_SUSPENDED && flags & (DQUOT_LIMITS_ENABLED |
+	    DQUOT_USAGE_ENABLED)))
+		return -EINVAL;
+
 	/* We need to serialize quota_off() for device */
 	mutex_lock(&dqopt->dqonoff_mutex);
+
+	/*
+	 * Skip everything if there's nothing to do. We have to do this because
+	 * sometimes we are called when fill_super() failed and calling
+	 * sync_fs() in such cases does no good.
+	 */
+	if (!sb_any_quota_loaded(sb)) {
+		mutex_unlock(&dqopt->dqonoff_mutex);
+		return 0;
+	}
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
 		toputinode[cnt] = NULL;
 		if (type != -1 && cnt != type)
 			continue;
-		if (!sb_has_quota_enabled(sb, cnt))
+		if (!sb_has_quota_loaded(sb, cnt))
 			continue;
-		reset_enable_flags(dqopt, cnt);
+
+		if (flags & DQUOT_SUSPENDED) {
+			spin_lock(&dq_state_lock);
+			dqopt->flags |=
+				dquot_state_flag(DQUOT_SUSPENDED, cnt);
+			spin_unlock(&dq_state_lock);
+		} else {
+			spin_lock(&dq_state_lock);
+			dqopt->flags &= ~dquot_state_flag(flags, cnt);
+			/* Turning off suspended quotas? */
+			if (!sb_has_quota_loaded(sb, cnt) &&
+			    sb_has_quota_suspended(sb, cnt)) {
+				dqopt->flags &=	~dquot_state_flag(
+							DQUOT_SUSPENDED, cnt);
+				spin_unlock(&dq_state_lock);
+				iput(dqopt->files[cnt]);
+				dqopt->files[cnt] = NULL;
+				continue;
+			}
+			spin_unlock(&dq_state_lock);
+		}
+
+		/* We still have to keep quota loaded? */
+		if (sb_has_quota_loaded(sb, cnt) && !(flags & DQUOT_SUSPENDED))
+			continue;
 
 		/* Note: these are blocking operations */
 		drop_dquot_ref(sb, cnt);
@@ -1488,13 +1710,19 @@ int vfs_quota_off(struct super_block *sb, int type)
 		put_quota_format(dqopt->info[cnt].dqi_format);
 
 		toputinode[cnt] = dqopt->files[cnt];
-		dqopt->files[cnt] = NULL;
+		if (!sb_has_quota_loaded(sb, cnt))
+			dqopt->files[cnt] = NULL;
 		dqopt->info[cnt].dqi_flags = 0;
 		dqopt->info[cnt].dqi_igrace = 0;
 		dqopt->info[cnt].dqi_bgrace = 0;
 		dqopt->ops[cnt] = NULL;
 	}
 	mutex_unlock(&dqopt->dqonoff_mutex);
+
+	/* Skip syncing and setting flags if quota files are hidden */
+	if (dqopt->flags & DQUOT_QUOTA_SYS_FILE)
+		goto put_inodes;
+
 	/* Sync the superblock so that buffers with quota data are written to
 	 * disk (and so userspace sees correct data afterwards). */
 	if (sb->s_op->sync_fs)
@@ -1510,28 +1738,52 @@ int vfs_quota_off(struct super_block *sb, int type)
 			mutex_lock(&dqopt->dqonoff_mutex);
 			/* If quota was reenabled in the meantime, we have
 			 * nothing to do */
-			if (!sb_has_quota_enabled(sb, cnt)) {
+			if (!sb_has_quota_loaded(sb, cnt)) {
 				mutex_lock_nested(&toputinode[cnt]->i_mutex, I_MUTEX_QUOTA);
 				toputinode[cnt]->i_flags &= ~(S_IMMUTABLE |
 				  S_NOATIME | S_NOQUOTA);
 				truncate_inode_pages(&toputinode[cnt]->i_data, 0);
 				mutex_unlock(&toputinode[cnt]->i_mutex);
 				mark_inode_dirty(toputinode[cnt]);
-				iput(toputinode[cnt]);
 			}
 			mutex_unlock(&dqopt->dqonoff_mutex);
 		}
 	if (sb->s_bdev)
 		invalidate_bdev(sb->s_bdev);
-	return 0;
+put_inodes:
+	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
+		if (toputinode[cnt]) {
+			/* On remount RO, we keep the inode pointer so that we
+			 * can reenable quota on the subsequent remount RW. We
+			 * have to check 'flags' variable and not use sb_has_
+			 * function because another quotaon / quotaoff could
+			 * change global state before we got here. We refuse
+			 * to suspend quotas when there is pending delete on
+			 * the quota file... */
+			if (!(flags & DQUOT_SUSPENDED))
+				iput(toputinode[cnt]);
+			else if (!toputinode[cnt]->i_nlink)
+				ret = -EBUSY;
+		}
+	return ret;
+}
+
+int vfs_quota_off(struct super_block *sb, int type, int remount)
+{
+	return vfs_quota_disable(sb, type, remount ? DQUOT_SUSPENDED :
+				 (DQUOT_USAGE_ENABLED | DQUOT_LIMITS_ENABLED));
 }
 
 /*
  *	Turn quotas on on a device
  */
 
-/* Helper function when we already have the inode */
-static int vfs_quota_on_inode(struct inode *inode, int type, int format_id)
+/*
+ * Helper function to turn quotas on when we already have the inode of
+ * quota file and no quota information is loaded.
+ */
+static int vfs_load_quota_inode(struct inode *inode, int type, int format_id,
+	unsigned int flags)
 {
 	struct quota_format_type *fmt = find_quota_format(format_id);
 	struct super_block *sb = inode->i_sb;
@@ -1553,26 +1805,37 @@ static int vfs_quota_on_inode(struct inode *inode, int type, int format_id)
 		error = -EINVAL;
 		goto out_fmt;
 	}
+	/* Usage always has to be set... */
+	if (!(flags & DQUOT_USAGE_ENABLED)) {
+		error = -EINVAL;
+		goto out_fmt;
+	}
 
-	/* As we bypass the pagecache we must now flush the inode so that
-	 * we see all the changes from userspace... */
-	write_inode_now(inode, 1);
-	/* And now flush the block cache so that kernel sees the changes */
-	invalidate_bdev(sb->s_bdev);
+	if (!(dqopt->flags & DQUOT_QUOTA_SYS_FILE)) {
+		/* As we bypass the pagecache we must now flush the inode so
+		 * that we see all the changes from userspace... */
+		write_inode_now(inode, 1);
+		/* And now flush the block cache so that kernel sees the
+		 * changes */
+		invalidate_bdev(sb->s_bdev);
+	}
 	mutex_lock(&inode->i_mutex);
 	mutex_lock(&dqopt->dqonoff_mutex);
-	if (sb_has_quota_enabled(sb, type)) {
+	if (sb_has_quota_loaded(sb, type)) {
 		error = -EBUSY;
 		goto out_lock;
 	}
-	/* We don't want quota and atime on quota files (deadlocks possible)
-	 * Also nobody should write to the file - we use special IO operations
-	 * which ignore the immutable bit. */
-	down_write(&dqopt->dqptr_sem);
-	oldflags = inode->i_flags & (S_NOATIME | S_IMMUTABLE | S_NOQUOTA);
-	inode->i_flags |= S_NOQUOTA | S_NOATIME | S_IMMUTABLE;
-	up_write(&dqopt->dqptr_sem);
-	sb->dq_op->drop(inode);
+
+	if (!(dqopt->flags & DQUOT_QUOTA_SYS_FILE)) {
+		/* We don't want quota and atime on quota files (deadlocks
+		 * possible) Also nobody should write to the file - we use
+		 * special IO operations which ignore the immutable bit. */
+		down_write(&dqopt->dqptr_sem);
+		oldflags = inode->i_flags & (S_NOATIME | S_IMMUTABLE | S_NOQUOTA);
+		inode->i_flags |= S_NOQUOTA | S_NOATIME | S_IMMUTABLE;
+		up_write(&dqopt->dqptr_sem);
+		sb->dq_op->drop(inode);
+	}
 
 	error = -EIO;
 	dqopt->files[type] = igrab(inode);
@@ -1584,6 +1847,7 @@ static int vfs_quota_on_inode(struct inode *inode, int type, int format_id)
 
 	dqopt->ops[type] = fmt->qf_ops;
 	dqopt->info[type].dqi_format = fmt;
+	dqopt->info[type].dqi_fmt_id = format_id;
 	INIT_LIST_HEAD(&dqopt->info[type].dqi_dirty_list);
 	mutex_lock(&dqopt->dqio_mutex);
 	if ((error = dqopt->ops[type]->read_file_info(sb, type)) < 0) {
@@ -1592,7 +1856,9 @@ static int vfs_quota_on_inode(struct inode *inode, int type, int format_id)
 	}
 	mutex_unlock(&dqopt->dqio_mutex);
 	mutex_unlock(&inode->i_mutex);
-	set_enable_flags(dqopt, type);
+	spin_lock(&dq_state_lock);
+	dqopt->flags |= dquot_state_flag(flags, type);
+	spin_unlock(&dq_state_lock);
 
 	add_dquot_ref(sb, type);
 	mutex_unlock(&dqopt->dqonoff_mutex);
@@ -1619,26 +1885,113 @@ out_fmt:
 	return error; 
 }
 
-/* Actual function called from quotactl() */
-int vfs_quota_on(struct super_block *sb, int type, int format_id, char *path)
+/* Reenable quotas on remount RW */
+static int vfs_quota_on_remount(struct super_block *sb, int type)
 {
-	struct nameidata nd;
-	int error;
+	struct quota_info *dqopt = sb_dqopt(sb);
+	struct inode *inode;
+	int ret;
+	unsigned int flags;
 
-	error = path_lookup(path, LOOKUP_FOLLOW, &nd);
-	if (error < 0)
-		return error;
-	error = security_quota_on(nd.dentry);
+	mutex_lock(&dqopt->dqonoff_mutex);
+	if (!sb_has_quota_suspended(sb, type)) {
+		mutex_unlock(&dqopt->dqonoff_mutex);
+		return 0;
+	}
+	inode = dqopt->files[type];
+	dqopt->files[type] = NULL;
+	spin_lock(&dq_state_lock);
+	flags = dqopt->flags & dquot_state_flag(DQUOT_USAGE_ENABLED |
+						DQUOT_LIMITS_ENABLED, type);
+	dqopt->flags &= ~dquot_state_flag(DQUOT_STATE_FLAGS, type);
+	spin_unlock(&dq_state_lock);
+	mutex_unlock(&dqopt->dqonoff_mutex);
+
+	flags = dquot_generic_flag(flags, type);
+	ret = vfs_load_quota_inode(inode, type, dqopt->info[type].dqi_fmt_id,
+				   flags);
+	iput(inode);
+
+	return ret;
+}
+
+int vfs_quota_on_path(struct super_block *sb, int type, int format_id,
+		      struct path *path)
+{
+	int error = security_quota_on(path->dentry);
 	if (error)
-		goto out_path;
+		return error;
 	/* Quota file not on the same filesystem? */
-	if (nd.mnt->mnt_sb != sb)
+	if (path->mnt->mnt_sb != sb)
 		error = -EXDEV;
 	else
-		error = vfs_quota_on_inode(nd.dentry->d_inode, type, format_id);
-out_path:
-	path_release(&nd);
+		error = vfs_load_quota_inode(path->dentry->d_inode, type,
+					     format_id, DQUOT_USAGE_ENABLED |
+					     DQUOT_LIMITS_ENABLED);
 	return error;
+}
+
+int vfs_quota_on(struct super_block *sb, int type, int format_id, char *name,
+		 int remount)
+{
+	struct path path;
+	int error;
+
+	if (remount)
+		return vfs_quota_on_remount(sb, type);
+
+	error = kern_path(name, LOOKUP_FOLLOW, &path);
+	if (!error) {
+		error = vfs_quota_on_path(sb, type, format_id, &path);
+		path_put(&path);
+	}
+	return error;
+}
+
+/*
+ * More powerful function for turning on quotas allowing setting
+ * of individual quota flags
+ */
+int vfs_quota_enable(struct inode *inode, int type, int format_id,
+		unsigned int flags)
+{
+	int ret = 0;
+	struct super_block *sb = inode->i_sb;
+	struct quota_info *dqopt = sb_dqopt(sb);
+
+	/* Just unsuspend quotas? */
+	if (flags & DQUOT_SUSPENDED)
+		return vfs_quota_on_remount(sb, type);
+	if (!flags)
+		return 0;
+	/* Just updating flags needed? */
+	if (sb_has_quota_loaded(sb, type)) {
+		mutex_lock(&dqopt->dqonoff_mutex);
+		/* Now do a reliable test... */
+		if (!sb_has_quota_loaded(sb, type)) {
+			mutex_unlock(&dqopt->dqonoff_mutex);
+			goto load_quota;
+		}
+		if (flags & DQUOT_USAGE_ENABLED &&
+		    sb_has_quota_usage_enabled(sb, type)) {
+			ret = -EBUSY;
+			goto out_lock;
+		}
+		if (flags & DQUOT_LIMITS_ENABLED &&
+		    sb_has_quota_limits_enabled(sb, type)) {
+			ret = -EBUSY;
+			goto out_lock;
+		}
+		spin_lock(&dq_state_lock);
+		sb_dqopt(sb)->flags |= dquot_state_flag(flags, type);
+		spin_unlock(&dq_state_lock);
+out_lock:
+		mutex_unlock(&dqopt->dqonoff_mutex);
+		return ret;
+	}
+
+load_quota:
+	return vfs_load_quota_inode(inode, type, format_id, flags);
 }
 
 /*
@@ -1662,11 +2015,38 @@ int vfs_quota_on_mount(struct super_block *sb, char *qf_name,
 
 	error = security_quota_on(dentry);
 	if (!error)
-		error = vfs_quota_on_inode(dentry->d_inode, type, format_id);
+		error = vfs_load_quota_inode(dentry->d_inode, type, format_id,
+				DQUOT_USAGE_ENABLED | DQUOT_LIMITS_ENABLED);
 
 out:
 	dput(dentry);
 	return error;
+}
+
+/* Wrapper to turn on quotas when remounting rw */
+int vfs_dq_quota_on_remount(struct super_block *sb)
+{
+	int cnt;
+	int ret = 0, err;
+
+	if (!sb->s_qcop || !sb->s_qcop->quota_on)
+		return -ENOSYS;
+	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
+		err = sb->s_qcop->quota_on(sb, cnt, 0, NULL, 1);
+		if (err < 0 && !ret)
+			ret = err;
+	}
+	return ret;
+}
+
+static inline qsize_t qbtos(qsize_t blocks)
+{
+	return blocks << QIF_DQBLKSIZE_BITS;
+}
+
+static inline qsize_t stoqb(qsize_t space)
+{
+	return (space + QIF_DQBLKSIZE - 1) >> QIF_DQBLKSIZE_BITS;
 }
 
 /* Generic routine for getting common part of quota structure */
@@ -1675,8 +2055,8 @@ static void do_get_dqblk(struct dquot *dquot, struct if_dqblk *di)
 	struct mem_dqblk *dm = &dquot->dq_dqb;
 
 	spin_lock(&dq_data_lock);
-	di->dqb_bhardlimit = dm->dqb_bhardlimit;
-	di->dqb_bsoftlimit = dm->dqb_bsoftlimit;
+	di->dqb_bhardlimit = stoqb(dm->dqb_bhardlimit);
+	di->dqb_bsoftlimit = stoqb(dm->dqb_bsoftlimit);
 	di->dqb_curspace = dm->dqb_curspace;
 	di->dqb_ihardlimit = dm->dqb_ihardlimit;
 	di->dqb_isoftlimit = dm->dqb_isoftlimit;
@@ -1691,54 +2071,71 @@ int vfs_get_dqblk(struct super_block *sb, int type, qid_t id, struct if_dqblk *d
 {
 	struct dquot *dquot;
 
-	mutex_lock(&sb_dqopt(sb)->dqonoff_mutex);
-	if (!(dquot = dqget(sb, id, type))) {
-		mutex_unlock(&sb_dqopt(sb)->dqonoff_mutex);
+	dquot = dqget(sb, id, type);
+	if (dquot == NODQUOT)
 		return -ESRCH;
-	}
 	do_get_dqblk(dquot, di);
 	dqput(dquot);
-	mutex_unlock(&sb_dqopt(sb)->dqonoff_mutex);
+
 	return 0;
 }
 
 /* Generic routine for setting common part of quota structure */
-static void do_set_dqblk(struct dquot *dquot, struct if_dqblk *di)
+static int do_set_dqblk(struct dquot *dquot, struct if_dqblk *di)
 {
 	struct mem_dqblk *dm = &dquot->dq_dqb;
 	int check_blim = 0, check_ilim = 0;
+	struct mem_dqinfo *dqi = &sb_dqopt(dquot->dq_sb)->info[dquot->dq_type];
+
+	if ((di->dqb_valid & QIF_BLIMITS &&
+	     (di->dqb_bhardlimit > dqi->dqi_maxblimit ||
+	      di->dqb_bsoftlimit > dqi->dqi_maxblimit)) ||
+	    (di->dqb_valid & QIF_ILIMITS &&
+	     (di->dqb_ihardlimit > dqi->dqi_maxilimit ||
+	      di->dqb_isoftlimit > dqi->dqi_maxilimit)))
+		return -ERANGE;
 
 	spin_lock(&dq_data_lock);
 	if (di->dqb_valid & QIF_SPACE) {
 		dm->dqb_curspace = di->dqb_curspace;
 		check_blim = 1;
+		__set_bit(DQ_LASTSET_B + QIF_SPACE_B, &dquot->dq_flags);
 	}
 	if (di->dqb_valid & QIF_BLIMITS) {
-		dm->dqb_bsoftlimit = di->dqb_bsoftlimit;
-		dm->dqb_bhardlimit = di->dqb_bhardlimit;
+		dm->dqb_bsoftlimit = qbtos(di->dqb_bsoftlimit);
+		dm->dqb_bhardlimit = qbtos(di->dqb_bhardlimit);
 		check_blim = 1;
+		__set_bit(DQ_LASTSET_B + QIF_BLIMITS_B, &dquot->dq_flags);
 	}
 	if (di->dqb_valid & QIF_INODES) {
 		dm->dqb_curinodes = di->dqb_curinodes;
 		check_ilim = 1;
+		__set_bit(DQ_LASTSET_B + QIF_INODES_B, &dquot->dq_flags);
 	}
 	if (di->dqb_valid & QIF_ILIMITS) {
 		dm->dqb_isoftlimit = di->dqb_isoftlimit;
 		dm->dqb_ihardlimit = di->dqb_ihardlimit;
 		check_ilim = 1;
+		__set_bit(DQ_LASTSET_B + QIF_ILIMITS_B, &dquot->dq_flags);
 	}
-	if (di->dqb_valid & QIF_BTIME)
+	if (di->dqb_valid & QIF_BTIME) {
 		dm->dqb_btime = di->dqb_btime;
-	if (di->dqb_valid & QIF_ITIME)
+		check_blim = 1;
+		__set_bit(DQ_LASTSET_B + QIF_BTIME_B, &dquot->dq_flags);
+	}
+	if (di->dqb_valid & QIF_ITIME) {
 		dm->dqb_itime = di->dqb_itime;
+		check_ilim = 1;
+		__set_bit(DQ_LASTSET_B + QIF_ITIME_B, &dquot->dq_flags);
+	}
 
 	if (check_blim) {
-		if (!dm->dqb_bsoftlimit || toqb(dm->dqb_curspace) < dm->dqb_bsoftlimit) {
+		if (!dm->dqb_bsoftlimit || dm->dqb_curspace < dm->dqb_bsoftlimit) {
 			dm->dqb_btime = 0;
 			clear_bit(DQ_BLKS_B, &dquot->dq_flags);
 		}
 		else if (!(di->dqb_valid & QIF_BTIME))	/* Set grace only if user hasn't provided his own... */
-			dm->dqb_btime = get_seconds() + sb_dqopt(dquot->dq_sb)->info[dquot->dq_type].dqi_bgrace;
+			dm->dqb_btime = get_seconds() + dqi->dqi_bgrace;
 	}
 	if (check_ilim) {
 		if (!dm->dqb_isoftlimit || dm->dqb_curinodes < dm->dqb_isoftlimit) {
@@ -1746,7 +2143,7 @@ static void do_set_dqblk(struct dquot *dquot, struct if_dqblk *di)
 			clear_bit(DQ_INODES_B, &dquot->dq_flags);
 		}
 		else if (!(di->dqb_valid & QIF_ITIME))	/* Set grace only if user hasn't provided his own... */
-			dm->dqb_itime = get_seconds() + sb_dqopt(dquot->dq_sb)->info[dquot->dq_type].dqi_igrace;
+			dm->dqb_itime = get_seconds() + dqi->dqi_igrace;
 	}
 	if (dm->dqb_bhardlimit || dm->dqb_bsoftlimit || dm->dqb_ihardlimit || dm->dqb_isoftlimit)
 		clear_bit(DQ_FAKE_B, &dquot->dq_flags);
@@ -1754,21 +2151,24 @@ static void do_set_dqblk(struct dquot *dquot, struct if_dqblk *di)
 		set_bit(DQ_FAKE_B, &dquot->dq_flags);
 	spin_unlock(&dq_data_lock);
 	mark_dquot_dirty(dquot);
+
+	return 0;
 }
 
 int vfs_set_dqblk(struct super_block *sb, int type, qid_t id, struct if_dqblk *di)
 {
 	struct dquot *dquot;
+	int rc;
 
-	mutex_lock(&sb_dqopt(sb)->dqonoff_mutex);
-	if (!(dquot = dqget(sb, id, type))) {
-		mutex_unlock(&sb_dqopt(sb)->dqonoff_mutex);
-		return -ESRCH;
+	dquot = dqget(sb, id, type);
+	if (!dquot) {
+		rc = -ESRCH;
+		goto out;
 	}
-	do_set_dqblk(dquot, di);
+	rc = do_set_dqblk(dquot, di);
 	dqput(dquot);
-	mutex_unlock(&sb_dqopt(sb)->dqonoff_mutex);
-	return 0;
+out:
+	return rc;
 }
 
 /* Generic routine for getting common part of quota file information */
@@ -1777,7 +2177,7 @@ int vfs_get_dqinfo(struct super_block *sb, int type, struct if_dqinfo *ii)
 	struct mem_dqinfo *mi;
   
 	mutex_lock(&sb_dqopt(sb)->dqonoff_mutex);
-	if (!sb_has_quota_enabled(sb, type)) {
+	if (!sb_has_quota_active(sb, type)) {
 		mutex_unlock(&sb_dqopt(sb)->dqonoff_mutex);
 		return -ESRCH;
 	}
@@ -1796,11 +2196,12 @@ int vfs_get_dqinfo(struct super_block *sb, int type, struct if_dqinfo *ii)
 int vfs_set_dqinfo(struct super_block *sb, int type, struct if_dqinfo *ii)
 {
 	struct mem_dqinfo *mi;
+	int err = 0;
 
 	mutex_lock(&sb_dqopt(sb)->dqonoff_mutex);
-	if (!sb_has_quota_enabled(sb, type)) {
-		mutex_unlock(&sb_dqopt(sb)->dqonoff_mutex);
-		return -ESRCH;
+	if (!sb_has_quota_active(sb, type)) {
+		err = -ESRCH;
+		goto out;
 	}
 	mi = sb_dqopt(sb)->info + type;
 	spin_lock(&dq_data_lock);
@@ -1814,8 +2215,9 @@ int vfs_set_dqinfo(struct super_block *sb, int type, struct if_dqinfo *ii)
 	mark_info_dirty(sb, type);
 	/* Force write to disk */
 	sb->dq_op->write_info(sb, type);
+out:
 	mutex_unlock(&sb_dqopt(sb)->dqonoff_mutex);
-	return 0;
+	return err;
 }
 
 struct quotactl_ops vfs_quotactl_ops = {
@@ -1977,9 +2379,13 @@ EXPORT_SYMBOL(register_quota_format);
 EXPORT_SYMBOL(unregister_quota_format);
 EXPORT_SYMBOL(dqstats);
 EXPORT_SYMBOL(dq_data_lock);
+EXPORT_SYMBOL(vfs_quota_enable);
 EXPORT_SYMBOL(vfs_quota_on);
+EXPORT_SYMBOL(vfs_quota_on_path);
 EXPORT_SYMBOL(vfs_quota_on_mount);
+EXPORT_SYMBOL(vfs_quota_disable);
 EXPORT_SYMBOL(vfs_quota_off);
+EXPORT_SYMBOL(dquot_scan_active);
 EXPORT_SYMBOL(vfs_quota_sync);
 EXPORT_SYMBOL(vfs_get_dqinfo);
 EXPORT_SYMBOL(vfs_set_dqinfo);
@@ -1992,8 +2398,13 @@ EXPORT_SYMBOL(dquot_release);
 EXPORT_SYMBOL(dquot_mark_dquot_dirty);
 EXPORT_SYMBOL(dquot_initialize);
 EXPORT_SYMBOL(dquot_drop);
+EXPORT_SYMBOL(vfs_dq_drop);
+EXPORT_SYMBOL(dqget);
+EXPORT_SYMBOL(dqput);
 EXPORT_SYMBOL(dquot_alloc_space);
 EXPORT_SYMBOL(dquot_alloc_inode);
 EXPORT_SYMBOL(dquot_free_space);
 EXPORT_SYMBOL(dquot_free_inode);
 EXPORT_SYMBOL(dquot_transfer);
+EXPORT_SYMBOL(vfs_dq_transfer);
+EXPORT_SYMBOL(vfs_dq_quota_on_remount);

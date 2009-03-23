@@ -170,8 +170,6 @@ struct b43_dmadesc_generic {
 #define B43_DMA0_RX_BUFFERSIZE	(2304 + 100)
 #define B43_DMA3_RX_BUFFERSIZE	16
 
-#ifdef CONFIG_B43_DMA
-
 struct sk_buff;
 struct b43_private;
 struct b43_txstatus;
@@ -183,7 +181,6 @@ struct b43_dmadesc_meta {
 	dma_addr_t dmaaddr;
 	/* ieee80211 TX status. Only used once per 802.11 frag. */
 	bool is_last_fragment;
-	struct ieee80211_tx_status txstat;
 };
 
 struct b43_dmaring;
@@ -203,6 +200,12 @@ struct b43_dma_ops {
 	void (*tx_resume) (struct b43_dmaring * ring);
 	int (*get_current_rxslot) (struct b43_dmaring * ring);
 	void (*set_current_rxslot) (struct b43_dmaring * ring, int slot);
+};
+
+enum b43_dmatype {
+	B43_DMA_30BIT	= 30,
+	B43_DMA_32BIT	= 32,
+	B43_DMA_64BIT	= 64,
 };
 
 struct b43_dmaring {
@@ -237,10 +240,13 @@ struct b43_dmaring {
 	int index;
 	/* Boolean. Is this a TX ring? */
 	bool tx;
-	/* Boolean. 64bit DMA if true, 32bit DMA otherwise. */
-	bool dma64;
+	/* The type of DMA engine used. */
+	enum b43_dmatype type;
 	/* Boolean. Is this ring stopped at ieee80211 level? */
 	bool stopped;
+	/* The QOS priority assigned to this ring. Only used for TX rings.
+	 * This is the mac80211 "queue" value. */
+	u8 queue_prio;
 	/* Lock, only used for TX. */
 	spinlock_t lock;
 	struct b43_wldev *dev;
@@ -249,7 +255,13 @@ struct b43_dmaring {
 	int max_used_slots;
 	/* Last time we injected a ring overflow. */
 	unsigned long last_injected_overflow;
-#endif				/* CONFIG_B43_DEBUG */
+	/* Statistics: Number of successfully transmitted packets */
+	u64 nr_succeed_tx_packets;
+	/* Statistics: Number of failed TX packets */
+	u64 nr_failed_tx_packets;
+	/* Statistics: Total number of TX plus all retries. */
+	u64 nr_total_packet_tries;
+#endif /* CONFIG_B43_DEBUG */
 };
 
 static inline u32 b43_dma_read(struct b43_dmaring *ring, u16 offset)
@@ -257,21 +269,13 @@ static inline u32 b43_dma_read(struct b43_dmaring *ring, u16 offset)
 	return b43_read32(ring->dev, ring->mmio_base + offset);
 }
 
-static inline
-    void b43_dma_write(struct b43_dmaring *ring, u16 offset, u32 value)
+static inline void b43_dma_write(struct b43_dmaring *ring, u16 offset, u32 value)
 {
 	b43_write32(ring->dev, ring->mmio_base + offset, value);
 }
 
 int b43_dma_init(struct b43_wldev *dev);
 void b43_dma_free(struct b43_wldev *dev);
-
-int b43_dmacontroller_rx_reset(struct b43_wldev *dev,
-			       u16 dmacontroller_mmio_base, int dma64);
-int b43_dmacontroller_tx_reset(struct b43_wldev *dev,
-			       u16 dmacontroller_mmio_base, int dma64);
-
-u16 b43_dmacontroller_base(int dma64bit, int dmacontroller_idx);
 
 void b43_dma_tx_suspend(struct b43_wldev *dev);
 void b43_dma_tx_resume(struct b43_wldev *dev);
@@ -280,58 +284,13 @@ void b43_dma_get_tx_stats(struct b43_wldev *dev,
 			  struct ieee80211_tx_queue_stats *stats);
 
 int b43_dma_tx(struct b43_wldev *dev,
-	       struct sk_buff *skb, struct ieee80211_tx_control *ctl);
+	       struct sk_buff *skb);
 void b43_dma_handle_txstatus(struct b43_wldev *dev,
 			     const struct b43_txstatus *status);
 
 void b43_dma_rx(struct b43_dmaring *ring);
 
-#else /* CONFIG_B43_DMA */
+void b43_dma_direct_fifo_rx(struct b43_wldev *dev,
+			    unsigned int engine_index, bool enable);
 
-static inline int b43_dma_init(struct b43_wldev *dev)
-{
-	return 0;
-}
-static inline void b43_dma_free(struct b43_wldev *dev)
-{
-}
-static inline
-    int b43_dmacontroller_rx_reset(struct b43_wldev *dev,
-				   u16 dmacontroller_mmio_base, int dma64)
-{
-	return 0;
-}
-static inline
-    int b43_dmacontroller_tx_reset(struct b43_wldev *dev,
-				   u16 dmacontroller_mmio_base, int dma64)
-{
-	return 0;
-}
-static inline
-    void b43_dma_get_tx_stats(struct b43_wldev *dev,
-			      struct ieee80211_tx_queue_stats *stats)
-{
-}
-static inline
-    int b43_dma_tx(struct b43_wldev *dev,
-		   struct sk_buff *skb, struct ieee80211_tx_control *ctl)
-{
-	return 0;
-}
-static inline
-    void b43_dma_handle_txstatus(struct b43_wldev *dev,
-				 const struct b43_txstatus *status)
-{
-}
-static inline void b43_dma_rx(struct b43_dmaring *ring)
-{
-}
-static inline void b43_dma_tx_suspend(struct b43_wldev *dev)
-{
-}
-static inline void b43_dma_tx_resume(struct b43_wldev *dev)
-{
-}
-
-#endif /* CONFIG_B43_DMA */
 #endif /* B43_DMA_H_ */

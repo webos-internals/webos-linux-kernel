@@ -11,8 +11,6 @@
  * (C) Copyright 2005 Robert Love
  */
 
-#ifdef __KERNEL__
-
 #include <linux/dnotify.h>
 #include <linux/inotify.h>
 #include <linux/audit.h>
@@ -92,6 +90,14 @@ static inline void fsnotify_inoderemove(struct inode *inode)
 }
 
 /*
+ * fsnotify_link_count - inode's link count changed
+ */
+static inline void fsnotify_link_count(struct inode *inode)
+{
+	inotify_inode_queue_event(inode, IN_ATTRIB, 0, NULL, NULL);
+}
+
+/*
  * fsnotify_create - 'name' was linked in
  */
 static inline void fsnotify_create(struct inode *inode, struct dentry *dentry)
@@ -100,6 +106,20 @@ static inline void fsnotify_create(struct inode *inode, struct dentry *dentry)
 	inotify_inode_queue_event(inode, IN_CREATE, 0, dentry->d_name.name,
 				  dentry->d_inode);
 	audit_inode_child(dentry->d_name.name, dentry, inode);
+}
+
+/*
+ * fsnotify_link - new hardlink in 'inode' directory
+ * Note: We have to pass also the linked inode ptr as some filesystems leave
+ *   new_dentry->d_inode NULL and instantiate inode pointer later
+ */
+static inline void fsnotify_link(struct inode *dir, struct inode *inode, struct dentry *new_dentry)
+{
+	inode_dir_notify(dir, DN_CREATE);
+	inotify_inode_queue_event(dir, IN_CREATE, 0, new_dentry->d_name.name,
+				  inode);
+	fsnotify_link_count(inode);
+	audit_inode_child(new_dentry->d_name.name, new_dentry, dir);
 }
 
 /*
@@ -168,7 +188,7 @@ static inline void fsnotify_close(struct file *file)
 	struct dentry *dentry = file->f_path.dentry;
 	struct inode *inode = dentry->d_inode;
 	const char *name = dentry->d_name.name;
-	mode_t mode = file->f_mode;
+	fmode_t mode = file->f_mode;
 	u32 mask = (mode & FMODE_WRITE) ? IN_CLOSE_WRITE : IN_CLOSE_NOWRITE;
 
 	if (S_ISDIR(inode->i_mode))
@@ -273,7 +293,5 @@ static inline void fsnotify_oldname_free(const char *old_name)
 }
 
 #endif	/* ! CONFIG_INOTIFY */
-
-#endif	/* __KERNEL__ */
 
 #endif	/* _LINUX_FS_NOTIFY_H */

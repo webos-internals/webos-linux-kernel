@@ -370,7 +370,7 @@ static int i2o_scsi_reply(struct i2o_controller *c, u32 m,
 	 */
 	if (cmd->result)
 		memcpy(cmd->sense_buffer, &msg->body[3],
-		       min(sizeof(cmd->sense_buffer), (size_t) 40));
+		       min(SCSI_SENSE_BUFFERSIZE, 40));
 
 	/* only output error code if AdapterStatus is not HBA_SUCCESS */
 	if ((error >> 8) & 0xff)
@@ -390,7 +390,7 @@ static int i2o_scsi_reply(struct i2o_controller *c, u32 m,
  *	@i2o_dev: the I2O device which was added
  *
  *	If a I2O device is added we catch the notification, because I2O classes
- *	other then SCSI peripheral will not be received through
+ *	other than SCSI peripheral will not be received through
  *	i2o_scsi_probe().
  */
 static void i2o_scsi_notify_device_add(struct i2o_device *i2o_dev)

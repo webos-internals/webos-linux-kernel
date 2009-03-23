@@ -12,6 +12,7 @@
 #include <linux/time.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/namei.h>
 #include <linux/fcntl.h>
 #include <linux/net.h>
 #include <linux/in.h>
@@ -22,6 +23,7 @@
 #include <linux/seq_file.h>
 #include <linux/pagemap.h>
 #include <linux/init.h>
+#include <linux/inet.h>
 #include <linux/string.h>
 #include <linux/smp_lock.h>
 #include <linux/ctype.h>
@@ -35,8 +37,10 @@
 #include <linux/nfsd/cache.h>
 #include <linux/nfsd/xdr.h>
 #include <linux/nfsd/syscall.h>
+#include <linux/lockd/lockd.h>
 
 #include <asm/uaccess.h>
+#include <net/ipv6.h>
 
 /*
  *	We have a single directory with 9 nodes in it.
@@ -52,6 +56,8 @@ enum {
 	NFSD_Getfs,
 	NFSD_List,
 	NFSD_Fh,
+	NFSD_FO_UnlockIP,
+	NFSD_FO_UnlockFS,
 	NFSD_Threads,
 	NFSD_Pool_Threads,
 	NFSD_Versions,
@@ -78,6 +84,8 @@ static ssize_t write_unexport(struct file *file, char *buf, size_t size);
 static ssize_t write_getfd(struct file *file, char *buf, size_t size);
 static ssize_t write_getfs(struct file *file, char *buf, size_t size);
 static ssize_t write_filehandle(struct file *file, char *buf, size_t size);
+static ssize_t write_unlock_ip(struct file *file, char *buf, size_t size);
+static ssize_t write_unlock_fs(struct file *file, char *buf, size_t size);
 static ssize_t write_threads(struct file *file, char *buf, size_t size);
 static ssize_t write_pool_threads(struct file *file, char *buf, size_t size);
 static ssize_t write_versions(struct file *file, char *buf, size_t size);
@@ -97,6 +105,8 @@ static ssize_t (*write_op[])(struct file *, char *, size_t) = {
 	[NFSD_Getfd] = write_getfd,
 	[NFSD_Getfs] = write_getfs,
 	[NFSD_Fh] = write_filehandle,
+	[NFSD_FO_UnlockIP] = write_unlock_ip,
+	[NFSD_FO_UnlockFS] = write_unlock_fs,
 	[NFSD_Threads] = write_threads,
 	[NFSD_Pool_Threads] = write_pool_threads,
 	[NFSD_Versions] = write_versions,
@@ -149,7 +159,6 @@ static const struct file_operations transaction_ops = {
 	.release	= simple_transaction_release,
 };
 
-extern struct seq_operations nfs_exports_op;
 static int exports_open(struct inode *inode, struct file *file)
 {
 	return seq_open(file, &nfs_exports_op);
@@ -160,15 +169,30 @@ static const struct file_operations exports_operations = {
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= seq_release,
+	.owner		= THIS_MODULE,
 };
 
 /*----------------------------------------------------------------------------*/
 /*
  * payload - write methods
- * If the method has a response, the response should be put in buf,
- * and the length returned.  Otherwise return 0 or and -error.
  */
 
+/**
+ * write_svc - Start kernel's NFSD server
+ *
+ * Deprecated.  /proc/fs/nfsd/threads is preferred.
+ * Function remains to support old versions of nfs-utils.
+ *
+ * Input:
+ *			buf:	struct nfsctl_svc
+ *				svc_port:	port number of this
+ *						server's listener
+ *				svc_nthreads:	number of threads to start
+ *			size:	size in bytes of passed in nfsctl_svc
+ * Output:
+ *	On success:	returns zero
+ *	On error:	return code is negative errno value
+ */
 static ssize_t write_svc(struct file *file, char *buf, size_t size)
 {
 	struct nfsctl_svc *data;
@@ -178,6 +202,30 @@ static ssize_t write_svc(struct file *file, char *buf, size_t size)
 	return nfsd_svc(data->svc_port, data->svc_nthreads);
 }
 
+/**
+ * write_add - Add or modify client entry in auth unix cache
+ *
+ * Deprecated.  /proc/net/rpc/auth.unix.ip is preferred.
+ * Function remains to support old versions of nfs-utils.
+ *
+ * Input:
+ *			buf:	struct nfsctl_client
+ *				cl_ident:	'\0'-terminated C string
+ *						containing domain name
+ *						of client
+ *				cl_naddr:	no. of items in cl_addrlist
+ *				cl_addrlist:	array of client addresses
+ *				cl_fhkeytype:	ignored
+ *				cl_fhkeylen:	ignored
+ *				cl_fhkey:	ignored
+ *			size:	size in bytes of passed in nfsctl_client
+ * Output:
+ *	On success:	returns zero
+ *	On error:	return code is negative errno value
+ *
+ * Note: Only AF_INET client addresses are passed in, since
+ * nfsctl_client.cl_addrlist contains only in_addr fields for addresses.
+ */
 static ssize_t write_add(struct file *file, char *buf, size_t size)
 {
 	struct nfsctl_client *data;
@@ -187,6 +235,30 @@ static ssize_t write_add(struct file *file, char *buf, size_t size)
 	return exp_addclient(data);
 }
 
+/**
+ * write_del - Remove client from auth unix cache
+ *
+ * Deprecated.  /proc/net/rpc/auth.unix.ip is preferred.
+ * Function remains to support old versions of nfs-utils.
+ *
+ * Input:
+ *			buf:	struct nfsctl_client
+ *				cl_ident:	'\0'-terminated C string
+ *						containing domain name
+ *						of client
+ *				cl_naddr:	ignored
+ *				cl_addrlist:	ignored
+ *				cl_fhkeytype:	ignored
+ *				cl_fhkeylen:	ignored
+ *				cl_fhkey:	ignored
+ *			size:	size in bytes of passed in nfsctl_client
+ * Output:
+ *	On success:	returns zero
+ *	On error:	return code is negative errno value
+ *
+ * Note: Only AF_INET client addresses are passed in, since
+ * nfsctl_client.cl_addrlist contains only in_addr fields for addresses.
+ */
 static ssize_t write_del(struct file *file, char *buf, size_t size)
 {
 	struct nfsctl_client *data;
@@ -196,6 +268,33 @@ static ssize_t write_del(struct file *file, char *buf, size_t size)
 	return exp_delclient(data);
 }
 
+/**
+ * write_export - Export part or all of a local file system
+ *
+ * Deprecated.  /proc/net/rpc/{nfsd.export,nfsd.fh} are preferred.
+ * Function remains to support old versions of nfs-utils.
+ *
+ * Input:
+ *			buf:	struct nfsctl_export
+ *				ex_client:	'\0'-terminated C string
+ *						containing domain name
+ *						of client allowed to access
+ *						this export
+ *				ex_path:	'\0'-terminated C string
+ *						containing pathname of
+ *						directory in local file system
+ *				ex_dev:		fsid to use for this export
+ *				ex_ino:		ignored
+ *				ex_flags:	export flags for this export
+ *				ex_anon_uid:	UID to use for anonymous
+ *						requests
+ *				ex_anon_gid:	GID to use for anonymous
+ *						requests
+ *			size:	size in bytes of passed in nfsctl_export
+ * Output:
+ *	On success:	returns zero
+ *	On error:	return code is negative errno value
+ */
 static ssize_t write_export(struct file *file, char *buf, size_t size)
 {
 	struct nfsctl_export *data;
@@ -205,6 +304,31 @@ static ssize_t write_export(struct file *file, char *buf, size_t size)
 	return exp_export(data);
 }
 
+/**
+ * write_unexport - Unexport a previously exported file system
+ *
+ * Deprecated.  /proc/net/rpc/{nfsd.export,nfsd.fh} are preferred.
+ * Function remains to support old versions of nfs-utils.
+ *
+ * Input:
+ *			buf:	struct nfsctl_export
+ *				ex_client:	'\0'-terminated C string
+ *						containing domain name
+ *						of client no longer allowed
+ *						to access this export
+ *				ex_path:	'\0'-terminated C string
+ *						containing pathname of
+ *						directory in local file system
+ *				ex_dev:		ignored
+ *				ex_ino:		ignored
+ *				ex_flags:	ignored
+ *				ex_anon_uid:	ignored
+ *				ex_anon_gid:	ignored
+ *			size:	size in bytes of passed in nfsctl_export
+ * Output:
+ *	On success:	returns zero
+ *	On error:	return code is negative errno value
+ */
 static ssize_t write_unexport(struct file *file, char *buf, size_t size)
 {
 	struct nfsctl_export *data;
@@ -215,6 +339,30 @@ static ssize_t write_unexport(struct file *file, char *buf, size_t size)
 	return exp_unexport(data);
 }
 
+/**
+ * write_getfs - Get a variable-length NFS file handle by path
+ *
+ * Deprecated.  /proc/fs/nfsd/filehandle is preferred.
+ * Function remains to support old versions of nfs-utils.
+ *
+ * Input:
+ *			buf:	struct nfsctl_fsparm
+ *				gd_addr:	socket address of client
+ *				gd_path:	'\0'-terminated C string
+ *						containing pathname of
+ *						directory in local file system
+ *				gd_maxlen:	maximum size of returned file
+ *						handle
+ *			size:	size in bytes of passed in nfsctl_fsparm
+ * Output:
+ *	On success:	passed-in buffer filled with a knfsd_fh structure
+ *			(a variable-length raw NFS file handle);
+ *			return code is the size in bytes of the file handle
+ *	On error:	return code is negative errno value
+ *
+ * Note: Only AF_INET client addresses are passed in, since gd_addr
+ * is the same size as a struct sockaddr_in.
+ */
 static ssize_t write_getfs(struct file *file, char *buf, size_t size)
 {
 	struct nfsctl_fsparm *data;
@@ -222,6 +370,7 @@ static ssize_t write_getfs(struct file *file, char *buf, size_t size)
 	struct auth_domain *clp;
 	int err = 0;
 	struct knfsd_fh *res;
+	struct in6_addr in6;
 
 	if (size < sizeof(*data))
 		return -EINVAL;
@@ -236,7 +385,11 @@ static ssize_t write_getfs(struct file *file, char *buf, size_t size)
 	res = (struct knfsd_fh*)buf;
 
 	exp_readlock();
-	if (!(clp = auth_unix_lookup(sin->sin_addr)))
+
+	ipv6_addr_set_v4mapped(sin->sin_addr.s_addr, &in6);
+
+	clp = auth_unix_lookup(&in6);
+	if (!clp)
 		err = -EPERM;
 	else {
 		err = exp_rootfh(clp, data->gd_path, res, data->gd_maxlen);
@@ -249,6 +402,29 @@ static ssize_t write_getfs(struct file *file, char *buf, size_t size)
 	return err;
 }
 
+/**
+ * write_getfd - Get a fixed-length NFS file handle by path (used by mountd)
+ *
+ * Deprecated.  /proc/fs/nfsd/filehandle is preferred.
+ * Function remains to support old versions of nfs-utils.
+ *
+ * Input:
+ *			buf:	struct nfsctl_fdparm
+ *				gd_addr:	socket address of client
+ *				gd_path:	'\0'-terminated C string
+ *						containing pathname of
+ *						directory in local file system
+ *				gd_version:	fdparm structure version
+ *			size:	size in bytes of passed in nfsctl_fdparm
+ * Output:
+ *	On success:	passed-in buffer filled with nfsctl_res
+ *			(a fixed-length raw NFS file handle);
+ *			return code is the size in bytes of the file handle
+ *	On error:	return code is negative errno value
+ *
+ * Note: Only AF_INET client addresses are passed in, since gd_addr
+ * is the same size as a struct sockaddr_in.
+ */
 static ssize_t write_getfd(struct file *file, char *buf, size_t size)
 {
 	struct nfsctl_fdparm *data;
@@ -257,6 +433,7 @@ static ssize_t write_getfd(struct file *file, char *buf, size_t size)
 	int err = 0;
 	struct knfsd_fh fh;
 	char *res;
+	struct in6_addr in6;
 
 	if (size < sizeof(*data))
 		return -EINVAL;
@@ -271,7 +448,11 @@ static ssize_t write_getfd(struct file *file, char *buf, size_t size)
 	res = buf;
 	sin = (struct sockaddr_in *)&data->gd_addr;
 	exp_readlock();
-	if (!(clp = auth_unix_lookup(sin->sin_addr)))
+
+	ipv6_addr_set_v4mapped(sin->sin_addr.s_addr, &in6);
+
+	clp = auth_unix_lookup(&in6);
+	if (!clp)
 		err = -EPERM;
 	else {
 		err = exp_rootfh(clp, data->gd_path, &fh, NFS_FHSIZE);
@@ -288,15 +469,125 @@ static ssize_t write_getfd(struct file *file, char *buf, size_t size)
 	return err;
 }
 
+/**
+ * write_unlock_ip - Release all locks used by a client
+ *
+ * Experimental.
+ *
+ * Input:
+ *			buf:	'\n'-terminated C string containing a
+ *				presentation format IPv4 address
+ *			size:	length of C string in @buf
+ * Output:
+ *	On success:	returns zero if all specified locks were released;
+ *			returns one if one or more locks were not released
+ *	On error:	return code is negative errno value
+ *
+ * Note: Only AF_INET client addresses are passed in
+ */
+static ssize_t write_unlock_ip(struct file *file, char *buf, size_t size)
+{
+	struct sockaddr_in sin = {
+		.sin_family	= AF_INET,
+	};
+	int b1, b2, b3, b4;
+	char c;
+	char *fo_path;
+
+	/* sanity check */
+	if (size == 0)
+		return -EINVAL;
+
+	if (buf[size-1] != '\n')
+		return -EINVAL;
+
+	fo_path = buf;
+	if (qword_get(&buf, fo_path, size) < 0)
+		return -EINVAL;
+
+	/* get ipv4 address */
+	if (sscanf(fo_path, "%u.%u.%u.%u%c", &b1, &b2, &b3, &b4, &c) != 4)
+		return -EINVAL;
+	if (b1 > 255 || b2 > 255 || b3 > 255 || b4 > 255)
+		return -EINVAL;
+	sin.sin_addr.s_addr = htonl((b1 << 24) | (b2 << 16) | (b3 << 8) | b4);
+
+	return nlmsvc_unlock_all_by_ip((struct sockaddr *)&sin);
+}
+
+/**
+ * write_unlock_fs - Release all locks on a local file system
+ *
+ * Experimental.
+ *
+ * Input:
+ *			buf:	'\n'-terminated C string containing the
+ *				absolute pathname of a local file system
+ *			size:	length of C string in @buf
+ * Output:
+ *	On success:	returns zero if all specified locks were released;
+ *			returns one if one or more locks were not released
+ *	On error:	return code is negative errno value
+ */
+static ssize_t write_unlock_fs(struct file *file, char *buf, size_t size)
+{
+	struct path path;
+	char *fo_path;
+	int error;
+
+	/* sanity check */
+	if (size == 0)
+		return -EINVAL;
+
+	if (buf[size-1] != '\n')
+		return -EINVAL;
+
+	fo_path = buf;
+	if (qword_get(&buf, fo_path, size) < 0)
+		return -EINVAL;
+
+	error = kern_path(fo_path, 0, &path);
+	if (error)
+		return error;
+
+	/*
+	 * XXX: Needs better sanity checking.  Otherwise we could end up
+	 * releasing locks on the wrong file system.
+	 *
+	 * For example:
+	 * 1.  Does the path refer to a directory?
+	 * 2.  Is that directory a mount point, or
+	 * 3.  Is that directory the root of an exported file system?
+	 */
+	error = nlmsvc_unlock_all_by_sb(path.mnt->mnt_sb);
+
+	path_put(&path);
+	return error;
+}
+
+/**
+ * write_filehandle - Get a variable-length NFS file handle by path
+ *
+ * On input, the buffer contains a '\n'-terminated C string comprised of
+ * three alphanumeric words separated by whitespace.  The string may
+ * contain escape sequences.
+ *
+ * Input:
+ *			buf:
+ *				domain:		client domain name
+ *				path:		export pathname
+ *				maxsize:	numeric maximum size of
+ *						@buf
+ *			size:	length of C string in @buf
+ * Output:
+ *	On success:	passed-in buffer filled with '\n'-terminated C
+ *			string containing a ASCII hex text version
+ *			of the NFS file handle;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is negative errno value
+ */
 static ssize_t write_filehandle(struct file *file, char *buf, size_t size)
 {
-	/* request is:
-	 *   domain path maxsize
-	 * response is
-	 *   filehandle
-	 *
-	 * qword quoting is used, so filehandle will be \x....
-	 */
 	char *dname, *path;
 	int uninitialized_var(maxsize);
 	char *mesg = buf;
@@ -304,17 +595,22 @@ static ssize_t write_filehandle(struct file *file, char *buf, size_t size)
 	struct auth_domain *dom;
 	struct knfsd_fh fh;
 
+	if (size == 0)
+		return -EINVAL;
+
 	if (buf[size-1] != '\n')
 		return -EINVAL;
 	buf[size-1] = 0;
 
 	dname = mesg;
 	len = qword_get(&mesg, dname, size);
-	if (len <= 0) return -EINVAL;
+	if (len <= 0)
+		return -EINVAL;
 	
 	path = dname+len+1;
 	len = qword_get(&mesg, path, size);
-	if (len <= 0) return -EINVAL;
+	if (len <= 0)
+		return -EINVAL;
 
 	len = get_int(&mesg, &maxsize);
 	if (len)
@@ -338,19 +634,43 @@ static ssize_t write_filehandle(struct file *file, char *buf, size_t size)
 	if (len)
 		return len;
 	
-	mesg = buf; len = SIMPLE_TRANSACTION_LIMIT;
+	mesg = buf;
+	len = SIMPLE_TRANSACTION_LIMIT;
 	qword_addhex(&mesg, &len, (char*)&fh.fh_base, fh.fh_size);
 	mesg[-1] = '\n';
 	return mesg - buf;	
 }
 
-extern int nfsd_nrthreads(void);
-
+/**
+ * write_threads - Start NFSD, or report the current number of running threads
+ *
+ * Input:
+ *			buf:		ignored
+ *			size:		zero
+ * Output:
+ *	On success:	passed-in buffer filled with '\n'-terminated C
+ *			string numeric value representing the number of
+ *			running NFSD threads;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero
+ *
+ * OR
+ *
+ * Input:
+ *			buf:		C string containing an unsigned
+ *					integer value representing the
+ *					number of NFSD threads to start
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	NFS service is started;
+ *			passed-in buffer filled with '\n'-terminated C
+ *			string numeric value representing the number of
+ *			running NFSD threads;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero or a negative errno value
+ */
 static ssize_t write_threads(struct file *file, char *buf, size_t size)
 {
-	/* if size > 0, look for a number of threads and call nfsd_svc
-	 * then write out number of threads as reply
-	 */
 	char *mesg = buf;
 	int rv;
 	if (size > 0) {
@@ -358,9 +678,9 @@ static ssize_t write_threads(struct file *file, char *buf, size_t size)
 		rv = get_int(&mesg, &newthreads);
 		if (rv)
 			return rv;
-		if (newthreads <0)
+		if (newthreads < 0)
 			return -EINVAL;
-		rv = nfsd_svc(2049, newthreads);
+		rv = nfsd_svc(NFS_PORT, newthreads);
 		if (rv)
 			return rv;
 	}
@@ -368,10 +688,28 @@ static ssize_t write_threads(struct file *file, char *buf, size_t size)
 	return strlen(buf);
 }
 
-extern int nfsd_nrpools(void);
-extern int nfsd_get_nrthreads(int n, int *);
-extern int nfsd_set_nrthreads(int n, int *);
-
+/**
+ * write_pool_threads - Set or report the current number of threads per pool
+ *
+ * Input:
+ *			buf:		ignored
+ *			size:		zero
+ *
+ * OR
+ *
+ * Input:
+ * 			buf:		C string containing whitespace-
+ * 					separated unsigned integer values
+ *					representing the number of NFSD
+ *					threads to start in each pool
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	passed-in buffer filled with '\n'-terminated C
+ *			string containing integer values representing the
+ *			number of NFSD threads in each pool;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero or a negative errno value
+ */
 static ssize_t write_pool_threads(struct file *file, char *buf, size_t size)
 {
 	/* if size > 0, look for an array of number of threads per node
@@ -381,22 +719,26 @@ static ssize_t write_pool_threads(struct file *file, char *buf, size_t size)
 	int i;
 	int rv;
 	int len;
-    	int npools = nfsd_nrpools();
+	int npools;
 	int *nthreads;
 
+	mutex_lock(&nfsd_mutex);
+	npools = nfsd_nrpools();
 	if (npools == 0) {
 		/*
 		 * NFS is shut down.  The admin can start it by
 		 * writing to the threads file but NOT the pool_threads
 		 * file, sorry.  Report zero threads.
 		 */
+		mutex_unlock(&nfsd_mutex);
 		strcpy(buf, "0\n");
 		return strlen(buf);
 	}
 
 	nthreads = kcalloc(npools, sizeof(int), GFP_KERNEL);
+	rv = -ENOMEM;
 	if (nthreads == NULL)
-		return -ENOMEM;
+		goto out_free;
 
 	if (size > 0) {
 		for (i = 0; i < npools; i++) {
@@ -427,19 +769,17 @@ static ssize_t write_pool_threads(struct file *file, char *buf, size_t size)
 		mesg += len;
 	}
 
+	mutex_unlock(&nfsd_mutex);
 	return (mesg-buf);
 
 out_free:
 	kfree(nthreads);
+	mutex_unlock(&nfsd_mutex);
 	return rv;
 }
 
-static ssize_t write_versions(struct file *file, char *buf, size_t size)
+static ssize_t __write_versions(struct file *file, char *buf, size_t size)
 {
-	/*
-	 * Format:
-	 *   [-/+]vers [-/+]vers ...
-	 */
 	char *mesg = buf;
 	char *vers, sign;
 	int len, num;
@@ -497,14 +837,55 @@ static ssize_t write_versions(struct file *file, char *buf, size_t size)
 	return len;
 }
 
-static ssize_t write_ports(struct file *file, char *buf, size_t size)
+/**
+ * write_versions - Set or report the available NFS protocol versions
+ *
+ * Input:
+ *			buf:		ignored
+ *			size:		zero
+ * Output:
+ *	On success:	passed-in buffer filled with '\n'-terminated C
+ *			string containing positive or negative integer
+ *			values representing the current status of each
+ *			protocol version;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero or a negative errno value
+ *
+ * OR
+ *
+ * Input:
+ * 			buf:		C string containing whitespace-
+ * 					separated positive or negative
+ * 					integer values representing NFS
+ * 					protocol versions to enable ("+n")
+ * 					or disable ("-n")
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	status of zero or more protocol versions has
+ *			been updated; passed-in buffer filled with
+ *			'\n'-terminated C string containing positive
+ *			or negative integer values representing the
+ *			current status of each protocol version;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero or a negative errno value
+ */
+static ssize_t write_versions(struct file *file, char *buf, size_t size)
+{
+	ssize_t rv;
+
+	mutex_lock(&nfsd_mutex);
+	rv = __write_versions(file, buf, size);
+	mutex_unlock(&nfsd_mutex);
+	return rv;
+}
+
+static ssize_t __write_ports(struct file *file, char *buf, size_t size)
 {
 	if (size == 0) {
 		int len = 0;
-		lock_kernel();
+
 		if (nfsd_serv)
-			len = svc_sock_names(buf, nfsd_serv, NULL);
-		unlock_kernel();
+			len = svc_xprt_names(nfsd_serv, buf, 0);
 		return len;
 	}
 	/* Either a single 'fd' number is written, in which
@@ -524,41 +905,182 @@ static ssize_t write_ports(struct file *file, char *buf, size_t size)
 			return -EINVAL;
 		err = nfsd_create_serv();
 		if (!err) {
-			int proto = 0;
-			err = svc_addsock(nfsd_serv, fd, buf, &proto);
+			err = svc_addsock(nfsd_serv, fd, buf);
 			if (err >= 0) {
-				err = lockd_up(proto);
+				err = lockd_up();
 				if (err < 0)
 					svc_sock_names(buf+strlen(buf)+1, nfsd_serv, buf);
 			}
 			/* Decrease the count, but don't shutdown the
 			 * the service
 			 */
-			lock_kernel();
 			nfsd_serv->sv_nrthreads--;
-			unlock_kernel();
 		}
 		return err < 0 ? err : 0;
 	}
-	if (buf[0] == '-') {
+	if (buf[0] == '-' && isdigit(buf[1])) {
 		char *toclose = kstrdup(buf+1, GFP_KERNEL);
 		int len = 0;
 		if (!toclose)
 			return -ENOMEM;
-		lock_kernel();
 		if (nfsd_serv)
 			len = svc_sock_names(buf, nfsd_serv, toclose);
-		unlock_kernel();
 		if (len >= 0)
 			lockd_down();
 		kfree(toclose);
 		return len;
 	}
+	/*
+	 * Add a transport listener by writing it's transport name
+	 */
+	if (isalpha(buf[0])) {
+		int err;
+		char transport[16];
+		int port;
+		if (sscanf(buf, "%15s %4d", transport, &port) == 2) {
+			err = nfsd_create_serv();
+			if (!err) {
+				err = svc_create_xprt(nfsd_serv,
+						      transport, port,
+						      SVC_SOCK_ANONYMOUS);
+				if (err == -ENOENT)
+					/* Give a reasonable perror msg for
+					 * bad transport string */
+					err = -EPROTONOSUPPORT;
+			}
+			return err < 0 ? err : 0;
+		}
+	}
+	/*
+	 * Remove a transport by writing it's transport name and port number
+	 */
+	if (buf[0] == '-' && isalpha(buf[1])) {
+		struct svc_xprt *xprt;
+		int err = -EINVAL;
+		char transport[16];
+		int port;
+		if (sscanf(&buf[1], "%15s %4d", transport, &port) == 2) {
+			if (port == 0)
+				return -EINVAL;
+			if (nfsd_serv) {
+				xprt = svc_find_xprt(nfsd_serv, transport,
+						     AF_UNSPEC, port);
+				if (xprt) {
+					svc_close_xprt(xprt);
+					svc_xprt_put(xprt);
+					err = 0;
+				} else
+					err = -ENOTCONN;
+			}
+			return err < 0 ? err : 0;
+		}
+	}
 	return -EINVAL;
 }
 
+/**
+ * write_ports - Pass a socket file descriptor or transport name to listen on
+ *
+ * Input:
+ *			buf:		ignored
+ *			size:		zero
+ * Output:
+ *	On success:	passed-in buffer filled with a '\n'-terminated C
+ *			string containing a whitespace-separated list of
+ *			named NFSD listeners;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero or a negative errno value
+ *
+ * OR
+ *
+ * Input:
+ *			buf:		C string containing an unsigned
+ *					integer value representing a bound
+ *					but unconnected socket that is to be
+ *					used as an NFSD listener
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	NFS service is started;
+ *			passed-in buffer filled with a '\n'-terminated C
+ *			string containing a unique alphanumeric name of
+ *			the listener;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is a negative errno value
+ *
+ * OR
+ *
+ * Input:
+ *			buf:		C string containing a "-" followed
+ *					by an integer value representing a
+ *					previously passed in socket file
+ *					descriptor
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	NFS service no longer listens on that socket;
+ *			passed-in buffer filled with a '\n'-terminated C
+ *			string containing a unique name of the listener;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is a negative errno value
+ *
+ * OR
+ *
+ * Input:
+ *			buf:		C string containing a transport
+ *					name and an unsigned integer value
+ *					representing the port to listen on,
+ *					separated by whitespace
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	returns zero; NFS service is started
+ *	On error:	return code is a negative errno value
+ *
+ * OR
+ *
+ * Input:
+ *			buf:		C string containing a "-" followed
+ *					by a transport name and an unsigned
+ *					integer value representing the port
+ *					to listen on, separated by whitespace
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	returns zero; NFS service no longer listens
+ *			on that transport
+ *	On error:	return code is a negative errno value
+ */
+static ssize_t write_ports(struct file *file, char *buf, size_t size)
+{
+	ssize_t rv;
+
+	mutex_lock(&nfsd_mutex);
+	rv = __write_ports(file, buf, size);
+	mutex_unlock(&nfsd_mutex);
+	return rv;
+}
+
+
 int nfsd_max_blksize;
 
+/**
+ * write_maxblksize - Set or report the current NFS blksize
+ *
+ * Input:
+ *			buf:		ignored
+ *			size:		zero
+ *
+ * OR
+ *
+ * Input:
+ * 			buf:		C string containing an unsigned
+ * 					integer value representing the new
+ * 					NFS blksize
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	passed-in buffer filled with '\n'-terminated C string
+ *			containing numeric value of the current NFS blksize
+ *			setting;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero or a negative errno value
+ */
 static ssize_t write_maxblksize(struct file *file, char *buf, size_t size)
 {
 	char *mesg = buf;
@@ -575,13 +1097,13 @@ static ssize_t write_maxblksize(struct file *file, char *buf, size_t size)
 		if (bsize > NFSSVC_MAXBLKSIZE)
 			bsize = NFSSVC_MAXBLKSIZE;
 		bsize &= ~(1024-1);
-		lock_kernel();
+		mutex_lock(&nfsd_mutex);
 		if (nfsd_serv && nfsd_serv->sv_nrthreads) {
-			unlock_kernel();
+			mutex_unlock(&nfsd_mutex);
 			return -EBUSY;
 		}
 		nfsd_max_blksize = bsize;
-		unlock_kernel();
+		mutex_unlock(&nfsd_mutex);
 	}
 	return sprintf(buf, "%d\n", nfsd_max_blksize);
 }
@@ -589,16 +1111,17 @@ static ssize_t write_maxblksize(struct file *file, char *buf, size_t size)
 #ifdef CONFIG_NFSD_V4
 extern time_t nfs4_leasetime(void);
 
-static ssize_t write_leasetime(struct file *file, char *buf, size_t size)
+static ssize_t __write_leasetime(struct file *file, char *buf, size_t size)
 {
 	/* if size > 10 seconds, call
 	 * nfs4_reset_lease() then write out the new lease (seconds) as reply
 	 */
 	char *mesg = buf;
-	int rv;
+	int rv, lease;
 
 	if (size > 0) {
-		int lease;
+		if (nfsd_serv)
+			return -EBUSY;
 		rv = get_int(&mesg, &lease);
 		if (rv)
 			return rv;
@@ -610,24 +1133,94 @@ static ssize_t write_leasetime(struct file *file, char *buf, size_t size)
 	return strlen(buf);
 }
 
-static ssize_t write_recoverydir(struct file *file, char *buf, size_t size)
+/**
+ * write_leasetime - Set or report the current NFSv4 lease time
+ *
+ * Input:
+ *			buf:		ignored
+ *			size:		zero
+ *
+ * OR
+ *
+ * Input:
+ *			buf:		C string containing an unsigned
+ *					integer value representing the new
+ *					NFSv4 lease expiry time
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	passed-in buffer filled with '\n'-terminated C
+ *			string containing unsigned integer value of the
+ *			current lease expiry time;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero or a negative errno value
+ */
+static ssize_t write_leasetime(struct file *file, char *buf, size_t size)
+{
+	ssize_t rv;
+
+	mutex_lock(&nfsd_mutex);
+	rv = __write_leasetime(file, buf, size);
+	mutex_unlock(&nfsd_mutex);
+	return rv;
+}
+
+extern char *nfs4_recoverydir(void);
+
+static ssize_t __write_recoverydir(struct file *file, char *buf, size_t size)
 {
 	char *mesg = buf;
 	char *recdir;
 	int len, status;
 
-	if (size > PATH_MAX || buf[size-1] != '\n')
-		return -EINVAL;
-	buf[size-1] = 0;
+	if (size > 0) {
+		if (nfsd_serv)
+			return -EBUSY;
+		if (size > PATH_MAX || buf[size-1] != '\n')
+			return -EINVAL;
+		buf[size-1] = 0;
 
-	recdir = mesg;
-	len = qword_get(&mesg, recdir, size);
-	if (len <= 0)
-		return -EINVAL;
+		recdir = mesg;
+		len = qword_get(&mesg, recdir, size);
+		if (len <= 0)
+			return -EINVAL;
 
-	status = nfs4_reset_recoverydir(recdir);
+		status = nfs4_reset_recoverydir(recdir);
+	}
+	sprintf(buf, "%s\n", nfs4_recoverydir());
 	return strlen(buf);
 }
+
+/**
+ * write_recoverydir - Set or report the pathname of the recovery directory
+ *
+ * Input:
+ *			buf:		ignored
+ *			size:		zero
+ *
+ * OR
+ *
+ * Input:
+ *			buf:		C string containing the pathname
+ *					of the directory on a local file
+ *					system containing permanent NFSv4
+ *					recovery data
+ *			size:		non-zero length of C string in @buf
+ * Output:
+ *	On success:	passed-in buffer filled with '\n'-terminated C string
+ *			containing the current recovery pathname setting;
+ *			return code is the size in bytes of the string
+ *	On error:	return code is zero or a negative errno value
+ */
+static ssize_t write_recoverydir(struct file *file, char *buf, size_t size)
+{
+	ssize_t rv;
+
+	mutex_lock(&nfsd_mutex);
+	rv = __write_recoverydir(file, buf, size);
+	mutex_unlock(&nfsd_mutex);
+	return rv;
+}
+
 #endif
 
 /*----------------------------------------------------------------------------*/
@@ -646,6 +1239,10 @@ static int nfsd_fill_super(struct super_block * sb, void * data, int silent)
 		[NFSD_Getfd] = {".getfd", &transaction_ops, S_IWUSR|S_IRUSR},
 		[NFSD_Getfs] = {".getfs", &transaction_ops, S_IWUSR|S_IRUSR},
 		[NFSD_List] = {"exports", &exports_operations, S_IRUGO},
+		[NFSD_FO_UnlockIP] = {"unlock_ip",
+					&transaction_ops, S_IWUSR|S_IRUSR},
+		[NFSD_FO_UnlockFS] = {"unlock_filesystem",
+					&transaction_ops, S_IWUSR|S_IRUSR},
 		[NFSD_Fh] = {"filehandle", &transaction_ops, S_IWUSR|S_IRUSR},
 		[NFSD_Threads] = {"threads", &transaction_ops, S_IWUSR|S_IRUSR},
 		[NFSD_Pool_Threads] = {"pool_threads", &transaction_ops, S_IWUSR|S_IRUSR},
@@ -674,6 +1271,26 @@ static struct file_system_type nfsd_fs_type = {
 	.kill_sb	= kill_litter_super,
 };
 
+#ifdef CONFIG_PROC_FS
+static int create_proc_exports_entry(void)
+{
+	struct proc_dir_entry *entry;
+
+	entry = proc_mkdir("fs/nfs", NULL);
+	if (!entry)
+		return -ENOMEM;
+	entry = proc_create("exports", 0, entry, &exports_operations);
+	if (!entry)
+		return -ENOMEM;
+	return 0;
+}
+#else /* CONFIG_PROC_FS */
+static int create_proc_exports_entry(void)
+{
+	return 0;
+}
+#endif
+
 static int __init init_nfsd(void)
 {
 	int retval;
@@ -683,32 +1300,43 @@ static int __init init_nfsd(void)
 	if (retval)
 		return retval;
 	nfsd_stat_init();	/* Statistics */
-	nfsd_cache_init();	/* RPC reply cache */
-	nfsd_export_init();	/* Exports table */
+	retval = nfsd_reply_cache_init();
+	if (retval)
+		goto out_free_stat;
+	retval = nfsd_export_init();
+	if (retval)
+		goto out_free_cache;
 	nfsd_lockd_init();	/* lockd->nfsd callbacks */
-	nfsd_idmap_init();      /* Name to ID mapping */
-	if (proc_mkdir("fs/nfs", NULL)) {
-		struct proc_dir_entry *entry;
-		entry = create_proc_entry("fs/nfs/exports", 0, NULL);
-		if (entry)
-			entry->proc_fops =  &exports_operations;
-	}
+	retval = nfsd_idmap_init();
+	if (retval)
+		goto out_free_lockd;
+	retval = create_proc_exports_entry();
+	if (retval)
+		goto out_free_idmap;
 	retval = register_filesystem(&nfsd_fs_type);
-	if (retval) {
-		nfsd_export_shutdown();
-		nfsd_cache_shutdown();
-		remove_proc_entry("fs/nfs/exports", NULL);
-		remove_proc_entry("fs/nfs", NULL);
-		nfsd_stat_shutdown();
-		nfsd_lockd_shutdown();
-	}
+	if (retval)
+		goto out_free_all;
+	return 0;
+out_free_all:
+	remove_proc_entry("fs/nfs/exports", NULL);
+	remove_proc_entry("fs/nfs", NULL);
+out_free_idmap:
+	nfsd_idmap_shutdown();
+out_free_lockd:
+	nfsd_lockd_shutdown();
+	nfsd_export_shutdown();
+out_free_cache:
+	nfsd_reply_cache_shutdown();
+out_free_stat:
+	nfsd_stat_shutdown();
+	nfsd4_free_slabs();
 	return retval;
 }
 
 static void __exit exit_nfsd(void)
 {
 	nfsd_export_shutdown();
-	nfsd_cache_shutdown();
+	nfsd_reply_cache_shutdown();
 	remove_proc_entry("fs/nfs/exports", NULL);
 	remove_proc_entry("fs/nfs", NULL);
 	nfsd_stat_shutdown();

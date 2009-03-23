@@ -9,14 +9,10 @@
  * ----------------------------------------------------------------------- */
 
 /*
- * arch/i386/boot/voyager.c
- *
  * Get the Voyager config information
  */
 
 #include "boot.h"
-
-#ifdef CONFIG_X86_VOYAGER
 
 int query_voyager(void)
 {
@@ -42,5 +38,3 @@ int query_voyager(void)
 	copy_from_fs(data_ptr, di, 7);	/* Table is 7 bytes apparently */
 	return 0;
 }
-
-#endif /* CONFIG_X86_VOYAGER */

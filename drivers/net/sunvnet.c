@@ -1,6 +1,6 @@
 /* sunvnet.c: Sun LDOM Virtual Network Driver.
  *
- * Copyright (C) 2007 David S. Miller <davem@davemloft.net>
+ * Copyright (C) 2007, 2008 David S. Miller <davem@davemloft.net>
  */
 
 #include <linux/module.h>
@@ -336,7 +336,7 @@ static int vnet_walk_rx_one(struct vnet_port *port,
 	if (IS_ERR(desc))
 		return PTR_ERR(desc);
 
-	viodbg(DATA, "vio_walk_rx_one desc[%02x:%02x:%08x:%08x:%lx:%lx]\n",
+	viodbg(DATA, "vio_walk_rx_one desc[%02x:%02x:%08x:%08x:%llx:%llx]\n",
 	       desc->hdr.state, desc->hdr.ack,
 	       desc->size, desc->ncookies,
 	       desc->cookies[0].cookie_addr,
@@ -394,14 +394,14 @@ static int vnet_rx(struct vnet_port *port, void *msgbuf)
 	struct vio_dring_state *dr = &port->vio.drings[VIO_DRIVER_RX_RING];
 	struct vio_driver_state *vio = &port->vio;
 
-	viodbg(DATA, "vnet_rx stype_env[%04x] seq[%016lx] rcv_nxt[%016lx]\n",
+	viodbg(DATA, "vnet_rx stype_env[%04x] seq[%016llx] rcv_nxt[%016llx]\n",
 	       pkt->tag.stype_env, pkt->seq, dr->rcv_nxt);
 
 	if (unlikely(pkt->tag.stype_env != VIO_DRING_DATA))
 		return 0;
 	if (unlikely(pkt->seq != dr->rcv_nxt)) {
-		printk(KERN_ERR PFX "RX out of sequence seq[0x%lx] "
-		       "rcv_nxt[0x%lx]\n", pkt->seq, dr->rcv_nxt);
+		printk(KERN_ERR PFX "RX out of sequence seq[0x%llx] "
+		       "rcv_nxt[0x%llx]\n", pkt->seq, dr->rcv_nxt);
 		return 0;
 	}
 
@@ -1130,7 +1130,7 @@ static struct vio_driver_ops vnet_vio_ops = {
 	.handshake_complete	= vnet_handshake_complete,
 };
 
-static void print_version(void)
+static void __devinit print_version(void)
 {
 	static int version_printed;
 
@@ -1213,12 +1213,9 @@ static int __devinit vnet_port_probe(struct vio_dev *vdev,
 
 	dev_set_drvdata(&vdev->dev, port);
 
-	printk(KERN_INFO "%s: PORT ( remote-mac ", vp->dev->name);
-	for (i = 0; i < 6; i++)
-		printk("%2.2x%c", port->raddr[i], i == 5 ? ' ' : ':');
-	if (switch_port)
-		printk("switch-port ");
-	printk(")\n");
+	printk(KERN_INFO "%s: PORT ( remote-mac %pM%s )\n",
+	       vp->dev->name, port->raddr,
+	       switch_port ? " switch-port" : "");
 
 	vio_port_up(&port->vio);
 
@@ -1262,7 +1259,7 @@ static int vnet_port_remove(struct vio_dev *vdev)
 	return 0;
 }
 
-static struct vio_device_id vnet_port_match[] = {
+static const struct vio_device_id vnet_port_match[] = {
 	{
 		.type = "vnet-port",
 	},

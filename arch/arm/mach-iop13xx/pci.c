@@ -21,11 +21,11 @@
 #include <linux/delay.h>
 #include <linux/jiffies.h>
 #include <asm/irq.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/sizes.h>
 #include <asm/signal.h>
 #include <asm/mach/pci.h>
-#include <asm/arch/pci.h>
+#include <mach/pci.h>
 
 #define IOP13XX_PCI_DEBUG 0
 #define PRINTK(x...) ((void)(IOP13XX_PCI_DEBUG && printk(x)))
@@ -94,13 +94,13 @@ void iop13xx_map_pci_memory(void)
 					, 0, iop13xx_atux_mem_size, MT_DEVICE);
 					if (!iop13xx_atux_mem_base) {
 						printk("%s: atux allocation "
-						       "failed\n", __FUNCTION__);
+						       "failed\n", __func__);
 						BUG();
 					}
 				} else
 					iop13xx_atux_mem_size = 0;
 				PRINTK("%s: atu: %d bus_size: %d mem_base: %x\n",
-				__FUNCTION__, atu, iop13xx_atux_mem_size,
+				__func__, atu, iop13xx_atux_mem_size,
 				iop13xx_atux_mem_base);
 				break;
 			case 1:
@@ -120,13 +120,13 @@ void iop13xx_map_pci_memory(void)
 					, 0, iop13xx_atue_mem_size, MT_DEVICE);
 					if (!iop13xx_atue_mem_base) {
 						printk("%s: atue allocation "
-						       "failed\n", __FUNCTION__);
+						       "failed\n", __func__);
 						BUG();
 					}
 				} else
 					iop13xx_atue_mem_size = 0;
 				PRINTK("%s: atu: %d bus_size: %d mem_base: %x\n",
-				__FUNCTION__, atu, iop13xx_atue_mem_size,
+				__func__, atu, iop13xx_atue_mem_size,
 				iop13xx_atue_mem_base);
 				break;
 			}

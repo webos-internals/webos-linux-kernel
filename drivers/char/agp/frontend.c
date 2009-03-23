@@ -39,6 +39,7 @@
 #include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
+#include <linux/smp_lock.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include "agp.h"
@@ -395,7 +396,7 @@ static int agp_remove_controller(struct agp_controller *controller)
 
 	if (agp_fe.current_controller == controller) {
 		agp_fe.current_controller = NULL;
-		agp_fe.backend_acquired = FALSE;
+		agp_fe.backend_acquired = false;
 		agp_backend_release(agp_bridge);
 	}
 	kfree(controller);
@@ -443,7 +444,7 @@ static void agp_controller_release_current(struct agp_controller *controller,
 	}
 
 	agp_fe.current_controller = NULL;
-	agp_fe.used_by_controller = FALSE;
+	agp_fe.used_by_controller = false;
 	agp_backend_release(agp_bridge);
 }
 
@@ -573,7 +574,7 @@ static int agp_mmap(struct file *file, struct vm_area_struct *vma)
 
 	mutex_lock(&(agp_fe.agp_mutex));
 
-	if (agp_fe.backend_acquired != TRUE)
+	if (agp_fe.backend_acquired != true)
 		goto out_eperm;
 
 	if (!(test_bit(AGP_FF_IS_VALID, &priv->access_flags)))
@@ -677,6 +678,7 @@ static int agp_open(struct inode *inode, struct file *file)
 	struct agp_client *client;
 	int rc = -ENXIO;
 
+	lock_kernel();
 	mutex_lock(&(agp_fe.agp_mutex));
 
 	if (minor != AGPGART_MINOR)
@@ -689,7 +691,7 @@ static int agp_open(struct inode *inode, struct file *file)
 	set_bit(AGP_FF_ALLOW_CLIENT, &priv->access_flags);
 	priv->my_pid = current->pid;
 
-	if ((current->uid == 0) || (current->suid == 0)) {
+	if (capable(CAP_SYS_RAWIO)) {
 		/* Root priv, can be controller */
 		set_bit(AGP_FF_ALLOW_CONTROLLER, &priv->access_flags);
 	}
@@ -703,12 +705,14 @@ static int agp_open(struct inode *inode, struct file *file)
 	agp_insert_file_private(priv);
 	DBG("private=%p, client=%p", priv, client);
 	mutex_unlock(&(agp_fe.agp_mutex));
+	unlock_kernel();
 	return 0;
 
 err_out_nomem:
 	rc = -ENOMEM;
 err_out:
 	mutex_unlock(&(agp_fe.agp_mutex));
+	unlock_kernel();
 	return rc;
 }
 
@@ -768,7 +772,7 @@ int agpioc_acquire_wrap(struct agp_file_private *priv)
 
 	atomic_inc(&agp_bridge->agp_in_use);
 
-	agp_fe.backend_acquired = TRUE;
+	agp_fe.backend_acquired = true;
 
 	controller = agp_find_controller_by_pid(priv->my_pid);
 
@@ -778,7 +782,7 @@ int agpioc_acquire_wrap(struct agp_file_private *priv)
 		controller = agp_create_controller(priv->my_pid);
 
 		if (controller == NULL) {
-			agp_fe.backend_acquired = FALSE;
+			agp_fe.backend_acquired = false;
 			agp_backend_release(agp_bridge);
 			return -ENOMEM;
 		}
@@ -960,7 +964,14 @@ static int agpioc_unbind_wrap(struct agp_file_private *priv, void __user *arg)
 	return agp_unbind_memory(memory);
 }
 
-static int agp_ioctl(struct inode *inode, struct file *file,
+int agpioc_chipset_flush_wrap(struct agp_file_private *priv)
+{
+	DBG("");
+	agp_flush_chipset(agp_bridge);
+	return 0;
+}
+
+static long agp_ioctl(struct file *file,
 		     unsigned int cmd, unsigned long arg)
 {
 	struct agp_file_private *curr_priv = file->private_data;
@@ -974,7 +985,7 @@ static int agp_ioctl(struct inode *inode, struct file *file,
 		ret_val = -EINVAL;
 		goto ioctl_out;
 	}
-	if ((agp_fe.backend_acquired != TRUE) &&
+	if ((agp_fe.backend_acquired != true) &&
 	    (cmd != AGPIOC_ACQUIRE)) {
 		ret_val = -EBUSY;
 		goto ioctl_out;
@@ -1033,6 +1044,10 @@ static int agp_ioctl(struct inode *inode, struct file *file,
 	case AGPIOC_UNBIND:
 		ret_val = agpioc_unbind_wrap(curr_priv, (void __user *) arg);
 		break;
+	       
+	case AGPIOC_CHIPSET_FLUSH:
+		ret_val = agpioc_chipset_flush_wrap(curr_priv);
+		break;
 	}
 
 ioctl_out:
@@ -1047,7 +1062,7 @@ static const struct file_operations agp_fops =
 	.llseek		= no_llseek,
 	.read		= agp_read,
 	.write		= agp_write,
-	.ioctl		= agp_ioctl,
+	.unlocked_ioctl	= agp_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= compat_agp_ioctl,
 #endif

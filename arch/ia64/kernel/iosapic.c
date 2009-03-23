@@ -69,7 +69,7 @@
  *     systems, we use one-to-one mapping between IA-64 vector and IRQ.  A
  *     platform can implement platform_irq_to_vector(irq) and
  *     platform_local_vector_to_irq(vector) APIs to differentiate the mapping.
- *     Please see also include/asm-ia64/hw_irq.h for those APIs.
+ *     Please see also arch/ia64/include/asm/hw_irq.h for those APIs.
  *
  * To sum up, there are three levels of mappings involved:
  *
@@ -330,25 +330,25 @@ unmask_irq (unsigned int irq)
 
 
 static void
-iosapic_set_affinity (unsigned int irq, cpumask_t mask)
+iosapic_set_affinity(unsigned int irq, const struct cpumask *mask)
 {
 #ifdef CONFIG_SMP
 	u32 high32, low32;
-	int dest, rte_index;
+	int cpu, dest, rte_index;
 	int redir = (irq & IA64_IRQ_REDIRECTED) ? 1 : 0;
 	struct iosapic_rte_info *rte;
 	struct iosapic *iosapic;
 
 	irq &= (~IA64_IRQ_REDIRECTED);
 
-	cpus_and(mask, mask, cpu_online_map);
-	if (cpus_empty(mask))
+	cpu = cpumask_first_and(cpu_online_mask, mask);
+	if (cpu >= nr_cpu_ids)
 		return;
 
-	if (reassign_irq_vector(irq, first_cpu(mask)))
+	if (irq_prepare_move(irq, cpu))
 		return;
 
-	dest = cpu_physical_id(first_cpu(mask));
+	dest = cpu_physical_id(cpu);
 
 	if (!iosapic_intr_info[irq].count)
 		return;			/* not an IOSAPIC interrupt */
@@ -397,6 +397,7 @@ iosapic_end_level_irq (unsigned int irq)
 	struct iosapic_rte_info *rte;
 	int do_unmask_irq = 0;
 
+	irq_complete_move(irq);
 	if (unlikely(irq_desc[irq].status & IRQ_MOVE_PENDING)) {
 		do_unmask_irq = 1;
 		mask_irq(irq);
@@ -450,6 +451,7 @@ iosapic_ack_edge_irq (unsigned int irq)
 {
 	irq_desc_t *idesc = irq_desc + irq;
 
+	irq_complete_move(irq);
 	move_native_irq(irq);
 	/*
 	 * Once we have recorded IRQ_PENDING already, we can mask the
@@ -505,7 +507,7 @@ static int iosapic_find_sharable_irq(unsigned long trigger, unsigned long pol)
 	if (trigger == IOSAPIC_EDGE)
 		return -EINVAL;
 
-	for (i = 0; i <= NR_IRQS; i++) {
+	for (i = 0; i < NR_IRQS; i++) {
 		info = &iosapic_intr_info[i];
 		if (info->trigger == trigger && info->polarity == pol &&
 		    (info->dmode == IOSAPIC_FIXED ||
@@ -532,7 +534,7 @@ iosapic_reassign_vector (int irq)
 	if (iosapic_intr_info[irq].count) {
 		new_irq = create_irq();
 		if (new_irq < 0)
-			panic("%s: out of interrupt vectors!\n", __FUNCTION__);
+			panic("%s: out of interrupt vectors!\n", __func__);
 		printk(KERN_INFO "Reassigning vector %d to %d\n",
 		       irq_to_vector(irq), irq_to_vector(new_irq));
 		memcpy(&iosapic_intr_info[new_irq], &iosapic_intr_info[irq],
@@ -556,8 +558,6 @@ static struct iosapic_rte_info * __init_refok iosapic_alloc_rte (void)
 	if (!iosapic_kmalloc_ok && list_empty(&free_rte_list)) {
 		rte = alloc_bootmem(sizeof(struct iosapic_rte_info) *
 				    NR_PREALLOCATE_RTE_ENTRIES);
-		if (!rte)
-			return NULL;
 		for (i = 0; i < NR_PREALLOCATE_RTE_ENTRIES; i++, rte++)
 			list_add(&rte->rte_list, &free_rte_list);
 	}
@@ -585,6 +585,15 @@ static inline int irq_is_shared (int irq)
 	return (iosapic_intr_info[irq].count > 1);
 }
 
+struct irq_chip*
+ia64_native_iosapic_get_irq_chip(unsigned long trigger)
+{
+	if (trigger == IOSAPIC_EDGE)
+		return &irq_type_iosapic_edge;
+	else
+		return &irq_type_iosapic_level;
+}
+
 static int
 register_intr (unsigned int gsi, int irq, unsigned char delivery,
 	       unsigned long polarity, unsigned long trigger)
@@ -597,7 +606,7 @@ register_intr (unsigned int gsi, int irq, unsigned char delivery,
 	index = find_iosapic(gsi);
 	if (index < 0) {
 		printk(KERN_WARNING "%s: No IOSAPIC for GSI %u\n",
-		       __FUNCTION__, gsi);
+		       __func__, gsi);
 		return -ENODEV;
 	}
 
@@ -606,7 +615,7 @@ register_intr (unsigned int gsi, int irq, unsigned char delivery,
 		rte = iosapic_alloc_rte();
 		if (!rte) {
 			printk(KERN_WARNING "%s: cannot allocate memory\n",
-			       __FUNCTION__);
+			       __func__);
 			return -ENOMEM;
 		}
 
@@ -623,7 +632,7 @@ register_intr (unsigned int gsi, int irq, unsigned char delivery,
 		    (info->trigger != trigger || info->polarity != polarity)){
 			printk (KERN_WARNING
 				"%s: cannot override the interrupt\n",
-				__FUNCTION__);
+				__func__);
 			return -EINVAL;
 		}
 		rte->refcnt++;
@@ -635,17 +644,14 @@ register_intr (unsigned int gsi, int irq, unsigned char delivery,
 	iosapic_intr_info[irq].dmode    = delivery;
 	iosapic_intr_info[irq].trigger  = trigger;
 
-	if (trigger == IOSAPIC_EDGE)
-		irq_type = &irq_type_iosapic_edge;
-	else
-		irq_type = &irq_type_iosapic_level;
+	irq_type = iosapic_get_irq_chip(trigger);
 
 	idesc = irq_desc + irq;
-	if (idesc->chip != irq_type) {
+	if (irq_type != NULL && idesc->chip != irq_type) {
 		if (idesc->chip != &no_irq_type)
 			printk(KERN_WARNING
 			       "%s: changing vector %d from %s to %s\n",
-			       __FUNCTION__, irq_to_vector(irq),
+			       __func__, irq_to_vector(irq),
 			       idesc->chip->name, irq_type->name);
 		idesc->chip = irq_type;
 	}
@@ -689,21 +695,19 @@ get_target_cpu (unsigned int gsi, int irq)
 #ifdef CONFIG_NUMA
 	{
 		int num_cpus, cpu_index, iosapic_index, numa_cpu, i = 0;
-		cpumask_t cpu_mask;
+		const struct cpumask *cpu_mask;
 
 		iosapic_index = find_iosapic(gsi);
 		if (iosapic_index < 0 ||
 		    iosapic_lists[iosapic_index].node == MAX_NUMNODES)
 			goto skip_numa_setup;
 
-		cpu_mask = node_to_cpumask(iosapic_lists[iosapic_index].node);
-		cpus_and(cpu_mask, cpu_mask, domain);
-		for_each_cpu_mask(numa_cpu, cpu_mask) {
-			if (!cpu_online(numa_cpu))
-				cpu_clear(numa_cpu, cpu_mask);
+		cpu_mask = cpumask_of_node(iosapic_lists[iosapic_index].node);
+		num_cpus = 0;
+		for_each_cpu_and(numa_cpu, cpu_mask, &domain) {
+			if (cpu_online(numa_cpu))
+				num_cpus++;
 		}
-
-		num_cpus = cpus_weight(cpu_mask);
 
 		if (!num_cpus)
 			goto skip_numa_setup;
@@ -711,10 +715,11 @@ get_target_cpu (unsigned int gsi, int irq)
 		/* Use irq assignment to distribute across cpus in node */
 		cpu_index = irq % num_cpus;
 
-		for (numa_cpu = first_cpu(cpu_mask) ; i < cpu_index ; i++)
-			numa_cpu = next_cpu(numa_cpu, cpu_mask);
+		for_each_cpu_and(numa_cpu, cpu_mask, &domain)
+			if (cpu_online(numa_cpu) && i++ >= cpu_index)
+				break;
 
-		if (numa_cpu != NR_CPUS)
+		if (numa_cpu < nr_cpu_ids)
 			return cpu_physical_id(numa_cpu);
 	}
 skip_numa_setup:
@@ -725,7 +730,7 @@ skip_numa_setup:
 	 * case of NUMA.)
 	 */
 	do {
-		if (++cpu >= NR_CPUS)
+		if (++cpu >= nr_cpu_ids)
 			cpu = 0;
 	} while (!cpu_online(cpu) || !cpu_isset(cpu, domain));
 
@@ -918,7 +923,7 @@ iosapic_register_platform_intr (u32 int_type, unsigned int gsi,
 	      case ACPI_INTERRUPT_INIT:
 		irq = create_irq();
 		if (irq < 0)
-			panic("%s: out of interrupt vectors!\n", __FUNCTION__);
+			panic("%s: out of interrupt vectors!\n", __func__);
 		vector = irq_to_vector(irq);
 		delivery = IOSAPIC_INIT;
 		break;
@@ -929,7 +934,7 @@ iosapic_register_platform_intr (u32 int_type, unsigned int gsi,
 		mask = 1;
 		break;
 	      default:
-		printk(KERN_ERR "%s: invalid int type 0x%x\n", __FUNCTION__,
+		printk(KERN_ERR "%s: invalid int type 0x%x\n", __func__,
 		       int_type);
 		return -1;
 	}
@@ -974,6 +979,22 @@ iosapic_override_isa_irq (unsigned int isa_irq, unsigned int gsi,
 }
 
 void __init
+ia64_native_iosapic_pcat_compat_init(void)
+{
+	if (pcat_compat) {
+		/*
+		 * Disable the compatibility mode interrupts (8259 style),
+		 * needs IN/OUT support enabled.
+		 */
+		printk(KERN_INFO
+		       "%s: Disabling PC-AT compatible 8259 interrupts\n",
+		       __func__);
+		outb(0xff, 0xA1);
+		outb(0xff, 0x21);
+	}
+}
+
+void __init
 iosapic_system_init (int system_pcat_compat)
 {
 	int irq;
@@ -987,17 +1008,8 @@ iosapic_system_init (int system_pcat_compat)
 	}
 
 	pcat_compat = system_pcat_compat;
-	if (pcat_compat) {
-		/*
-		 * Disable the compatibility mode interrupts (8259 style),
-		 * needs IN/OUT support enabled.
-		 */
-		printk(KERN_INFO
-		       "%s: Disabling PC-AT compatible 8259 interrupts\n",
-		       __FUNCTION__);
-		outb(0xff, 0xA1);
-		outb(0xff, 0x21);
-	}
+	if (pcat_compat)
+		iosapic_pcat_compat_init();
 }
 
 static inline int
@@ -1009,7 +1021,7 @@ iosapic_alloc (void)
 		if (!iosapic_lists[index].addr)
 			return index;
 
-	printk(KERN_WARNING "%s: failed to allocate iosapic\n", __FUNCTION__);
+	printk(KERN_WARNING "%s: failed to allocate iosapic\n", __func__);
 	return -1;
 }
 
@@ -1107,14 +1119,14 @@ iosapic_remove (unsigned int gsi_base)
 	index = find_iosapic(gsi_base);
 	if (index < 0) {
 		printk(KERN_WARNING "%s: No IOSAPIC for GSI base %u\n",
-		       __FUNCTION__, gsi_base);
+		       __func__, gsi_base);
 		goto out;
 	}
 
 	if (iosapic_lists[index].rtes_inuse) {
 		err = -EBUSY;
 		printk(KERN_WARNING "%s: IOSAPIC for GSI base %u is busy\n",
-		       __FUNCTION__, gsi_base);
+		       __func__, gsi_base);
 		goto out;
 	}
 
@@ -1135,7 +1147,7 @@ map_iosapic_to_node(unsigned int gsi_base, int node)
 	index = find_iosapic(gsi_base);
 	if (index < 0) {
 		printk(KERN_WARNING "%s: No IOSAPIC for GSI %u\n",
-		       __FUNCTION__, gsi_base);
+		       __func__, gsi_base);
 		return;
 	}
 	iosapic_lists[index].node = node;

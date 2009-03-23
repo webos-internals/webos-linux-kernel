@@ -84,6 +84,8 @@ struct romfs_inode_info {
 	struct inode vfs_inode;
 };
 
+static struct inode *romfs_iget(struct super_block *, unsigned long);
+
 /* instead of private superblock data */
 static inline unsigned long romfs_maxsize(struct super_block *sb)
 {
@@ -117,7 +119,7 @@ static int romfs_fill_super(struct super_block *s, void *data, int silent)
 	struct buffer_head *bh;
 	struct romfs_super_block *rsb;
 	struct inode *root;
-	int sz;
+	int sz, ret = -EINVAL;
 
 	/* I would parse the options here, but there are none.. :) */
 
@@ -157,10 +159,13 @@ static int romfs_fill_super(struct super_block *s, void *data, int silent)
 	     & ROMFH_MASK;
 
 	s->s_op	= &romfs_ops;
-	root = iget(s, sz);
-	if (!root)
+	root = romfs_iget(s, sz);
+	if (IS_ERR(root)) {
+		ret = PTR_ERR(root);
 		goto out;
+	}
 
+	ret = -ENOMEM;
 	s->s_root = d_alloc_root(root);
 	if (!s->s_root)
 		goto outiput;
@@ -173,7 +178,7 @@ outiput:
 out:
 	brelse(bh);
 outnobh:
-	return -EINVAL;
+	return ret;
 }
 
 /* That's simple too. */
@@ -335,8 +340,9 @@ static struct dentry *
 romfs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 {
 	unsigned long offset, maxoff;
-	int fslen, res;
-	struct inode *inode;
+	long res;
+	int fslen;
+	struct inode *inode = NULL;
 	char fsname[ROMFS_MAXFN];	/* XXX dynamic? */
 	struct romfs_inode ri;
 	const char *name;		/* got from dentry */
@@ -346,7 +352,7 @@ romfs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 	offset = dir->i_ino & ROMFH_MASK;
 	lock_kernel();
 	if (romfs_copyfrom(dir, &ri, offset, ROMFH_SIZE) <= 0)
-		goto out;
+		goto error;
 
 	maxoff = romfs_maxsize(dir->i_sb);
 	offset = be32_to_cpu(ri.spec) & ROMFH_MASK;
@@ -359,9 +365,9 @@ romfs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 
 	for(;;) {
 		if (!offset || offset >= maxoff)
-			goto out0;
+			goto success; /* negative success */
 		if (romfs_copyfrom(dir, &ri, offset, ROMFH_SIZE) <= 0)
-			goto out;
+			goto error;
 
 		/* try to match the first 16 bytes of name */
 		fslen = romfs_strnlen(dir, offset+ROMFH_SIZE, ROMFH_SIZE);
@@ -389,23 +395,17 @@ romfs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 	if ((be32_to_cpu(ri.next) & ROMFH_TYPE) == ROMFH_HRD)
 		offset = be32_to_cpu(ri.spec) & ROMFH_MASK;
 
-	if ((inode = iget(dir->i_sb, offset)))
-		goto outi;
+	inode = romfs_iget(dir->i_sb, offset);
+	if (IS_ERR(inode)) {
+		res = PTR_ERR(inode);
+		goto error;
+	}
 
-	/*
-	 * it's a bit funky, _lookup needs to return an error code
-	 * (negative) or a NULL, both as a dentry.  ENOENT should not
-	 * be returned, instead we need to create a negative dentry by
-	 * d_add(dentry, NULL); and return 0 as no error.
-	 * (Although as I see, it only matters on writable file
-	 * systems).
-	 */
-
-out0:	inode = NULL;
-outi:	res = 0;
-	d_add (dentry, inode);
-
-out:	unlock_kernel();
+success:
+	d_add(dentry, inode);
+	res = 0;
+error:
+	unlock_kernel();
 	return ERR_PTR(res);
 }
 
@@ -418,7 +418,8 @@ static int
 romfs_readpage(struct file *file, struct page * page)
 {
 	struct inode *inode = page->mapping->host;
-	loff_t offset, avail, readlen;
+	loff_t offset, size;
+	unsigned long filled;
 	void *buf;
 	int result = -EIO;
 
@@ -430,21 +431,29 @@ romfs_readpage(struct file *file, struct page * page)
 
 	/* 32 bit warning -- but not for us :) */
 	offset = page_offset(page);
-	if (offset < i_size_read(inode)) {
-		avail = inode->i_size-offset;
-		readlen = min_t(unsigned long, avail, PAGE_SIZE);
-		if (romfs_copyfrom(inode, buf, ROMFS_I(inode)->i_dataoffset+offset, readlen) == readlen) {
-			if (readlen < PAGE_SIZE) {
-				memset(buf + readlen,0,PAGE_SIZE-readlen);
-			}
-			SetPageUptodate(page);
-			result = 0;
+	size = i_size_read(inode);
+	filled = 0;
+	result = 0;
+	if (offset < size) {
+		unsigned long readlen;
+
+		size -= offset;
+		readlen = size > PAGE_SIZE ? PAGE_SIZE : size;
+
+		filled = romfs_copyfrom(inode, buf, ROMFS_I(inode)->i_dataoffset+offset, readlen);
+
+		if (filled != readlen) {
+			SetPageError(page);
+			filled = 0;
+			result = -EIO;
 		}
 	}
-	if (result) {
-		memset(buf, 0, PAGE_SIZE);
-		SetPageError(page);
-	}
+
+	if (filled < PAGE_SIZE)
+		memset(buf + filled, 0, PAGE_SIZE-filled);
+
+	if (!result)
+		SetPageUptodate(page);
 	flush_dcache_page(page);
 
 	unlock_page(page);
@@ -478,20 +487,29 @@ static mode_t romfs_modemap[] =
 	S_IFBLK+0600, S_IFCHR+0600, S_IFSOCK+0644, S_IFIFO+0644
 };
 
-static void
-romfs_read_inode(struct inode *i)
+static struct inode *
+romfs_iget(struct super_block *sb, unsigned long ino)
 {
-	int nextfh, ino;
+	int nextfh, ret;
 	struct romfs_inode ri;
+	struct inode *i;
 
-	ino = i->i_ino & ROMFH_MASK;
+	ino &= ROMFH_MASK;
+	i = iget_locked(sb, ino);
+	if (!i)
+		return ERR_PTR(-ENOMEM);
+	if (!(i->i_state & I_NEW))
+		return i;
+
 	i->i_mode = 0;
 
 	/* Loop for finding the real hard link */
 	for(;;) {
 		if (romfs_copyfrom(i, &ri, ino, ROMFH_SIZE) <= 0) {
-			printk("romfs: read error for inode 0x%x\n", ino);
-			return;
+			printk(KERN_ERR "romfs: read error for inode 0x%lx\n",
+				ino);
+			iget_failed(i);
+			return ERR_PTR(-EIO);
 		}
 		/* XXX: do romfs_checksum here too (with name) */
 
@@ -506,14 +524,13 @@ romfs_read_inode(struct inode *i)
 	i->i_size = be32_to_cpu(ri.size);
 	i->i_mtime.tv_sec = i->i_atime.tv_sec = i->i_ctime.tv_sec = 0;
 	i->i_mtime.tv_nsec = i->i_atime.tv_nsec = i->i_ctime.tv_nsec = 0;
-	i->i_uid = i->i_gid = 0;
 
         /* Precalculate the data offset */
-        ino = romfs_strnlen(i, ino+ROMFH_SIZE, ROMFS_MAXFN);
-        if (ino >= 0)
-                ino = ((ROMFH_SIZE+ino+1+ROMFH_PAD)&ROMFH_MASK);
-        else
-                ino = 0;
+	ret = romfs_strnlen(i, ino + ROMFH_SIZE, ROMFS_MAXFN);
+	if (ret >= 0)
+		ino = (ROMFH_SIZE + ret + 1 + ROMFH_PAD) & ROMFH_MASK;
+	else
+		ino = 0;
 
         ROMFS_I(i)->i_metasize = ino;
         ROMFS_I(i)->i_dataoffset = ino+(i->i_ino&ROMFH_MASK);
@@ -548,6 +565,8 @@ romfs_read_inode(struct inode *i)
 			init_special_inode(i, ino,
 					MKDEV(nextfh>>16,nextfh&0xffff));
 	}
+	unlock_new_inode(i);
+	return i;
 }
 
 static struct kmem_cache * romfs_inode_cachep;
@@ -566,7 +585,7 @@ static void romfs_destroy_inode(struct inode *inode)
 	kmem_cache_free(romfs_inode_cachep, ROMFS_I(inode));
 }
 
-static void init_once(struct kmem_cache *cachep, void *foo)
+static void init_once(void *foo)
 {
 	struct romfs_inode_info *ei = foo;
 
@@ -599,7 +618,6 @@ static int romfs_remount(struct super_block *sb, int *flags, char *data)
 static const struct super_operations romfs_ops = {
 	.alloc_inode	= romfs_alloc_inode,
 	.destroy_inode	= romfs_destroy_inode,
-	.read_inode	= romfs_read_inode,
 	.statfs		= romfs_statfs,
 	.remount_fs	= romfs_remount,
 };

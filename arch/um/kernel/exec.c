@@ -15,16 +15,18 @@
 #include "mem_user.h"
 #include "skas.h"
 #include "os.h"
+#include "internal.h"
 
 void flush_thread(void)
 {
 	void *data = NULL;
-	unsigned long end = proc_mm ? task_size : STUB_START;
 	int ret;
 
 	arch_flush_thread(&current->thread.arch);
 
-	ret = unmap(&current->mm->context.id, 0, end, 1, &data);
+	ret = unmap(&current->mm->context.id, 0, STUB_START, 0, &data);
+	ret = ret || unmap(&current->mm->context.id, STUB_END,
+			   host_task_size - STUB_END, 1, &data);
 	if (ret) {
 		printk(KERN_ERR "flush_thread - clearing address space failed, "
 		       "err = %d\n", ret);
@@ -41,23 +43,11 @@ void start_thread(struct pt_regs *regs, unsigned long eip, unsigned long esp)
 	PT_REGS_SP(regs) = esp;
 }
 
-#ifdef CONFIG_TTY_LOG
-extern void log_exec(char **argv, void *tty);
-#endif
-
 static long execve1(char *file, char __user * __user *argv,
 		    char __user *__user *env)
 {
 	long error;
-#ifdef CONFIG_TTY_LOG
-	struct tty_struct *tty;
 
-	mutex_lock(&tty_mutex);
-	tty = get_current_tty();
-	if (tty)
-		log_exec(argv, tty);
-	mutex_unlock(&tty_mutex);
-#endif
 	error = do_execve(file, argv, env, &current->thread.regs);
 	if (error == 0) {
 		task_lock(current);

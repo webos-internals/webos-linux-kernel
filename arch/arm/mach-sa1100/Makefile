@@ -3,7 +3,7 @@
 #
 
 # Common support
-obj-y := clock.o generic.o irq.o dma.o time.o #nmi-oopser.o
+obj-y := clock.o generic.o gpio.o irq.o dma.o time.o #nmi-oopser.o
 obj-m :=
 obj-n :=
 obj-  :=
@@ -45,9 +45,6 @@ led-$(CONFIG_SA1100_SIMPAD)		+= leds-simpad.o
 
 # LEDs support
 obj-$(CONFIG_LEDS) += $(led-y)
-
-# SA1110 USB client support
-#obj-$(CONFIG_SA1100_USB)		+= usb/
 
 # Miscelaneous functions
 obj-$(CONFIG_PM)			+= pm.o sleep.o

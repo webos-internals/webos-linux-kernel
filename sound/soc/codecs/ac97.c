@@ -2,16 +2,12 @@
  * ac97.c  --  ALSA Soc AC97 codec support
  *
  * Copyright 2005 Wolfson Microelectronics PLC.
- * Author: Liam Girdwood
- *         liam.girdwood@wolfsonmicro.com or linux@wolfsonmicro.com
+ * Author: Liam Girdwood <lrg@slimlogic.co.uk>
  *
  *  This program is free software; you can redistribute  it and/or modify it
  *  under  the terms of  the GNU General  Public License as published by the
  *  Free Software Foundation;  either version 2 of the  License, or (at your
  *  option) any later version.
- *
- *  Revision history
- *    17th Oct 2005   Initial version.
  *
  * Generic AC97 support.
  */
@@ -19,16 +15,17 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/ac97_codec.h>
 #include <sound/initval.h>
 #include <sound/soc.h>
+#include "ac97.h"
 
 #define AC97_VERSION "0.6"
 
-static int ac97_prepare(struct snd_pcm_substream *substream)
+static int ac97_prepare(struct snd_pcm_substream *substream,
+			struct snd_soc_dai *dai)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
@@ -41,11 +38,12 @@ static int ac97_prepare(struct snd_pcm_substream *substream)
 }
 
 #define STD_AC97_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_11025 |\
-		SNDRV_PCM_RATE_22050 | SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000)
+		SNDRV_PCM_RATE_22050 | SNDRV_PCM_RATE_44100 |\
+		SNDRV_PCM_RATE_48000)
 
-struct snd_soc_codec_dai ac97_dai = {
+struct snd_soc_dai ac97_dai = {
 	.name = "AC97 HiFi",
-	.type = SND_SOC_DAI_AC97,
+	.ac97_control = 1,
 	.playback = {
 		.stream_name = "AC97 Playback",
 		.channels_min = 1,
@@ -87,7 +85,7 @@ static int ac97_soc_probe(struct platform_device *pdev)
 	printk(KERN_INFO "AC97 SoC Audio Codec %s\n", AC97_VERSION);
 
 	socdev->codec = kzalloc(sizeof(struct snd_soc_codec), GFP_KERNEL);
-	if (socdev->codec == NULL)
+	if (!socdev->codec)
 		return -ENOMEM;
 	codec = socdev->codec;
 	mutex_init(&codec->mutex);
@@ -103,20 +101,20 @@ static int ac97_soc_probe(struct platform_device *pdev)
 
 	/* register pcms */
 	ret = snd_soc_new_pcms(socdev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1);
-	if(ret < 0)
+	if (ret < 0)
 		goto err;
 
 	/* add codec as bus device for standard ac97 */
 	ret = snd_ac97_bus(codec->card, 0, &soc_ac97_ops, NULL, &ac97_bus);
-	if(ret < 0)
+	if (ret < 0)
 		goto bus_err;
 
 	memset(&ac97_template, 0, sizeof(struct snd_ac97_template));
 	ret = snd_ac97_mixer(ac97_bus, &ac97_template, &codec->ac97);
-	if(ret < 0)
+	if (ret < 0)
 		goto bus_err;
 
-	ret = snd_soc_register_card(socdev);
+	ret = snd_soc_init_card(socdev);
 	if (ret < 0)
 		goto bus_err;
 	return 0;
@@ -136,7 +134,7 @@ static int ac97_soc_remove(struct platform_device *pdev)
 	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
 	struct snd_soc_codec *codec = socdev->codec;
 
-	if(codec == NULL)
+	if (!codec)
 		return 0;
 
 	snd_soc_free_pcms(socdev);
@@ -146,11 +144,35 @@ static int ac97_soc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-struct snd_soc_codec_device soc_codec_dev_ac97= {
+#ifdef CONFIG_PM
+static int ac97_soc_suspend(struct platform_device *pdev, pm_message_t msg)
+{
+	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
+
+	snd_ac97_suspend(socdev->codec->ac97);
+
+	return 0;
+}
+
+static int ac97_soc_resume(struct platform_device *pdev)
+{
+	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
+
+	snd_ac97_resume(socdev->codec->ac97);
+
+	return 0;
+}
+#else
+#define ac97_soc_suspend NULL
+#define ac97_soc_resume NULL
+#endif
+
+struct snd_soc_codec_device soc_codec_dev_ac97 = {
 	.probe = 	ac97_soc_probe,
 	.remove = 	ac97_soc_remove,
+	.suspend =	ac97_soc_suspend,
+	.resume =	ac97_soc_resume,
 };
-
 EXPORT_SYMBOL_GPL(soc_codec_dev_ac97);
 
 MODULE_DESCRIPTION("Soc Generic AC97 driver");

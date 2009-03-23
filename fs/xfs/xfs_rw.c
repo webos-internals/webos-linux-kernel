@@ -126,11 +126,11 @@ xfs_write_sync_logforce(
 		 * when we return.
 		 */
 		if (iip && iip->ili_last_lsn) {
-			xfs_log_force(mp, iip->ili_last_lsn,
-					XFS_LOG_FORCE | XFS_LOG_SYNC);
+			error = _xfs_log_force(mp, iip->ili_last_lsn,
+					XFS_LOG_FORCE | XFS_LOG_SYNC, NULL);
 		} else if (xfs_ipincount(ip) > 0) {
-			xfs_log_force(mp, (xfs_lsn_t)0,
-					XFS_LOG_FORCE | XFS_LOG_SYNC);
+			error = _xfs_log_force(mp, (xfs_lsn_t)0,
+					XFS_LOG_FORCE | XFS_LOG_SYNC, NULL);
 		}
 
 	} else {
@@ -314,7 +314,7 @@ xfs_bioerror_relse(
 		 * ASYNC buffers.
 		 */
 		XFS_BUF_ERROR(bp, EIO);
-		XFS_BUF_V_IODONESEMA(bp);
+		XFS_BUF_FINISH_IOWAIT(bp);
 	} else {
 		xfs_buf_relse(bp);
 	}
@@ -406,7 +406,7 @@ xfs_bwrite(
 	 * XXXsup how does this work for quotas.
 	 */
 	XFS_BUF_SET_BDSTRAT_FUNC(bp, xfs_bdstrat_cb);
-	XFS_BUF_SET_FSPRIVATE3(bp, mp);
+	bp->b_mount = mp;
 	XFS_BUF_WRITE(bp);
 
 	if ((error = XFS_bwrite(bp))) {

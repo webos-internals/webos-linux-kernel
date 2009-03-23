@@ -46,11 +46,11 @@
 static int debug;
 #define DEBUG(n, format, arg...) \
 	if (n <= debug) {	 \
-		printk(KERN_DEBUG __FILE__ ":%s(): " format "\n", __FUNCTION__ , ## arg); \
+		printk(KERN_DEBUG __FILE__ ":%s(): " format "\n", __func__ , ## arg); \
 	}
 #else
 #define DEBUG(n, arg...)
-static const int debug = 0;
+static const int debug;
 #endif
 
 #define DRIVER_VERSION "v0.01"
@@ -93,7 +93,7 @@ static void qcm_register_input(struct qcm *cam, struct usb_device *dev)
 
 	cam->input = input_dev = input_allocate_device();
 	if (!input_dev) {
-		warn("insufficient mem for cam input device");
+		dev_warn(&dev->dev, "insufficient mem for cam input device\n");
 		return;
 	}
 
@@ -105,12 +105,11 @@ static void qcm_register_input(struct qcm *cam, struct usb_device *dev)
 	input_dev->evbit[0] = BIT_MASK(EV_KEY);
 	input_dev->keybit[BIT_WORD(BTN_0)] = BIT_MASK(BTN_0);
 
-	input_dev->private = cam;
-
 	error = input_register_device(cam->input);
 	if (error) {
-		warn("Failed to register camera's input device, err: %d\n",
-		     error);
+		dev_warn(&dev->dev,
+			 "Failed to register camera's input device, err: %d\n",
+			 error);
 		input_free_device(cam->input);
 		cam->input = NULL;
 	}
@@ -212,7 +211,7 @@ static int qcm_stv_setb(struct usb_device *dev, u16 reg, u8 val)
 	return ret;
 }
 
-static int qcm_stv_setw(struct usb_device *dev, u16 reg, u16 val)
+static int qcm_stv_setw(struct usb_device *dev, u16 reg, __le16 val)
 {
 	int ret;
 
@@ -258,7 +257,7 @@ static void qcm_hsv2rgb(u16 hue, u16 sat, u16 val, u16 *r, u16 *g, u16 *b)
 	unsigned int p;
 
 	/*
-	the registers controling gain are 8 bit of which
+	the registers controlling gain are 8 bit of which
 	we affect only the last 4 bits with our gain.
 	we know that if saturation is 0, (unsaturated) then
 	we're grayscale (center axis of the colour cone) so
@@ -448,7 +447,7 @@ static int qcm_sensor_init(struct uvd *uvd)
 	CHECK_RET(ret, qcm_stv_setw(uvd->dev, 0x15c1,
 				cpu_to_le16(ISOC_PACKET_SIZE)));
 	CHECK_RET(ret, qcm_stv_setb(uvd->dev, 0x15c3, 0x08));
-	CHECK_RET(ret, ret = qcm_stv_setb(uvd->dev, 0x143f, 0x01));
+	CHECK_RET(ret, qcm_stv_setb(uvd->dev, 0x143f, 0x01));
 
 	CHECK_RET(ret, qcm_stv_setb(uvd->dev, STV_ISO_ENABLE, 0x00));
 
@@ -589,8 +588,9 @@ static int qcm_compress_iso(struct uvd *uvd, struct urb *dataurb)
 			dataurb->iso_frame_desc[i].offset;
 
 		if (st < 0) {
-			warn("Data error: packet=%d. len=%d. status=%d.",
-			      i, n, st);
+			dev_warn(&uvd->dev->dev,
+				 "Data error: packet=%d. len=%d. status=%d.\n",
+				 i, n, st);
 			uvd->stats.iso_err_count++;
 			continue;
 		}
@@ -701,7 +701,7 @@ static void qcm_stop_data(struct uvd *uvd)
 
 	ret = qcm_camera_off(uvd);
 	if (ret)
-		warn("couldn't turn the cam off.");
+		dev_warn(&uvd->dev->dev, "couldn't turn the cam off.\n");
 
 	uvd->streaming = 0;
 
@@ -955,8 +955,7 @@ static int qcm_probe(struct usb_interface *intf,
 		for (j=0; j < interface->desc.bNumEndpoints; j++) {
 			endpoint = &interface->endpoint[j].desc;
 
-			if ((endpoint->bEndpointAddress &
-				USB_ENDPOINT_DIR_MASK) != USB_DIR_IN)
+			if (usb_endpoint_dir_out(endpoint))
 				continue; /* not input then not good */
 
 			buffer_size = le16_to_cpu(endpoint->wMaxPacketSize);
@@ -965,9 +964,7 @@ static int qcm_probe(struct usb_interface *intf,
 				continue; /* 0 pkt size is not what we want */
 			}
 
-			if ((endpoint->bmAttributes &
-				USB_ENDPOINT_XFERTYPE_MASK) ==
-				USB_ENDPOINT_XFER_ISOC) {
+			if (usb_endpoint_xfer_isoc(endpoint)) {
 				video_ep = endpoint->bEndpointAddress;
 				/* break out of the search */
 				goto good_videoep;
@@ -1082,7 +1079,8 @@ static struct usbvideo_cb qcm_driver = {
 
 static int __init qcm_init(void)
 {
-	info(DRIVER_DESC " " DRIVER_VERSION);
+	printk(KERN_INFO KBUILD_MODNAME ": " DRIVER_VERSION ":"
+	       DRIVER_DESC "\n");
 
 	return usbvideo_register(
 		&cams,

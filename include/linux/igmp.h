@@ -2,7 +2,7 @@
  *	Linux NET3:	Internet Group Management Protocol  [IGMP]
  *
  *	Authors:
- *		Alan Cox <Alan.Cox@linux.org>
+ *		Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
  *	Extended to talk the BSD extended IGMP protocol of mrouted 3.6
  *
@@ -16,6 +16,7 @@
 #ifndef _LINUX_IGMP_H
 #define _LINUX_IGMP_H
 
+#include <linux/types.h>
 #include <asm/byteorder.h>
 
 /*
@@ -80,27 +81,6 @@ struct igmpv3_query {
 	__be32 srcs[0];
 };
 
-#ifdef __KERNEL__
-#include <linux/skbuff.h>
-
-static inline struct igmphdr *igmp_hdr(const struct sk_buff *skb)
-{
-	return (struct igmphdr *)skb_transport_header(skb);
-}
-
-static inline struct igmpv3_report *
-			igmpv3_report_hdr(const struct sk_buff *skb)
-{
-	return (struct igmpv3_report *)skb_transport_header(skb);
-}
-
-static inline struct igmpv3_query *
-			igmpv3_query_hdr(const struct sk_buff *skb)
-{
-	return (struct igmpv3_query *)skb_transport_header(skb);
-}
-#endif
-
 #define IGMP_HOST_MEMBERSHIP_QUERY	0x11	/* From RFC1112 */
 #define IGMP_HOST_MEMBERSHIP_REPORT	0x12	/* Ditto */
 #define IGMP_DVMRP			0x13	/* DVMRP routing */
@@ -150,6 +130,23 @@ static inline struct igmpv3_query *
 #include <linux/skbuff.h>
 #include <linux/timer.h>
 #include <linux/in.h>
+
+static inline struct igmphdr *igmp_hdr(const struct sk_buff *skb)
+{
+	return (struct igmphdr *)skb_transport_header(skb);
+}
+
+static inline struct igmpv3_report *
+			igmpv3_report_hdr(const struct sk_buff *skb)
+{
+	return (struct igmpv3_report *)skb_transport_header(skb);
+}
+
+static inline struct igmpv3_query *
+			igmpv3_query_hdr(const struct sk_buff *skb)
+{
+	return (struct igmpv3_query *)skb_transport_header(skb);
+}
 
 extern int sysctl_igmp_max_memberships;
 extern int sysctl_igmp_max_msf;
@@ -232,7 +229,6 @@ extern int ip_mc_msfget(struct sock *sk, struct ip_msfilter *msf,
 extern int ip_mc_gsfget(struct sock *sk, struct group_filter *gsf,
 		struct group_filter __user *optval, int __user *optlen);
 extern int ip_mc_sf_allow(struct sock *sk, __be32 local, __be32 rmt, int dif);
-extern void ip_mr_init(void);
 extern void ip_mc_init_dev(struct in_device *);
 extern void ip_mc_destroy_dev(struct in_device *);
 extern void ip_mc_up(struct in_device *);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -75,11 +75,23 @@
 #define IPATH_IB_LINKDOWN		0
 #define IPATH_IB_LINKARM		1
 #define IPATH_IB_LINKACTIVE		2
-#define IPATH_IB_LINKINIT		3
+#define IPATH_IB_LINKDOWN_ONLY		3
 #define IPATH_IB_LINKDOWN_SLEEP		4
 #define IPATH_IB_LINKDOWN_DISABLE	5
 #define IPATH_IB_LINK_LOOPBACK	6 /* enable local loopback */
 #define IPATH_IB_LINK_EXTERNAL	7 /* normal, disable local loopback */
+#define IPATH_IB_LINK_NO_HRTBT	8 /* disable Heartbeat, e.g. for loopback */
+#define IPATH_IB_LINK_HRTBT	9 /* enable heartbeat, normal, non-loopback */
+
+/*
+ * These 3 values (SDR and DDR may be ORed for auto-speed
+ * negotiation) are used for the 3rd argument to path_f_set_ib_cfg
+ * with cmd IPATH_IB_CFG_SPD_ENB, by direct calls or via sysfs.  They
+ * are also the the possible values for ipath_link_speed_enabled and active
+ * The values were chosen to match values used within the IB spec.
+ */
+#define IPATH_IB_SDR 1
+#define IPATH_IB_DDR 2
 
 /*
  * stats maintained by the driver.  For now, at least, this is global
@@ -188,7 +200,8 @@ typedef enum _ipath_ureg {
 #define IPATH_RUNTIME_FORCE_WC_ORDER	0x4
 #define IPATH_RUNTIME_RCVHDR_COPY	0x8
 #define IPATH_RUNTIME_MASTER	0x10
-/* 0x20 and 0x40 are no longer used, but are reserved for ABI compatibility */
+#define IPATH_RUNTIME_NODMA_RTAIL 0x80
+#define IPATH_RUNTIME_SDMA	      0x200
 #define IPATH_RUNTIME_FORCE_PIOAVAIL 0x400
 #define IPATH_RUNTIME_PIO_REGSWAPPED 0x800
 
@@ -433,8 +446,10 @@ struct ipath_user_info {
 #define IPATH_CMD_UNUSED_2	26
 #define IPATH_CMD_PIOAVAILUPD	27	/* force an update of PIOAvail reg */
 #define IPATH_CMD_POLL_TYPE	28	/* set the kind of polling we want */
-
-#define IPATH_CMD_MAX		28
+#define IPATH_CMD_ARMLAUNCH_CTRL	29 /* armlaunch detection control */
+/* 30 is unused */
+#define IPATH_CMD_SDMA_INFLIGHT 31	/* sdma inflight counter request */
+#define IPATH_CMD_SDMA_COMPLETE 32	/* sdma completion counter request */
 
 /*
  * Poll types
@@ -472,11 +487,24 @@ struct ipath_cmd {
 	union {
 		struct ipath_tid_info tid_info;
 		struct ipath_user_info user_info;
+
+		/*
+		 * address in userspace where we should put the sdma
+		 * inflight counter
+		 */
+		__u64 sdma_inflight;
+		/*
+		 * address in userspace where we should put the sdma
+		 * completion counter
+		 */
+		__u64 sdma_complete;
 		/* address in userspace of struct ipath_port_info to
 		   write result to */
 		__u64 port_info;
 		/* enable/disable receipt of packets */
 		__u32 recv_ctrl;
+		/* enable/disable armlaunch errors (non-zero to enable) */
+		__u32 armlaunch_ctrl;
 		/* partition key to set */
 		__u16 part_key;
 		/* user address of __u32 bitmask of active slaves */
@@ -524,7 +552,7 @@ struct ipath_diag_pkt {
 
 /* The second diag_pkt struct is the expanded version that allows
  * more control over the packet, specifically, by allowing a custom
- * pbc (+ extra) qword, so that special modes and deliberate
+ * pbc (+ static rate) qword, so that special modes and deliberate
  * changes to CRCs can be used. The elements were also re-ordered
  * for better alignment and to avoid padding issues.
  */
@@ -579,7 +607,7 @@ struct ipath_flash {
 struct infinipath_counters {
 	__u64 LBIntCnt;
 	__u64 LBFlowStallCnt;
-	__u64 Reserved1;
+	__u64 TxSDmaDescCnt;	/* was Reserved1 */
 	__u64 TxUnsupVLErrCnt;
 	__u64 TxDataPktCnt;
 	__u64 TxFlowPktCnt;
@@ -615,12 +643,26 @@ struct infinipath_counters {
 	__u64 RxP6HdrEgrOvflCnt;
 	__u64 RxP7HdrEgrOvflCnt;
 	__u64 RxP8HdrEgrOvflCnt;
-	__u64 Reserved6;
-	__u64 Reserved7;
+	__u64 RxP9HdrEgrOvflCnt;	/* was Reserved6 */
+	__u64 RxP10HdrEgrOvflCnt;	/* was Reserved7 */
+	__u64 RxP11HdrEgrOvflCnt;	/* new for IBA7220 */
+	__u64 RxP12HdrEgrOvflCnt;	/* new for IBA7220 */
+	__u64 RxP13HdrEgrOvflCnt;	/* new for IBA7220 */
+	__u64 RxP14HdrEgrOvflCnt;	/* new for IBA7220 */
+	__u64 RxP15HdrEgrOvflCnt;	/* new for IBA7220 */
+	__u64 RxP16HdrEgrOvflCnt;	/* new for IBA7220 */
 	__u64 IBStatusChangeCnt;
 	__u64 IBLinkErrRecoveryCnt;
 	__u64 IBLinkDownedCnt;
 	__u64 IBSymbolErrCnt;
+	/* The following are new for IBA7220 */
+	__u64 RxVL15DroppedPktCnt;
+	__u64 RxOtherLocalPhyErrCnt;
+	__u64 PcieRetryBufDiagQwordCnt;
+	__u64 ExcessBufferOvflCnt;
+	__u64 LocalLinkIntegrityErrCnt;
+	__u64 RxVlErrCnt;
+	__u64 RxDlidFltrCnt;
 };
 
 /*
@@ -635,8 +677,12 @@ struct infinipath_counters {
 #define INFINIPATH_RHF_LENGTH_SHIFT 0
 #define INFINIPATH_RHF_RCVTYPE_MASK 0x7
 #define INFINIPATH_RHF_RCVTYPE_SHIFT 11
-#define INFINIPATH_RHF_EGRINDEX_MASK 0x7FF
+#define INFINIPATH_RHF_EGRINDEX_MASK 0xFFF
 #define INFINIPATH_RHF_EGRINDEX_SHIFT 16
+#define INFINIPATH_RHF_SEQ_MASK 0xF
+#define INFINIPATH_RHF_SEQ_SHIFT 0
+#define INFINIPATH_RHF_HDRQ_OFFSET_MASK 0x7FF
+#define INFINIPATH_RHF_HDRQ_OFFSET_SHIFT 4
 #define INFINIPATH_RHF_H_ICRCERR   0x80000000
 #define INFINIPATH_RHF_H_VCRCERR   0x40000000
 #define INFINIPATH_RHF_H_PARITYERR 0x20000000
@@ -646,6 +692,8 @@ struct infinipath_counters {
 #define INFINIPATH_RHF_H_TIDERR    0x02000000
 #define INFINIPATH_RHF_H_MKERR     0x01000000
 #define INFINIPATH_RHF_H_IBERR     0x00800000
+#define INFINIPATH_RHF_H_ERR_MASK  0xFF800000
+#define INFINIPATH_RHF_L_USE_EGR   0x80000000
 #define INFINIPATH_RHF_L_SWA       0x00008000
 #define INFINIPATH_RHF_L_SWB       0x00004000
 
@@ -669,6 +717,7 @@ struct infinipath_counters {
 /* SendPIO per-buffer control */
 #define INFINIPATH_SP_TEST    0x40
 #define INFINIPATH_SP_TESTEBP 0x20
+#define INFINIPATH_SP_TRIGGER_SHIFT  15
 
 /* SendPIOAvail bits */
 #define INFINIPATH_SENDPIOAVAIL_BUSY_SHIFT 1
@@ -735,6 +784,7 @@ struct ether_header {
 #define IPATH_MSN_MASK 0xFFFFFF
 #define IPATH_QPN_MASK 0xFFFFFF
 #define IPATH_MULTICAST_LID_BASE 0xC000
+#define IPATH_EAGER_TID_ID INFINIPATH_I_TID_MASK
 #define IPATH_MULTICAST_QPN 0xFFFFFF
 
 /* Receive Header Queue: receive type (from infinipath) */
@@ -754,7 +804,7 @@ struct ether_header {
  */
 static inline __u32 ipath_hdrget_err_flags(const __le32 * rbuf)
 {
-	return __le32_to_cpu(rbuf[1]);
+	return __le32_to_cpu(rbuf[1]) & INFINIPATH_RHF_H_ERR_MASK;
 }
 
 static inline __u32 ipath_hdrget_rcv_type(const __le32 * rbuf)
@@ -773,6 +823,23 @@ static inline __u32 ipath_hdrget_index(const __le32 * rbuf)
 {
 	return (__le32_to_cpu(rbuf[0]) >> INFINIPATH_RHF_EGRINDEX_SHIFT)
 	    & INFINIPATH_RHF_EGRINDEX_MASK;
+}
+
+static inline __u32 ipath_hdrget_seq(const __le32 *rbuf)
+{
+	return (__le32_to_cpu(rbuf[1]) >> INFINIPATH_RHF_SEQ_SHIFT)
+		& INFINIPATH_RHF_SEQ_MASK;
+}
+
+static inline __u32 ipath_hdrget_offset(const __le32 *rbuf)
+{
+	return (__le32_to_cpu(rbuf[1]) >> INFINIPATH_RHF_HDRQ_OFFSET_SHIFT)
+		& INFINIPATH_RHF_HDRQ_OFFSET_MASK;
+}
+
+static inline __u32 ipath_hdrget_use_egr_buf(const __le32 *rbuf)
+{
+	return __le32_to_cpu(rbuf[0]) & INFINIPATH_RHF_L_USE_EGR;
 }
 
 static inline __u32 ipath_hdrget_ipath_ver(__le32 hdrword)

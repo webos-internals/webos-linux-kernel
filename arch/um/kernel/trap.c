@@ -13,6 +13,7 @@
 #include "as-layout.h"
 #include "kern_util.h"
 #include "os.h"
+#include "skas.h"
 #include "sysdep/sigcontext.h"
 
 /*
@@ -63,11 +64,10 @@ good_area:
 
 	do {
 		int fault;
-survive:
+
 		fault = handle_mm_fault(mm, vma, address, is_write);
 		if (unlikely(fault & VM_FAULT_ERROR)) {
 			if (fault & VM_FAULT_OOM) {
-				err = -ENOMEM;
 				goto out_of_memory;
 			} else if (fault & VM_FAULT_SIGBUS) {
 				err = -EACCES;
@@ -103,18 +103,14 @@ out:
 out_nosemaphore:
 	return err;
 
-/*
- * We ran out of memory, or some other thing happened to us that made
- * us unable to handle the page fault gracefully.
- */
 out_of_memory:
-	if (is_global_init(current)) {
-		up_read(&mm->mmap_sem);
-		yield();
-		down_read(&mm->mmap_sem);
-		goto survive;
-	}
-	goto out;
+	/*
+	 * We ran out of memory, call the OOM killer, and return the userspace
+	 * (which will retry the fault, or kill us if we got oom-killed).
+	 */
+	up_read(&mm->mmap_sem);
+	pagefault_out_of_memory();
+	return 0;
 }
 
 static void bad_segv(struct faultinfo fi, unsigned long ip)
@@ -128,7 +124,19 @@ static void bad_segv(struct faultinfo fi, unsigned long ip)
 	force_sig_info(SIGSEGV, &si, current);
 }
 
-static void segv_handler(int sig, struct uml_pt_regs *regs)
+void fatal_sigsegv(void)
+{
+	force_sigsegv(SIGSEGV, current);
+	do_signal();
+	/*
+	 * This is to tell gcc that we're not returning - do_signal
+	 * can, in general, return, but in this case, it's not, since
+	 * we just got a fatal SIGSEGV queued.
+	 */
+	os_dump_core();
+}
+
+void segv_handler(int sig, struct uml_pt_regs *regs)
 {
 	struct faultinfo * fi = UPT_FAULTINFO(regs);
 
@@ -201,9 +209,6 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 		si.si_addr = (void __user *)address;
 		current->thread.arch.faultinfo = fi;
 		force_sig_info(SIGBUS, &si, current);
-	} else if (err == -ENOMEM) {
-		printk(KERN_INFO "VM: killing process %s\n", current->comm);
-		do_exit(SIGKILL);
 	} else {
 		BUG_ON(err != -EFAULT);
 		si.si_signo = SIGSEGV;
@@ -216,9 +221,6 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 
 void relay_signal(int sig, struct uml_pt_regs *regs)
 {
-	if (arch_handle_signal(sig, regs))
-		return;
-
 	if (!UPT_IS_USER(regs)) {
 		if (sig == SIGBUS)
 			printk(KERN_ERR "Bus error - the host /dev/shm or /tmp "
@@ -226,30 +228,23 @@ void relay_signal(int sig, struct uml_pt_regs *regs)
 		panic("Kernel mode signal %d", sig);
 	}
 
+	arch_examine_signal(sig, regs);
+
 	current->thread.arch.faultinfo = *UPT_FAULTINFO(regs);
 	force_sig(sig, current);
 }
 
-static void bus_handler(int sig, struct uml_pt_regs *regs)
+void bus_handler(int sig, struct uml_pt_regs *regs)
 {
 	if (current->thread.fault_catcher != NULL)
 		UML_LONGJMP(current->thread.fault_catcher, 1);
 	else relay_signal(sig, regs);
 }
 
-static void winch(int sig, struct uml_pt_regs *regs)
+void winch(int sig, struct uml_pt_regs *regs)
 {
 	do_IRQ(WINCH_IRQ, regs);
 }
-
-const struct kern_handlers handlinfo_kern = {
-	.relay_signal = relay_signal,
-	.winch = winch,
-	.bus_handler = bus_handler,
-	.page_fault = segv_handler,
-	.sigio_handler = sigio_handler,
-	.timer_handler = timer_handler
-};
 
 void trap_init(void)
 {

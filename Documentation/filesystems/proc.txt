@@ -43,6 +43,8 @@ Table of Contents
   2.13	/proc/<pid>/oom_score - Display current oom-killer score
   2.14	/proc/<pid>/io - Display the IO accounting fields
   2.15	/proc/<pid>/coredump_filter - Core dump filtering settings
+  2.16	/proc/<pid>/mountinfo - Information about mounts
+  2.17	/proc/sys/fs/epoll - Configuration options for the epoll interface
 
 ------------------------------------------------------------------------------
 Preface
@@ -138,6 +140,7 @@ Table 1-1: Process specific entries in /proc
  statm		Process memory status information
  status		Process status in human readable form
  wchan		If CONFIG_KALLSYMS is set, a pre-decoded wchan
+ stack		Report full stack trace, enable via CONFIG_STACKTRACE
  smaps		Extension based on maps, the rss size for each mapped file
 ..............................................................................
 
@@ -216,6 +219,7 @@ Table 1-3: Contents of the stat files (as of 2.6.22-rc3)
   priority      priority level
   nice          nice level
   num_threads   number of threads
+  it_real_value	(obsolete, always 0)
   start_time    time the process started after system boot
   vsize         virtual memory size
   rss           resident set memory size
@@ -294,6 +298,7 @@ Table 1-4: Kernel info in /proc
  uptime      System uptime                                     
  version     Kernel version                                    
  video	     bttv info of video resources			(2.4)
+ vmallocinfo Show vmalloced areas
 ..............................................................................
 
 You can,  for  example,  check  which interrupts are currently in use and what
@@ -378,28 +383,35 @@ i386 and x86_64 platforms support the new IRQ vector displays.
 Of some interest is the introduction of the /proc/irq directory to 2.4.
 It could be used to set IRQ to CPU affinity, this means that you can "hook" an
 IRQ to only one CPU, or to exclude a CPU of handling IRQs. The contents of the
-irq subdir is one subdir for each IRQ, and one file; prof_cpu_mask
+irq subdir is one subdir for each IRQ, and two files; default_smp_affinity and
+prof_cpu_mask.
 
 For example 
   > ls /proc/irq/
   0  10  12  14  16  18  2  4  6  8  prof_cpu_mask
-  1  11  13  15  17  19  3  5  7  9
+  1  11  13  15  17  19  3  5  7  9  default_smp_affinity
   > ls /proc/irq/0/
   smp_affinity
 
-The contents of the prof_cpu_mask file and each smp_affinity file for each IRQ
-is the same by default:
+smp_affinity is a bitmask, in which you can specify which CPUs can handle the
+IRQ, you can set it by doing:
 
-  > cat /proc/irq/0/smp_affinity 
+  > echo 1 > /proc/irq/10/smp_affinity
+
+This means that only the first CPU will handle the IRQ, but you can also echo
+5 which means that only the first and fourth CPU can handle the IRQ.
+
+The contents of each smp_affinity file is the same by default:
+
+  > cat /proc/irq/0/smp_affinity
   ffffffff
 
-It's a bitmask, in which you can specify which CPUs can handle the IRQ, you can
-set it by doing:
+The default_smp_affinity mask applies to all non-active IRQs, which are the
+IRQs which have not yet been allocated/activated, and hence which lack a
+/proc/irq/[0-9]* directory.
 
-  > echo 1 > /proc/irq/prof_cpu_mask
-
-This means that only the first CPU will handle the IRQ, but you can also echo 5
-which means that only the first and fourth CPU can handle the IRQ.
+prof_cpu_mask specifies which CPUs are to be profiled by the system wide
+profiler. Default value is ffffffff (all cpus).
 
 The way IRQs are routed is handled by the IO-APIC, and it's Round Robin
 between all the CPUs which are allowed to handle it. As usual the kernel has
@@ -461,11 +473,17 @@ SwapTotal:           0 kB
 SwapFree:            0 kB
 Dirty:             968 kB
 Writeback:           0 kB
+AnonPages:      861800 kB
 Mapped:         280372 kB
-Slab:           684068 kB
+Slab:           284364 kB
+SReclaimable:   159856 kB
+SUnreclaim:     124508 kB
+PageTables:      24448 kB
+NFS_Unstable:        0 kB
+Bounce:              0 kB
+WritebackTmp:        0 kB
 CommitLimit:   7669796 kB
 Committed_AS:   100056 kB
-PageTables:      24448 kB
 VmallocTotal:   112216 kB
 VmallocUsed:       428 kB
 VmallocChunk:   111088 kB
@@ -501,8 +519,17 @@ VmallocChunk:   111088 kB
               on the disk
        Dirty: Memory which is waiting to get written back to the disk
    Writeback: Memory which is actively being written back to the disk
+   AnonPages: Non-file backed pages mapped into userspace page tables
       Mapped: files which have been mmaped, such as libraries
         Slab: in-kernel data structures cache
+SReclaimable: Part of Slab, that might be reclaimed, such as caches
+  SUnreclaim: Part of Slab, that cannot be reclaimed on memory pressure
+  PageTables: amount of memory dedicated to the lowest level of page
+              tables.
+NFS_Unstable: NFS pages sent to the server, but not yet committed to stable
+	      storage
+      Bounce: Memory used for block device "bounce buffers"
+WritebackTmp: Memory used by FUSE for temporary writeback buffers
  CommitLimit: Based on the overcommit ratio ('vm.overcommit_ratio'),
               this is the total amount of  memory currently available to
               be allocated on the system. This limit is only adhered to
@@ -529,12 +556,53 @@ Committed_AS: The amount of memory presently allocated on the system.
               above) will not be permitted. This is useful if one needs
               to guarantee that processes will not fail due to lack of
               memory once that memory has been successfully allocated.
-  PageTables: amount of memory dedicated to the lowest level of page
-              tables.
 VmallocTotal: total size of vmalloc memory area
  VmallocUsed: amount of vmalloc area which is used
 VmallocChunk: largest contigious block of vmalloc area which is free
 
+..............................................................................
+
+vmallocinfo:
+
+Provides information about vmalloced/vmaped areas. One line per area,
+containing the virtual address range of the area, size in bytes,
+caller information of the creator, and optional information depending
+on the kind of area :
+
+ pages=nr    number of pages
+ phys=addr   if a physical address was specified
+ ioremap     I/O mapping (ioremap() and friends)
+ vmalloc     vmalloc() area
+ vmap        vmap()ed pages
+ user        VM_USERMAP area
+ vpages      buffer for pages pointers was vmalloced (huge area)
+ N<node>=nr  (Only on NUMA kernels)
+             Number of pages allocated on memory node <node>
+
+> cat /proc/vmallocinfo
+0xffffc20000000000-0xffffc20000201000 2101248 alloc_large_system_hash+0x204 ...
+  /0x2c0 pages=512 vmalloc N0=128 N1=128 N2=128 N3=128
+0xffffc20000201000-0xffffc20000302000 1052672 alloc_large_system_hash+0x204 ...
+  /0x2c0 pages=256 vmalloc N0=64 N1=64 N2=64 N3=64
+0xffffc20000302000-0xffffc20000304000    8192 acpi_tb_verify_table+0x21/0x4f...
+  phys=7fee8000 ioremap
+0xffffc20000304000-0xffffc20000307000   12288 acpi_tb_verify_table+0x21/0x4f...
+  phys=7fee7000 ioremap
+0xffffc2000031d000-0xffffc2000031f000    8192 init_vdso_vars+0x112/0x210
+0xffffc2000031f000-0xffffc2000032b000   49152 cramfs_uncompress_init+0x2e ...
+  /0x80 pages=11 vmalloc N0=3 N1=3 N2=2 N3=3
+0xffffc2000033a000-0xffffc2000033d000   12288 sys_swapon+0x640/0xac0      ...
+  pages=2 vmalloc N1=2
+0xffffc20000347000-0xffffc2000034c000   20480 xt_alloc_table_info+0xfe ...
+  /0x130 [x_tables] pages=4 vmalloc N0=4
+0xffffffffa0000000-0xffffffffa000f000   61440 sys_init_module+0xc27/0x1d00 ...
+   pages=14 vmalloc N2=14
+0xffffffffa000f000-0xffffffffa0014000   20480 sys_init_module+0xc27/0x1d00 ...
+   pages=4 vmalloc N1=4
+0xffffffffa0014000-0xffffffffa0017000   12288 sys_init_module+0xc27/0x1d00 ...
+   pages=2 vmalloc N1=2
+0xffffffffa0017000-0xffffffffa0022000   45056 sys_init_module+0xc27/0x1d00 ...
+   pages=10 vmalloc N0=10
 
 1.3 IDE devices in /proc/ide
 ----------------------------
@@ -858,6 +926,44 @@ The   "procs_blocked" line gives  the  number of  processes currently blocked,
 waiting for I/O to complete.
 
 
+1.9 Ext4 file system parameters
+------------------------------
+
+Information about mounted ext4 file systems can be found in
+/proc/fs/ext4.  Each mounted filesystem will have a directory in
+/proc/fs/ext4 based on its device name (i.e., /proc/fs/ext4/hdc or
+/proc/fs/ext4/dm-0).   The files in each per-device directory are shown
+in Table 1-10, below.
+
+Table 1-10: Files in /proc/fs/ext4/<devname>
+..............................................................................
+ File            Content                                        
+ mb_groups       details of multiblock allocator buddy cache of free blocks
+ mb_history      multiblock allocation history
+ stats           controls whether the multiblock allocator should start
+                 collecting statistics, which are shown during the unmount
+ group_prealloc  the multiblock allocator will round up allocation
+                 requests to a multiple of this tuning parameter if the
+                 stripe size is not set in the ext4 superblock
+ max_to_scan     The maximum number of extents the multiblock allocator
+                 will search to find the best extent
+ min_to_scan     The minimum number of extents the multiblock allocator
+                 will search to find the best extent
+ order2_req      Tuning parameter which controls the minimum size for 
+                 requests (as a power of 2) where the buddy cache is
+                 used
+ stream_req      Files which have fewer blocks than this tunable
+                 parameter will have their blocks allocated out of a
+                 block group specific preallocation pool, so that small
+                 files are packed closely together.  Each large file
+                 will have its blocks allocated out of its own unique
+                 preallocation pool.
+inode_readahead  Tuning parameter which controls the maximum number of
+                 inode table blocks that ext4's inode table readahead
+                 algorithm will pre-read into the buffer cache
+..............................................................................
+
+
 ------------------------------------------------------------------------------
 Summary
 ------------------------------------------------------------------------------
@@ -989,6 +1095,14 @@ nr_inodes
 Denotes the  number  of  inodes the system has allocated. This number will
 grow and shrink dynamically.
 
+nr_open
+-------
+
+Denotes the maximum number of file-handles a process can
+allocate. Default value is 1024*1024 (1048576) which should be
+enough for most machines. Actual limit depends on RLIMIT_NOFILE
+resource limit.
+
 nr_free_inodes
 --------------
 
@@ -1094,13 +1208,6 @@ check the amount of free space (value is in seconds). Default settings are: 4,
 2, and  30.  That is, suspend accounting if there is less than 2 percent free;
 resume it  if we have a value of 3 or more percent; consider information about
 the amount of free space valid for 30 seconds
-
-audit_argv_kb
--------------
-
-The file contains a single value denoting the limit on the argv array size
-for execve (in KiB). This limit is only applied when system call auditing for
-execve is enabled, otherwise the value is ignored.
 
 ctrl-alt-del
 ------------
@@ -1216,225 +1323,56 @@ debugging information is displayed on console.
 NMI switch that most IA32 servers have fires unknown NMI up, for example.
 If a system hangs up, try pressing the NMI switch.
 
+panic_on_unrecovered_nmi
+------------------------
+
+The default Linux behaviour on an NMI of either memory or unknown is to continue
+operation. For many environments such as scientific computing it is preferable
+that the box is taken out and the error dealt with than an uncorrected
+parity/ECC error get propogated.
+
+A small number of systems do generate NMI's for bizarre random reasons such as
+power management so the default is off. That sysctl works like the existing
+panic controls already in that directory.
+
 nmi_watchdog
 ------------
 
 Enables/Disables the NMI watchdog on x86 systems.  When the value is non-zero
 the NMI watchdog is enabled and will continuously test all online cpus to
-determine whether or not they are still functioning properly.
+determine whether or not they are still functioning properly. Currently,
+passing "nmi_watchdog=" parameter at boot time is required for this function
+to work.
 
-Because the NMI watchdog shares registers with oprofile, by disabling the NMI
-watchdog, oprofile may have more registers to utilize.
+If LAPIC NMI watchdog method is in use (nmi_watchdog=2 kernel parameter), the
+NMI watchdog shares registers with oprofile. By disabling the NMI watchdog,
+oprofile may have more registers to utilize.
 
-maps_protect
-------------
+msgmni
+------
 
-Enables/Disables the protection of the per-process proc entries "maps" and
-"smaps".  When enabled, the contents of these files are visible only to
-readers that are allowed to ptrace() the given process.
+Maximum number of message queue ids on the system.
+This value scales to the amount of lowmem. It is automatically recomputed
+upon memory add/remove or ipc namespace creation/removal.
+When a value is written into this file, msgmni's value becomes fixed, i.e. it
+is not recomputed anymore when one of the above events occurs.
+Use auto_msgmni to change this behavior.
+
+auto_msgmni
+-----------
+
+Enables/Disables automatic recomputing of msgmni upon memory add/remove or
+upon ipc namespace creation/removal (see the msgmni description above).
+Echoing "1" into this file enables msgmni automatic recomputing.
+Echoing "0" turns it off.
+auto_msgmni default value is 1.
 
 
 2.4 /proc/sys/vm - The virtual memory subsystem
 -----------------------------------------------
 
-The files  in  this directory can be used to tune the operation of the virtual
-memory (VM)  subsystem  of  the  Linux  kernel.
-
-vfs_cache_pressure
-------------------
-
-Controls the tendency of the kernel to reclaim the memory which is used for
-caching of directory and inode objects.
-
-At the default value of vfs_cache_pressure=100 the kernel will attempt to
-reclaim dentries and inodes at a "fair" rate with respect to pagecache and
-swapcache reclaim.  Decreasing vfs_cache_pressure causes the kernel to prefer
-to retain dentry and inode caches.  Increasing vfs_cache_pressure beyond 100
-causes the kernel to prefer to reclaim dentries and inodes.
-
-dirty_background_ratio
-----------------------
-
-Contains, as a percentage of total system memory, the number of pages at which
-the pdflush background writeback daemon will start writing out dirty data.
-
-dirty_ratio
------------------
-
-Contains, as a percentage of total system memory, the number of pages at which
-a process which is generating disk writes will itself start writing out dirty
-data.
-
-dirty_writeback_centisecs
--------------------------
-
-The pdflush writeback daemons will periodically wake up and write `old' data
-out to disk.  This tunable expresses the interval between those wakeups, in
-100'ths of a second.
-
-Setting this to zero disables periodic writeback altogether.
-
-dirty_expire_centisecs
-----------------------
-
-This tunable is used to define when dirty data is old enough to be eligible
-for writeout by the pdflush daemons.  It is expressed in 100'ths of a second. 
-Data which has been dirty in-memory for longer than this interval will be
-written out next time a pdflush daemon wakes up.
-
-legacy_va_layout
-----------------
-
-If non-zero, this sysctl disables the new 32-bit mmap mmap layout - the kernel
-will use the legacy (2.4) layout for all processes.
-
-lower_zone_protection
----------------------
-
-For some specialised workloads on highmem machines it is dangerous for
-the kernel to allow process memory to be allocated from the "lowmem"
-zone.  This is because that memory could then be pinned via the mlock()
-system call, or by unavailability of swapspace.
-
-And on large highmem machines this lack of reclaimable lowmem memory
-can be fatal.
-
-So the Linux page allocator has a mechanism which prevents allocations
-which _could_ use highmem from using too much lowmem.  This means that
-a certain amount of lowmem is defended from the possibility of being
-captured into pinned user memory.
-
-(The same argument applies to the old 16 megabyte ISA DMA region.  This
-mechanism will also defend that region from allocations which could use
-highmem or lowmem).
-
-The `lower_zone_protection' tunable determines how aggressive the kernel is
-in defending these lower zones.  The default value is zero - no
-protection at all.
-
-If you have a machine which uses highmem or ISA DMA and your
-applications are using mlock(), or if you are running with no swap then
-you probably should increase the lower_zone_protection setting.
-
-The units of this tunable are fairly vague.  It is approximately equal
-to "megabytes," so setting lower_zone_protection=100 will protect around 100
-megabytes of the lowmem zone from user allocations.  It will also make
-those 100 megabytes unavailable for use by applications and by
-pagecache, so there is a cost.
-
-The effects of this tunable may be observed by monitoring
-/proc/meminfo:LowFree.  Write a single huge file and observe the point
-at which LowFree ceases to fall.
-
-A reasonable value for lower_zone_protection is 100.
-
-page-cluster
-------------
-
-page-cluster controls the number of pages which are written to swap in
-a single attempt.  The swap I/O size.
-
-It is a logarithmic value - setting it to zero means "1 page", setting
-it to 1 means "2 pages", setting it to 2 means "4 pages", etc.
-
-The default value is three (eight pages at a time).  There may be some
-small benefits in tuning this to a different value if your workload is
-swap-intensive.
-
-overcommit_memory
------------------
-
-Controls overcommit of system memory, possibly allowing processes
-to allocate (but not use) more memory than is actually available.
-
-
-0	-	Heuristic overcommit handling. Obvious overcommits of
-		address space are refused. Used for a typical system. It
-		ensures a seriously wild allocation fails while allowing
-		overcommit to reduce swap usage.  root is allowed to
-		allocate slightly more memory in this mode. This is the
-		default.
-
-1	-	Always overcommit. Appropriate for some scientific
-		applications.
-
-2	-	Don't overcommit. The total address space commit
-		for the system is not permitted to exceed swap plus a
-		configurable percentage (default is 50) of physical RAM.
-		Depending on the percentage you use, in most situations
-		this means a process will not be killed while attempting
-		to use already-allocated memory but will receive errors
-		on memory allocation as	appropriate.
-
-overcommit_ratio
-----------------
-
-Percentage of physical memory size to include in overcommit calculations
-(see above.)
-
-Memory allocation limit = swapspace + physmem * (overcommit_ratio / 100)
-
-	swapspace = total size of all swap areas
-	physmem = size of physical memory in system
-
-nr_hugepages and hugetlb_shm_group
-----------------------------------
-
-nr_hugepages configures number of hugetlb page reserved for the system.
-
-hugetlb_shm_group contains group id that is allowed to create SysV shared
-memory segment using hugetlb page.
-
-hugepages_treat_as_movable
---------------------------
-
-This parameter is only useful when kernelcore= is specified at boot time to
-create ZONE_MOVABLE for pages that may be reclaimed or migrated. Huge pages
-are not movable so are not normally allocated from ZONE_MOVABLE. A non-zero
-value written to hugepages_treat_as_movable allows huge pages to be allocated
-from ZONE_MOVABLE.
-
-Once enabled, the ZONE_MOVABLE is treated as an area of memory the huge
-pages pool can easily grow or shrink within. Assuming that applications are
-not running that mlock() a lot of memory, it is likely the huge pages pool
-can grow to the size of ZONE_MOVABLE by repeatedly entering the desired value
-into nr_hugepages and triggering page reclaim.
-
-laptop_mode
------------
-
-laptop_mode is a knob that controls "laptop mode". All the things that are
-controlled by this knob are discussed in Documentation/laptop-mode.txt.
-
-block_dump
-----------
-
-block_dump enables block I/O debugging when set to a nonzero value. More
-information on block I/O debugging is in Documentation/laptop-mode.txt.
-
-swap_token_timeout
-------------------
-
-This file contains valid hold time of swap out protection token. The Linux
-VM has token based thrashing control mechanism and uses the token to prevent
-unnecessary page faults in thrashing situation. The unit of the value is
-second. The value would be useful to tune thrashing behavior.
-
-drop_caches
------------
-
-Writing to this will cause the kernel to drop clean caches, dentries and
-inodes from memory, causing that memory to become free.
-
-To free pagecache:
-	echo 1 > /proc/sys/vm/drop_caches
-To free dentries and inodes:
-	echo 2 > /proc/sys/vm/drop_caches
-To free pagecache, dentries and inodes:
-	echo 3 > /proc/sys/vm/drop_caches
-
-As this is a non-destructive operation and dirty objects are not freeable, the
-user should run `sync' first.
+Please see: Documentation/sysctls/vm.txt for a description of these
+entries.
 
 
 2.5 /proc/sys/dev - Device specific parameters
@@ -1540,6 +1478,13 @@ of problems on the network like duplicate address or bad checksums. Normally,
 this should be enabled, but if the problem persists the messages can be
 disabled.
 
+netdev_budget
+-------------
+
+Maximum number of packets taken from all interfaces in one polling cycle (NAPI
+poll). In one polling cycle interfaces which are registered to polling are
+probed in a round-robin manner. The limit of packets in one such probe can be
+set per-device via sysfs class/net/<device>/weight .
 
 netdev_max_backlog
 ------------------
@@ -1880,11 +1825,6 @@ max_size
 Maximum size  of  the routing cache. Old entries will be purged once the cache
 reached has this size.
 
-max_delay, min_delay
---------------------
-
-Delays for flushing the routing cache.
-
 redirect_load, redirect_number
 ------------------------------
 
@@ -2094,6 +2034,34 @@ increase the likelihood of this process being killed by the oom-killer.  Valid
 values are in the range -16 to +15, plus the special value -17, which disables
 oom-killing altogether for this process.
 
+The process to be killed in an out-of-memory situation is selected among all others
+based on its badness score. This value equals the original memory size of the process
+and is then updated according to its CPU time (utime + stime) and the
+run time (uptime - start time). The longer it runs the smaller is the score.
+Badness score is divided by the square root of the CPU time and then by
+the double square root of the run time.
+
+Swapped out tasks are killed first. Half of each child's memory size is added to
+the parent's score if they do not share the same memory. Thus forking servers
+are the prime candidates to be killed. Having only one 'hungry' child will make
+parent less preferable than the child.
+
+/proc/<pid>/oom_score shows process' current badness score.
+
+The following heuristics are then applied:
+ * if the task was reniced, its score doubles
+ * superuser or direct hardware access tasks (CAP_SYS_ADMIN, CAP_SYS_RESOURCE
+ 	or CAP_SYS_RAWIO) have their score divided by 4
+ * if oom condition happened in one cpuset and checked task does not belong
+ 	to it, its score is divided by 8
+ * the resulting score is multiplied by two to the power of oom_adj, i.e.
+	points <<= oom_adj when it is positive and
+	points >>= -(oom_adj) otherwise
+
+The task with the highest badness score is then selected and its children
+are killed, process itself will be killed in an OOM situation when it does
+not have children or some of them disabled oom like described above.
+
 2.13 /proc/<pid>/oom_score - Display current oom-killer score
 -------------------------------------------------------------
 
@@ -2227,22 +2195,29 @@ will be dumped when the <pid> process is dumped. coredump_filter is a bitmask
 of memory types. If a bit of the bitmask is set, memory segments of the
 corresponding memory type are dumped, otherwise they are not dumped.
 
-The following 4 memory types are supported:
+The following 7 memory types are supported:
   - (bit 0) anonymous private memory
   - (bit 1) anonymous shared memory
   - (bit 2) file-backed private memory
   - (bit 3) file-backed shared memory
+  - (bit 4) ELF header pages in file-backed private memory areas (it is
+            effective only if the bit 2 is cleared)
+  - (bit 5) hugetlb private memory
+  - (bit 6) hugetlb shared memory
 
   Note that MMIO pages such as frame buffer are never dumped and vDSO pages
   are always dumped regardless of the bitmask status.
 
-Default value of coredump_filter is 0x3; this means all anonymous memory
-segments are dumped.
+  Note bit 0-4 doesn't effect any hugetlb memory. hugetlb memory are only
+  effected by bit 5-6.
+
+Default value of coredump_filter is 0x23; this means all anonymous memory
+segments and hugetlb private memory are dumped.
 
 If you don't want to dump all shared memory segments attached to pid 1234,
-write 1 to the process's proc file.
+write 0x21 to the process's proc file.
 
-  $ echo 0x1 > /proc/1234/coredump_filter
+  $ echo 0x21 > /proc/1234/coredump_filter
 
 When a new process is created, the process inherits the bitmask status from its
 parent. It is useful to set up coredump_filter before the program runs.
@@ -2251,4 +2226,67 @@ For example:
   $ echo 0x7 > /proc/self/coredump_filter
   $ ./some_program
 
+2.16	/proc/<pid>/mountinfo - Information about mounts
+--------------------------------------------------------
+
+This file contains lines of the form:
+
+36 35 98:0 /mnt1 /mnt2 rw,noatime master:1 - ext3 /dev/root rw,errors=continue
+(1)(2)(3)   (4)   (5)      (6)      (7)   (8) (9)   (10)         (11)
+
+(1) mount ID:  unique identifier of the mount (may be reused after umount)
+(2) parent ID:  ID of parent (or of self for the top of the mount tree)
+(3) major:minor:  value of st_dev for files on filesystem
+(4) root:  root of the mount within the filesystem
+(5) mount point:  mount point relative to the process's root
+(6) mount options:  per mount options
+(7) optional fields:  zero or more fields of the form "tag[:value]"
+(8) separator:  marks the end of the optional fields
+(9) filesystem type:  name of filesystem of the form "type[.subtype]"
+(10) mount source:  filesystem specific information or "none"
+(11) super options:  per super block options
+
+Parsers should ignore all unrecognised optional fields.  Currently the
+possible optional fields are:
+
+shared:X  mount is shared in peer group X
+master:X  mount is slave to peer group X
+propagate_from:X  mount is slave and receives propagation from peer group X (*)
+unbindable  mount is unbindable
+
+(*) X is the closest dominant peer group under the process's root.  If
+X is the immediate master of the mount, or if there's no dominant peer
+group under the same root, then only the "master:X" field is present
+and not the "propagate_from:X" field.
+
+For more information on mount propagation see:
+
+  Documentation/filesystems/sharedsubtree.txt
+
+2.17	/proc/sys/fs/epoll - Configuration options for the epoll interface
+--------------------------------------------------------
+
+This directory contains configuration options for the epoll(7) interface.
+
+max_user_instances
+------------------
+
+This is the maximum number of epoll file descriptors that a single user can
+have open at a given time. The default value is 128, and should be enough
+for normal users.
+
+max_user_watches
+----------------
+
+Every epoll file descriptor can store a number of files to be monitored
+for event readiness. Each one of these monitored files constitutes a "watch".
+This configuration option sets the maximum number of "watches" that are
+allowed for each user.
+Each "watch" costs roughly 90 bytes on a 32bit kernel, and roughly 160 bytes
+on a 64bit one.
+The current default value for  max_user_watches  is the 1/32 of the available
+low memory, divided for the "watch" cost in bytes.
+
+
 ------------------------------------------------------------------------------
+

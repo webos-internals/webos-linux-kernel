@@ -38,6 +38,7 @@
 #define AGPIOC_DEALLOCATE _IOW (AGPIOC_BASE, 7, int)
 #define AGPIOC_BIND       _IOW (AGPIOC_BASE, 8, struct agp_bind*)
 #define AGPIOC_UNBIND     _IOW (AGPIOC_BASE, 9, struct agp_unbind*)
+#define AGPIOC_CHIPSET_FLUSH _IO (AGPIOC_BASE, 10)
 
 #define AGP_DEVICE      "/dev/agpgart"
 
@@ -51,7 +52,6 @@
 
 #ifndef __KERNEL__
 #include <linux/types.h>
-#include <asm/types.h>
 
 struct agp_version {
 	__u16 major;
@@ -205,8 +205,8 @@ struct agp_front_data {
 	struct agp_controller *current_controller;
 	struct agp_controller *controllers;
 	struct agp_file_private *file_priv_list;
-	u8 used_by_controller;
-	u8 backend_acquired;
+	bool used_by_controller;
+	bool backend_acquired;
 };
 
 #endif				/* __KERNEL__ */

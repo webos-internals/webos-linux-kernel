@@ -24,19 +24,20 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/sysdev.h>
+#include <linux/io.h>
 
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
-#include <asm/io.h>
 
 #include <asm/mach/irq.h>
 
-#include <asm/arch/regs-irq.h>
-#include <asm/arch/regs-gpio.h>
+#include <mach/regs-irq.h>
+#include <mach/regs-gpio.h>
+#include <mach/regs-power.h>
 
-#include <asm/plat-s3c24xx/cpu.h>
-#include <asm/plat-s3c24xx/irq.h>
-#include <asm/plat-s3c24xx/pm.h>
+#include <plat/cpu.h>
+#include <plat/irq.h>
+#include <plat/pm.h>
 
 #define INTMSK(start, end) ((1 << ((end) + 1 - (start))) - 1)
 #define INTMSK_SUB(start, end) (INTMSK(start, end) << ((start - S3C2410_IRQSUB(0))))
@@ -122,10 +123,10 @@ static void s3c2412_irq_demux_cfsdi(unsigned int irq, struct irq_desc *desc)
 	subsrc  &= ~submsk;
 
 	if (subsrc & INTBIT(IRQ_S3C2412_SDI))
-		desc_handle_irq(IRQ_S3C2412_SDI, irq_desc + IRQ_S3C2412_SDI);
+		generic_handle_irq(IRQ_S3C2412_SDI);
 
 	if (subsrc & INTBIT(IRQ_S3C2412_CF))
-		desc_handle_irq(IRQ_S3C2412_CF, irq_desc + IRQ_S3C2412_CF);
+		generic_handle_irq(IRQ_S3C2412_CF);
 }
 
 #define INTMSK_CFSDI	(1UL << (IRQ_S3C2412_CFSDI - IRQ_EINT0))
@@ -153,6 +154,22 @@ static struct irq_chip s3c2412_irq_cfsdi = {
 	.unmask		= s3c2412_irq_cfsdi_unmask,
 };
 
+static int s3c2412_irq_rtc_wake(unsigned int irqno, unsigned int state)
+{
+	unsigned long pwrcfg;
+
+	pwrcfg = __raw_readl(S3C2412_PWRCFG);
+	if (state)
+		pwrcfg &= ~S3C2412_PWRCFG_RTC_MASKIRQ;
+	else
+		pwrcfg |= S3C2412_PWRCFG_RTC_MASKIRQ;
+	__raw_writel(pwrcfg, S3C2412_PWRCFG);
+
+	return s3c_irq_chip.set_wake(irqno, state);
+}
+
+static struct irq_chip s3c2412_irq_rtc_chip;
+
 static int s3c2412_irq_add(struct sys_device *sysdev)
 {
 	unsigned int irqno;
@@ -172,6 +189,13 @@ static int s3c2412_irq_add(struct sys_device *sysdev)
 		set_irq_handler(irqno, handle_level_irq);
 		set_irq_flags(irqno, IRQF_VALID);
 	}
+
+	/* change RTC IRQ's set wake method */
+
+	s3c2412_irq_rtc_chip = s3c_irq_chip;
+	s3c2412_irq_rtc_chip.set_wake = s3c2412_irq_rtc_wake;
+
+	set_irq_chip(IRQ_RTC, &s3c2412_irq_rtc_chip);
 
 	return 0;
 }

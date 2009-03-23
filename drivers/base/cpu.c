@@ -14,22 +14,23 @@
 #include "base.h"
 
 struct sysdev_class cpu_sysdev_class = {
-	set_kset_name("cpu"),
+	.name = "cpu",
 };
 EXPORT_SYMBOL(cpu_sysdev_class);
 
-static struct sys_device *cpu_sys_devices[NR_CPUS];
+static DEFINE_PER_CPU(struct sys_device *, cpu_sys_devices);
 
 #ifdef CONFIG_HOTPLUG_CPU
-static ssize_t show_online(struct sys_device *dev, char *buf)
+static ssize_t show_online(struct sys_device *dev, struct sysdev_attribute *attr,
+			   char *buf)
 {
 	struct cpu *cpu = container_of(dev, struct cpu, sysdev);
 
 	return sprintf(buf, "%u\n", !!cpu_online(cpu->sysdev.id));
 }
 
-static ssize_t store_online(struct sys_device *dev, const char *buf,
-			    size_t count)
+static ssize_t __ref store_online(struct sys_device *dev, struct sysdev_attribute *attr,
+				 const char *buf, size_t count)
 {
 	struct cpu *cpu = container_of(dev, struct cpu, sysdev);
 	ssize_t ret;
@@ -55,7 +56,7 @@ static ssize_t store_online(struct sys_device *dev, const char *buf,
 }
 static SYSDEV_ATTR(online, 0644, show_online, store_online);
 
-static void __devinit register_cpu_control(struct cpu *cpu)
+static void __cpuinit register_cpu_control(struct cpu *cpu)
 {
 	sysdev_create_file(&cpu->sysdev, &attr_online);
 }
@@ -68,7 +69,7 @@ void unregister_cpu(struct cpu *cpu)
 	sysdev_remove_file(&cpu->sysdev, &attr_online);
 
 	sysdev_unregister(&cpu->sysdev);
-	cpu_sys_devices[logical_cpu] = NULL;
+	per_cpu(cpu_sys_devices, logical_cpu) = NULL;
 	return;
 }
 #else /* ... !CONFIG_HOTPLUG_CPU */
@@ -80,7 +81,8 @@ static inline void register_cpu_control(struct cpu *cpu)
 #ifdef CONFIG_KEXEC
 #include <linux/kexec.h>
 
-static ssize_t show_crash_notes(struct sys_device *dev, char *buf)
+static ssize_t show_crash_notes(struct sys_device *dev, struct sysdev_attribute *attr,
+				char *buf)
 {
 	struct cpu *cpu = container_of(dev, struct cpu, sysdev);
 	ssize_t rc;
@@ -103,6 +105,95 @@ static SYSDEV_ATTR(crash_notes, 0400, show_crash_notes, NULL);
 #endif
 
 /*
+ * Print cpu online, possible, present, and system maps
+ */
+static ssize_t print_cpus_map(char *buf, cpumask_t *map)
+{
+	int n = cpulist_scnprintf(buf, PAGE_SIZE-2, map);
+
+	buf[n++] = '\n';
+	buf[n] = '\0';
+	return n;
+}
+
+#define	print_cpus_func(type) \
+static ssize_t print_cpus_##type(struct sysdev_class *class, char *buf)	\
+{									\
+	return print_cpus_map(buf, &cpu_##type##_map);			\
+}									\
+static struct sysdev_class_attribute attr_##type##_map = 		\
+	_SYSDEV_CLASS_ATTR(type, 0444, print_cpus_##type, NULL)
+
+print_cpus_func(online);
+print_cpus_func(possible);
+print_cpus_func(present);
+
+/*
+ * Print values for NR_CPUS and offlined cpus
+ */
+static ssize_t print_cpus_kernel_max(struct sysdev_class *class, char *buf)
+{
+	int n = snprintf(buf, PAGE_SIZE-2, "%d\n", NR_CPUS - 1);
+	return n;
+}
+static SYSDEV_CLASS_ATTR(kernel_max, 0444, print_cpus_kernel_max, NULL);
+
+/* arch-optional setting to enable display of offline cpus >= nr_cpu_ids */
+unsigned int total_cpus;
+
+static ssize_t print_cpus_offline(struct sysdev_class *class, char *buf)
+{
+	int n = 0, len = PAGE_SIZE-2;
+	cpumask_var_t offline;
+
+	/* display offline cpus < nr_cpu_ids */
+	if (!alloc_cpumask_var(&offline, GFP_KERNEL))
+		return -ENOMEM;
+	cpumask_complement(offline, cpu_online_mask);
+	n = cpulist_scnprintf(buf, len, offline);
+	free_cpumask_var(offline);
+
+	/* display offline cpus >= nr_cpu_ids */
+	if (total_cpus && nr_cpu_ids < total_cpus) {
+		if (n && n < len)
+			buf[n++] = ',';
+
+		if (nr_cpu_ids == total_cpus-1)
+			n += snprintf(&buf[n], len - n, "%d", nr_cpu_ids);
+		else
+			n += snprintf(&buf[n], len - n, "%d-%d",
+						      nr_cpu_ids, total_cpus-1);
+	}
+
+	n += snprintf(&buf[n], len - n, "\n");
+	return n;
+}
+static SYSDEV_CLASS_ATTR(offline, 0444, print_cpus_offline, NULL);
+
+static struct sysdev_class_attribute *cpu_state_attr[] = {
+	&attr_online_map,
+	&attr_possible_map,
+	&attr_present_map,
+	&attr_kernel_max,
+	&attr_offline,
+};
+
+static int cpu_states_init(void)
+{
+	int i;
+	int err = 0;
+
+	for (i = 0;  i < ARRAY_SIZE(cpu_state_attr); i++) {
+		int ret;
+		ret = sysdev_class_create_file(&cpu_sysdev_class,
+						cpu_state_attr[i]);
+		if (!err)
+			err = ret;
+	}
+	return err;
+}
+
+/*
  * register_cpu - Setup a sysfs device for a CPU.
  * @cpu - cpu->hotpluggable field set to 1 will generate a control file in
  *	  sysfs for this CPU.
@@ -110,7 +201,7 @@ static SYSDEV_ATTR(crash_notes, 0400, show_crash_notes, NULL);
  *
  * Initialize and register the CPU device.
  */
-int __devinit register_cpu(struct cpu *cpu, int num)
+int __cpuinit register_cpu(struct cpu *cpu, int num)
 {
 	int error;
 	cpu->node_id = cpu_to_node(num);
@@ -122,7 +213,7 @@ int __devinit register_cpu(struct cpu *cpu, int num)
 	if (!error && cpu->hotpluggable)
 		register_cpu_control(cpu);
 	if (!error)
-		cpu_sys_devices[num] = &cpu->sysdev;
+		per_cpu(cpu_sys_devices, num) = &cpu->sysdev;
 	if (!error)
 		register_cpu_under_node(num, cpu_to_node(num));
 
@@ -135,8 +226,8 @@ int __devinit register_cpu(struct cpu *cpu, int num)
 
 struct sys_device *get_cpu_sysdev(unsigned cpu)
 {
-	if (cpu < NR_CPUS)
-		return cpu_sys_devices[cpu];
+	if (cpu < nr_cpu_ids && cpu_possible(cpu))
+		return per_cpu(cpu_sys_devices, cpu);
 	else
 		return NULL;
 }
@@ -147,6 +238,9 @@ int __init cpu_dev_init(void)
 	int err;
 
 	err = sysdev_class_register(&cpu_sysdev_class);
+	if (!err)
+		err = cpu_states_init();
+
 #if defined(CONFIG_SCHED_MC) || defined(CONFIG_SCHED_SMT)
 	if (!err)
 		err = sched_create_sysfs_power_savings_entries(&cpu_sysdev_class);

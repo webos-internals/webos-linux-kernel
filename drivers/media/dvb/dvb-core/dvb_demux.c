@@ -368,7 +368,7 @@ static inline void dvb_dmx_swfilter_packet_type(struct dvb_demux_feed *feed,
 #define DVR_FEED(f)							\
 	(((f)->type == DMX_TYPE_TS) &&					\
 	((f)->feed.ts.is_filtering) &&					\
-	(((f)->ts_type & (TS_PACKET|TS_PAYLOAD_ONLY)) == TS_PACKET))
+	(((f)->ts_type & (TS_PACKET | TS_DEMUX)) == TS_PACKET))
 
 static void dvb_dmx_swfilter_packet(struct dvb_demux *demux, const u8 *buf)
 {
@@ -553,7 +553,7 @@ static void dvb_demux_feed_add(struct dvb_demux_feed *feed)
 	spin_lock_irq(&feed->demux->lock);
 	if (dvb_demux_feed_find(feed)) {
 		printk(KERN_ERR "%s: feed already in list (type=%x state=%x pid=%x)\n",
-		       __FUNCTION__, feed->type, feed->state, feed->pid);
+		       __func__, feed->type, feed->state, feed->pid);
 		goto out;
 	}
 
@@ -567,7 +567,7 @@ static void dvb_demux_feed_del(struct dvb_demux_feed *feed)
 	spin_lock_irq(&feed->demux->lock);
 	if (!(dvb_demux_feed_find(feed))) {
 		printk(KERN_ERR "%s: feed not in list (type=%x state=%x pid=%x)\n",
-		       __FUNCTION__, feed->type, feed->state, feed->pid);
+		       __func__, feed->type, feed->state, feed->pid);
 		goto out;
 	}
 
@@ -1056,16 +1056,27 @@ static int dvbdmx_close(struct dmx_demux *demux)
 	return 0;
 }
 
-static int dvbdmx_write(struct dmx_demux *demux, const char *buf, size_t count)
+static int dvbdmx_write(struct dmx_demux *demux, const char __user *buf, size_t count)
 {
 	struct dvb_demux *dvbdemux = (struct dvb_demux *)demux;
+	void *p;
 
 	if ((!demux->frontend) || (demux->frontend->source != DMX_MEMORY_FE))
 		return -EINVAL;
 
-	if (mutex_lock_interruptible(&dvbdemux->mutex))
+	p = kmalloc(count, GFP_USER);
+	if (!p)
+		return -ENOMEM;
+	if (copy_from_user(p, buf, count)) {
+		kfree(p);
+		return -EFAULT;
+	}
+	if (mutex_lock_interruptible(&dvbdemux->mutex)) {
+		kfree(p);
 		return -ERESTARTSYS;
-	dvb_dmx_swfilter(dvbdemux, (u8 *)buf, count);
+	}
+	dvb_dmx_swfilter(dvbdemux, p, count);
+	kfree(p);
 	mutex_unlock(&dvbdemux->mutex);
 
 	if (signal_pending(current))

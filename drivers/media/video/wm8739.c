@@ -27,23 +27,21 @@
 #include <asm/uaccess.h>
 #include <linux/i2c.h>
 #include <linux/i2c-id.h>
-#include <linux/videodev.h>
-#include <media/v4l2-common.h>
+#include <linux/videodev2.h>
+#include <media/v4l2-device.h>
 #include <media/v4l2-chip-ident.h>
+#include <media/v4l2-i2c-drv.h>
 
 MODULE_DESCRIPTION("wm8739 driver");
 MODULE_AUTHOR("T. Adachi, Hans Verkuil");
 MODULE_LICENSE("GPL");
 
-static int debug = 0;
-static unsigned short normal_i2c[] = { 0x34 >> 1, 0x36 >> 1, I2C_CLIENT_END };
+static int debug;
 
 module_param(debug, int, 0644);
 
 MODULE_PARM_DESC(debug, "Debug level (0-1)");
 
-
-I2C_CLIENT_INSMOD;
 
 /* ------------------------------------------------------------------------ */
 
@@ -54,6 +52,7 @@ enum {
 };
 
 struct wm8739_state {
+	struct v4l2_subdev sd;
 	u32 clock_freq;
 	u8 muted;
 	u16 volume;
@@ -62,45 +61,49 @@ struct wm8739_state {
 	u8 vol_r; 		/* +12dB to -34.5dB 1.5dB step (5bit) def:0dB */
 };
 
+static inline struct wm8739_state *to_state(struct v4l2_subdev *sd)
+{
+	return container_of(sd, struct wm8739_state, sd);
+}
+
 /* ------------------------------------------------------------------------ */
 
-static int wm8739_write(struct i2c_client *client, int reg, u16 val)
+static int wm8739_write(struct v4l2_subdev *sd, int reg, u16 val)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int i;
 
 	if (reg < 0 || reg >= TOT_REGS) {
-		v4l_err(client, "Invalid register R%d\n", reg);
+		v4l2_err(sd, "Invalid register R%d\n", reg);
 		return -1;
 	}
 
-	v4l_dbg(1, debug, client, "write: %02x %02x\n", reg, val);
+	v4l2_dbg(1, debug, sd, "write: %02x %02x\n", reg, val);
 
-	for (i = 0; i < 3; i++) {
-		if (i2c_smbus_write_byte_data(client, (reg << 1) |
-					(val >> 8), val & 0xff) == 0) {
+	for (i = 0; i < 3; i++)
+		if (i2c_smbus_write_byte_data(client,
+				(reg << 1) | (val >> 8), val & 0xff) == 0)
 			return 0;
-		}
-	}
-	v4l_err(client, "I2C: cannot write %03x to register R%d\n", val, reg);
+	v4l2_err(sd, "I2C: cannot write %03x to register R%d\n", val, reg);
 	return -1;
 }
 
 /* write regs to set audio volume etc */
-static void wm8739_set_audio(struct i2c_client *client)
+static void wm8739_set_audio(struct v4l2_subdev *sd)
 {
-	struct wm8739_state *state = i2c_get_clientdata(client);
+	struct wm8739_state *state = to_state(sd);
 	u16 mute = state->muted ? 0x80 : 0;
 
 	/* Volume setting: bits 0-4, 0x1f = 12 dB, 0x00 = -34.5 dB
 	 * Default setting: 0x17 = 0 dB
 	 */
-	wm8739_write(client, R0, (state->vol_l & 0x1f) | mute);
-	wm8739_write(client, R1, (state->vol_r & 0x1f) | mute);
+	wm8739_write(sd, R0, (state->vol_l & 0x1f) | mute);
+	wm8739_write(sd, R1, (state->vol_r & 0x1f) | mute);
 }
 
-static int wm8739_get_ctrl(struct i2c_client *client, struct v4l2_control *ctrl)
+static int wm8739_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
-	struct wm8739_state *state = i2c_get_clientdata(client);
+	struct wm8739_state *state = to_state(sd);
 
 	switch (ctrl->id) {
 	case V4L2_CID_AUDIO_MUTE:
@@ -121,9 +124,9 @@ static int wm8739_get_ctrl(struct i2c_client *client, struct v4l2_control *ctrl)
 	return 0;
 }
 
-static int wm8739_set_ctrl(struct i2c_client *client, struct v4l2_control *ctrl)
+static int wm8739_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
-	struct wm8739_state *state = i2c_get_clientdata(client);
+	struct wm8739_state *state = to_state(sd);
 	unsigned int work_l, work_r;
 
 	switch (ctrl->id) {
@@ -151,7 +154,7 @@ static int wm8739_set_ctrl(struct i2c_client *client, struct v4l2_control *ctrl)
 	state->vol_r = (long)work_r * 31 / 65535;
 
 	/* set audio volume etc. */
-	wm8739_set_audio(client);
+	wm8739_set_audio(sd);
 	return 0;
 }
 
@@ -167,7 +170,7 @@ static struct v4l2_queryctrl wm8739_qctrl[] = {
 		.default_value = 58880,
 		.flags         = 0,
 		.type          = V4L2_CTRL_TYPE_INTEGER,
-	},{
+	}, {
 		.id            = V4L2_CID_AUDIO_MUTE,
 		.name          = "Mute",
 		.minimum       = 0,
@@ -176,7 +179,7 @@ static struct v4l2_queryctrl wm8739_qctrl[] = {
 		.default_value = 1,
 		.flags         = 0,
 		.type          = V4L2_CTRL_TYPE_BOOLEAN,
-	},{
+	}, {
 		.id            = V4L2_CID_AUDIO_BALANCE,
 		.name          = "Balance",
 		.minimum       = 0,
@@ -190,102 +193,111 @@ static struct v4l2_queryctrl wm8739_qctrl[] = {
 
 /* ------------------------------------------------------------------------ */
 
-static int wm8739_command(struct i2c_client *client, unsigned int cmd, void *arg)
+static int wm8739_s_clock_freq(struct v4l2_subdev *sd, u32 audiofreq)
 {
-	struct wm8739_state *state = i2c_get_clientdata(client);
+	struct wm8739_state *state = to_state(sd);
 
-	switch (cmd) {
-	case VIDIOC_INT_AUDIO_CLOCK_FREQ:
-	{
-		u32 audiofreq = *(u32 *)arg;
-
-		state->clock_freq = audiofreq;
-		wm8739_write(client, R9, 0x000);	/* de-activate */
-		switch (audiofreq) {
-		case 44100:
-			wm8739_write(client, R8, 0x020); /* 256fps, fs=44.1k     */
-			break;
-		case 48000:
-			wm8739_write(client, R8, 0x000); /* 256fps, fs=48k       */
-			break;
-		case 32000:
-			wm8739_write(client, R8, 0x018); /* 256fps, fs=32k       */
-			break;
-		default:
-			break;
-		}
-		wm8739_write(client, R9, 0x001);	/* activate */
+	state->clock_freq = audiofreq;
+	/* de-activate */
+	wm8739_write(sd, R9, 0x000);
+	switch (audiofreq) {
+	case 44100:
+		/* 256fps, fs=44.1k */
+		wm8739_write(sd, R8, 0x020);
 		break;
-	}
-
-	case VIDIOC_G_CTRL:
-		return wm8739_get_ctrl(client, arg);
-
-	case VIDIOC_S_CTRL:
-		return wm8739_set_ctrl(client, arg);
-
-	case VIDIOC_QUERYCTRL:
-	{
-		struct v4l2_queryctrl *qc = arg;
-		int i;
-
-		for (i = 0; i < ARRAY_SIZE(wm8739_qctrl); i++)
-			if (qc->id && qc->id == wm8739_qctrl[i].id) {
-				memcpy(qc, &wm8739_qctrl[i], sizeof(*qc));
-				return 0;
-			}
-		return -EINVAL;
-	}
-
-	case VIDIOC_G_CHIP_IDENT:
-		return v4l2_chip_ident_i2c_client(client, arg, V4L2_IDENT_WM8739, 0);
-
-	case VIDIOC_LOG_STATUS:
-		v4l_info(client, "Frequency: %u Hz\n", state->clock_freq);
-		v4l_info(client, "Volume L:  %02x%s\n", state->vol_l & 0x1f,
-				state->muted ? " (muted)" : "");
-		v4l_info(client, "Volume R:  %02x%s\n", state->vol_r & 0x1f,
-				state->muted ? " (muted)" : "");
+	case 48000:
+		/* 256fps, fs=48k */
+		wm8739_write(sd, R8, 0x000);
 		break;
-
+	case 32000:
+		/* 256fps, fs=32k */
+		wm8739_write(sd, R8, 0x018);
+		break;
 	default:
-		return -EINVAL;
+		break;
 	}
-
+	/* activate */
+	wm8739_write(sd, R9, 0x001);
 	return 0;
 }
+
+static int wm8739_queryctrl(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(wm8739_qctrl); i++)
+		if (qc->id && qc->id == wm8739_qctrl[i].id) {
+			memcpy(qc, &wm8739_qctrl[i], sizeof(*qc));
+			return 0;
+		}
+	return -EINVAL;
+}
+
+static int wm8739_g_chip_ident(struct v4l2_subdev *sd, struct v4l2_dbg_chip_ident *chip)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
+	return v4l2_chip_ident_i2c_client(client, chip, V4L2_IDENT_WM8739, 0);
+}
+
+static int wm8739_log_status(struct v4l2_subdev *sd)
+{
+	struct wm8739_state *state = to_state(sd);
+
+	v4l2_info(sd, "Frequency: %u Hz\n", state->clock_freq);
+	v4l2_info(sd, "Volume L:  %02x%s\n", state->vol_l & 0x1f,
+			state->muted ? " (muted)" : "");
+	v4l2_info(sd, "Volume R:  %02x%s\n", state->vol_r & 0x1f,
+			state->muted ? " (muted)" : "");
+	return 0;
+}
+
+static int wm8739_command(struct i2c_client *client, unsigned cmd, void *arg)
+{
+	return v4l2_subdev_command(i2c_get_clientdata(client), cmd, arg);
+}
+
+/* ----------------------------------------------------------------------- */
+
+static const struct v4l2_subdev_core_ops wm8739_core_ops = {
+	.log_status = wm8739_log_status,
+	.g_chip_ident = wm8739_g_chip_ident,
+	.queryctrl = wm8739_queryctrl,
+	.g_ctrl = wm8739_g_ctrl,
+	.s_ctrl = wm8739_s_ctrl,
+};
+
+static const struct v4l2_subdev_audio_ops wm8739_audio_ops = {
+	.s_clock_freq = wm8739_s_clock_freq,
+};
+
+static const struct v4l2_subdev_ops wm8739_ops = {
+	.core = &wm8739_core_ops,
+	.audio = &wm8739_audio_ops,
+};
 
 /* ------------------------------------------------------------------------ */
 
 /* i2c implementation */
 
-static struct i2c_driver i2c_driver;
-
-static int wm8739_attach(struct i2c_adapter *adapter, int address, int kind)
+static int wm8739_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
-	struct i2c_client *client;
 	struct wm8739_state *state;
+	struct v4l2_subdev *sd;
 
 	/* Check if the adapter supports the needed features */
-	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return 0;
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
+		return -EIO;
 
-	client = kzalloc(sizeof(struct i2c_client), GFP_KERNEL);
-	if (client == NULL)
-		return -ENOMEM;
-
-	client->addr = address;
-	client->adapter = adapter;
-	client->driver = &i2c_driver;
-	snprintf(client->name, sizeof(client->name) - 1, "wm8739");
-
-	v4l_info(client, "chip found @ 0x%x (%s)\n", address << 1, adapter->name);
+	v4l_info(client, "chip found @ 0x%x (%s)\n",
+			client->addr << 1, client->adapter->name);
 
 	state = kmalloc(sizeof(struct wm8739_state), GFP_KERNEL);
-	if (state == NULL) {
-		kfree(client);
+	if (state == NULL)
 		return -ENOMEM;
-	}
+	sd = &state->sd;
+	v4l2_i2c_subdev_init(sd, client, &wm8739_ops);
 	state->vol_l = 0x17; /* 0dB */
 	state->vol_r = 0x17; /* 0dB */
 	state->muted = 0;
@@ -293,69 +305,47 @@ static int wm8739_attach(struct i2c_adapter *adapter, int address, int kind)
 	/* normalize (12dB(31) to -34.5dB(0) [0dB(23)] -> 65535 to 0) */
 	state->volume = ((long)state->vol_l + 1) * 65535 / 31;
 	state->clock_freq = 48000;
-	i2c_set_clientdata(client, state);
 
-	/* initialize wm8739 */
-	wm8739_write(client, R15, 0x00); /* reset */
-	wm8739_write(client, R5, 0x000); /* filter setting, high path, offet clear */
-	wm8739_write(client, R6, 0x000); /* ADC, OSC, Power Off mode Disable */
-	wm8739_write(client, R7, 0x049); /* Digital Audio interface format */
-					 /* Enable Master mode */
-					 /* 24 bit, MSB first/left justified */
-	wm8739_write(client, R8, 0x000); /* sampling control */
-					 /* normal, 256fs, 48KHz sampling rate */
-	wm8739_write(client, R9, 0x001); /* activate */
-	wm8739_set_audio(client); 	 /* set volume/mute */
+	/* Initialize wm8739 */
 
-	i2c_attach_client(client);
-
+	/* reset */
+	wm8739_write(sd, R15, 0x00);
+	/* filter setting, high path, offet clear */
+	wm8739_write(sd, R5, 0x000);
+	/* ADC, OSC, Power Off mode Disable */
+	wm8739_write(sd, R6, 0x000);
+	/* Digital Audio interface format:
+	   Enable Master mode, 24 bit, MSB first/left justified */
+	wm8739_write(sd, R7, 0x049);
+	/* sampling control: normal, 256fs, 48KHz sampling rate */
+	wm8739_write(sd, R8, 0x000);
+	/* activate */
+	wm8739_write(sd, R9, 0x001);
+	/* set volume/mute */
+	wm8739_set_audio(sd);
 	return 0;
 }
 
-static int wm8739_probe(struct i2c_adapter *adapter)
+static int wm8739_remove(struct i2c_client *client)
 {
-	if (adapter->class & I2C_CLASS_TV_ANALOG)
-		return i2c_probe(adapter, &addr_data, wm8739_attach);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+
+	v4l2_device_unregister_subdev(sd);
+	kfree(to_state(sd));
 	return 0;
 }
 
-static int wm8739_detach(struct i2c_client *client)
-{
-	struct wm8739_state *state = i2c_get_clientdata(client);
-	int err;
-
-	err = i2c_detach_client(client);
-	if (err)
-		return err;
-
-	kfree(state);
-	kfree(client);
-	return 0;
-}
-
-/* ----------------------------------------------------------------------- */
-
-/* i2c implementation */
-static struct i2c_driver i2c_driver = {
-	.driver = {
-		.name = "wm8739",
-	},
-	.id = I2C_DRIVERID_WM8739,
-	.attach_adapter = wm8739_probe,
-	.detach_client  = wm8739_detach,
-	.command = wm8739_command,
+static const struct i2c_device_id wm8739_id[] = {
+	{ "wm8739", 0 },
+	{ }
 };
+MODULE_DEVICE_TABLE(i2c, wm8739_id);
 
-
-static int __init wm8739_init_module(void)
-{
-	return i2c_add_driver(&i2c_driver);
-}
-
-static void __exit wm8739_cleanup_module(void)
-{
-	i2c_del_driver(&i2c_driver);
-}
-
-module_init(wm8739_init_module);
-module_exit(wm8739_cleanup_module);
+static struct v4l2_i2c_driver_data v4l2_i2c_data = {
+	.name = "wm8739",
+	.driverid = I2C_DRIVERID_WM8739,
+	.command = wm8739_command,
+	.probe = wm8739_probe,
+	.remove = wm8739_remove,
+	.id_table = wm8739_id,
+};

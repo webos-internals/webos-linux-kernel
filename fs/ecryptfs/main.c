@@ -30,7 +30,6 @@
 #include <linux/namei.h>
 #include <linux/skbuff.h>
 #include <linux/crypto.h>
-#include <linux/netlink.h>
 #include <linux/mount.h>
 #include <linux/pagemap.h>
 #include <linux/key.h>
@@ -49,8 +48,7 @@ MODULE_PARM_DESC(ecryptfs_verbosity,
 		 "0, which is Quiet)");
 
 /**
- * Module parameter that defines the number of netlink message buffer
- * elements
+ * Module parameter that defines the number of message buffer elements
  */
 unsigned int ecryptfs_message_buf_len = ECRYPTFS_DEFAULT_MSG_CTX_ELEMS;
 
@@ -60,9 +58,9 @@ MODULE_PARM_DESC(ecryptfs_message_buf_len,
 
 /**
  * Module parameter that defines the maximum guaranteed amount of time to wait
- * for a response through netlink.  The actual sleep time will be, more than
+ * for a response from ecryptfsd.  The actual sleep time will be, more than
  * likely, a small amount greater than this specified value, but only less if
- * the netlink message successfully arrives.
+ * the message successfully arrives.
  */
 signed long ecryptfs_message_wait_timeout = ECRYPTFS_MAX_MSG_CTX_TTL / HZ;
 
@@ -82,8 +80,6 @@ unsigned int ecryptfs_number_of_users = ECRYPTFS_DEFAULT_NUM_USERS;
 module_param(ecryptfs_number_of_users, uint, 0);
 MODULE_PARM_DESC(ecryptfs_number_of_users, "An estimate of the number of "
 		 "concurrent users of eCryptfs");
-
-unsigned int ecryptfs_transport = ECRYPTFS_DEFAULT_TRANSPORT;
 
 void __ecryptfs_printk(const char *fmt, ...)
 {
@@ -119,6 +115,7 @@ void __ecryptfs_printk(const char *fmt, ...)
  */
 int ecryptfs_init_persistent_file(struct dentry *ecryptfs_dentry)
 {
+	const struct cred *cred = current_cred();
 	struct ecryptfs_inode_info *inode_info =
 		ecryptfs_inode_to_private(ecryptfs_dentry->d_inode);
 	int rc = 0;
@@ -130,26 +127,12 @@ int ecryptfs_init_persistent_file(struct dentry *ecryptfs_dentry)
 			ecryptfs_dentry_to_lower_mnt(ecryptfs_dentry);
 
 		lower_dentry = ecryptfs_dentry_to_lower(ecryptfs_dentry);
-		/* Corresponding dput() and mntput() are done when the
-		 * persistent file is fput() when the eCryptfs inode
-		 * is destroyed. */
-		dget(lower_dentry);
-		mntget(lower_mnt);
-		inode_info->lower_file = dentry_open(lower_dentry,
-						     lower_mnt,
-						     (O_RDWR | O_LARGEFILE));
-		if (IS_ERR(inode_info->lower_file)) {
-			dget(lower_dentry);
-			mntget(lower_mnt);
-			inode_info->lower_file = dentry_open(lower_dentry,
-							     lower_mnt,
-							     (O_RDONLY
-							      | O_LARGEFILE));
-		}
-		if (IS_ERR(inode_info->lower_file)) {
+		rc = ecryptfs_privileged_open(&inode_info->lower_file,
+					      lower_dentry, lower_mnt, cred);
+		if (rc || IS_ERR(inode_info->lower_file)) {
 			printk(KERN_ERR "Error opening lower persistent file "
-			       "for lower_dentry [0x%p] and lower_mnt [0x%p]\n",
-			       lower_dentry, lower_mnt);
+			       "for lower_dentry [0x%p] and lower_mnt [0x%p]; "
+			       "rc = [%d]\n", lower_dentry, lower_mnt, rc);
 			rc = PTR_ERR(inode_info->lower_file);
 			inode_info->lower_file = NULL;
 		}
@@ -163,14 +146,14 @@ int ecryptfs_init_persistent_file(struct dentry *ecryptfs_dentry)
  * @lower_dentry: Existing dentry in the lower filesystem
  * @dentry: ecryptfs' dentry
  * @sb: ecryptfs's super_block
- * @flag: If set to true, then d_add is called, else d_instantiate is called
+ * @flags: flags to govern behavior of interpose procedure
  *
  * Interposes upper and lower dentries.
  *
  * Returns zero on success; non-zero otherwise
  */
 int ecryptfs_interpose(struct dentry *lower_dentry, struct dentry *dentry,
-		       struct super_block *sb, int flag)
+		       struct super_block *sb, u32 flags)
 {
 	struct inode *lower_inode;
 	struct inode *inode;
@@ -207,7 +190,7 @@ int ecryptfs_interpose(struct dentry *lower_dentry, struct dentry *dentry,
 		init_special_inode(inode, lower_inode->i_mode,
 				   lower_inode->i_rdev);
 	dentry->d_op = &ecryptfs_dops;
-	if (flag)
+	if (flags & ECRYPTFS_INTERPOSE_FLAG_D_ADD)
 		d_add(dentry, inode);
 	else
 		d_instantiate(dentry, inode);
@@ -215,34 +198,30 @@ int ecryptfs_interpose(struct dentry *lower_dentry, struct dentry *dentry,
 	/* This size will be overwritten for real files w/ headers and
 	 * other metadata */
 	fsstack_copy_inode_size(inode, lower_inode);
-	rc = ecryptfs_init_persistent_file(dentry);
-	if (rc) {
-		printk(KERN_ERR "%s: Error attempting to initialize the "
-		       "persistent file for the dentry with name [%s]; "
-		       "rc = [%d]\n", __FUNCTION__, dentry->d_name.name, rc);
-		goto out;
-	}
 out:
 	return rc;
 }
 
-enum { ecryptfs_opt_sig, ecryptfs_opt_ecryptfs_sig, ecryptfs_opt_debug,
-       ecryptfs_opt_ecryptfs_debug, ecryptfs_opt_cipher,
-       ecryptfs_opt_ecryptfs_cipher, ecryptfs_opt_ecryptfs_key_bytes,
+enum { ecryptfs_opt_sig, ecryptfs_opt_ecryptfs_sig,
+       ecryptfs_opt_cipher, ecryptfs_opt_ecryptfs_cipher,
+       ecryptfs_opt_ecryptfs_key_bytes,
        ecryptfs_opt_passthrough, ecryptfs_opt_xattr_metadata,
-       ecryptfs_opt_encrypted_view, ecryptfs_opt_err };
+       ecryptfs_opt_encrypted_view, ecryptfs_opt_fnek_sig,
+       ecryptfs_opt_fn_cipher, ecryptfs_opt_fn_cipher_key_bytes,
+       ecryptfs_opt_err };
 
-static match_table_t tokens = {
+static const match_table_t tokens = {
 	{ecryptfs_opt_sig, "sig=%s"},
 	{ecryptfs_opt_ecryptfs_sig, "ecryptfs_sig=%s"},
-	{ecryptfs_opt_debug, "debug=%u"},
-	{ecryptfs_opt_ecryptfs_debug, "ecryptfs_debug=%u"},
 	{ecryptfs_opt_cipher, "cipher=%s"},
 	{ecryptfs_opt_ecryptfs_cipher, "ecryptfs_cipher=%s"},
 	{ecryptfs_opt_ecryptfs_key_bytes, "ecryptfs_key_bytes=%u"},
 	{ecryptfs_opt_passthrough, "ecryptfs_passthrough"},
 	{ecryptfs_opt_xattr_metadata, "ecryptfs_xattr_metadata"},
 	{ecryptfs_opt_encrypted_view, "ecryptfs_encrypted_view"},
+	{ecryptfs_opt_fnek_sig, "ecryptfs_fnek_sig=%s"},
+	{ecryptfs_opt_fn_cipher, "ecryptfs_fn_cipher=%s"},
+	{ecryptfs_opt_fn_cipher_key_bytes, "ecryptfs_fn_key_bytes=%u"},
 	{ecryptfs_opt_err, NULL}
 };
 
@@ -264,10 +243,11 @@ static int ecryptfs_init_global_auth_toks(
 			       "session keyring for sig specified in mount "
 			       "option: [%s]\n", global_auth_tok->sig);
 			global_auth_tok->flags |= ECRYPTFS_AUTH_TOK_INVALID;
-			rc = 0;
+			goto out;
 		} else
 			global_auth_tok->flags &= ~ECRYPTFS_AUTH_TOK_INVALID;
 	}
+out:
 	return rc;
 }
 
@@ -306,18 +286,24 @@ static int ecryptfs_parse_options(struct super_block *sb, char *options)
 	int rc = 0;
 	int sig_set = 0;
 	int cipher_name_set = 0;
+	int fn_cipher_name_set = 0;
 	int cipher_key_bytes;
 	int cipher_key_bytes_set = 0;
+	int fn_cipher_key_bytes;
+	int fn_cipher_key_bytes_set = 0;
 	struct ecryptfs_mount_crypt_stat *mount_crypt_stat =
 		&ecryptfs_superblock_to_private(sb)->mount_crypt_stat;
 	substring_t args[MAX_OPT_ARGS];
 	int token;
 	char *sig_src;
-	char *debug_src;
 	char *cipher_name_dst;
 	char *cipher_name_src;
+	char *fn_cipher_name_dst;
+	char *fn_cipher_name_src;
+	char *fnek_dst;
+	char *fnek_src;
 	char *cipher_key_bytes_src;
-	int cipher_name_len;
+	char *fn_cipher_key_bytes_src;
 
 	if (!options) {
 		rc = -EINVAL;
@@ -333,23 +319,13 @@ static int ecryptfs_parse_options(struct super_block *sb, char *options)
 		case ecryptfs_opt_ecryptfs_sig:
 			sig_src = args[0].from;
 			rc = ecryptfs_add_global_auth_tok(mount_crypt_stat,
-							  sig_src);
+							  sig_src, 0);
 			if (rc) {
 				printk(KERN_ERR "Error attempting to register "
 				       "global sig; rc = [%d]\n", rc);
 				goto out;
 			}
 			sig_set = 1;
-			break;
-		case ecryptfs_opt_debug:
-		case ecryptfs_opt_ecryptfs_debug:
-			debug_src = args[0].from;
-			ecryptfs_verbosity =
-				(int)simple_strtol(debug_src, &debug_src,
-						   0);
-			ecryptfs_printk(KERN_DEBUG,
-					"Verbosity set to [%d]" "\n",
-					ecryptfs_verbosity);
 			break;
 		case ecryptfs_opt_cipher:
 		case ecryptfs_opt_ecryptfs_cipher:
@@ -359,10 +335,7 @@ static int ecryptfs_parse_options(struct super_block *sb, char *options)
 				global_default_cipher_name;
 			strncpy(cipher_name_dst, cipher_name_src,
 				ECRYPTFS_MAX_CIPHER_NAME_SIZE);
-			ecryptfs_printk(KERN_DEBUG,
-					"The mount_crypt_stat "
-					"global_default_cipher_name set to: "
-					"[%s]\n", cipher_name_dst);
+			cipher_name_dst[ECRYPTFS_MAX_CIPHER_NAME_SIZE] = '\0';
 			cipher_name_set = 1;
 			break;
 		case ecryptfs_opt_ecryptfs_key_bytes:
@@ -372,11 +345,6 @@ static int ecryptfs_parse_options(struct super_block *sb, char *options)
 						   &cipher_key_bytes_src, 0);
 			mount_crypt_stat->global_default_cipher_key_size =
 				cipher_key_bytes;
-			ecryptfs_printk(KERN_DEBUG,
-					"The mount_crypt_stat "
-					"global_default_cipher_key_size "
-					"set to: [%d]\n", mount_crypt_stat->
-					global_default_cipher_key_size);
 			cipher_key_bytes_set = 1;
 			break;
 		case ecryptfs_opt_passthrough:
@@ -393,11 +361,52 @@ static int ecryptfs_parse_options(struct super_block *sb, char *options)
 			mount_crypt_stat->flags |=
 				ECRYPTFS_ENCRYPTED_VIEW_ENABLED;
 			break;
+		case ecryptfs_opt_fnek_sig:
+			fnek_src = args[0].from;
+			fnek_dst =
+				mount_crypt_stat->global_default_fnek_sig;
+			strncpy(fnek_dst, fnek_src, ECRYPTFS_SIG_SIZE_HEX);
+			mount_crypt_stat->global_default_fnek_sig[
+				ECRYPTFS_SIG_SIZE_HEX] = '\0';
+			rc = ecryptfs_add_global_auth_tok(
+				mount_crypt_stat,
+				mount_crypt_stat->global_default_fnek_sig,
+				ECRYPTFS_AUTH_TOK_FNEK);
+			if (rc) {
+				printk(KERN_ERR "Error attempting to register "
+				       "global fnek sig [%s]; rc = [%d]\n",
+				       mount_crypt_stat->global_default_fnek_sig,
+				       rc);
+				goto out;
+			}
+			mount_crypt_stat->flags |=
+				(ECRYPTFS_GLOBAL_ENCRYPT_FILENAMES
+				 | ECRYPTFS_GLOBAL_ENCFN_USE_MOUNT_FNEK);
+			break;
+		case ecryptfs_opt_fn_cipher:
+			fn_cipher_name_src = args[0].from;
+			fn_cipher_name_dst =
+				mount_crypt_stat->global_default_fn_cipher_name;
+			strncpy(fn_cipher_name_dst, fn_cipher_name_src,
+				ECRYPTFS_MAX_CIPHER_NAME_SIZE);
+			mount_crypt_stat->global_default_fn_cipher_name[
+				ECRYPTFS_MAX_CIPHER_NAME_SIZE] = '\0';
+			fn_cipher_name_set = 1;
+			break;
+		case ecryptfs_opt_fn_cipher_key_bytes:
+			fn_cipher_key_bytes_src = args[0].from;
+			fn_cipher_key_bytes =
+				(int)simple_strtol(fn_cipher_key_bytes_src,
+						   &fn_cipher_key_bytes_src, 0);
+			mount_crypt_stat->global_default_fn_cipher_key_bytes =
+				fn_cipher_key_bytes;
+			fn_cipher_key_bytes_set = 1;
+			break;
 		case ecryptfs_opt_err:
 		default:
-			ecryptfs_printk(KERN_WARNING,
-					"eCryptfs: unrecognized option '%s'\n",
-					p);
+			printk(KERN_WARNING
+			       "%s: eCryptfs: unrecognized option [%s]\n",
+			       __func__, p);
 		}
 	}
 	if (!sig_set) {
@@ -408,38 +417,63 @@ static int ecryptfs_parse_options(struct super_block *sb, char *options)
 		goto out;
 	}
 	if (!cipher_name_set) {
-		cipher_name_len = strlen(ECRYPTFS_DEFAULT_CIPHER);
-		if (unlikely(cipher_name_len
-			     >= ECRYPTFS_MAX_CIPHER_NAME_SIZE)) {
+		int cipher_name_len = strlen(ECRYPTFS_DEFAULT_CIPHER);
+
+		BUG_ON(cipher_name_len >= ECRYPTFS_MAX_CIPHER_NAME_SIZE);
+		strcpy(mount_crypt_stat->global_default_cipher_name,
+		       ECRYPTFS_DEFAULT_CIPHER);
+	}
+	if ((mount_crypt_stat->flags & ECRYPTFS_GLOBAL_ENCRYPT_FILENAMES)
+	    && !fn_cipher_name_set)
+		strcpy(mount_crypt_stat->global_default_fn_cipher_name,
+		       mount_crypt_stat->global_default_cipher_name);
+	if (!cipher_key_bytes_set)
+		mount_crypt_stat->global_default_cipher_key_size = 0;
+	if ((mount_crypt_stat->flags & ECRYPTFS_GLOBAL_ENCRYPT_FILENAMES)
+	    && !fn_cipher_key_bytes_set)
+		mount_crypt_stat->global_default_fn_cipher_key_bytes =
+			mount_crypt_stat->global_default_cipher_key_size;
+	mutex_lock(&key_tfm_list_mutex);
+	if (!ecryptfs_tfm_exists(mount_crypt_stat->global_default_cipher_name,
+				 NULL)) {
+		rc = ecryptfs_add_new_key_tfm(
+			NULL, mount_crypt_stat->global_default_cipher_name,
+			mount_crypt_stat->global_default_cipher_key_size);
+		if (rc) {
+			printk(KERN_ERR "Error attempting to initialize "
+			       "cipher with name = [%s] and key size = [%td]; "
+			       "rc = [%d]\n",
+			       mount_crypt_stat->global_default_cipher_name,
+			       mount_crypt_stat->global_default_cipher_key_size,
+			       rc);
 			rc = -EINVAL;
-			BUG();
+			mutex_unlock(&key_tfm_list_mutex);
 			goto out;
 		}
-		memcpy(mount_crypt_stat->global_default_cipher_name,
-		       ECRYPTFS_DEFAULT_CIPHER, cipher_name_len);
-		mount_crypt_stat->global_default_cipher_name[cipher_name_len]
-		    = '\0';
 	}
-	if (!cipher_key_bytes_set) {
-		mount_crypt_stat->global_default_cipher_key_size = 0;
+	if ((mount_crypt_stat->flags & ECRYPTFS_GLOBAL_ENCRYPT_FILENAMES)
+	    && !ecryptfs_tfm_exists(
+		    mount_crypt_stat->global_default_fn_cipher_name, NULL)) {
+		rc = ecryptfs_add_new_key_tfm(
+			NULL, mount_crypt_stat->global_default_fn_cipher_name,
+			mount_crypt_stat->global_default_fn_cipher_key_bytes);
+		if (rc) {
+			printk(KERN_ERR "Error attempting to initialize "
+			       "cipher with name = [%s] and key size = [%td]; "
+			       "rc = [%d]\n",
+			       mount_crypt_stat->global_default_fn_cipher_name,
+			       mount_crypt_stat->global_default_fn_cipher_key_bytes,
+			       rc);
+			rc = -EINVAL;
+			mutex_unlock(&key_tfm_list_mutex);
+			goto out;
+		}
 	}
-	rc = ecryptfs_add_new_key_tfm(
-		NULL, mount_crypt_stat->global_default_cipher_name,
-		mount_crypt_stat->global_default_cipher_key_size);
-	if (rc) {
-		printk(KERN_ERR "Error attempting to initialize cipher with "
-		       "name = [%s] and key size = [%td]; rc = [%d]\n",
-		       mount_crypt_stat->global_default_cipher_name,
-		       mount_crypt_stat->global_default_cipher_key_size, rc);
-		rc = -EINVAL;
-		goto out;
-	}
+	mutex_unlock(&key_tfm_list_mutex);
 	rc = ecryptfs_init_global_auth_toks(mount_crypt_stat);
-	if (rc) {
+	if (rc)
 		printk(KERN_WARNING "One or more global auth toks could not "
 		       "properly register; rc = [%d]\n", rc);
-	}
-	rc = 0;
 out:
 	return rc;
 }
@@ -511,31 +545,26 @@ out:
  */
 static int ecryptfs_read_super(struct super_block *sb, const char *dev_name)
 {
+	struct path path;
 	int rc;
-	struct nameidata nd;
-	struct dentry *lower_root;
-	struct vfsmount *lower_mnt;
 
-	memset(&nd, 0, sizeof(struct nameidata));
-	rc = path_lookup(dev_name, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &nd);
+	rc = kern_path(dev_name, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &path);
 	if (rc) {
 		ecryptfs_printk(KERN_WARNING, "path_lookup() failed\n");
 		goto out;
 	}
-	lower_root = nd.dentry;
-	lower_mnt = nd.mnt;
-	ecryptfs_set_superblock_lower(sb, lower_root->d_sb);
-	sb->s_maxbytes = lower_root->d_sb->s_maxbytes;
-	sb->s_blocksize = lower_root->d_sb->s_blocksize;
-	ecryptfs_set_dentry_lower(sb->s_root, lower_root);
-	ecryptfs_set_dentry_lower_mnt(sb->s_root, lower_mnt);
-	rc = ecryptfs_interpose(lower_root, sb->s_root, sb, 0);
+	ecryptfs_set_superblock_lower(sb, path.dentry->d_sb);
+	sb->s_maxbytes = path.dentry->d_sb->s_maxbytes;
+	sb->s_blocksize = path.dentry->d_sb->s_blocksize;
+	ecryptfs_set_dentry_lower(sb->s_root, path.dentry);
+	ecryptfs_set_dentry_lower_mnt(sb->s_root, path.mnt);
+	rc = ecryptfs_interpose(path.dentry, sb->s_root, sb, 0);
 	if (rc)
 		goto out_free;
 	rc = 0;
 	goto out;
 out_free:
-	path_release(&nd);
+	path_put(&path);
 out:
 	return rc;
 }
@@ -614,7 +643,7 @@ static struct file_system_type ecryptfs_fs_type = {
  * Initializes the ecryptfs_inode_info_cache when it is created
  */
 static void
-inode_info_init_once(struct kmem_cache *cachep, void *vptr)
+inode_info_init_once(void *vptr)
 {
 	struct ecryptfs_inode_info *ei = (struct ecryptfs_inode_info *)vptr;
 
@@ -625,7 +654,7 @@ static struct ecryptfs_cache_info {
 	struct kmem_cache **cache;
 	const char *name;
 	size_t size;
-	void (*ctor)(struct kmem_cache *cache, void *obj);
+	void (*ctor)(void *obj);
 } ecryptfs_cache_infos[] = {
 	{
 		.cache = &ecryptfs_auth_tok_list_item_cache,
@@ -652,11 +681,6 @@ static struct ecryptfs_cache_info {
 		.cache = &ecryptfs_sb_info_cache,
 		.name = "ecryptfs_sb_cache",
 		.size = sizeof(struct ecryptfs_sb_info),
-	},
-	{
-		.cache = &ecryptfs_header_cache_0,
-		.name = "ecryptfs_headers_0",
-		.size = PAGE_CACHE_SIZE,
 	},
 	{
 		.cache = &ecryptfs_header_cache_1,
@@ -692,6 +716,11 @@ static struct ecryptfs_cache_info {
 		.cache = &ecryptfs_key_tfm_cache,
 		.name = "ecryptfs_key_tfm_cache",
 		.size = sizeof(struct ecryptfs_key_tfm),
+	},
+	{
+		.cache = &ecryptfs_open_req_cache,
+		.name = "ecryptfs_open_req_cache",
+		.size = sizeof(struct ecryptfs_open_req),
 	},
 };
 
@@ -734,127 +763,40 @@ static int ecryptfs_init_kmem_caches(void)
 	return 0;
 }
 
-struct ecryptfs_obj {
-	char *name;
-	struct list_head slot_list;
-	struct kobject kobj;
-};
+static struct kobject *ecryptfs_kobj;
 
-struct ecryptfs_attribute {
-	struct attribute attr;
-	ssize_t(*show) (struct ecryptfs_obj *, char *);
-	ssize_t(*store) (struct ecryptfs_obj *, const char *, size_t);
-};
-
-static ssize_t
-ecryptfs_attr_store(struct kobject *kobj,
-		    struct attribute *attr, const char *buf, size_t len)
-{
-	struct ecryptfs_obj *obj = container_of(kobj, struct ecryptfs_obj,
-						kobj);
-	struct ecryptfs_attribute *attribute =
-		container_of(attr, struct ecryptfs_attribute, attr);
-
-	return (attribute->store ? attribute->store(obj, buf, len) : 0);
-}
-
-static ssize_t
-ecryptfs_attr_show(struct kobject *kobj, struct attribute *attr, char *buf)
-{
-	struct ecryptfs_obj *obj = container_of(kobj, struct ecryptfs_obj,
-						kobj);
-	struct ecryptfs_attribute *attribute =
-		container_of(attr, struct ecryptfs_attribute, attr);
-
-	return (attribute->show ? attribute->show(obj, buf) : 0);
-}
-
-static struct sysfs_ops ecryptfs_sysfs_ops = {
-	.show = ecryptfs_attr_show,
-	.store = ecryptfs_attr_store
-};
-
-static struct kobj_type ecryptfs_ktype = {
-	.sysfs_ops = &ecryptfs_sysfs_ops
-};
-
-static decl_subsys(ecryptfs, &ecryptfs_ktype, NULL);
-
-static ssize_t version_show(struct ecryptfs_obj *obj, char *buff)
+static ssize_t version_show(struct kobject *kobj,
+			    struct kobj_attribute *attr, char *buff)
 {
 	return snprintf(buff, PAGE_SIZE, "%d\n", ECRYPTFS_VERSIONING_MASK);
 }
 
-static struct ecryptfs_attribute sysfs_attr_version = __ATTR_RO(version);
+static struct kobj_attribute version_attr = __ATTR_RO(version);
 
-static struct ecryptfs_version_str_map_elem {
-	u32 flag;
-	char *str;
-} ecryptfs_version_str_map[] = {
-	{ECRYPTFS_VERSIONING_PASSPHRASE, "passphrase"},
-	{ECRYPTFS_VERSIONING_PUBKEY, "pubkey"},
-	{ECRYPTFS_VERSIONING_PLAINTEXT_PASSTHROUGH, "plaintext passthrough"},
-	{ECRYPTFS_VERSIONING_POLICY, "policy"},
-	{ECRYPTFS_VERSIONING_XATTR, "metadata in extended attribute"},
-	{ECRYPTFS_VERSIONING_MULTKEY, "multiple keys per file"}
+static struct attribute *attributes[] = {
+	&version_attr.attr,
+	NULL,
 };
 
-static ssize_t version_str_show(struct ecryptfs_obj *obj, char *buff)
-{
-	int i;
-	int remaining = PAGE_SIZE;
-	int total_written = 0;
-
-	buff[0] = '\0';
-	for (i = 0; i < ARRAY_SIZE(ecryptfs_version_str_map); i++) {
-		int entry_size;
-
-		if (!(ECRYPTFS_VERSIONING_MASK
-		      & ecryptfs_version_str_map[i].flag))
-			continue;
-		entry_size = strlen(ecryptfs_version_str_map[i].str);
-		if ((entry_size + 2) > remaining)
-			goto out;
-		memcpy(buff, ecryptfs_version_str_map[i].str, entry_size);
-		buff[entry_size++] = '\n';
-		buff[entry_size] = '\0';
-		buff += entry_size;
-		total_written += entry_size;
-		remaining -= entry_size;
-	}
-out:
-	return total_written;
-}
-
-static struct ecryptfs_attribute sysfs_attr_version_str = __ATTR_RO(version_str);
+static struct attribute_group attr_group = {
+	.attrs = attributes,
+};
 
 static int do_sysfs_registration(void)
 {
 	int rc;
 
-	rc = subsystem_register(&ecryptfs_subsys);
-	if (rc) {
-		printk(KERN_ERR
-		       "Unable to register ecryptfs sysfs subsystem\n");
+	ecryptfs_kobj = kobject_create_and_add("ecryptfs", fs_kobj);
+	if (!ecryptfs_kobj) {
+		printk(KERN_ERR "Unable to create ecryptfs kset\n");
+		rc = -ENOMEM;
 		goto out;
 	}
-	rc = sysfs_create_file(&ecryptfs_subsys.kobj,
-			       &sysfs_attr_version.attr);
+	rc = sysfs_create_group(ecryptfs_kobj, &attr_group);
 	if (rc) {
 		printk(KERN_ERR
-		       "Unable to create ecryptfs version attribute\n");
-		subsystem_unregister(&ecryptfs_subsys);
-		goto out;
-	}
-	rc = sysfs_create_file(&ecryptfs_subsys.kobj,
-			       &sysfs_attr_version_str.attr);
-	if (rc) {
-		printk(KERN_ERR
-		       "Unable to create ecryptfs version_str attribute\n");
-		sysfs_remove_file(&ecryptfs_subsys.kobj,
-				  &sysfs_attr_version.attr);
-		subsystem_unregister(&ecryptfs_subsys);
-		goto out;
+		       "Unable to create ecryptfs version attributes\n");
+		kobject_put(ecryptfs_kobj);
 	}
 out:
 	return rc;
@@ -862,11 +804,8 @@ out:
 
 static void do_sysfs_unregistration(void)
 {
-	sysfs_remove_file(&ecryptfs_subsys.kobj,
-			  &sysfs_attr_version.attr);
-	sysfs_remove_file(&ecryptfs_subsys.kobj,
-			  &sysfs_attr_version_str.attr);
-	subsystem_unregister(&ecryptfs_subsys);
+	sysfs_remove_group(ecryptfs_kobj, &attr_group);
+	kobject_put(ecryptfs_kobj);
 }
 
 static int __init ecryptfs_init(void)
@@ -894,17 +833,23 @@ static int __init ecryptfs_init(void)
 		printk(KERN_ERR "Failed to register filesystem\n");
 		goto out_free_kmem_caches;
 	}
-	kobj_set_kset_s(&ecryptfs_subsys, fs_subsys);
 	rc = do_sysfs_registration();
 	if (rc) {
 		printk(KERN_ERR "sysfs registration failed\n");
 		goto out_unregister_filesystem;
 	}
-	rc = ecryptfs_init_messaging(ecryptfs_transport);
+	rc = ecryptfs_init_kthread();
 	if (rc) {
-		ecryptfs_printk(KERN_ERR, "Failure occured while attempting to "
-				"initialize the eCryptfs netlink socket\n");
+		printk(KERN_ERR "%s: kthread initialization failed; "
+		       "rc = [%d]\n", __func__, rc);
 		goto out_do_sysfs_unregistration;
+	}
+	rc = ecryptfs_init_messaging();
+	if (rc) {
+		printk(KERN_ERR "Failure occured while attempting to "
+				"initialize the communications channel to "
+				"ecryptfsd\n");
+		goto out_destroy_kthread;
 	}
 	rc = ecryptfs_init_crypto();
 	if (rc) {
@@ -912,9 +857,15 @@ static int __init ecryptfs_init(void)
 		       "rc = [%d]\n", rc);
 		goto out_release_messaging;
 	}
+	if (ecryptfs_verbosity > 0)
+		printk(KERN_CRIT "eCryptfs verbosity set to %d. Secret values "
+			"will be written to the syslog!\n", ecryptfs_verbosity);
+
 	goto out;
 out_release_messaging:
-	ecryptfs_release_messaging(ecryptfs_transport);
+	ecryptfs_release_messaging();
+out_destroy_kthread:
+	ecryptfs_destroy_kthread();
 out_do_sysfs_unregistration:
 	do_sysfs_unregistration();
 out_unregister_filesystem:
@@ -933,7 +884,8 @@ static void __exit ecryptfs_exit(void)
 	if (rc)
 		printk(KERN_ERR "Failure whilst attempting to destroy crypto; "
 		       "rc = [%d]\n", rc);
-	ecryptfs_release_messaging(ecryptfs_transport);
+	ecryptfs_release_messaging();
+	ecryptfs_destroy_kthread();
 	do_sysfs_unregistration();
 	unregister_filesystem(&ecryptfs_fs_type);
 	ecryptfs_free_kmem_caches();

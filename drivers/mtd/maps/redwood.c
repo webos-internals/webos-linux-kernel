@@ -1,6 +1,4 @@
 /*
- * $Id: redwood.c,v 1.11 2005/11/07 11:14:28 gleixner Exp $
- *
  * drivers/mtd/maps/redwood.c
  *
  * FLASH map for the IBM Redwood 4/5/6 boards.
@@ -124,7 +122,7 @@ struct map_info redwood_flash_map = {
 
 static struct mtd_info *redwood_mtd;
 
-int __init init_redwood_flash(void)
+static int __init init_redwood_flash(void)
 {
 	int err;
 

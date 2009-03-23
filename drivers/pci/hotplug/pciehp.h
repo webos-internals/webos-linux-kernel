@@ -57,19 +57,30 @@ extern struct workqueue_struct *pciehp_wq;
 #define warn(format, arg...)						\
 	printk(KERN_WARNING "%s: " format, MY_NAME , ## arg)
 
+#define ctrl_dbg(ctrl, format, arg...)					\
+	do {								\
+		if (pciehp_debug)					\
+			dev_printk(, &ctrl->pcie->device,		\
+					format, ## arg);		\
+	} while (0)
+#define ctrl_err(ctrl, format, arg...)					\
+	dev_err(&ctrl->pcie->device, format, ## arg)
+#define ctrl_info(ctrl, format, arg...)					\
+	dev_info(&ctrl->pcie->device, format, ## arg)
+#define ctrl_warn(ctrl, format, arg...)					\
+	dev_warn(&ctrl->pcie->device, format, ## arg)
+
 #define SLOT_NAME_SIZE 10
 struct slot {
 	u8 bus;
 	u8 device;
-	u32 number;
 	u8 state;
-	struct timer_list task_event;
 	u8 hp_slot;
+	u32 number;
 	struct controller *ctrl;
 	struct hpc_ops *hpc_ops;
 	struct hotplug_slot *hotplug_slot;
 	struct list_head	slot_list;
-	char name[SLOT_NAME_SIZE];
 	unsigned long last_emi_toggle;
 	struct delayed_work work;	/* work for button event */
 	struct mutex lock;
@@ -82,28 +93,25 @@ struct event_info {
 };
 
 struct controller {
-	struct controller *next;
 	struct mutex crit_sect;		/* critical section mutex */
 	struct mutex ctrl_lock;		/* controller lock */
 	int num_slots;			/* Number of slots on ctlr */
 	int slot_num_inc;		/* 1 or -1 */
 	struct pci_dev *pci_dev;
+	struct pcie_device *pcie;	/* PCI Express port service */
 	struct list_head slot_list;
-	struct slot *slot;
 	struct hpc_ops *hpc_ops;
 	wait_queue_head_t queue;	/* sleep & wake process */
-	u8 bus;
-	u8 device;
-	u8 function;
 	u8 slot_device_offset;
 	u32 first_slot;		/* First physical slot number */  /* PCIE only has 1 slot */
 	u8 slot_bus;		/* Bus where the slots handled by this controller sit */
-	u8 ctrlcap;
-	u16 vendor_id;
+	u32 slot_cap;
 	u8 cap_base;
 	struct timer_list poll_timer;
-	volatile int cmd_busy;
-	spinlock_t lock;
+	int cmd_busy;
+	unsigned int no_cmd_complete:1;
+	unsigned int link_active_reporting:1;
+	unsigned int notification_enabled:1;
 };
 
 #define INT_BUTTON_IGNORE		0
@@ -142,25 +150,36 @@ struct controller {
 #define PWR_LED_PRSN	0x00000010
 #define HP_SUPR_RM_SUP	0x00000020
 #define EMI_PRSN	0x00020000
+#define NO_CMD_CMPL_SUP	0x00040000
 
-#define ATTN_BUTTN(cap)		(cap & ATTN_BUTTN_PRSN)
-#define POWER_CTRL(cap)		(cap & PWR_CTRL_PRSN)
-#define MRL_SENS(cap)		(cap & MRL_SENS_PRSN)
-#define ATTN_LED(cap)		(cap & ATTN_LED_PRSN)
-#define PWR_LED(cap)		(cap & PWR_LED_PRSN) 
-#define HP_SUPR_RM(cap)		(cap & HP_SUPR_RM_SUP)
-#define EMI(cap)		(cap & EMI_PRSN)
+#define ATTN_BUTTN(ctrl)	((ctrl)->slot_cap & ATTN_BUTTN_PRSN)
+#define POWER_CTRL(ctrl)	((ctrl)->slot_cap & PWR_CTRL_PRSN)
+#define MRL_SENS(ctrl)		((ctrl)->slot_cap & MRL_SENS_PRSN)
+#define ATTN_LED(ctrl)		((ctrl)->slot_cap & ATTN_LED_PRSN)
+#define PWR_LED(ctrl)		((ctrl)->slot_cap & PWR_LED_PRSN)
+#define HP_SUPR_RM(ctrl)	((ctrl)->slot_cap & HP_SUPR_RM_SUP)
+#define EMI(ctrl)		((ctrl)->slot_cap & EMI_PRSN)
+#define NO_CMD_CMPL(ctrl)	((ctrl)->slot_cap & NO_CMD_CMPL_SUP)
 
 extern int pciehp_sysfs_enable_slot(struct slot *slot);
 extern int pciehp_sysfs_disable_slot(struct slot *slot);
-extern u8 pciehp_handle_attention_button(u8 hp_slot, struct controller *ctrl);
-extern u8 pciehp_handle_switch_change(u8 hp_slot, struct controller *ctrl);
-extern u8 pciehp_handle_presence_change(u8 hp_slot, struct controller *ctrl);
-extern u8 pciehp_handle_power_fault(u8 hp_slot, struct controller *ctrl);
+extern u8 pciehp_handle_attention_button(struct slot *p_slot);
+  extern u8 pciehp_handle_switch_change(struct slot *p_slot);
+extern u8 pciehp_handle_presence_change(struct slot *p_slot);
+extern u8 pciehp_handle_power_fault(struct slot *p_slot);
 extern int pciehp_configure_device(struct slot *p_slot);
 extern int pciehp_unconfigure_device(struct slot *p_slot);
 extern void pciehp_queue_pushbutton_work(struct work_struct *work);
-int pcie_init(struct controller *ctrl, struct pcie_device *dev);
+struct controller *pcie_init(struct pcie_device *dev);
+int pcie_init_notification(struct controller *ctrl);
+int pciehp_enable_slot(struct slot *p_slot);
+int pciehp_disable_slot(struct slot *p_slot);
+int pcie_enable_notification(struct controller *ctrl);
+
+static inline const char *slot_name(struct slot *slot)
+{
+	return hotplug_slot_name(slot->hotplug_slot);
+}
 
 static inline struct slot *pciehp_find_slot(struct controller *ctrl, u8 device)
 {
@@ -171,7 +190,7 @@ static inline struct slot *pciehp_find_slot(struct controller *ctrl, u8 device)
 			return slot;
 	}
 
-	err("%s: slot (device=0x%x) not found\n", __FUNCTION__, device);
+	ctrl_err(ctrl, "Slot (device=0x%02x) not found\n", device);
 	return NULL;
 }
 
@@ -200,11 +219,27 @@ struct hpc_ops {
 #ifdef CONFIG_ACPI
 #include <acpi/acpi.h>
 #include <acpi/acpi_bus.h>
-#include <acpi/actypes.h>
 #include <linux/pci-acpi.h>
 
-#define pciehp_get_hp_hw_control_from_firmware(dev)			\
-	pciehp_acpi_get_hp_hw_control_from_firmware(dev)
+extern void __init pciehp_acpi_slot_detection_init(void);
+extern int pciehp_acpi_slot_detection_check(struct pci_dev *dev);
+
+static inline void pciehp_firmware_init(void)
+{
+	pciehp_acpi_slot_detection_init();
+}
+
+static inline int pciehp_get_hp_hw_control_from_firmware(struct pci_dev *dev)
+{
+	int retval;
+	u32 flags = (OSC_PCI_EXPRESS_NATIVE_HP_CONTROL |
+		     OSC_PCI_EXPRESS_CAP_STRUCTURE_CONTROL);
+	retval = acpi_get_hp_hw_control_from_firmware(dev, flags);
+	if (retval)
+		return retval;
+	return pciehp_acpi_slot_detection_check(dev);
+}
+
 static inline int pciehp_get_hp_params_from_firmware(struct pci_dev *dev,
 			struct hotplug_params *hpp)
 {
@@ -213,6 +248,7 @@ static inline int pciehp_get_hp_params_from_firmware(struct pci_dev *dev,
 	return 0;
 }
 #else
+#define pciehp_firmware_init()				do {} while (0)
 #define pciehp_get_hp_hw_control_from_firmware(dev) 	0
 #define pciehp_get_hp_params_from_firmware(dev, hpp)    (-ENODEV)
 #endif 				/* CONFIG_ACPI */

@@ -19,12 +19,12 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 
-#include <asm/hardware.h>
-#include <asm/arch/jornada720.h>
+#include <mach/hardware.h>
+#include <mach/jornada720.h>
 
 MODULE_AUTHOR("Kristoffer Ericson <kristoffer.ericson@gmail.com>");
 MODULE_DESCRIPTION("HP Jornada 710/720/728 touchscreen driver");
-MODULE_LICENSE("GPLv2");
+MODULE_LICENSE("GPL v2");
 
 struct jornada_ts {
 	struct input_dev *dev;
@@ -119,8 +119,8 @@ static int __devinit jornada720_ts_probe(struct platform_device *pdev)
 	input_dev->id.bustype = BUS_HOST;
 	input_dev->dev.parent = &pdev->dev;
 
-	input_dev->evbit[0] = BIT(EV_KEY) | BIT(EV_ABS);
-	input_dev->keybit[LONG(BTN_TOUCH)] = BIT(BTN_TOUCH);
+	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
+	input_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
 	input_set_abs_params(input_dev, ABS_X, 270, 3900, 0, 0);
 	input_set_abs_params(input_dev, ABS_Y, 180, 3700, 0, 0);
 
@@ -160,11 +160,15 @@ static int __devexit jornada720_ts_remove(struct platform_device *pdev)
 	return 0;
 }
 
+/* work with hotplug and coldplug */
+MODULE_ALIAS("platform:jornada_ts");
+
 static struct platform_driver jornada720_ts_driver = {
 	.probe		= jornada720_ts_probe,
 	.remove		= __devexit_p(jornada720_ts_remove),
 	.driver		= {
 		.name	= "jornada_ts",
+		.owner	= THIS_MODULE,
 	},
 };
 

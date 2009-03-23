@@ -1,8 +1,4 @@
 /******************************************************************* 
- * ident "$Id: idt77252.c,v 1.2 2001/11/11 08:13:54 ecd Exp $"
- *
- * $Author: ecd $
- * $Date: 2001/11/11 08:13:54 $
  *
  * Copyright (c) 2000 ATecoM GmbH 
  *
@@ -29,9 +25,6 @@
  * 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  *******************************************************************/
-static char const rcsid[] =
-"$Id: idt77252.c,v 1.2 2001/11/11 08:13:54 ecd Exp $";
-
 
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -555,7 +548,7 @@ idt77252_tx_dump(struct idt77252_dev *card)
 	struct vc_map *vc;
 	int i;
 
-	printk("%s\n", __FUNCTION__);
+	printk("%s\n", __func__);
 	for (i = 0; i < card->tct_size; i++) {
 		vc = card->vcs[i];
 		if (!vc)
@@ -1035,7 +1028,7 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 	skb = sb_pool_skb(card, le32_to_cpu(rsqe->word_2));
 	if (skb == NULL) {
 		printk("%s: NULL skb in %s, rsqe: %08x %08x %08x %08x\n",
-		       card->name, __FUNCTION__,
+		       card->name, __func__,
 		       le32_to_cpu(rsqe->word_1), le32_to_cpu(rsqe->word_2),
 		       le32_to_cpu(rsqe->word_3), le32_to_cpu(rsqe->word_4));
 		return;
@@ -1121,11 +1114,8 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 
 	rpp = &vc->rcv.rx_pool;
 
+	__skb_queue_tail(&rpp->queue, skb);
 	rpp->len += skb->len;
-	if (!rpp->count++)
-		rpp->first = skb;
-	*rpp->last = skb;
-	rpp->last = &skb->next;
 
 	if (stat & SAR_RSQE_EPDU) {
 		unsigned char *l1l2;
@@ -1152,7 +1142,7 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 			atomic_inc(&vcc->stats->rx_err);
 			return;
 		}
-		if (rpp->count > 1) {
+		if (skb_queue_len(&rpp->queue) > 1) {
 			struct sk_buff *sb;
 
 			skb = dev_alloc_skb(rpp->len);
@@ -1168,12 +1158,9 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 				dev_kfree_skb(skb);
 				return;
 			}
-			sb = rpp->first;
-			for (i = 0; i < rpp->count; i++) {
+			skb_queue_walk(&rpp->queue, sb)
 				memcpy(skb_put(skb, sb->len),
 				       sb->data, sb->len);
-				sb = sb->next;
-			}
 
 			recycle_rx_pool_skb(card, rpp);
 
@@ -1187,7 +1174,6 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 			return;
 		}
 
-		skb->next = NULL;
 		flush_rx_pool(card, rpp);
 
 		if (!atm_charge(vcc, skb->truesize)) {
@@ -1873,7 +1859,7 @@ add_rx_skb(struct idt77252_dev *card, int queue,
 			return;
 
 		if (sb_pool_add(card, skb, queue)) {
-			printk("%s: SB POOL full\n", __FUNCTION__);
+			printk("%s: SB POOL full\n", __func__);
 			goto outfree;
 		}
 
@@ -1883,7 +1869,7 @@ add_rx_skb(struct idt77252_dev *card, int queue,
 		IDT77252_PRV_PADDR(skb) = paddr;
 
 		if (push_rx_skb(card, skb, queue)) {
-			printk("%s: FB QUEUE full\n", __FUNCTION__);
+			printk("%s: FB QUEUE full\n", __func__);
 			goto outunmap;
 		}
 	}
@@ -1925,25 +1911,18 @@ recycle_rx_skb(struct idt77252_dev *card, struct sk_buff *skb)
 static void
 flush_rx_pool(struct idt77252_dev *card, struct rx_pool *rpp)
 {
+	skb_queue_head_init(&rpp->queue);
 	rpp->len = 0;
-	rpp->count = 0;
-	rpp->first = NULL;
-	rpp->last = &rpp->first;
 }
 
 static void
 recycle_rx_pool_skb(struct idt77252_dev *card, struct rx_pool *rpp)
 {
-	struct sk_buff *skb, *next;
-	int i;
+	struct sk_buff *skb, *tmp;
 
-	skb = rpp->first;
-	for (i = 0; i < rpp->count; i++) {
-		next = skb->next;
-		skb->next = NULL;
+	skb_queue_walk_safe(&rpp->queue, skb, tmp)
 		recycle_rx_skb(card, skb);
-		skb = next;
-	}
+
 	flush_rx_pool(card, rpp);
 }
 
@@ -2016,8 +1995,7 @@ idt77252_send_skb(struct atm_vcc *vcc, struct sk_buff *skb, int oam)
 	return 0;
 }
 
-int
-idt77252_send(struct atm_vcc *vcc, struct sk_buff *skb)
+static int idt77252_send(struct atm_vcc *vcc, struct sk_buff *skb)
 {
 	return idt77252_send_skb(vcc, skb, 0);
 }
@@ -2545,7 +2523,7 @@ idt77252_close(struct atm_vcc *vcc)
 		waitfor_idle(card);
 		spin_unlock_irqrestore(&card->cmd_lock, flags);
 
-		if (vc->rcv.rx_pool.count) {
+		if (skb_queue_len(&vc->rcv.rx_pool.queue) != 0) {
 			DPRINTK("%s: closing a VC with pending rx buffers.\n",
 				card->name);
 
@@ -2978,7 +2956,7 @@ close_card_oam(struct idt77252_dev *card)
 			waitfor_idle(card);
 			spin_unlock_irqrestore(&card->cmd_lock, flags);
 
-			if (vc->rcv.rx_pool.count) {
+			if (skb_queue_len(&vc->rcv.rx_pool.queue) != 0) {
 				DPRINTK("%s: closing a VC "
 					"with pending rx buffers.\n",
 					card->name);
@@ -3072,8 +3050,7 @@ idt77252_dev_open(struct idt77252_dev *card)
 	return 0;
 }
 
-void
-idt77252_dev_close(struct atm_dev *dev)
+static void idt77252_dev_close(struct atm_dev *dev)
 {
 	struct idt77252_dev *card = dev->dev_data;
 	u32 conf;
@@ -3821,12 +3798,12 @@ static int __init idt77252_init(void)
 {
 	struct sk_buff *skb;
 
-	printk("%s: at %p\n", __FUNCTION__, idt77252_init);
+	printk("%s: at %p\n", __func__, idt77252_init);
 
 	if (sizeof(skb->cb) < sizeof(struct atm_skb_data) +
 			      sizeof(struct idt77252_skb_prv)) {
 		printk(KERN_ERR "%s: skb->cb is too small (%lu < %lu)\n",
-		       __FUNCTION__, (unsigned long) sizeof(skb->cb),
+		       __func__, (unsigned long) sizeof(skb->cb),
 		       (unsigned long) sizeof(struct atm_skb_data) +
 				       sizeof(struct idt77252_skb_prv));
 		return -EIO;

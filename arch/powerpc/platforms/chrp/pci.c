@@ -141,6 +141,7 @@ hydra_init(void)
 		of_node_put(np);
 		return 0;
 	}
+	of_node_put(np);
 	Hydra = ioremap(r.start, r.end-r.start);
 	printk("Hydra Mac I/O at %llx\n", (unsigned long long)r.start);
 	printk("Hydra Feature_Control was %x",
@@ -198,7 +199,7 @@ static void __init setup_peg2(struct pci_controller *hose, struct device_node *d
 		printk ("RTAS supporting Pegasos OF not found, please upgrade"
 			" your firmware\n");
 	}
-	pci_assign_all_buses = 1;
+	ppc_pci_add_flags(PPC_PCI_REASSIGN_ALL_BUS);
 	/* keep the reference to the root node */
 }
 
@@ -260,13 +261,13 @@ chrp_find_bridges(void)
 				dev->full_name);
 			continue;
 		}
-		hose->first_busno = bus_range[0];
+		hose->first_busno = hose->self_busno = bus_range[0];
 		hose->last_busno = bus_range[1];
 
 		model = of_get_property(dev, "model", NULL);
 		if (model == NULL)
 			model = "<none>";
-		if (of_device_is_compatible(dev, "IBM,python")) {
+		if (strncmp(model, "IBM, Python", 11) == 0) {
 			setup_python(hose, dev);
 		} else if (is_mot
 			   || strncmp(model, "Motorola, Grackle", 17) == 0) {
@@ -354,7 +355,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_WINBOND, PCI_DEVICE_ID_WINBOND_82C105,
  * mode as well. The same fixup must be done to the class-code property in
  * the IDE node /pci@80000000/ide@C,1
  */
-static void __devinit chrp_pci_fixup_vt8231_ata(struct pci_dev *viaide)
+static void chrp_pci_fixup_vt8231_ata(struct pci_dev *viaide)
 {
 	u8 progif;
 	struct pci_dev *viaisa;
@@ -367,7 +368,7 @@ static void __devinit chrp_pci_fixup_vt8231_ata(struct pci_dev *viaide)
 	viaisa = pci_get_device(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_8231, NULL);
 	if (!viaisa)
 		return;
-	printk("Fixing VIA IDE, force legacy mode on '%s'\n", viaide->dev.bus_id);
+	dev_info(&viaide->dev, "Fixing VIA IDE, force legacy mode on\n");
 
 	pci_read_config_byte(viaide, PCI_CLASS_PROG, &progif);
 	pci_write_config_byte(viaide, PCI_CLASS_PROG, progif & ~0x5);
@@ -375,4 +376,4 @@ static void __devinit chrp_pci_fixup_vt8231_ata(struct pci_dev *viaide)
 
 	pci_dev_put(viaisa);
 }
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C586_1, chrp_pci_fixup_vt8231_ata);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C586_1, chrp_pci_fixup_vt8231_ata);

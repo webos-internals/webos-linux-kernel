@@ -247,6 +247,7 @@ struct nv_adma_port_priv {
 	void __iomem		*ctl_block;
 	void __iomem		*gen_block;
 	void __iomem		*notifier_clear_block;
+	u64			adma_dma_mask;
 	u8			flags;
 	int			last_issue_ncq;
 };
@@ -301,14 +302,15 @@ static void nv_ck804_host_stop(struct ata_host *host);
 static irqreturn_t nv_generic_interrupt(int irq, void *dev_instance);
 static irqreturn_t nv_nf2_interrupt(int irq, void *dev_instance);
 static irqreturn_t nv_ck804_interrupt(int irq, void *dev_instance);
-static int nv_scr_read(struct ata_port *ap, unsigned int sc_reg, u32 *val);
-static int nv_scr_write(struct ata_port *ap, unsigned int sc_reg, u32 val);
+static int nv_scr_read(struct ata_link *link, unsigned int sc_reg, u32 *val);
+static int nv_scr_write(struct ata_link *link, unsigned int sc_reg, u32 val);
 
+static int nv_noclassify_hardreset(struct ata_link *link, unsigned int *class,
+				   unsigned long deadline);
 static void nv_nf2_freeze(struct ata_port *ap);
 static void nv_nf2_thaw(struct ata_port *ap);
 static void nv_ck804_freeze(struct ata_port *ap);
 static void nv_ck804_thaw(struct ata_port *ap);
-static void nv_error_handler(struct ata_port *ap);
 static int nv_adma_slave_config(struct scsi_device *sdev);
 static int nv_adma_check_atapi_dma(struct ata_queued_cmd *qc);
 static void nv_adma_qc_prep(struct ata_queued_cmd *qc);
@@ -350,6 +352,7 @@ enum nv_host_type
 	NFORCE3 = NFORCE2,	/* NF2 == NF3 as far as sata_nv is concerned */
 	CK804,
 	ADMA,
+	MCP5x,
 	SWNCQ,
 };
 
@@ -361,10 +364,10 @@ static const struct pci_device_id nv_pci_tbl[] = {
 	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_CK804_SATA2), CK804 },
 	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP04_SATA), CK804 },
 	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP04_SATA2), CK804 },
-	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP51_SATA), SWNCQ },
-	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP51_SATA2), SWNCQ },
-	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP55_SATA), SWNCQ },
-	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP55_SATA2), SWNCQ },
+	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP51_SATA), MCP5x },
+	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP51_SATA2), MCP5x },
+	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP55_SATA), MCP5x },
+	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP55_SATA2), MCP5x },
 	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP61_SATA), GENERIC },
 	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP61_SATA2), GENERIC },
 	{ PCI_VDEVICE(NVIDIA, PCI_DEVICE_ID_NVIDIA_NFORCE_MCP61_SATA3), GENERIC },
@@ -384,157 +387,85 @@ static struct pci_driver nv_pci_driver = {
 };
 
 static struct scsi_host_template nv_sht = {
-	.module			= THIS_MODULE,
-	.name			= DRV_NAME,
-	.ioctl			= ata_scsi_ioctl,
-	.queuecommand		= ata_scsi_queuecmd,
-	.can_queue		= ATA_DEF_QUEUE,
-	.this_id		= ATA_SHT_THIS_ID,
-	.sg_tablesize		= LIBATA_MAX_PRD,
-	.cmd_per_lun		= ATA_SHT_CMD_PER_LUN,
-	.emulated		= ATA_SHT_EMULATED,
-	.use_clustering		= ATA_SHT_USE_CLUSTERING,
-	.proc_name		= DRV_NAME,
-	.dma_boundary		= ATA_DMA_BOUNDARY,
-	.slave_configure	= ata_scsi_slave_config,
-	.slave_destroy		= ata_scsi_slave_destroy,
-	.bios_param		= ata_std_bios_param,
+	ATA_BMDMA_SHT(DRV_NAME),
 };
 
 static struct scsi_host_template nv_adma_sht = {
-	.module			= THIS_MODULE,
-	.name			= DRV_NAME,
-	.ioctl			= ata_scsi_ioctl,
-	.queuecommand		= ata_scsi_queuecmd,
-	.change_queue_depth	= ata_scsi_change_queue_depth,
+	ATA_NCQ_SHT(DRV_NAME),
 	.can_queue		= NV_ADMA_MAX_CPBS,
-	.this_id		= ATA_SHT_THIS_ID,
 	.sg_tablesize		= NV_ADMA_SGTBL_TOTAL_LEN,
-	.cmd_per_lun		= ATA_SHT_CMD_PER_LUN,
-	.emulated		= ATA_SHT_EMULATED,
-	.use_clustering		= ATA_SHT_USE_CLUSTERING,
-	.proc_name		= DRV_NAME,
 	.dma_boundary		= NV_ADMA_DMA_BOUNDARY,
 	.slave_configure	= nv_adma_slave_config,
-	.slave_destroy		= ata_scsi_slave_destroy,
-	.bios_param		= ata_std_bios_param,
 };
 
 static struct scsi_host_template nv_swncq_sht = {
-	.module			= THIS_MODULE,
-	.name			= DRV_NAME,
-	.ioctl			= ata_scsi_ioctl,
-	.queuecommand		= ata_scsi_queuecmd,
-	.change_queue_depth	= ata_scsi_change_queue_depth,
+	ATA_NCQ_SHT(DRV_NAME),
 	.can_queue		= ATA_MAX_QUEUE,
-	.this_id		= ATA_SHT_THIS_ID,
 	.sg_tablesize		= LIBATA_MAX_PRD,
-	.cmd_per_lun		= ATA_SHT_CMD_PER_LUN,
-	.emulated		= ATA_SHT_EMULATED,
-	.use_clustering		= ATA_SHT_USE_CLUSTERING,
-	.proc_name		= DRV_NAME,
 	.dma_boundary		= ATA_DMA_BOUNDARY,
 	.slave_configure	= nv_swncq_slave_config,
-	.slave_destroy		= ata_scsi_slave_destroy,
-	.bios_param		= ata_std_bios_param,
 };
 
-static const struct ata_port_operations nv_generic_ops = {
-	.tf_load		= ata_tf_load,
-	.tf_read		= ata_tf_read,
-	.exec_command		= ata_exec_command,
-	.check_status		= ata_check_status,
-	.dev_select		= ata_std_dev_select,
-	.bmdma_setup		= ata_bmdma_setup,
-	.bmdma_start		= ata_bmdma_start,
-	.bmdma_stop		= ata_bmdma_stop,
-	.bmdma_status		= ata_bmdma_status,
-	.qc_prep		= ata_qc_prep,
-	.qc_issue		= ata_qc_issue_prot,
-	.freeze			= ata_bmdma_freeze,
-	.thaw			= ata_bmdma_thaw,
-	.error_handler		= nv_error_handler,
-	.post_internal_cmd	= ata_bmdma_post_internal_cmd,
-	.data_xfer		= ata_data_xfer,
-	.irq_clear		= ata_bmdma_irq_clear,
-	.irq_on			= ata_irq_on,
+static struct ata_port_operations nv_common_ops = {
+	.inherits		= &ata_bmdma_port_ops,
 	.scr_read		= nv_scr_read,
 	.scr_write		= nv_scr_write,
-	.port_start		= ata_port_start,
 };
 
-static const struct ata_port_operations nv_nf2_ops = {
-	.tf_load		= ata_tf_load,
-	.tf_read		= ata_tf_read,
-	.exec_command		= ata_exec_command,
-	.check_status		= ata_check_status,
-	.dev_select		= ata_std_dev_select,
-	.bmdma_setup		= ata_bmdma_setup,
-	.bmdma_start		= ata_bmdma_start,
-	.bmdma_stop		= ata_bmdma_stop,
-	.bmdma_status		= ata_bmdma_status,
-	.qc_prep		= ata_qc_prep,
-	.qc_issue		= ata_qc_issue_prot,
+/* OSDL bz11195 reports that link doesn't come online after hardreset
+ * on generic nv's and there have been several other similar reports
+ * on linux-ide.  Disable hardreset for generic nv's.
+ */
+static struct ata_port_operations nv_generic_ops = {
+	.inherits		= &nv_common_ops,
+	.hardreset		= ATA_OP_NULL,
+};
+
+/* nf2 is ripe with hardreset related problems.
+ *
+ * kernel bz#3352 reports nf2/3 controllers can't determine device
+ * signature reliably.  The following thread reports detection failure
+ * on cold boot with the standard debouncing timing.
+ *
+ * http://thread.gmane.org/gmane.linux.ide/34098
+ *
+ * And bz#12176 reports that hardreset simply doesn't work on nf2.
+ * Give up on it and just don't do hardreset.
+ */
+static struct ata_port_operations nv_nf2_ops = {
+	.inherits		= &nv_generic_ops,
 	.freeze			= nv_nf2_freeze,
 	.thaw			= nv_nf2_thaw,
-	.error_handler		= nv_error_handler,
-	.post_internal_cmd	= ata_bmdma_post_internal_cmd,
-	.data_xfer		= ata_data_xfer,
-	.irq_clear		= ata_bmdma_irq_clear,
-	.irq_on			= ata_irq_on,
-	.scr_read		= nv_scr_read,
-	.scr_write		= nv_scr_write,
-	.port_start		= ata_port_start,
 };
 
-static const struct ata_port_operations nv_ck804_ops = {
-	.tf_load		= ata_tf_load,
-	.tf_read		= ata_tf_read,
-	.exec_command		= ata_exec_command,
-	.check_status		= ata_check_status,
-	.dev_select		= ata_std_dev_select,
-	.bmdma_setup		= ata_bmdma_setup,
-	.bmdma_start		= ata_bmdma_start,
-	.bmdma_stop		= ata_bmdma_stop,
-	.bmdma_status		= ata_bmdma_status,
-	.qc_prep		= ata_qc_prep,
-	.qc_issue		= ata_qc_issue_prot,
+/* For initial probing after boot and hot plugging, hardreset mostly
+ * works fine on CK804 but curiously, reprobing on the initial port by
+ * rescanning or rmmod/insmod fails to acquire the initial D2H Reg FIS
+ * in somewhat undeterministic way.  Use noclassify hardreset.
+ */
+static struct ata_port_operations nv_ck804_ops = {
+	.inherits		= &nv_common_ops,
 	.freeze			= nv_ck804_freeze,
 	.thaw			= nv_ck804_thaw,
-	.error_handler		= nv_error_handler,
-	.post_internal_cmd	= ata_bmdma_post_internal_cmd,
-	.data_xfer		= ata_data_xfer,
-	.irq_clear		= ata_bmdma_irq_clear,
-	.irq_on			= ata_irq_on,
-	.scr_read		= nv_scr_read,
-	.scr_write		= nv_scr_write,
-	.port_start		= ata_port_start,
+	.hardreset		= nv_noclassify_hardreset,
 	.host_stop		= nv_ck804_host_stop,
 };
 
-static const struct ata_port_operations nv_adma_ops = {
-	.tf_load		= ata_tf_load,
-	.tf_read		= nv_adma_tf_read,
+static struct ata_port_operations nv_adma_ops = {
+	.inherits		= &nv_ck804_ops,
+
 	.check_atapi_dma	= nv_adma_check_atapi_dma,
-	.exec_command		= ata_exec_command,
-	.check_status		= ata_check_status,
-	.dev_select		= ata_std_dev_select,
-	.bmdma_setup		= ata_bmdma_setup,
-	.bmdma_start		= ata_bmdma_start,
-	.bmdma_stop		= ata_bmdma_stop,
-	.bmdma_status		= ata_bmdma_status,
+	.sff_tf_read		= nv_adma_tf_read,
 	.qc_defer		= ata_std_qc_defer,
 	.qc_prep		= nv_adma_qc_prep,
 	.qc_issue		= nv_adma_qc_issue,
+	.sff_irq_clear		= nv_adma_irq_clear,
+
 	.freeze			= nv_adma_freeze,
 	.thaw			= nv_adma_thaw,
 	.error_handler		= nv_adma_error_handler,
 	.post_internal_cmd	= nv_adma_post_internal_cmd,
-	.data_xfer		= ata_data_xfer,
-	.irq_clear		= nv_adma_irq_clear,
-	.irq_on			= ata_irq_on,
-	.scr_read		= nv_scr_read,
-	.scr_write		= nv_scr_write,
+
 	.port_start		= nv_adma_port_start,
 	.port_stop		= nv_adma_port_stop,
 #ifdef CONFIG_PM
@@ -544,28 +475,28 @@ static const struct ata_port_operations nv_adma_ops = {
 	.host_stop		= nv_adma_host_stop,
 };
 
-static const struct ata_port_operations nv_swncq_ops = {
-	.tf_load		= ata_tf_load,
-	.tf_read		= ata_tf_read,
-	.exec_command		= ata_exec_command,
-	.check_status		= ata_check_status,
-	.dev_select		= ata_std_dev_select,
-	.bmdma_setup		= ata_bmdma_setup,
-	.bmdma_start		= ata_bmdma_start,
-	.bmdma_stop		= ata_bmdma_stop,
-	.bmdma_status		= ata_bmdma_status,
+/* Kernel bz#12351 reports that when SWNCQ is enabled, for hotplug to
+ * work, hardreset should be used and hardreset can't report proper
+ * signature, which suggests that mcp5x is closer to nf2 as long as
+ * reset quirkiness is concerned.  Define separate ops for mcp5x with
+ * nv_noclassify_hardreset().
+ */
+static struct ata_port_operations nv_mcp5x_ops = {
+	.inherits		= &nv_common_ops,
+	.hardreset		= nv_noclassify_hardreset,
+};
+
+static struct ata_port_operations nv_swncq_ops = {
+	.inherits		= &nv_mcp5x_ops,
+
 	.qc_defer		= ata_std_qc_defer,
 	.qc_prep		= nv_swncq_qc_prep,
 	.qc_issue		= nv_swncq_qc_issue,
+
 	.freeze			= nv_mcp55_freeze,
 	.thaw			= nv_mcp55_thaw,
 	.error_handler		= nv_swncq_error_handler,
-	.post_internal_cmd	= ata_bmdma_post_internal_cmd,
-	.data_xfer		= ata_data_xfer,
-	.irq_clear		= ata_bmdma_irq_clear,
-	.irq_on			= ata_irq_on,
-	.scr_read		= nv_scr_read,
-	.scr_write		= nv_scr_write,
+
 #ifdef CONFIG_PM
 	.port_suspend		= nv_swncq_port_suspend,
 	.port_resume		= nv_swncq_port_resume,
@@ -573,63 +504,70 @@ static const struct ata_port_operations nv_swncq_ops = {
 	.port_start		= nv_swncq_port_start,
 };
 
+struct nv_pi_priv {
+	irq_handler_t			irq_handler;
+	struct scsi_host_template	*sht;
+};
+
+#define NV_PI_PRIV(_irq_handler, _sht) \
+	&(struct nv_pi_priv){ .irq_handler = _irq_handler, .sht = _sht }
+
 static const struct ata_port_info nv_port_info[] = {
 	/* generic */
 	{
-		.sht		= &nv_sht,
 		.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY,
-		.link_flags	= ATA_LFLAG_HRST_TO_RESUME,
 		.pio_mask	= NV_PIO_MASK,
 		.mwdma_mask	= NV_MWDMA_MASK,
 		.udma_mask	= NV_UDMA_MASK,
 		.port_ops	= &nv_generic_ops,
-		.irq_handler	= nv_generic_interrupt,
+		.private_data	= NV_PI_PRIV(nv_generic_interrupt, &nv_sht),
 	},
 	/* nforce2/3 */
 	{
-		.sht		= &nv_sht,
 		.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY,
-		.link_flags	= ATA_LFLAG_HRST_TO_RESUME,
 		.pio_mask	= NV_PIO_MASK,
 		.mwdma_mask	= NV_MWDMA_MASK,
 		.udma_mask	= NV_UDMA_MASK,
 		.port_ops	= &nv_nf2_ops,
-		.irq_handler	= nv_nf2_interrupt,
+		.private_data	= NV_PI_PRIV(nv_nf2_interrupt, &nv_sht),
 	},
 	/* ck804 */
 	{
-		.sht		= &nv_sht,
 		.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY,
-		.link_flags	= ATA_LFLAG_HRST_TO_RESUME,
 		.pio_mask	= NV_PIO_MASK,
 		.mwdma_mask	= NV_MWDMA_MASK,
 		.udma_mask	= NV_UDMA_MASK,
 		.port_ops	= &nv_ck804_ops,
-		.irq_handler	= nv_ck804_interrupt,
+		.private_data	= NV_PI_PRIV(nv_ck804_interrupt, &nv_sht),
 	},
 	/* ADMA */
 	{
-		.sht		= &nv_adma_sht,
 		.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY |
 				  ATA_FLAG_MMIO | ATA_FLAG_NCQ,
-		.link_flags	= ATA_LFLAG_HRST_TO_RESUME,
 		.pio_mask	= NV_PIO_MASK,
 		.mwdma_mask	= NV_MWDMA_MASK,
 		.udma_mask	= NV_UDMA_MASK,
 		.port_ops	= &nv_adma_ops,
-		.irq_handler	= nv_adma_interrupt,
+		.private_data	= NV_PI_PRIV(nv_adma_interrupt, &nv_adma_sht),
+	},
+	/* MCP5x */
+	{
+		.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY,
+		.pio_mask	= NV_PIO_MASK,
+		.mwdma_mask	= NV_MWDMA_MASK,
+		.udma_mask	= NV_UDMA_MASK,
+		.port_ops	= &nv_mcp5x_ops,
+		.private_data	= NV_PI_PRIV(nv_generic_interrupt, &nv_sht),
 	},
 	/* SWNCQ */
 	{
-		.sht		= &nv_swncq_sht,
 		.flags	        = ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY |
 				  ATA_FLAG_NCQ,
-		.link_flags	= ATA_LFLAG_HRST_TO_RESUME,
 		.pio_mask	= NV_PIO_MASK,
 		.mwdma_mask	= NV_MWDMA_MASK,
 		.udma_mask	= NV_UDMA_MASK,
 		.port_ops	= &nv_swncq_ops,
-		.irq_handler	= nv_swncq_interrupt,
+		.private_data	= NV_PI_PRIV(nv_swncq_interrupt, &nv_swncq_sht),
 	},
 };
 
@@ -639,8 +577,8 @@ MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, nv_pci_tbl);
 MODULE_VERSION(DRV_VERSION);
 
-static int adma_enabled = 1;
-static int swncq_enabled;
+static int adma_enabled;
+static int swncq_enabled = 1;
 
 static void nv_adma_register_mode(struct ata_port *ap)
 {
@@ -715,9 +653,10 @@ static int nv_adma_slave_config(struct scsi_device *sdev)
 {
 	struct ata_port *ap = ata_shost_to_port(sdev->host);
 	struct nv_adma_port_priv *pp = ap->private_data;
+	struct nv_adma_port_priv *port0, *port1;
+	struct scsi_device *sdev0, *sdev1;
 	struct pci_dev *pdev = to_pci_dev(ap->host->dev);
-	u64 bounce_limit;
-	unsigned long segment_boundary;
+	unsigned long segment_boundary, flags;
 	unsigned short sg_tablesize;
 	int rc;
 	int adma_enable;
@@ -729,6 +668,8 @@ static int nv_adma_slave_config(struct scsi_device *sdev)
 		/* Not a proper libata device, ignore */
 		return rc;
 
+	spin_lock_irqsave(ap->lock, flags);
+
 	if (ap->link.device[sdev->id].class == ATA_DEV_ATAPI) {
 		/*
 		 * NVIDIA reports that ADMA mode does not support ATAPI commands.
@@ -737,7 +678,6 @@ static int nv_adma_slave_config(struct scsi_device *sdev)
 		 * Restrict DMA parameters as required by the legacy interface
 		 * when an ATAPI device is connected.
 		 */
-		bounce_limit = ATA_DMA_MASK;
 		segment_boundary = ATA_DMA_BOUNDARY;
 		/* Subtract 1 since an extra entry may be needed for padding, see
 		   libata-scsi.c */
@@ -748,7 +688,6 @@ static int nv_adma_slave_config(struct scsi_device *sdev)
 		adma_enable = 0;
 		nv_adma_register_mode(ap);
 	} else {
-		bounce_limit = *ap->dev->dma_mask;
 		segment_boundary = NV_ADMA_DMA_BOUNDARY;
 		sg_tablesize = NV_ADMA_SGTBL_TOTAL_LEN;
 		adma_enable = 1;
@@ -774,12 +713,49 @@ static int nv_adma_slave_config(struct scsi_device *sdev)
 	if (current_reg != new_reg)
 		pci_write_config_dword(pdev, NV_MCP_SATA_CFG_20, new_reg);
 
-	blk_queue_bounce_limit(sdev->request_queue, bounce_limit);
+	port0 = ap->host->ports[0]->private_data;
+	port1 = ap->host->ports[1]->private_data;
+	sdev0 = ap->host->ports[0]->link.device[0].sdev;
+	sdev1 = ap->host->ports[1]->link.device[0].sdev;
+	if ((port0->flags & NV_ADMA_ATAPI_SETUP_COMPLETE) ||
+	    (port1->flags & NV_ADMA_ATAPI_SETUP_COMPLETE)) {
+		/** We have to set the DMA mask to 32-bit if either port is in
+		    ATAPI mode, since they are on the same PCI device which is
+		    used for DMA mapping. If we set the mask we also need to set
+		    the bounce limit on both ports to ensure that the block
+		    layer doesn't feed addresses that cause DMA mapping to
+		    choke. If either SCSI device is not allocated yet, it's OK
+		    since that port will discover its correct setting when it
+		    does get allocated.
+		    Note: Setting 32-bit mask should not fail. */
+		if (sdev0)
+			blk_queue_bounce_limit(sdev0->request_queue,
+					       ATA_DMA_MASK);
+		if (sdev1)
+			blk_queue_bounce_limit(sdev1->request_queue,
+					       ATA_DMA_MASK);
+
+		pci_set_dma_mask(pdev, ATA_DMA_MASK);
+	} else {
+		/** This shouldn't fail as it was set to this value before */
+		pci_set_dma_mask(pdev, pp->adma_dma_mask);
+		if (sdev0)
+			blk_queue_bounce_limit(sdev0->request_queue,
+					       pp->adma_dma_mask);
+		if (sdev1)
+			blk_queue_bounce_limit(sdev1->request_queue,
+					       pp->adma_dma_mask);
+	}
+
 	blk_queue_segment_boundary(sdev->request_queue, segment_boundary);
 	blk_queue_max_hw_segments(sdev->request_queue, sg_tablesize);
 	ata_port_printk(ap, KERN_INFO,
-		"bounce limit 0x%llX, segment boundary 0x%lX, hw segs %hu\n",
-		(unsigned long long)bounce_limit, segment_boundary, sg_tablesize);
+		"DMA mask 0x%llX, segment boundary 0x%lX, hw segs %hu\n",
+		(unsigned long long)*ap->host->dev->dma_mask,
+		segment_boundary, sg_tablesize);
+
+	spin_unlock_irqrestore(ap->lock, flags);
+
 	return rc;
 }
 
@@ -800,7 +776,7 @@ static void nv_adma_tf_read(struct ata_port *ap, struct ata_taskfile *tf)
 	   ADMA mode could abort outstanding commands. */
 	nv_adma_register_mode(ap);
 
-	ata_tf_read(ap, tf);
+	ata_sff_tf_read(ap, tf);
 }
 
 static unsigned int nv_adma_tf_to_cpb(struct ata_taskfile *tf, __le16 *cpb)
@@ -890,7 +866,7 @@ static int nv_adma_check_cpb(struct ata_port *ap, int cpb_num, int force_err)
 					"notifier for tag %d with no cmd?\n",
 					cpb_num);
 			ehi->err_mask |= AC_ERR_HSM;
-			ehi->action |= ATA_EH_SOFTRESET;
+			ehi->action |= ATA_EH_RESET;
 			ata_port_freeze(ap);
 			return 1;
 		}
@@ -914,12 +890,12 @@ static int nv_host_intr(struct ata_port *ap, u8 irq_stat)
 
 	/* DEV interrupt w/ no active qc? */
 	if (unlikely(!qc || (qc->tf.flags & ATA_TFLAG_POLLING))) {
-		ata_check_status(ap);
+		ata_sff_check_status(ap);
 		return 1;
 	}
 
 	/* handle interrupt */
-	return ata_host_intr(ap, qc);
+	return ata_sff_host_intr(ap, qc);
 }
 
 static irqreturn_t nv_adma_interrupt(int irq, void *dev_instance)
@@ -1011,14 +987,20 @@ static irqreturn_t nv_adma_interrupt(int irq, void *dev_instance)
 			}
 
 			if (status & (NV_ADMA_STAT_DONE |
-				      NV_ADMA_STAT_CPBERR)) {
-				u32 check_commands;
+				      NV_ADMA_STAT_CPBERR |
+				      NV_ADMA_STAT_CMD_COMPLETE)) {
+				u32 check_commands = notifier_clears[i];
 				int pos, error = 0;
 
-				if (ata_tag_valid(ap->link.active_tag))
-					check_commands = 1 << ap->link.active_tag;
-				else
-					check_commands = ap->link.sactive;
+				if (status & NV_ADMA_STAT_CPBERR) {
+					/* Check all active commands */
+					if (ata_tag_valid(ap->link.active_tag))
+						check_commands = 1 <<
+							ap->link.active_tag;
+					else
+						check_commands = ap->
+							link.sactive;
+				}
 
 				/** Check CPBs for completed commands */
 				while ((pos = ffs(check_commands)) && !error) {
@@ -1092,7 +1074,7 @@ static void nv_adma_irq_clear(struct ata_port *ap)
 	u32 notifier_clears[2];
 
 	if (pp->flags & NV_ADMA_ATAPI_SETUP_COMPLETE) {
-		ata_bmdma_irq_clear(ap);
+		ata_sff_irq_clear(ap);
 		return;
 	}
 
@@ -1123,7 +1105,7 @@ static void nv_adma_post_internal_cmd(struct ata_queued_cmd *qc)
 	struct nv_adma_port_priv *pp = qc->ap->private_data;
 
 	if (pp->flags & NV_ADMA_PORT_REGISTER_MODE)
-		ata_bmdma_post_internal_cmd(qc);
+		ata_sff_post_internal_cmd(qc);
 }
 
 static int nv_adma_port_start(struct ata_port *ap)
@@ -1134,9 +1116,19 @@ static int nv_adma_port_start(struct ata_port *ap)
 	void *mem;
 	dma_addr_t mem_dma;
 	void __iomem *mmio;
+	struct pci_dev *pdev = to_pci_dev(dev);
 	u16 tmp;
 
 	VPRINTK("ENTER\n");
+
+	/* Ensure DMA mask is set to 32-bit before allocating legacy PRD and
+	   pad buffers */
+	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	if (rc)
+		return rc;
+	rc = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+	if (rc)
+		return rc;
 
 	rc = ata_port_start(ap);
 	if (rc)
@@ -1152,6 +1144,15 @@ static int nv_adma_port_start(struct ata_port *ap)
 	pp->gen_block = ap->host->iomap[NV_MMIO_BAR] + NV_ADMA_GEN;
 	pp->notifier_clear_block = pp->gen_block +
 	       NV_ADMA_NOTIFIER_CLEAR + (4 * ap->port_no);
+
+	/* Now that the legacy PRD and padding buffer are allocated we can
+	   safely raise the DMA mask to allocate the CPB/APRD table.
+	   These are allowed to fail since we store the value that ends up
+	   being used to set as the bounce limit in slave_config later if
+	   needed. */
+	pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
+	pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+	pp->adma_dma_mask = *dev->dma_mask;
 
 	mem = dmam_alloc_coherent(dev, NV_ADMA_PORT_PRIV_DMA_SZ,
 				  &mem_dma, GFP_KERNEL);
@@ -1336,21 +1337,18 @@ static void nv_adma_fill_aprd(struct ata_queued_cmd *qc,
 static void nv_adma_fill_sg(struct ata_queued_cmd *qc, struct nv_adma_cpb *cpb)
 {
 	struct nv_adma_port_priv *pp = qc->ap->private_data;
-	unsigned int idx;
 	struct nv_adma_prd *aprd;
 	struct scatterlist *sg;
+	unsigned int si;
 
 	VPRINTK("ENTER\n");
 
-	idx = 0;
-
-	ata_for_each_sg(sg, qc) {
-		aprd = (idx < 5) ? &cpb->aprd[idx] :
-			       &pp->aprd[NV_ADMA_SGTBL_LEN * qc->tag + (idx-5)];
-		nv_adma_fill_aprd(qc, sg, idx, aprd);
-		idx++;
+	for_each_sg(qc->sg, sg, qc->n_elem, si) {
+		aprd = (si < 5) ? &cpb->aprd[si] :
+			       &pp->aprd[NV_ADMA_SGTBL_LEN * qc->tag + (si-5)];
+		nv_adma_fill_aprd(qc, sg, si, aprd);
 	}
-	if (idx > 5)
+	if (si > 5)
 		cpb->next_aprd = cpu_to_le64(((u64)(pp->aprd_dma + NV_ADMA_SGTBL_SZ * qc->tag)));
 	else
 		cpb->next_aprd = cpu_to_le64(0);
@@ -1384,7 +1382,7 @@ static void nv_adma_qc_prep(struct ata_queued_cmd *qc)
 		BUG_ON(!(pp->flags & NV_ADMA_ATAPI_SETUP_COMPLETE) &&
 			(qc->flags & ATA_QCFLAG_DMAMAP));
 		nv_adma_register_mode(qc->ap);
-		ata_qc_prep(qc);
+		ata_sff_qc_prep(qc);
 		return;
 	}
 
@@ -1443,7 +1441,7 @@ static unsigned int nv_adma_qc_issue(struct ata_queued_cmd *qc)
 		BUG_ON(!(pp->flags & NV_ADMA_ATAPI_SETUP_COMPLETE) &&
 			(qc->flags & ATA_QCFLAG_DMAMAP));
 		nv_adma_register_mode(qc->ap);
-		return ata_qc_issue_prot(qc);
+		return ata_sff_qc_issue(qc);
 	} else
 		nv_adma_mode(qc->ap);
 
@@ -1484,11 +1482,11 @@ static irqreturn_t nv_generic_interrupt(int irq, void *dev_instance)
 
 			qc = ata_qc_from_tag(ap, ap->link.active_tag);
 			if (qc && (!(qc->tf.flags & ATA_TFLAG_POLLING)))
-				handled += ata_host_intr(ap, qc);
+				handled += ata_sff_host_intr(ap, qc);
 			else
 				// No request pending?  Clear interrupt status
 				// anyway, in case there's one pending.
-				ap->ops->check_status(ap);
+				ap->ops->sff_check_status(ap);
 		}
 
 	}
@@ -1542,22 +1540,33 @@ static irqreturn_t nv_ck804_interrupt(int irq, void *dev_instance)
 	return ret;
 }
 
-static int nv_scr_read(struct ata_port *ap, unsigned int sc_reg, u32 *val)
+static int nv_scr_read(struct ata_link *link, unsigned int sc_reg, u32 *val)
 {
 	if (sc_reg > SCR_CONTROL)
 		return -EINVAL;
 
-	*val = ioread32(ap->ioaddr.scr_addr + (sc_reg * 4));
+	*val = ioread32(link->ap->ioaddr.scr_addr + (sc_reg * 4));
 	return 0;
 }
 
-static int nv_scr_write(struct ata_port *ap, unsigned int sc_reg, u32 val)
+static int nv_scr_write(struct ata_link *link, unsigned int sc_reg, u32 val)
 {
 	if (sc_reg > SCR_CONTROL)
 		return -EINVAL;
 
-	iowrite32(val, ap->ioaddr.scr_addr + (sc_reg * 4));
+	iowrite32(val, link->ap->ioaddr.scr_addr + (sc_reg * 4));
 	return 0;
+}
+
+static int nv_noclassify_hardreset(struct ata_link *link, unsigned int *class,
+				   unsigned long deadline)
+{
+	bool online;
+	int rc;
+
+	rc = sata_link_hardreset(link, sata_deb_timing_hotplug, deadline,
+				 &online, NULL);
+	return online ? -EAGAIN : rc;
 }
 
 static void nv_nf2_freeze(struct ata_port *ap)
@@ -1619,7 +1628,7 @@ static void nv_mcp55_freeze(struct ata_port *ap)
 	mask = readl(mmio_base + NV_INT_ENABLE_MCP55);
 	mask &= ~(NV_INT_ALL_MCP55 << shift);
 	writel(mask, mmio_base + NV_INT_ENABLE_MCP55);
-	ata_bmdma_freeze(ap);
+	ata_sff_freeze(ap);
 }
 
 static void nv_mcp55_thaw(struct ata_port *ap)
@@ -1633,25 +1642,7 @@ static void nv_mcp55_thaw(struct ata_port *ap)
 	mask = readl(mmio_base + NV_INT_ENABLE_MCP55);
 	mask |= (NV_INT_MASK_MCP55 << shift);
 	writel(mask, mmio_base + NV_INT_ENABLE_MCP55);
-	ata_bmdma_thaw(ap);
-}
-
-static int nv_hardreset(struct ata_link *link, unsigned int *class,
-			unsigned long deadline)
-{
-	unsigned int dummy;
-
-	/* SATA hardreset fails to retrieve proper device signature on
-	 * some controllers.  Don't classify on hardreset.  For more
-	 * info, see http://bugzilla.kernel.org/show_bug.cgi?id=3352
-	 */
-	return sata_std_hardreset(link, &dummy, deadline);
-}
-
-static void nv_error_handler(struct ata_port *ap)
-{
-	ata_bmdma_drive_eh(ap, ata_std_prereset, ata_std_softreset,
-			   nv_hardreset, ata_std_postreset);
+	ata_sff_thaw(ap);
 }
 
 static void nv_adma_error_handler(struct ata_port *ap)
@@ -1707,8 +1698,7 @@ static void nv_adma_error_handler(struct ata_port *ap)
 		readw(mmio + NV_ADMA_CTL);	/* flush posted write */
 	}
 
-	ata_bmdma_drive_eh(ap, ata_std_prereset, ata_std_softreset,
-			   nv_hardreset, ata_std_postreset);
+	ata_sff_error_handler(ap);
 }
 
 static void nv_swncq_qc_to_dq(struct ata_port *ap, struct ata_queued_cmd *qc)
@@ -1794,7 +1784,7 @@ static void nv_swncq_ncq_stop(struct ata_port *ap)
 		pp->dhfis_bits, pp->dmafis_bits, pp->sdbfis_bits);
 
 	ata_port_printk(ap, KERN_ERR, "ATA_REG 0x%X ERR_REG 0x%X\n",
-			ap->ops->check_status(ap),
+			ap->ops->sff_check_status(ap),
 			ioread8(ap->ioaddr.error_addr));
 
 	sactive = readl(pp->sactive_block);
@@ -1820,7 +1810,7 @@ static void nv_swncq_ncq_stop(struct ata_port *ap)
 	}
 
 	nv_swncq_pp_reinit(ap);
-	ap->ops->irq_clear(ap);
+	ap->ops->sff_irq_clear(ap);
 	__ata_bmdma_stop(ap);
 	nv_swncq_irq_clear(ap, 0xffff);
 }
@@ -1831,11 +1821,10 @@ static void nv_swncq_error_handler(struct ata_port *ap)
 
 	if (ap->link.sactive) {
 		nv_swncq_ncq_stop(ap);
-		ehc->i.action |= ATA_EH_HARDRESET;
+		ehc->i.action |= ATA_EH_RESET;
 	}
 
-	ata_bmdma_drive_eh(ap, ata_std_prereset, ata_std_softreset,
-			   nv_hardreset, ata_std_postreset);
+	ata_sff_error_handler(ap);
 }
 
 #ifdef CONFIG_PM
@@ -1981,7 +1970,7 @@ static int nv_swncq_port_start(struct ata_port *ap)
 static void nv_swncq_qc_prep(struct ata_queued_cmd *qc)
 {
 	if (qc->tf.protocol != ATA_PROT_NCQ) {
-		ata_qc_prep(qc);
+		ata_sff_qc_prep(qc);
 		return;
 	}
 
@@ -1995,17 +1984,14 @@ static void nv_swncq_fill_sg(struct ata_queued_cmd *qc)
 {
 	struct ata_port *ap = qc->ap;
 	struct scatterlist *sg;
-	unsigned int idx;
 	struct nv_swncq_port_priv *pp = ap->private_data;
 	struct ata_prd *prd;
-
-	WARN_ON(qc->__sg == NULL);
-	WARN_ON(qc->n_elem == 0 && qc->pad_len == 0);
+	unsigned int si, idx;
 
 	prd = pp->prd + ATA_MAX_PRD * qc->tag;
 
 	idx = 0;
-	ata_for_each_sg(sg, qc) {
+	for_each_sg(qc->sg, sg, qc->n_elem, si) {
 		u32 addr, offset;
 		u32 sg_len, len;
 
@@ -2027,8 +2013,7 @@ static void nv_swncq_fill_sg(struct ata_queued_cmd *qc)
 		}
 	}
 
-	if (idx)
-		prd[idx - 1].flags_len |= cpu_to_le32(ATA_PRD_EOT);
+	prd[idx - 1].flags_len |= cpu_to_le32(ATA_PRD_EOT);
 }
 
 static unsigned int nv_swncq_issue_atacmd(struct ata_port *ap,
@@ -2047,8 +2032,8 @@ static unsigned int nv_swncq_issue_atacmd(struct ata_port *ap,
 	pp->dmafis_bits &= ~(1 << qc->tag);
 	pp->qc_active |= (0x1 << qc->tag);
 
-	ap->ops->tf_load(ap, &qc->tf);	 /* load tf registers */
-	ap->ops->exec_command(ap, &qc->tf);
+	ap->ops->sff_tf_load(ap, &qc->tf);	 /* load tf registers */
+	ap->ops->sff_exec_command(ap, &qc->tf);
 
 	DPRINTK("Issued tag %u\n", qc->tag);
 
@@ -2061,7 +2046,7 @@ static unsigned int nv_swncq_qc_issue(struct ata_queued_cmd *qc)
 	struct nv_swncq_port_priv *pp = ap->private_data;
 
 	if (qc->tf.protocol != ATA_PROT_NCQ)
-		return ata_qc_issue_prot(qc);
+		return ata_sff_qc_issue(qc);
 
 	DPRINTK("Enter\n");
 
@@ -2116,11 +2101,11 @@ static int nv_swncq_sdbfis(struct ata_port *ap)
 		ata_ehi_clear_desc(ehi);
 		ata_ehi_push_desc(ehi, "BMDMA stat 0x%x", host_stat);
 		ehi->err_mask |= AC_ERR_HOST_BUS;
-		ehi->action |= ATA_EH_SOFTRESET;
+		ehi->action |= ATA_EH_RESET;
 		return -EINVAL;
 	}
 
-	ap->ops->irq_clear(ap);
+	ap->ops->sff_irq_clear(ap);
 	__ata_bmdma_stop(ap);
 
 	sactive = readl(pp->sactive_block);
@@ -2131,7 +2116,7 @@ static int nv_swncq_sdbfis(struct ata_port *ap)
 		ata_ehi_push_desc(ehi, "illegal SWNCQ:qc_active transition"
 				  "(%08x->%08x)", pp->qc_active, sactive);
 		ehi->err_mask |= AC_ERR_HSM;
-		ehi->action |= ATA_EH_HARDRESET;
+		ehi->action |= ATA_EH_RESET;
 		return -EINVAL;
 	}
 	for (i = 0; i < ATA_MAX_QUEUE; i++) {
@@ -2242,7 +2227,7 @@ static void nv_swncq_host_interrupt(struct ata_port *ap, u16 fis)
 	u8 ata_stat;
 	int rc = 0;
 
-	ata_stat = ap->ops->check_status(ap);
+	ata_stat = ap->ops->sff_check_status(ap);
 	nv_swncq_irq_clear(ap, fis);
 	if (!fis)
 		return;
@@ -2258,16 +2243,16 @@ static void nv_swncq_host_interrupt(struct ata_port *ap, u16 fis)
 	if (!pp->qc_active)
 		return;
 
-	if (ap->ops->scr_read(ap, SCR_ERROR, &serror))
+	if (ap->ops->scr_read(&ap->link, SCR_ERROR, &serror))
 		return;
-	ap->ops->scr_write(ap, SCR_ERROR, serror);
+	ap->ops->scr_write(&ap->link, SCR_ERROR, serror);
 
 	if (ata_stat & ATA_ERR) {
 		ata_ehi_clear_desc(ehi);
 		ata_ehi_push_desc(ehi, "Ata error. fis:0x%X", fis);
 		ehi->err_mask |= AC_ERR_DEV;
 		ehi->serror |= serror;
-		ehi->action |= ATA_EH_SOFTRESET;
+		ehi->action |= ATA_EH_RESET;
 		ata_port_freeze(ap);
 		return;
 	}
@@ -2299,13 +2284,13 @@ static void nv_swncq_host_interrupt(struct ata_port *ap, u16 fis)
 		if (pp->ncq_flags & (ncq_saw_sdb | ncq_saw_backout)) {
 			ata_ehi_push_desc(ehi, "illegal fis transaction");
 			ehi->err_mask |= AC_ERR_HSM;
-			ehi->action |= ATA_EH_HARDRESET;
+			ehi->action |= ATA_EH_RESET;
 			goto irq_error;
 		}
 
 		if (!(fis & NV_SWNCQ_IRQ_DMASETUP) &&
 		    !(pp->ncq_flags & ncq_saw_dmas)) {
-			ata_stat = ap->ops->check_status(ap);
+			ata_stat = ap->ops->sff_check_status(ap);
 			if (ata_stat & ATA_BUSY)
 				goto irq_exit;
 
@@ -2372,6 +2357,7 @@ static int nv_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	static int printed_version;
 	const struct ata_port_info *ppi[] = { NULL, NULL };
+	struct nv_pi_priv *ipriv;
 	struct ata_host *host;
 	struct nv_host_priv *hpriv;
 	int rc;
@@ -2397,18 +2383,14 @@ static int nv_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (type == CK804 && adma_enabled) {
 		dev_printk(KERN_NOTICE, &pdev->dev, "Using ADMA mode\n");
 		type = ADMA;
-	}
-
-	if (type == SWNCQ) {
-		if (swncq_enabled)
-			dev_printk(KERN_NOTICE, &pdev->dev,
-				   "Using SWNCQ mode\n");
-		else
-			type = GENERIC;
+	} else if (type == MCP5x && swncq_enabled) {
+		dev_printk(KERN_NOTICE, &pdev->dev, "Using SWNCQ mode\n");
+		type = SWNCQ;
 	}
 
 	ppi[0] = &nv_port_info[type];
-	rc = ata_pci_prepare_sff_host(pdev, ppi, &host);
+	ipriv = ppi[0]->private_data;
+	rc = ata_pci_sff_prepare_host(pdev, ppi, &host);
 	if (rc)
 		return rc;
 
@@ -2417,12 +2399,6 @@ static int nv_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return -ENOMEM;
 	hpriv->type = type;
 	host->private_data = hpriv;
-
-	/* set 64bit dma masks, may fail */
-	if (type == ADMA) {
-		if (pci_set_dma_mask(pdev, DMA_64BIT_MASK) == 0)
-			pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK);
-	}
 
 	/* request and iomap NV_MMIO_BAR */
 	rc = pcim_iomap_regions(pdev, 1 << NV_MMIO_BAR, DRV_NAME);
@@ -2452,8 +2428,8 @@ static int nv_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		nv_swncq_host_init(host);
 
 	pci_set_master(pdev);
-	return ata_host_activate(host, pdev->irq, ppi[0]->irq_handler,
-				 IRQF_SHARED, ppi[0]->sht);
+	return ata_host_activate(host, pdev->irq, ipriv->irq_handler,
+				 IRQF_SHARED, ipriv->sht);
 }
 
 #ifdef CONFIG_PM
@@ -2547,7 +2523,7 @@ static void __exit nv_exit(void)
 module_init(nv_init);
 module_exit(nv_exit);
 module_param_named(adma, adma_enabled, bool, 0444);
-MODULE_PARM_DESC(adma, "Enable use of ADMA (Default: true)");
+MODULE_PARM_DESC(adma, "Enable use of ADMA (Default: false)");
 module_param_named(swncq, swncq_enabled, bool, 0444);
-MODULE_PARM_DESC(swncq, "Enable use of SWNCQ (Default: false)");
+MODULE_PARM_DESC(swncq, "Enable use of SWNCQ (Default: true)");
 

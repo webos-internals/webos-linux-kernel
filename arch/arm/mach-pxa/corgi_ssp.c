@@ -16,11 +16,13 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/mach-types.h>
 
-#include <asm/arch/ssp.h>
-#include <asm/arch/pxa-regs.h>
+#include <mach/ssp.h>
+#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-gpio.h>
+#include <mach/regs-ssp.h>
 #include "sharpsl.h"
 
 static DEFINE_SPINLOCK(corgi_ssp_lock);
@@ -31,7 +33,7 @@ static struct corgissp_machinfo *ssp_machinfo;
 /*
  * There are three devices connected to the SSP interface:
  *   1. A touchscreen controller (TI ADS7846 compatible)
- *   2. An LCD contoller (with some Backlight functionality)
+ *   2. An LCD controller (with some Backlight functionality)
  *   3. A battery monitoring IC (Maxim MAX1111)
  *
  * Each device uses a different speed/mode of communication.

@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/file.h>
 #include <linux/utsname.h>
-#include <linux/version.h>
 #include <linux/delay.h>
 #include <linux/bitops.h>
 #include <linux/genhd.h>
@@ -27,8 +26,6 @@
 #include <linux/pm.h>
 
 #include "power.h"
-
-extern char resume_file[];
 
 #define SWSUSP_SIG	"S1SUSPEND"
 
@@ -63,6 +60,7 @@ static struct block_device *resume_bdev;
 static int submit(int rw, pgoff_t page_off, struct page *page,
 			struct bio **bio_chain)
 {
+	const int bio_rw = rw | (1 << BIO_RW_SYNCIO) | (1 << BIO_RW_UNPLUG);
 	struct bio *bio;
 
 	bio = bio_alloc(__GFP_WAIT | __GFP_HIGH, 1);
@@ -73,7 +71,8 @@ static int submit(int rw, pgoff_t page_off, struct page *page,
 	bio->bi_end_io = end_swap_bio_read;
 
 	if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE) {
-		printk("swsusp: ERROR: adding page to bio at %ld\n", page_off);
+		printk(KERN_ERR "PM: Adding page to bio failed at %ld\n",
+			page_off);
 		bio_put(bio);
 		return -EFAULT;
 	}
@@ -82,7 +81,7 @@ static int submit(int rw, pgoff_t page_off, struct page *page,
 	bio_get(bio);
 
 	if (bio_chain == NULL) {
-		submit_bio(rw | (1 << BIO_RW_SYNC), bio);
+		submit_bio(bio_rw, bio);
 		wait_on_page_locked(page);
 		if (rw == READ)
 			bio_set_pages_dirty(bio);
@@ -92,7 +91,7 @@ static int submit(int rw, pgoff_t page_off, struct page *page,
 			get_page(page);	/* These pages are freed later */
 		bio->bi_private = *bio_chain;
 		*bio_chain = bio;
-		submit_bio(rw | (1 << BIO_RW_SYNC), bio);
+		submit_bio(bio_rw, bio);
 	}
 	return 0;
 }
@@ -153,7 +152,7 @@ static int mark_swapfiles(sector_t start, unsigned int flags)
 		error = bio_write_page(swsusp_resume_block,
 					swsusp_header, NULL);
 	} else {
-		printk(KERN_ERR "swsusp: Swap header not found!\n");
+		printk(KERN_ERR "PM: Swap header not found!\n");
 		error = -ENODEV;
 	}
 	return error;
@@ -174,13 +173,13 @@ static int swsusp_swap_check(void) /* This is called before saving image */
 		return res;
 
 	root_swap = res;
-	res = blkdev_get(resume_bdev, FMODE_WRITE, O_RDWR);
+	res = blkdev_get(resume_bdev, FMODE_WRITE);
 	if (res)
 		return res;
 
 	res = set_blocksize(resume_bdev, PAGE_SIZE);
 	if (res < 0)
-		blkdev_put(resume_bdev);
+		blkdev_put(resume_bdev, FMODE_WRITE);
 
 	return res;
 }
@@ -325,7 +324,8 @@ static int save_image(struct swap_map_handle *handle,
 	struct timeval start;
 	struct timeval stop;
 
-	printk("Saving image data pages (%u pages) ...     ", nr_to_write);
+	printk(KERN_INFO "PM: Saving image data pages (%u pages) ...     ",
+		nr_to_write);
 	m = nr_to_write / 100;
 	if (!m)
 		m = 1;
@@ -365,7 +365,7 @@ static int enough_swap(unsigned int nr_pages)
 {
 	unsigned int free_swap = count_swap_pages(root_swap, 1);
 
-	pr_debug("swsusp: free swap pages: %u\n", free_swap);
+	pr_debug("PM: Free swap pages: %u\n", free_swap);
 	return free_swap > nr_pages + PAGES_FOR_IO;
 }
 
@@ -388,7 +388,7 @@ int swsusp_write(unsigned int flags)
 
 	error = swsusp_swap_check();
 	if (error) {
-		printk(KERN_ERR "swsusp: Cannot find swap device, try "
+		printk(KERN_ERR "PM: Cannot find swap device, try "
 				"swapon -a.\n");
 		return error;
 	}
@@ -402,7 +402,7 @@ int swsusp_write(unsigned int flags)
 	}
 	header = (struct swsusp_info *)data_of(snapshot);
 	if (!enough_swap(header->pages)) {
-		printk(KERN_ERR "swsusp: Not enough free swap\n");
+		printk(KERN_ERR "PM: Not enough free swap\n");
 		error = -ENOSPC;
 		goto out;
 	}
@@ -417,7 +417,7 @@ int swsusp_write(unsigned int flags)
 
 		if (!error) {
 			flush_swap_writer(&handle);
-			printk("S");
+			printk(KERN_INFO "PM: S");
 			error = mark_swapfiles(start, flags);
 			printk("|\n");
 		}
@@ -427,7 +427,7 @@ int swsusp_write(unsigned int flags)
 
 	release_swap_writer(&handle);
  out:
-	swsusp_close();
+	swsusp_close(FMODE_WRITE);
 	return error;
 }
 
@@ -507,7 +507,8 @@ static int load_image(struct swap_map_handle *handle,
 	int err2;
 	unsigned nr_pages;
 
-	printk("Loading image data pages (%u pages) ...     ", nr_to_read);
+	printk(KERN_INFO "PM: Loading image data pages (%u pages) ...     ",
+		nr_to_read);
 	m = nr_to_read / 100;
 	if (!m)
 		m = 1;
@@ -558,7 +559,7 @@ int swsusp_read(unsigned int *flags_p)
 
 	*flags_p = swsusp_header->flags;
 	if (IS_ERR(resume_bdev)) {
-		pr_debug("swsusp: block device not initialised\n");
+		pr_debug("PM: Image device not initialised\n");
 		return PTR_ERR(resume_bdev);
 	}
 
@@ -574,12 +575,12 @@ int swsusp_read(unsigned int *flags_p)
 		error = load_image(&handle, &snapshot, header->pages - 1);
 	release_swap_reader(&handle);
 
-	blkdev_put(resume_bdev);
+	blkdev_put(resume_bdev, FMODE_READ);
 
 	if (!error)
-		pr_debug("swsusp: Reading resume file was successful\n");
+		pr_debug("PM: Image successfully loaded\n");
 	else
-		pr_debug("swsusp: Error %d resuming\n", error);
+		pr_debug("PM: Error %d resuming\n", error);
 	return error;
 }
 
@@ -609,15 +610,15 @@ int swsusp_check(void)
 			return -EINVAL;
 		}
 		if (error)
-			blkdev_put(resume_bdev);
+			blkdev_put(resume_bdev, FMODE_READ);
 		else
-			pr_debug("swsusp: Signature found, resuming\n");
+			pr_debug("PM: Signature found, resuming\n");
 	} else {
 		error = PTR_ERR(resume_bdev);
 	}
 
 	if (error)
-		pr_debug("swsusp: Error %d check for resume file\n", error);
+		pr_debug("PM: Error %d checking image file\n", error);
 
 	return error;
 }
@@ -626,14 +627,14 @@ int swsusp_check(void)
  *	swsusp_close - close swap device.
  */
 
-void swsusp_close(void)
+void swsusp_close(fmode_t mode)
 {
 	if (IS_ERR(resume_bdev)) {
-		pr_debug("swsusp: block device not initialised\n");
+		pr_debug("PM: Image device not initialised\n");
 		return;
 	}
 
-	blkdev_put(resume_bdev);
+	blkdev_put(resume_bdev, mode);
 }
 
 static int swsusp_header_init(void)

@@ -440,9 +440,8 @@ static __init struct scx200_acb_iface *scx200_create_iface(const char *text,
 	i2c_set_adapdata(adapter, iface);
 	snprintf(adapter->name, sizeof(adapter->name), "%s ACB%d", text, index);
 	adapter->owner = THIS_MODULE;
-	adapter->id = I2C_HW_SMBUS_SCX200;
 	adapter->algo = &scx200_acb_algorithm;
-	adapter->class = I2C_CLASS_HWMON;
+	adapter->class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
 	adapter->dev.parent = dev;
 
 	mutex_init(&iface->mutex);
@@ -492,7 +491,7 @@ static __init int scx200_create_pci(const char *text, struct pci_dev *pdev,
 	iface->pdev = pdev;
 	iface->bar = bar;
 
-	rc = pci_enable_device_bars(iface->pdev, 1 << iface->bar);
+	rc = pci_enable_device_io(iface->pdev);
 	if (rc)
 		goto errout_free;
 
@@ -527,7 +526,7 @@ static int __init scx200_create_isa(const char *text, unsigned long base,
 	if (iface == NULL)
 		return -ENOMEM;
 
-	if (request_region(base, 8, iface->adapter.name) == 0) {
+	if (!request_region(base, 8, iface->adapter.name)) {
 		printk(KERN_ERR NAME ": can't allocate io 0x%lx-0x%lx\n",
 		       base, base + 8 - 1);
 		rc = -EBUSY;

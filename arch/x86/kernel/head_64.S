@@ -18,11 +18,26 @@
 #include <asm/page.h>
 #include <asm/msr.h>
 #include <asm/cache.h>
+#include <asm/processor-flags.h>
+
+#ifdef CONFIG_PARAVIRT
+#include <asm/asm-offsets.h>
+#include <asm/paravirt.h>
+#else
+#define GET_CR2_INTO_RCX movq %cr2, %rcx
+#endif
 
 /* we are not able to switch in one step to the final KERNEL ADRESS SPACE
  * because we need identity-mapped pages.
  *
  */
+
+#define pud_index(x)	(((x) >> PUD_SHIFT) & (PTRS_PER_PUD-1))
+
+L4_PAGE_OFFSET = pgd_index(__PAGE_OFFSET)
+L3_PAGE_OFFSET = pud_index(__PAGE_OFFSET)
+L4_START_KERNEL = pgd_index(__START_KERNEL_map)
+L3_START_KERNEL = pud_index(__START_KERNEL_map)
 
 	.text
 	.section .text.head
@@ -56,7 +71,7 @@ startup_64:
 
 	/* Is the address not 2M aligned? */
 	movq	%rbp, %rax
-	andl	$~LARGE_PAGE_MASK, %eax
+	andl	$~PMD_PAGE_MASK, %eax
 	testl	%eax, %eax
 	jnz	bad_address
 
@@ -69,8 +84,8 @@ startup_64:
 	/* Fixup the physical addresses in the page table
 	 */
 	addq	%rbp, init_level4_pgt + 0(%rip)
-	addq	%rbp, init_level4_pgt + (258*8)(%rip)
-	addq	%rbp, init_level4_pgt + (511*8)(%rip)
+	addq	%rbp, init_level4_pgt + (L4_PAGE_OFFSET*8)(%rip)
+	addq	%rbp, init_level4_pgt + (L4_START_KERNEL*8)(%rip)
 
 	addq	%rbp, level3_ident_pgt + 0(%rip)
 
@@ -81,7 +96,7 @@ startup_64:
 
 	/* Add an Identity mapping if I am above 1G */
 	leaq	_text(%rip), %rdi
-	andq	$LARGE_PAGE_MASK, %rdi
+	andq	$PMD_PAGE_MASK, %rdi
 
 	movq	%rdi, %rax
 	shrq	$PUD_SHIFT, %rax
@@ -95,13 +110,18 @@ startup_64:
 	movq	%rdi, %rax
 	shrq	$PMD_SHIFT, %rax
 	andq	$(PTRS_PER_PMD - 1), %rax
-	leaq	__PAGE_KERNEL_LARGE_EXEC(%rdi), %rdx
+	leaq	__PAGE_KERNEL_IDENT_LARGE_EXEC(%rdi), %rdx
 	leaq	level2_spare_pgt(%rip), %rbx
 	movq	%rdx, 0(%rbx, %rax, 8)
 ident_complete:
 
-	/* Fixup the kernel text+data virtual addresses
+	/*
+	 * Fixup the kernel text+data virtual addresses. Note that
+	 * we might write invalid pmds, when the kernel is relocated
+	 * cleanup_highmap() fixes this up along with the mappings
+	 * beyond _end.
 	 */
+
 	leaq	level2_kernel_pgt(%rip), %rdi
 	leaq	4096(%rdi), %r8
 	/* See if it is a valid page table entry */
@@ -116,13 +136,9 @@ ident_complete:
 	/* Fixup phys_base */
 	addq	%rbp, phys_base(%rip)
 
-#ifdef CONFIG_SMP
+#ifdef CONFIG_X86_TRAMPOLINE
 	addq	%rbp, trampoline_level4_pgt + 0(%rip)
 	addq	%rbp, trampoline_level4_pgt + (511*8)(%rip)
-#endif
-#ifdef CONFIG_ACPI_SLEEP
-	addq	%rbp, wakeup_level4_pgt + 0(%rip)
-	addq	%rbp, wakeup_level4_pgt + (511*8)(%rip)
 #endif
 
 	/* Due to ENTRY(), sometimes the empty space gets filled with
@@ -146,9 +162,7 @@ ENTRY(secondary_startup_64)
 	 */
 
 	/* Enable PAE mode and PGE */
-	xorq	%rax, %rax
-	btsq	$5, %rax
-	btsq	$7, %rax
+	movl	$(X86_CR4_PAE | X86_CR4_PGE), %eax
 	movq	%rax, %cr4
 
 	/* Setup early boot stage 4 level pagetables. */
@@ -176,19 +190,15 @@ ENTRY(secondary_startup_64)
 1:	wrmsr				/* Make changes effective */
 
 	/* Setup cr0 */
-#define CR0_PM				1		/* protected mode */
-#define CR0_MP				(1<<1)
-#define CR0_ET				(1<<4)
-#define CR0_NE				(1<<5)
-#define CR0_WP				(1<<16)
-#define CR0_AM				(1<<18)
-#define CR0_PAGING 			(1<<31)
-	movl $CR0_PM|CR0_MP|CR0_ET|CR0_NE|CR0_WP|CR0_AM|CR0_PAGING,%eax
+#define CR0_STATE	(X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | \
+			 X86_CR0_NE | X86_CR0_WP | X86_CR0_AM | \
+			 X86_CR0_PG)
+	movl	$CR0_STATE, %eax
 	/* Make changes effective */
 	movq	%rax, %cr0
 
 	/* Setup a boot time stack */
-	movq init_rsp(%rip),%rsp
+	movq stack_start(%rip),%rsp
 
 	/* zero EFLAGS after setting rsp */
 	pushq $0
@@ -200,7 +210,7 @@ ENTRY(secondary_startup_64)
 	 * addresses where we're currently running on. We have to do that here
 	 * because in 32bit we couldn't load a 64bit linear address.
 	 */
-	lgdt	cpu_gdt_descr(%rip)
+	lgdt	early_gdt_descr(%rip)
 
 	/* set up data segments. actually 0 would do too */
 	movl $__KERNEL_DS,%eax
@@ -243,31 +253,51 @@ ENTRY(secondary_startup_64)
 	lretq
 
 	/* SMP bootup changes these two */
-#ifndef CONFIG_HOTPLUG_CPU
-	.pushsection .init.data
-#endif
+	__REFDATA
 	.align	8
-	.globl	initial_code
-initial_code:
+	ENTRY(initial_code)
 	.quad	x86_64_start_kernel
-#ifndef CONFIG_HOTPLUG_CPU
-	.popsection
-#endif
-	.globl init_rsp
-init_rsp:
+	__FINITDATA
+
+	ENTRY(stack_start)
 	.quad  init_thread_union+THREAD_SIZE-8
+	.word  0
 
 bad_address:
 	jmp bad_address
 
+	.section ".init.text","ax"
+#ifdef CONFIG_EARLY_PRINTK
+	.globl early_idt_handlers
+early_idt_handlers:
+	i = 0
+	.rept NUM_EXCEPTION_VECTORS
+	movl $i, %esi
+	jmp early_idt_handler
+	i = i + 1
+	.endr
+#endif
+
 ENTRY(early_idt_handler)
+#ifdef CONFIG_EARLY_PRINTK
 	cmpl $2,early_recursion_flag(%rip)
 	jz  1f
 	incl early_recursion_flag(%rip)
+	GET_CR2_INTO_RCX
+	movq %rcx,%r9
+	xorl %r8d,%r8d		# zero for error code
+	movl %esi,%ecx		# get vector number
+	# Test %ecx against mask of vectors that push error code.
+	cmpl $31,%ecx
+	ja 0f
+	movl $1,%eax
+	salq %cl,%rax
+	testl $0x27d00,%eax
+	je 0f
+	popq %r8		# get error code
+0:	movq 0(%rsp),%rcx	# get ip
+	movq 8(%rsp),%rdx	# get cs
 	xorl %eax,%eax
-	movq 8(%rsp),%rsi	# get rip
-	movq (%rsp),%rdx
-	movq %cr2,%rcx
 	leaq early_idt_msg(%rip),%rdi
 	call early_printk
 	cmpl $2,early_recursion_flag(%rip)
@@ -275,18 +305,23 @@ ENTRY(early_idt_handler)
 	call dump_stack
 #ifdef CONFIG_KALLSYMS	
 	leaq early_idt_ripmsg(%rip),%rdi
-	movq 8(%rsp),%rsi	# get rip again
+	movq 0(%rsp),%rsi	# get rip again
 	call __print_symbol
 #endif
+#endif /* EARLY_PRINTK */
 1:	hlt
 	jmp 1b
+
+#ifdef CONFIG_EARLY_PRINTK
 early_recursion_flag:
 	.long 0
 
 early_idt_msg:
-	.asciz "PANIC: early exception rip %lx error %lx cr2 %lx\n"
+	.asciz "PANIC: early exception %02lx rip %lx:%lx error %lx cr2 %lx\n"
 early_idt_ripmsg:
 	.asciz "RIP %s\n"
+#endif /* CONFIG_EARLY_PRINTK */
+	.previous
 
 .balign PAGE_SIZE
 
@@ -295,11 +330,11 @@ early_idt_ripmsg:
 ENTRY(name)
 
 /* Automate the creation of 1 to 1 mapping pmd entries */
-#define PMDS(START, PERM, COUNT)		\
-	i = 0 ;					\
-	.rept (COUNT) ;				\
-	.quad	(START) + (i << 21) + (PERM) ;	\
-	i = i + 1 ;				\
+#define PMDS(START, PERM, COUNT)			\
+	i = 0 ;						\
+	.rept (COUNT) ;					\
+	.quad	(START) + (i << PMD_SHIFT) + (PERM) ;	\
+	i = i + 1 ;					\
 	.endr
 
 	/*
@@ -310,9 +345,9 @@ ENTRY(name)
 	 */
 NEXT_PAGE(init_level4_pgt)
 	.quad	level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
-	.fill	257,8,0
+	.org	init_level4_pgt + L4_PAGE_OFFSET*8, 0
 	.quad	level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
-	.fill	252,8,0
+	.org	init_level4_pgt + L4_START_KERNEL*8, 0
 	/* (2^48-(2*1024*1024*1024))/(2^39) = 511 */
 	.quad	level3_kernel_pgt - __START_KERNEL_map + _PAGE_TABLE
 
@@ -321,7 +356,7 @@ NEXT_PAGE(level3_ident_pgt)
 	.fill	511,8,0
 
 NEXT_PAGE(level3_kernel_pgt)
-	.fill	510,8,0
+	.fill	L3_START_KERNEL,8,0
 	/* (2^48-(2*1024*1024*1024)-((2^39)*511))/(2^30) = 510 */
 	.quad	level2_kernel_pgt - __START_KERNEL_map + _KERNPG_TABLE
 	.quad	level2_fixmap_pgt - __START_KERNEL_map + _PAGE_TABLE
@@ -339,72 +374,41 @@ NEXT_PAGE(level2_ident_pgt)
 	/* Since I easily can, map the first 1G.
 	 * Don't set NX because code runs from these pages.
 	 */
-	PMDS(0x0000000000000000, __PAGE_KERNEL_LARGE_EXEC, PTRS_PER_PMD)
+	PMDS(0, __PAGE_KERNEL_IDENT_LARGE_EXEC, PTRS_PER_PMD)
 
 NEXT_PAGE(level2_kernel_pgt)
-	/* 40MB kernel mapping. The kernel code cannot be bigger than that.
-	   When you change this change KERNEL_TEXT_SIZE in page.h too. */
-	/* (2^48-(2*1024*1024*1024)-((2^39)*511)-((2^30)*510)) = 0 */
-	PMDS(0x0000000000000000, __PAGE_KERNEL_LARGE_EXEC|_PAGE_GLOBAL, KERNEL_TEXT_SIZE/PMD_SIZE)
-	/* Module mapping starts here */
-	.fill	(PTRS_PER_PMD - (KERNEL_TEXT_SIZE/PMD_SIZE)),8,0
+	/*
+	 * 512 MB kernel mapping. We spend a full page on this pagetable
+	 * anyway.
+	 *
+	 * The kernel code+data+bss must not be bigger than that.
+	 *
+	 * (NOTE: at +512MB starts the module area, see MODULES_VADDR.
+	 *  If you want to increase this then increase MODULES_VADDR
+	 *  too.)
+	 */
+	PMDS(0, __PAGE_KERNEL_LARGE_EXEC,
+		KERNEL_IMAGE_SIZE/PMD_SIZE)
 
 NEXT_PAGE(level2_spare_pgt)
-	.fill   512,8,0
+	.fill   512, 8, 0
 
 #undef PMDS
 #undef NEXT_PAGE
 
 	.data
 	.align 16
-	.globl cpu_gdt_descr
-cpu_gdt_descr:
-	.word	gdt_end-cpu_gdt_table-1
-gdt:
-	.quad	cpu_gdt_table
-#ifdef CONFIG_SMP
-	.rept	NR_CPUS-1
-	.word	0
-	.quad	0
-	.endr
-#endif
+	.globl early_gdt_descr
+early_gdt_descr:
+	.word	GDT_ENTRIES*8-1
+	.quad   per_cpu__gdt_page
 
 ENTRY(phys_base)
 	/* This must match the first entry in level2_kernel_pgt */
 	.quad   0x0000000000000000
 
-/* We need valid kernel segments for data and code in long mode too
- * IRET will check the segment types  kkeil 2000/10/28
- * Also sysret mandates a special GDT layout 
- */
-		 		
-	.section .data.page_aligned, "aw"
-	.align PAGE_SIZE
-
-/* The TLS descriptors are currently at a different place compared to i386.
-   Hopefully nobody expects them at a fixed place (Wine?) */
+#include "../../x86/xen/xen-head.S"
 	
-ENTRY(cpu_gdt_table)
-	.quad	0x0000000000000000	/* NULL descriptor */
-	.quad	0x00cf9b000000ffff	/* __KERNEL32_CS */
-	.quad	0x00af9b000000ffff	/* __KERNEL_CS */
-	.quad	0x00cf93000000ffff	/* __KERNEL_DS */
-	.quad	0x00cffb000000ffff	/* __USER32_CS */
-	.quad	0x00cff3000000ffff	/* __USER_DS, __USER32_DS  */
-	.quad	0x00affb000000ffff	/* __USER_CS */
-	.quad	0x0			/* unused */
-	.quad	0,0			/* TSS */
-	.quad	0,0			/* LDT */
-	.quad   0,0,0			/* three TLS descriptors */ 
-	.quad	0x0000f40000000000	/* node/CPU stored in limit */
-gdt_end:	
-	/* asm/segment.h:GDT_ENTRIES must match this */	
-	/* This should be a multiple of the cache line size */
-	/* GDTs of other CPUs are now dynamically allocated */
-
-	/* zero the remaining page */
-	.fill PAGE_SIZE / 8 - GDT_ENTRIES,8,0
-
 	.section .bss, "aw", @nobits
 	.align L1_CACHE_BYTES
 ENTRY(idt_table)

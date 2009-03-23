@@ -49,12 +49,6 @@ MODULE_LICENSE("GPL");
 #define GENERIC_REG_ID_LOW        0x1D	/* manufacturer ID LSB */
 #define GENERIC_REG_COM_I         0x29	/* misc ID bits */
 
-extern struct ovcamchip_ops ov6x20_ops;
-extern struct ovcamchip_ops ov6x30_ops;
-extern struct ovcamchip_ops ov7x10_ops;
-extern struct ovcamchip_ops ov7x20_ops;
-extern struct ovcamchip_ops ov76be_ops;
-
 static char *chip_names[NUM_CC_TYPES] = {
 	[CC_UNKNOWN]	= "Unknown chip",
 	[CC_OV76BE]	= "OV76BE",
@@ -297,7 +291,6 @@ static int ovcamchip_attach(struct i2c_adapter *adap)
 	switch (adap->id) {
 	case I2C_HW_SMBUS_OV511:
 	case I2C_HW_SMBUS_OV518:
-	case I2C_HW_SMBUS_OVFX2:
 	case I2C_HW_SMBUS_W9968CF:
 		PDEBUG(1, "Adapter ID 0x%06x accepted", adap->id);
 		break;
@@ -412,7 +405,6 @@ static struct i2c_driver driver = {
 		.name =		"ovcamchip",
 	},
 	.id =			I2C_DRIVERID_OVCAMCHIP,
-	.class =		I2C_CLASS_CAM_DIGITAL,
 	.attach_adapter =	ovcamchip_attach,
 	.detach_client =	ovcamchip_detach,
 	.command =		ovcamchip_command,

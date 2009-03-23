@@ -11,6 +11,7 @@
 
 #include <linux/audit.h>
 #include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/tty.h>
 
 struct tty_audit_buf {
@@ -27,7 +28,7 @@ static struct tty_audit_buf *tty_audit_buf_alloc(int major, int minor,
 {
 	struct tty_audit_buf *buf;
 
-	buf = kmalloc(sizeof (*buf), GFP_KERNEL);
+	buf = kmalloc(sizeof(*buf), GFP_KERNEL);
 	if (!buf)
 		goto err;
 	if (PAGE_SIZE != N_TTY_BUF_SIZE)
@@ -66,6 +67,29 @@ static void tty_audit_buf_put(struct tty_audit_buf *buf)
 		tty_audit_buf_free(buf);
 }
 
+static void tty_audit_log(const char *description, struct task_struct *tsk,
+			  uid_t loginuid, unsigned sessionid, int major,
+			  int minor, unsigned char *data, size_t size)
+{
+	struct audit_buffer *ab;
+
+	ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_TTY);
+	if (ab) {
+		char name[sizeof(tsk->comm)];
+		uid_t uid = task_uid(tsk);
+
+		audit_log_format(ab, "%s pid=%u uid=%u auid=%u ses=%u "
+				 "major=%d minor=%d comm=", description,
+				 tsk->pid, uid, loginuid, sessionid,
+				 major, minor);
+		get_task_comm(name, tsk);
+		audit_log_untrustedstring(ab, name);
+		audit_log_format(ab, " data=");
+		audit_log_n_hex(ab, data, size);
+		audit_log_end(ab);
+	}
+}
+
 /**
  *	tty_audit_buf_push	-	Push buffered data out
  *
@@ -73,27 +97,15 @@ static void tty_audit_buf_put(struct tty_audit_buf *buf)
  *	@tsk with @loginuid.  @buf->mutex must be locked.
  */
 static void tty_audit_buf_push(struct task_struct *tsk, uid_t loginuid,
+			       unsigned int sessionid,
 			       struct tty_audit_buf *buf)
 {
-	struct audit_buffer *ab;
-
 	if (buf->valid == 0)
 		return;
 	if (audit_enabled == 0)
 		return;
-	ab = audit_log_start(NULL, GFP_KERNEL, AUDIT_TTY);
-	if (ab) {
-		char name[sizeof(tsk->comm)];
-
-		audit_log_format(ab, "tty pid=%u uid=%u auid=%u major=%d "
-				 "minor=%d comm=", tsk->pid, tsk->uid,
-				 loginuid, buf->major, buf->minor);
-		get_task_comm(name, tsk);
-		audit_log_untrustedstring(ab, name);
-		audit_log_format(ab, " data=");
-		audit_log_n_untrustedstring(ab, buf->valid, buf->data);
-		audit_log_end(ab);
-	}
+	tty_audit_log("tty", tsk, loginuid, sessionid, buf->major, buf->minor,
+		      buf->data, buf->valid);
 	buf->valid = 0;
 }
 
@@ -105,8 +117,9 @@ static void tty_audit_buf_push(struct task_struct *tsk, uid_t loginuid,
  */
 static void tty_audit_buf_push_current(struct tty_audit_buf *buf)
 {
-	tty_audit_buf_push(current, audit_get_loginuid(current->audit_context),
-			   buf);
+	uid_t auid = audit_get_loginuid(current);
+	unsigned int sessionid = audit_get_sessionid(current);
+	tty_audit_buf_push(current, auid, sessionid, buf);
 }
 
 /**
@@ -147,9 +160,45 @@ void tty_audit_fork(struct signal_struct *sig)
 }
 
 /**
+ *	tty_audit_tiocsti	-	Log TIOCSTI
+ */
+void tty_audit_tiocsti(struct tty_struct *tty, char ch)
+{
+	struct tty_audit_buf *buf;
+	int major, minor, should_audit;
+
+	spin_lock_irq(&current->sighand->siglock);
+	should_audit = current->signal->audit_tty;
+	buf = current->signal->tty_audit_buf;
+	if (buf)
+		atomic_inc(&buf->count);
+	spin_unlock_irq(&current->sighand->siglock);
+
+	major = tty->driver->major;
+	minor = tty->driver->minor_start + tty->index;
+	if (buf) {
+		mutex_lock(&buf->mutex);
+		if (buf->major == major && buf->minor == minor)
+			tty_audit_buf_push_current(buf);
+		mutex_unlock(&buf->mutex);
+		tty_audit_buf_put(buf);
+	}
+
+	if (should_audit && audit_enabled) {
+		uid_t auid;
+		unsigned int sessionid;
+
+		auid = audit_get_loginuid(current);
+		sessionid = audit_get_sessionid(current);
+		tty_audit_log("ioctl=TIOCSTI", current, auid, sessionid, major,
+			      minor, &ch, 1);
+	}
+}
+
+/**
  *	tty_audit_push_task	-	Flush task's pending audit data
  */
-void tty_audit_push_task(struct task_struct *tsk, uid_t loginuid)
+void tty_audit_push_task(struct task_struct *tsk, uid_t loginuid, u32 sessionid)
 {
 	struct tty_audit_buf *buf;
 
@@ -162,7 +211,7 @@ void tty_audit_push_task(struct task_struct *tsk, uid_t loginuid)
 		return;
 
 	mutex_lock(&buf->mutex);
-	tty_audit_buf_push(tsk, loginuid, buf);
+	tty_audit_buf_push(tsk, loginuid, sessionid, buf);
 	mutex_unlock(&buf->mutex);
 
 	tty_audit_buf_put(buf);
@@ -231,6 +280,10 @@ void tty_audit_add_data(struct tty_struct *tty, unsigned char *data,
 	if (unlikely(size == 0))
 		return;
 
+	if (tty->driver->type == TTY_DRIVER_TYPE_PTY
+	    && tty->driver->subtype == PTY_TYPE_MASTER)
+		return;
+
 	buf = tty_audit_buf_get(tty);
 	if (!buf)
 		return;
@@ -292,54 +345,4 @@ void tty_audit_push(struct tty_struct *tty)
 		mutex_unlock(&buf->mutex);
 		tty_audit_buf_put(buf);
 	}
-}
-
-/**
- *	tty_audit_opening	-	A TTY is being opened.
- *
- *	As a special hack, tasks that close all their TTYs and open new ones
- *	are assumed to be system daemons (e.g. getty) and auditing is
- *	automatically disabled for them.
- */
-void tty_audit_opening(void)
-{
-	int disable;
-
-	disable = 1;
-	spin_lock_irq(&current->sighand->siglock);
-	if (current->signal->audit_tty == 0)
-		disable = 0;
-	spin_unlock_irq(&current->sighand->siglock);
-	if (!disable)
-		return;
-
-	task_lock(current);
-	if (current->files) {
-		struct fdtable *fdt;
-		unsigned i;
-
-		/*
-		 * We don't take a ref to the file, so we must hold ->file_lock
-		 * instead.
-		 */
-		spin_lock(&current->files->file_lock);
-		fdt = files_fdtable(current->files);
-		for (i = 0; i < fdt->max_fds; i++) {
-			struct file *filp;
-
-			filp = fcheck_files(current->files, i);
-			if (filp && is_tty(filp)) {
-				disable = 0;
-				break;
-			}
-		}
-		spin_unlock(&current->files->file_lock);
-	}
-	task_unlock(current);
-	if (!disable)
-		return;
-
-	spin_lock_irq(&current->sighand->siglock);
-	current->signal->audit_tty = 0;
-	spin_unlock_irq(&current->sighand->siglock);
 }

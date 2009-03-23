@@ -5,8 +5,6 @@
  *	Authors:
  *	Lennert Buytenhek		<buytenh@gnu.org>
  *
- *	$Id: br_fdb.c,v 1.6 2002/01/17 00:57:07 davem Exp $
- *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
  *	as published by the Free Software Foundation; either version
@@ -15,6 +13,7 @@
 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/rculist.h>
 #include <linux/spinlock.h>
 #include <linux/times.h>
 #include <linux/netdevice.h>
@@ -136,7 +135,7 @@ void br_fdb_cleanup(unsigned long _data)
 			this_timer = f->ageing_timer + delay;
 			if (time_before_eq(this_timer, jiffies))
 				fdb_delete(f);
-			else if (this_timer < next_timer)
+			else if (time_before(this_timer, next_timer))
 				next_timer = this_timer;
 		}
 	}
@@ -285,7 +284,11 @@ int br_fdb_fillbuf(struct net_bridge *br, void *buf,
 
 			/* convert from internal format to API */
 			memcpy(fe->mac_addr, f->addr.addr, ETH_ALEN);
+
+			/* due to ABI compat need to split into hi/lo */
 			fe->port_no = f->dst->port_no;
+			fe->port_hi = f->dst->port_no >> 8;
+
 			fe->is_local = f->is_local;
 			if (!f->is_static)
 				fe->ageing_timer_value = jiffies_to_clock_t(jiffies - f->ageing_timer);

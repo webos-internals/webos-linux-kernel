@@ -29,10 +29,10 @@ static ext_int_info_t ext_int_info_hwc;
 /* Lock to protect internal data consistency. */
 static DEFINE_SPINLOCK(sclp_lock);
 
-/* Mask of events that we can receive from the sclp interface. */
+/* Mask of events that we can send to the sclp interface. */
 static sccb_mask_t sclp_receive_mask;
 
-/* Mask of events that we can send to the sclp interface. */
+/* Mask of events that we can receive from the sclp interface. */
 static sccb_mask_t sclp_send_mask;
 
 /* List of registered event listeners and senders. */
@@ -280,8 +280,11 @@ sclp_dispatch_evbufs(struct sccb_header *sccb)
 	rc = 0;
 	for (offset = sizeof(struct sccb_header); offset < sccb->length;
 	     offset += evbuf->length) {
-		/* Search for event handler */
 		evbuf = (struct evbuf_header *) ((addr_t) sccb + offset);
+		/* Check for malformed hardware response */
+		if (evbuf->length == 0)
+			break;
+		/* Search for event handler */
 		reg = NULL;
 		list_for_each(l, &sclp_reg_list) {
 			reg = list_entry(l, struct sclp_register, list);
@@ -380,7 +383,7 @@ sclp_interrupt_handler(__u16 code)
 		}
 		sclp_running_state = sclp_running_state_idle;
 	}
-	if (evbuf_pending && sclp_receive_mask != 0 &&
+	if (evbuf_pending &&
 	    sclp_activation_state == sclp_activation_state_active)
 		__sclp_queue_read_req();
 	spin_unlock(&sclp_lock);
@@ -399,6 +402,7 @@ sclp_tod_from_jiffies(unsigned long jiffies)
 void
 sclp_sync_wait(void)
 {
+	unsigned long long old_tick;
 	unsigned long flags;
 	unsigned long cr0, cr0_sync;
 	u64 timeout;
@@ -419,11 +423,12 @@ sclp_sync_wait(void)
 	if (!irq_context)
 		local_bh_disable();
 	/* Enable service-signal interruption, disable timer interrupts */
+	old_tick = local_tick_disable();
 	trace_hardirqs_on();
 	__ctl_store(cr0, 0, 0);
 	cr0_sync = cr0;
+	cr0_sync &= 0xffff00a0;
 	cr0_sync |= 0x00000200;
-	cr0_sync &= 0xFFFFF3AC;
 	__ctl_load(cr0_sync, 0, 0);
 	__raw_local_irq_stosm(0x01);
 	/* Loop until driver state indicates finished request */
@@ -439,9 +444,9 @@ sclp_sync_wait(void)
 	__ctl_load(cr0, 0, 0);
 	if (!irq_context)
 		_local_bh_enable();
+	local_tick_enable(old_tick);
 	local_irq_restore(flags);
 }
-
 EXPORT_SYMBOL(sclp_sync_wait);
 
 /* Dispatch changes in send and receive mask to registered listeners. */
@@ -459,8 +464,8 @@ sclp_dispatch_state_change(void)
 		reg = NULL;
 		list_for_each(l, &sclp_reg_list) {
 			reg = list_entry(l, struct sclp_register, list);
-			receive_mask = reg->receive_mask & sclp_receive_mask;
-			send_mask = reg->send_mask & sclp_send_mask;
+			receive_mask = reg->send_mask & sclp_receive_mask;
+			send_mask = reg->receive_mask & sclp_send_mask;
 			if (reg->sclp_receive_mask != receive_mask ||
 			    reg->sclp_send_mask != send_mask) {
 				reg->sclp_receive_mask = receive_mask;
@@ -506,6 +511,8 @@ sclp_state_change_cb(struct evbuf_header *evbuf)
 	if (scbuf->validity_sclp_send_mask)
 		sclp_send_mask = scbuf->sclp_send_mask;
 	spin_unlock_irqrestore(&sclp_lock, flags);
+	if (scbuf->validity_sclp_active_facility_mask)
+		sclp_facilities = scbuf->sclp_active_facility_mask;
 	sclp_dispatch_state_change();
 }
 
@@ -615,8 +622,8 @@ struct init_sccb {
 	u16 mask_length;
 	sccb_mask_t receive_mask;
 	sccb_mask_t send_mask;
-	sccb_mask_t sclp_send_mask;
 	sccb_mask_t sclp_receive_mask;
+	sccb_mask_t sclp_send_mask;
 } __attribute__((packed));
 
 /* Prepare init mask request. Called while sclp_lock is locked. */
@@ -782,11 +789,9 @@ sclp_check_handler(__u16 code)
 	/* Is this the interrupt we are waiting for? */
 	if (finished_sccb == 0)
 		return;
-	if (finished_sccb != (u32) (addr_t) sclp_init_sccb) {
-		printk(KERN_WARNING SCLP_HEADER "unsolicited interrupt "
-		       "for buffer at 0x%x\n", finished_sccb);
-		return;
-	}
+	if (finished_sccb != (u32) (addr_t) sclp_init_sccb)
+		panic("sclp: unsolicited interrupt for buffer at 0x%x\n",
+		      finished_sccb);
 	spin_lock(&sclp_lock);
 	if (sclp_running_state == sclp_running_state_running) {
 		sclp_init_req.status = SCLP_REQ_DONE;
@@ -883,8 +888,6 @@ sclp_init(void)
 	unsigned long flags;
 	int rc;
 
-	if (!MACHINE_HAS_SCLP)
-		return -ENODEV;
 	spin_lock_irqsave(&sclp_lock, flags);
 	/* Check for previous or running initialization */
 	if (sclp_init_state != sclp_init_state_uninitialized) {

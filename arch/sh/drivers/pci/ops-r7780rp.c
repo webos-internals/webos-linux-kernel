@@ -13,29 +13,17 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/pci.h>
-#include <asm/r7780rp.h>
+#include <mach/highlander.h>
 #include <asm/io.h>
 #include "pci-sh4.h"
 
-static char r7780rp_irq_tab[] __initdata = {
-	0, 1, 2, 3,
-};
-
-static char r7780mp_irq_tab[] __initdata = {
+static char irq_tab[] __initdata = {
 	65, 66, 67, 68,
 };
 
 int __init pcibios_map_platform_irq(struct pci_dev *pdev, u8 slot, u8 pin)
 {
-	if (mach_is_r7780rp())
-		return r7780rp_irq_tab[slot];
-	if (mach_is_r7780mp() || mach_is_r7785rp())
-		return r7780mp_irq_tab[slot];
-
-	printk(KERN_ERR "PCI: Bad IRQ mapping "
-	       "request for slot %d, func %d\n", slot, pin-1);
-
-	return -1;
+	return irq_tab[slot];
 }
 
 static struct resource sh7780_io_resource = {

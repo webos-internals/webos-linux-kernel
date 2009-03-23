@@ -28,9 +28,6 @@
 #include <linux/usb.h>
 #include <linux/moduleparam.h>
 
-/* flag to keep track of how we were registered */
-static int secondary;
-
 /* default is a generic type of usb to serial converter */
 static int vendor_id = 0x0557;
 static int product_id = 0x2008;
@@ -49,7 +46,7 @@ module_param(debug, bool, 0600);
 	do {							\
 		if (debug)					\
 			printk(KERN_DEBUG "%s: %s: " fmt ,	\
-				MY_NAME , __FUNCTION__ , 	\
+				MY_NAME , __func__ , 	\
 				## arg);			\
 	} while (0)
 
@@ -58,9 +55,9 @@ static int rootplug_bprm_check_security (struct linux_binprm *bprm)
 	struct usb_device *dev;
 
 	root_dbg("file %s, e_uid = %d, e_gid = %d\n",
-		 bprm->filename, bprm->e_uid, bprm->e_gid);
+		 bprm->filename, bprm->cred->euid, bprm->cred->egid);
 
-	if (bprm->e_gid == 0) {
+	if (bprm->cred->egid == 0) {
 		dev = usb_find_device(vendor_id, product_id);
 		if (!dev) {
 			root_dbg("e_gid = 0, and device not found, "
@@ -75,17 +72,16 @@ static int rootplug_bprm_check_security (struct linux_binprm *bprm)
 
 static struct security_operations rootplug_security_ops = {
 	/* Use the capability functions for some of the hooks */
-	.ptrace =			cap_ptrace,
+	.ptrace_may_access =		cap_ptrace_may_access,
+	.ptrace_traceme =		cap_ptrace_traceme,
 	.capget =			cap_capget,
-	.capset_check =			cap_capset_check,
-	.capset_set =			cap_capset_set,
+	.capset =			cap_capset,
 	.capable =			cap_capable,
 
-	.bprm_apply_creds =		cap_bprm_apply_creds,
-	.bprm_set_security =		cap_bprm_set_security,
+	.bprm_set_creds =		cap_bprm_set_creds,
 
-	.task_post_setuid =		cap_task_post_setuid,
-	.task_reparent_to_init =	cap_task_reparent_to_init,
+	.task_fix_setuid =		cap_task_fix_setuid,
+	.task_prctl =			cap_task_prctl,
 
 	.bprm_check_security =		rootplug_bprm_check_security,
 };
@@ -96,13 +92,7 @@ static int __init rootplug_init (void)
 	if (register_security (&rootplug_security_ops)) {
 		printk (KERN_INFO 
 			"Failure registering Root Plug module with the kernel\n");
-		/* try registering with primary module */
-		if (mod_reg_security (MY_NAME, &rootplug_security_ops)) {
-			printk (KERN_INFO "Failure registering Root Plug "
-				" module with primary security module.\n");
 			return -EINVAL;
-		}
-		secondary = 1;
 	}
 	printk (KERN_INFO "Root Plug module initialized, "
 		"vendor_id = %4.4x, product id = %4.4x\n", vendor_id, product_id);

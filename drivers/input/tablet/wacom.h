@@ -11,7 +11,7 @@
  *  Copyright (c) 2000 Daniel Egger		<egger@suse.de>
  *  Copyright (c) 2001 Frederic Lepied		<flepied@mandrakesoft.com>
  *  Copyright (c) 2004 Panagiotis Issaris	<panagiotis.issaris@mech.kuleuven.ac.be>
- *  Copyright (c) 2002-2007 Ping Cheng		<pingc@wacom.com>
+ *  Copyright (c) 2002-2008 Ping Cheng		<pingc@wacom.com>
  *
  *  ChangeLog:
  *      v0.1 (vp)  - Initial release
@@ -65,6 +65,8 @@
  *		   - and wacom_wac.c deals with Wacom specific code
  *		   - Support Intuos3 4x6
  *      v1.47 (pc) - Added support for Bamboo
+ *      v1.48 (pc) - Added support for Bamboo1, BambooFun, and Cintiq 12WX
+ *      v1.49 (pc) - Added support for USB Tablet PC (0x90, 0x93, and 0x9A)
  */
 
 /*
@@ -85,7 +87,7 @@
 /*
  * Version Information
  */
-#define DRIVER_VERSION "v1.47"
+#define DRIVER_VERSION "v1.49"
 #define DRIVER_AUTHOR "Vojtech Pavlik <vojtech@ucw.cz>"
 #define DRIVER_DESC "USB Wacom Graphire and Wacom Intuos tablet driver"
 #define DRIVER_LICENSE "GPL"
@@ -100,14 +102,17 @@ struct wacom {
 	dma_addr_t data_dma;
 	struct input_dev *dev;
 	struct usb_device *usbdev;
+	struct usb_interface *intf;
 	struct urb *irq;
-	struct wacom_wac * wacom_wac;
+	struct wacom_wac *wacom_wac;
+	struct mutex lock;
+	unsigned int open:1;
 	char phys[32];
 };
 
 struct wacom_combo {
-	struct wacom * wacom;
-	struct urb * urb;
+	struct wacom *wacom;
+	struct urb *urb;
 };
 
 extern int wacom_wac_irq(struct wacom_wac * wacom_wac, void * wcombo);
@@ -125,9 +130,10 @@ extern void input_dev_i(struct input_dev *input_dev, struct wacom_wac *wacom_wac
 extern void input_dev_pl(struct input_dev *input_dev, struct wacom_wac *wacom_wac);
 extern void input_dev_pt(struct input_dev *input_dev, struct wacom_wac *wacom_wac);
 extern void input_dev_mo(struct input_dev *input_dev, struct wacom_wac *wacom_wac);
+extern void input_dev_bee(struct input_dev *input_dev, struct wacom_wac *wacom_wac);
 extern __u16 wacom_le16_to_cpu(unsigned char *data);
 extern __u16 wacom_be16_to_cpu(unsigned char *data);
-extern struct wacom_features * get_wacom_feature(const struct usb_device_id *id);
-extern const struct usb_device_id * get_device_table(void);
+extern struct wacom_features *get_wacom_feature(const struct usb_device_id *id);
+extern const struct usb_device_id *get_device_table(void);
 
 #endif

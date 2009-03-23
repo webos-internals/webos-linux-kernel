@@ -120,7 +120,6 @@ struct cache_deferred_req {
 	struct list_head	hash;	/* on hash chain */
 	struct list_head	recent; /* on fifo */
 	struct cache_head	*item;  /* cache item we wait on */
-	time_t			recv_time;
 	void			*owner; /* we might need to discard all defered requests
 					 * owned by someone */
 	void			(*revisit)(struct cache_deferred_req *req,
@@ -169,8 +168,8 @@ extern int cache_check(struct cache_detail *detail,
 extern void cache_flush(void);
 extern void cache_purge(struct cache_detail *detail);
 #define NEVER (0x7FFFFFFF)
-extern void cache_register(struct cache_detail *cd);
-extern int cache_unregister(struct cache_detail *cd);
+extern int cache_register(struct cache_detail *cd);
+extern void cache_unregister(struct cache_detail *cd);
 
 extern void qword_add(char **bpp, int *lp, char *str);
 extern void qword_addhex(char **bpp, int *lp, char *buf, int blen);

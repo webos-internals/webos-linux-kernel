@@ -158,7 +158,7 @@ void kexec_copy_flush(struct kimage *image)
  * on calling the interrupts, but we would like to call it off irq level
  * so that the interrupt controller is clean.
  */
-void kexec_smp_down(void *arg)
+static void kexec_smp_down(void *arg)
 {
 	if (ppc_md.kexec_cpu_down)
 		ppc_md.kexec_cpu_down(0, 1);
@@ -172,7 +172,7 @@ static void kexec_prepare_cpus(void)
 {
 	int my_cpu, i, notified=-1;
 
-	smp_call_function(kexec_smp_down, NULL, 0, /* wait */0);
+	smp_call_function(kexec_smp_down, NULL, /* wait */0);
 	my_cpu = get_cpu();
 
 	/* check the others cpus are now down (via paca hw cpu id == -1) */
@@ -249,7 +249,7 @@ static void kexec_prepare_cpus(void)
  * We could use a smaller stack if we don't care about anything using
  * current, but that audit has not been performed.
  */
-union thread_union kexec_stack
+static union thread_union kexec_stack
 	__attribute__((__section__(".data.init_task"))) = { };
 
 /* Our assembly helper, in kexec_stub.S */
@@ -270,8 +270,8 @@ void default_machine_kexec(struct kimage *image)
         * using debugger IPI.
         */
 
-       if (crashing_cpu == -1)
-               kexec_prepare_cpus();
+	if (crashing_cpu == -1)
+		kexec_prepare_cpus();
 
 	/* switch to a staticly allocated stack.  Based on irq stack code.
 	 * XXX: the task struct will likely be invalid once we do the copy!
@@ -289,7 +289,7 @@ void default_machine_kexec(struct kimage *image)
 }
 
 /* Values we need to export to the second kernel via the device tree. */
-static unsigned long htab_base, kernel_end;
+static unsigned long htab_base;
 
 static struct property htab_base_prop = {
 	.name = "linux,htab-base",
@@ -303,81 +303,32 @@ static struct property htab_size_prop = {
 	.value = &htab_size_bytes,
 };
 
-static struct property kernel_end_prop = {
-	.name = "linux,kernel-end",
-	.length = sizeof(unsigned long),
-	.value = &kernel_end,
-};
-
-static void __init export_htab_values(void)
+static int __init export_htab_values(void)
 {
 	struct device_node *node;
+	struct property *prop;
+
+	/* On machines with no htab htab_address is NULL */
+	if (!htab_address)
+		return -ENODEV;
 
 	node = of_find_node_by_path("/chosen");
 	if (!node)
-		return;
+		return -ENODEV;
 
-	kernel_end = __pa(_end);
-	prom_add_property(node, &kernel_end_prop);
-
-	/* On machines with no htab htab_address is NULL */
-	if (NULL == htab_address)
-		goto out;
+	/* remove any stale propertys so ours can be found */
+	prop = of_find_property(node, htab_base_prop.name, NULL);
+	if (prop)
+		prom_remove_property(node, prop);
+	prop = of_find_property(node, htab_size_prop.name, NULL);
+	if (prop)
+		prom_remove_property(node, prop);
 
 	htab_base = __pa(htab_address);
 	prom_add_property(node, &htab_base_prop);
 	prom_add_property(node, &htab_size_prop);
 
- out:
 	of_node_put(node);
-}
-
-static struct property crashk_base_prop = {
-	.name = "linux,crashkernel-base",
-	.length = sizeof(unsigned long),
-	.value = &crashk_res.start,
-};
-
-static unsigned long crashk_size;
-
-static struct property crashk_size_prop = {
-	.name = "linux,crashkernel-size",
-	.length = sizeof(unsigned long),
-	.value = &crashk_size,
-};
-
-static void __init export_crashk_values(void)
-{
-	struct device_node *node;
-	struct property *prop;
-
-	node = of_find_node_by_path("/chosen");
-	if (!node)
-		return;
-
-	/* There might be existing crash kernel properties, but we can't
-	 * be sure what's in them, so remove them. */
-	prop = of_find_property(node, "linux,crashkernel-base", NULL);
-	if (prop)
-		prom_remove_property(node, prop);
-
-	prop = of_find_property(node, "linux,crashkernel-size", NULL);
-	if (prop)
-		prom_remove_property(node, prop);
-
-	if (crashk_res.start != 0) {
-		prom_add_property(node, &crashk_base_prop);
-		crashk_size = crashk_res.end - crashk_res.start + 1;
-		prom_add_property(node, &crashk_size_prop);
-	}
-
-	of_node_put(node);
-}
-
-static int __init kexec_setup(void)
-{
-	export_htab_values();
-	export_crashk_values();
 	return 0;
 }
-__initcall(kexec_setup);
+late_initcall(export_htab_values);

@@ -46,8 +46,7 @@ static int dma_setup(struct scsi_cmnd *cmd, int dir_in)
     struct Scsi_Host *instance = cmd->device->host;
 
     /* don't allow DMA if the physical address is bad */
-    if (addr & A2091_XFER_MASK ||
-	(!dir_in && mm_end_of_chunk (addr, cmd->SCp.this_residual)))
+    if (addr & A2091_XFER_MASK)
     {
 	HDATA(instance)->dma_bounce_len = (cmd->SCp.this_residual + 511)
 	    & ~0x1ff;
@@ -73,18 +72,9 @@ static int dma_setup(struct scsi_cmnd *cmd, int dir_in)
 	}
 
 	if (!dir_in) {
-	    /* copy to bounce buffer for a write */
-	    if (cmd->use_sg)
-#if 0
-		panic ("scsi%ddma: incomplete s/g support",
-		       instance->host_no);
-#else
+		/* copy to bounce buffer for a write */
 		memcpy (HDATA(instance)->dma_bounce_buffer,
 			cmd->SCp.ptr, cmd->SCp.this_residual);
-#endif
-	    else
-		memcpy (HDATA(instance)->dma_bounce_buffer,
-			cmd->request_buffer, cmd->request_bufflen);
 	}
     }
 
@@ -144,30 +134,13 @@ static void dma_stop(struct Scsi_Host *instance, struct scsi_cmnd *SCpnt,
 
     /* copy from a bounce buffer, if necessary */
     if (status && HDATA(instance)->dma_bounce_buffer) {
-	if (SCpnt && SCpnt->use_sg) {
-#if 0
-	    panic ("scsi%d: incomplete s/g support",
-		   instance->host_no);
-#else
-	    if( HDATA(instance)->dma_dir )
+	if( HDATA(instance)->dma_dir )
 		memcpy (SCpnt->SCp.ptr, 
 			HDATA(instance)->dma_bounce_buffer,
 			SCpnt->SCp.this_residual);
-	    kfree (HDATA(instance)->dma_bounce_buffer);
-	    HDATA(instance)->dma_bounce_buffer = NULL;
-	    HDATA(instance)->dma_bounce_len = 0;
-	    
-#endif
-	} else {
-	    if (HDATA(instance)->dma_dir && SCpnt)
-		memcpy (SCpnt->request_buffer,
-			HDATA(instance)->dma_bounce_buffer,
-			SCpnt->request_bufflen);
-
-	    kfree (HDATA(instance)->dma_bounce_buffer);
-	    HDATA(instance)->dma_bounce_buffer = NULL;
-	    HDATA(instance)->dma_bounce_len = 0;
-	}
+	kfree (HDATA(instance)->dma_bounce_buffer);
+	HDATA(instance)->dma_bounce_buffer = NULL;
+	HDATA(instance)->dma_bounce_len = 0;
     }
 }
 
@@ -196,21 +169,30 @@ int __init a2091_detect(struct scsi_host_template *tpnt)
 	    continue;
 
 	instance = scsi_register (tpnt, sizeof (struct WD33C93_hostdata));
-	if (instance == NULL) {
-	    release_mem_region(address, 256);
-	    continue;
-	}
+	if (instance == NULL)
+	    goto release;
 	instance->base = ZTWO_VADDR(address);
 	instance->irq = IRQ_AMIGA_PORTS;
 	instance->unique_id = z->slotaddr;
 	DMA(instance)->DAWR = DAWR_A2091;
 	regs.SASR = &(DMA(instance)->SASR);
 	regs.SCMD = &(DMA(instance)->SCMD);
+	HDATA(instance)->no_sync = 0xff;
+	HDATA(instance)->fast = 0;
+	HDATA(instance)->dma_mode = CTRL_DMA;
 	wd33c93_init(instance, regs, dma_setup, dma_stop, WD33C93_FS_8_10);
-	request_irq(IRQ_AMIGA_PORTS, a2091_intr, IRQF_SHARED, "A2091 SCSI",
-		    instance);
+	if (request_irq(IRQ_AMIGA_PORTS, a2091_intr, IRQF_SHARED, "A2091 SCSI",
+			instance))
+	    goto unregister;
 	DMA(instance)->CNTR = CNTR_PDMD | CNTR_INTEN;
 	num_a2091++;
+	continue;
+
+unregister:
+	scsi_unregister(instance);
+	wd33c93_release();
+release:
+	release_mem_region(address, 256);
     }
 
     return num_a2091;

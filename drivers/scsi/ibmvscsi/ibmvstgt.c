@@ -55,7 +55,7 @@
 /* tmp - will replace with SCSI logging stuff */
 #define eprintk(fmt, args...)					\
 do {								\
-	printk("%s(%d) " fmt, __FUNCTION__, __LINE__, ##args);	\
+	printk("%s(%d) " fmt, __func__, __LINE__, ##args);	\
 } while (0)
 /* #define dprintk eprintk */
 #define dprintk(fmt, args...)
@@ -290,9 +290,9 @@ static int ibmvstgt_cmd_done(struct scsi_cmnd *sc,
 	int err = 0;
 
 	dprintk("%p %p %x %u\n", iue, target, vio_iu(iue)->srp.cmd.cdb[0],
-		cmd->usg_sg);
+		scsi_sg_count(sc));
 
-	if (sc->use_sg)
+	if (scsi_sg_count(sc))
 		err = srp_transfer_data(sc, &vio_iu(iue)->srp.cmd, ibmvstgt_rdma, 1, 1);
 
 	spin_lock_irqsave(&target->lock, flags);
@@ -539,9 +539,9 @@ out:
 		srp_iu_put(iue);
 }
 
-static irqreturn_t ibmvstgt_interrupt(int irq, void *data)
+static irqreturn_t ibmvstgt_interrupt(int dummy, void *data)
 {
-	struct srp_target *target = (struct srp_target *) data;
+	struct srp_target *target = data;
 	struct vio_port *vport = target_to_port(target);
 
 	vio_disable_interrupts(vport->dma_dev);
@@ -564,7 +564,7 @@ static int crq_queue_create(struct crq_queue *queue, struct srp_target *target)
 					  queue->size * sizeof(*queue->msgs),
 					  DMA_BIDIRECTIONAL);
 
-	if (dma_mapping_error(queue->msg_token))
+	if (dma_mapping_error(target->dev, queue->msg_token))
 		goto map_failed;
 
 	err = h_reg_crq(vport->dma_dev->unit_address, queue->msg_token,
@@ -780,32 +780,35 @@ static int ibmvstgt_it_nexus_response(struct Scsi_Host *shost, u64 itn_id,
 	return 0;
 }
 
-static ssize_t system_id_show(struct class_device *cdev, char *buf)
+static ssize_t system_id_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%s\n", system_id);
 }
 
-static ssize_t partition_number_show(struct class_device *cdev, char *buf)
+static ssize_t partition_number_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%x\n", partition_number);
 }
 
-static ssize_t unit_address_show(struct class_device *cdev, char *buf)
+static ssize_t unit_address_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
 {
-	struct Scsi_Host *shost = class_to_shost(cdev);
+	struct Scsi_Host *shost = class_to_shost(dev);
 	struct srp_target *target = host_to_srp_target(shost);
 	struct vio_port *vport = target_to_port(target);
 	return snprintf(buf, PAGE_SIZE, "%x\n", vport->dma_dev->unit_address);
 }
 
-static CLASS_DEVICE_ATTR(system_id, S_IRUGO, system_id_show, NULL);
-static CLASS_DEVICE_ATTR(partition_number, S_IRUGO, partition_number_show, NULL);
-static CLASS_DEVICE_ATTR(unit_address, S_IRUGO, unit_address_show, NULL);
+static DEVICE_ATTR(system_id, S_IRUGO, system_id_show, NULL);
+static DEVICE_ATTR(partition_number, S_IRUGO, partition_number_show, NULL);
+static DEVICE_ATTR(unit_address, S_IRUGO, unit_address_show, NULL);
 
-static struct class_device_attribute *ibmvstgt_attrs[] = {
-	&class_device_attr_system_id,
-	&class_device_attr_partition_number,
-	&class_device_attr_unit_address,
+static struct device_attribute *ibmvstgt_attrs[] = {
+	&dev_attr_system_id,
+	&dev_attr_partition_number,
+	&dev_attr_unit_address,
 	NULL,
 };
 
@@ -838,9 +841,6 @@ static int ibmvstgt_probe(struct vio_dev *dev, const struct vio_device_id *id)
 	if (!shost)
 		goto free_vport;
 	shost->transportt = ibmvstgt_transport_template;
-	err = scsi_tgt_alloc_queue(shost);
-	if (err)
-		goto put_host;
 
 	target = host_to_srp_target(shost);
 	target->shost = shost;
@@ -864,17 +864,23 @@ static int ibmvstgt_probe(struct vio_dev *dev, const struct vio_device_id *id)
 
 	INIT_WORK(&vport->crq_work, handle_crq);
 
-	err = crq_queue_create(&vport->crq_queue, target);
+	err = scsi_add_host(shost, target->dev);
 	if (err)
 		goto free_srp_target;
 
-	err = scsi_add_host(shost, target->dev);
+	err = scsi_tgt_alloc_queue(shost);
 	if (err)
-		goto destroy_queue;
+		goto remove_host;
+
+	err = crq_queue_create(&vport->crq_queue, target);
+	if (err)
+		goto free_queue;
 
 	return 0;
-destroy_queue:
-	crq_queue_destroy(target);
+free_queue:
+	scsi_tgt_free_queue(shost);
+remove_host:
+	scsi_remove_host(shost);
 free_srp_target:
 	srp_target_free(target);
 put_host:

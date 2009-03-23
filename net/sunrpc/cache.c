@@ -98,7 +98,7 @@ struct cache_head *sunrpc_cache_lookup(struct cache_detail *detail,
 
 	return new;
 }
-EXPORT_SYMBOL(sunrpc_cache_lookup);
+EXPORT_SYMBOL_GPL(sunrpc_cache_lookup);
 
 
 static void queue_loose(struct cache_detail *detail, struct cache_head *ch);
@@ -173,7 +173,7 @@ struct cache_head *sunrpc_cache_update(struct cache_detail *detail,
 	cache_put(old, detail);
 	return tmp;
 }
-EXPORT_SYMBOL(sunrpc_cache_update);
+EXPORT_SYMBOL_GPL(sunrpc_cache_update);
 
 static int cache_make_upcall(struct cache_detail *detail, struct cache_head *h);
 /*
@@ -245,6 +245,7 @@ int cache_check(struct cache_detail *detail,
 		cache_put(h, detail);
 	return rv;
 }
+EXPORT_SYMBOL_GPL(cache_check);
 
 /*
  * caches need to be periodically cleaned.
@@ -290,44 +291,73 @@ static const struct file_operations cache_flush_operations;
 static void do_cache_clean(struct work_struct *work);
 static DECLARE_DELAYED_WORK(cache_cleaner, do_cache_clean);
 
-void cache_register(struct cache_detail *cd)
+static void remove_cache_proc_entries(struct cache_detail *cd)
 {
+	if (cd->proc_ent == NULL)
+		return;
+	if (cd->flush_ent)
+		remove_proc_entry("flush", cd->proc_ent);
+	if (cd->channel_ent)
+		remove_proc_entry("channel", cd->proc_ent);
+	if (cd->content_ent)
+		remove_proc_entry("content", cd->proc_ent);
+	cd->proc_ent = NULL;
+	remove_proc_entry(cd->name, proc_net_rpc);
+}
+
+#ifdef CONFIG_PROC_FS
+static int create_cache_proc_entries(struct cache_detail *cd)
+{
+	struct proc_dir_entry *p;
+
 	cd->proc_ent = proc_mkdir(cd->name, proc_net_rpc);
-	if (cd->proc_ent) {
-		struct proc_dir_entry *p;
-		cd->proc_ent->owner = cd->owner;
-		cd->channel_ent = cd->content_ent = NULL;
+	if (cd->proc_ent == NULL)
+		goto out_nomem;
+	cd->proc_ent->owner = cd->owner;
+	cd->channel_ent = cd->content_ent = NULL;
 
-		p = create_proc_entry("flush", S_IFREG|S_IRUSR|S_IWUSR,
-				      cd->proc_ent);
-		cd->flush_ent =  p;
-		if (p) {
-			p->proc_fops = &cache_flush_operations;
-			p->owner = cd->owner;
-			p->data = cd;
-		}
+	p = proc_create_data("flush", S_IFREG|S_IRUSR|S_IWUSR,
+			     cd->proc_ent, &cache_flush_operations, cd);
+	cd->flush_ent = p;
+	if (p == NULL)
+		goto out_nomem;
+	p->owner = cd->owner;
 
-		if (cd->cache_request || cd->cache_parse) {
-			p = create_proc_entry("channel", S_IFREG|S_IRUSR|S_IWUSR,
-					      cd->proc_ent);
-			cd->channel_ent = p;
-			if (p) {
-				p->proc_fops = &cache_file_operations;
-				p->owner = cd->owner;
-				p->data = cd;
-			}
-		}
-		if (cd->cache_show) {
-			p = create_proc_entry("content", S_IFREG|S_IRUSR|S_IWUSR,
-					      cd->proc_ent);
-			cd->content_ent = p;
-			if (p) {
-				p->proc_fops = &content_file_operations;
-				p->owner = cd->owner;
-				p->data = cd;
-			}
-		}
+	if (cd->cache_request || cd->cache_parse) {
+		p = proc_create_data("channel", S_IFREG|S_IRUSR|S_IWUSR,
+				     cd->proc_ent, &cache_file_operations, cd);
+		cd->channel_ent = p;
+		if (p == NULL)
+			goto out_nomem;
+		p->owner = cd->owner;
 	}
+	if (cd->cache_show) {
+		p = proc_create_data("content", S_IFREG|S_IRUSR|S_IWUSR,
+				cd->proc_ent, &content_file_operations, cd);
+		cd->content_ent = p;
+		if (p == NULL)
+			goto out_nomem;
+		p->owner = cd->owner;
+	}
+	return 0;
+out_nomem:
+	remove_cache_proc_entries(cd);
+	return -ENOMEM;
+}
+#else /* CONFIG_PROC_FS */
+static int create_cache_proc_entries(struct cache_detail *cd)
+{
+	return 0;
+}
+#endif
+
+int cache_register(struct cache_detail *cd)
+{
+	int ret;
+
+	ret = create_cache_proc_entries(cd);
+	if (ret)
+		return ret;
 	rwlock_init(&cd->hash_lock);
 	INIT_LIST_HEAD(&cd->queue);
 	spin_lock(&cache_list_lock);
@@ -341,9 +371,11 @@ void cache_register(struct cache_detail *cd)
 
 	/* start the cleaning process */
 	schedule_delayed_work(&cache_cleaner, 0);
+	return 0;
 }
+EXPORT_SYMBOL_GPL(cache_register);
 
-int cache_unregister(struct cache_detail *cd)
+void cache_unregister(struct cache_detail *cd)
 {
 	cache_purge(cd);
 	spin_lock(&cache_list_lock);
@@ -351,30 +383,23 @@ int cache_unregister(struct cache_detail *cd)
 	if (cd->entries || atomic_read(&cd->inuse)) {
 		write_unlock(&cd->hash_lock);
 		spin_unlock(&cache_list_lock);
-		return -EBUSY;
+		goto out;
 	}
 	if (current_detail == cd)
 		current_detail = NULL;
 	list_del_init(&cd->others);
 	write_unlock(&cd->hash_lock);
 	spin_unlock(&cache_list_lock);
-	if (cd->proc_ent) {
-		if (cd->flush_ent)
-			remove_proc_entry("flush", cd->proc_ent);
-		if (cd->channel_ent)
-			remove_proc_entry("channel", cd->proc_ent);
-		if (cd->content_ent)
-			remove_proc_entry("content", cd->proc_ent);
-
-		cd->proc_ent = NULL;
-		remove_proc_entry(cd->name, proc_net_rpc);
-	}
+	remove_cache_proc_entries(cd);
 	if (list_empty(&cache_list)) {
 		/* module must be being unloaded so its safe to kill the worker */
 		cancel_delayed_work_sync(&cache_cleaner);
 	}
-	return 0;
+	return;
+out:
+	printk(KERN_ERR "nfsd: failed to unregister %s cache\n", cd->name);
 }
+EXPORT_SYMBOL_GPL(cache_unregister);
 
 /* clean cache tries to find something to clean
  * and cleans it.
@@ -489,6 +514,7 @@ void cache_flush(void)
 	while (cache_clean() != -1)
 		cond_resched();
 }
+EXPORT_SYMBOL_GPL(cache_flush);
 
 void cache_purge(struct cache_detail *detail)
 {
@@ -497,7 +523,7 @@ void cache_purge(struct cache_detail *detail)
 	cache_flush();
 	detail->flush_time = 1;
 }
-
+EXPORT_SYMBOL_GPL(cache_purge);
 
 
 /*
@@ -542,7 +568,6 @@ static int cache_defer_req(struct cache_req *req, struct cache_head *item)
 		return -ETIMEDOUT;
 
 	dreq->item = item;
-	dreq->recv_time = get_seconds();
 
 	spin_lock(&cache_defer_lock);
 
@@ -634,13 +659,13 @@ void cache_clean_deferred(void *owner)
 /*
  * communicate with user-space
  *
- * We have a magic /proc file - /proc/sunrpc/cache
- * On read, you get a full request, or block
- * On write, an update request is processed
- * Poll works if anything to read, and always allows write
+ * We have a magic /proc file - /proc/sunrpc/<cachename>/channel.
+ * On read, you get a full request, or block.
+ * On write, an update request is processed.
+ * Poll works if anything to read, and always allows write.
  *
  * Implemented by linked list of requests.  Each open file has
- * a ->private that also exists in this list.  New request are added
+ * a ->private that also exists in this list.  New requests are added
  * to the end and may wakeup and preceding readers.
  * New readers are added to the head.  If, on read, an item is found with
  * CACHE_UPCALLING clear, we free it from the list.
@@ -963,6 +988,7 @@ void qword_add(char **bpp, int *lp, char *str)
 	*bpp = bp;
 	*lp = len;
 }
+EXPORT_SYMBOL_GPL(qword_add);
 
 void qword_addhex(char **bpp, int *lp, char *buf, int blen)
 {
@@ -991,6 +1017,7 @@ void qword_addhex(char **bpp, int *lp, char *buf, int blen)
 	*bpp = bp;
 	*lp = len;
 }
+EXPORT_SYMBOL_GPL(qword_addhex);
 
 static void warn_no_listener(struct cache_detail *detail)
 {
@@ -1113,6 +1140,7 @@ int qword_get(char **bpp, char *dest, int bufsize)
 	*dest = '\0';
 	return len;
 }
+EXPORT_SYMBOL_GPL(qword_get);
 
 
 /*
@@ -1127,6 +1155,7 @@ struct handle {
 };
 
 static void *c_start(struct seq_file *m, loff_t *pos)
+	__acquires(cd->hash_lock)
 {
 	loff_t n = *pos;
 	unsigned hash, entry;
@@ -1183,6 +1212,7 @@ static void *c_next(struct seq_file *m, void *p, loff_t *pos)
 }
 
 static void c_stop(struct seq_file *m, void *p)
+	__releases(cd->hash_lock)
 {
 	struct cache_detail *cd = ((struct handle*)m->private)->cd;
 	read_unlock(&cd->hash_lock);
@@ -1242,18 +1272,18 @@ static ssize_t read_flush(struct file *file, char __user *buf,
 	struct cache_detail *cd = PDE(file->f_path.dentry->d_inode)->data;
 	char tbuf[20];
 	unsigned long p = *ppos;
-	int len;
+	size_t len;
 
 	sprintf(tbuf, "%lu\n", cd->flush_time);
 	len = strlen(tbuf);
 	if (p >= len)
 		return 0;
 	len -= p;
-	if (len > count) len = count;
+	if (len > count)
+		len = count;
 	if (copy_to_user(buf, (void*)(tbuf+p), len))
-		len = -EFAULT;
-	else
-		*ppos += len;
+		return -EFAULT;
+	*ppos += len;
 	return len;
 }
 

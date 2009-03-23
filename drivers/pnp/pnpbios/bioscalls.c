@@ -7,7 +7,6 @@
 #include <linux/init.h>
 #include <linux/linkage.h>
 #include <linux/kernel.h>
-#include <linux/pnpbios.h>
 #include <linux/device.h>
 #include <linux/pnp.h>
 #include <linux/mm.h>
@@ -61,7 +60,7 @@ set_base(gdt[(selname) >> 3], (u32)(address)); \
 set_limit(gdt[(selname) >> 3], size); \
 } while(0)
 
-static struct desc_struct bad_bios_desc = { 0, 0x00409200 };
+static struct desc_struct bad_bios_desc;
 
 /*
  * At some point we want to use this stack frame pointer to unwind
@@ -477,9 +476,12 @@ void pnpbios_calls_init(union pnp_bios_install_struct *header)
 	pnp_bios_callpoint.offset = header->fields.pm16offset;
 	pnp_bios_callpoint.segment = PNP_CS16;
 
+	bad_bios_desc.a = 0;
+	bad_bios_desc.b = 0x00409200;
+
 	set_base(bad_bios_desc, __va((unsigned long)0x40 << 4));
 	_set_limit((char *)&bad_bios_desc, 4095 - (0x40 << 4));
-	for (i = 0; i < NR_CPUS; i++) {
+	for_each_possible_cpu(i) {
 		struct desc_struct *gdt = get_cpu_gdt_table(i);
 		if (!gdt)
 			continue;

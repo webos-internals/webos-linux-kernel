@@ -10,34 +10,30 @@
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
  *  published by the Free Software Foundation.
- *
- *  Revision history
- *	21st Mar 2007   Initial Version
  */
 
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
 #include <linux/clk.h>
 
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/ac97_codec.h>
 #include <sound/initval.h>
 #include <sound/soc.h>
 
-#include <asm/hardware.h>
-#include <asm/io.h>
-#include <asm/plat-s3c/regs-ac97.h>
-#include <asm/arch/regs-gpio.h>
-#include <asm/arch/regs-clock.h>
-#include <asm/arch/audio.h>
+#include <mach/hardware.h>
+#include <plat/regs-ac97.h>
+#include <mach/regs-gpio.h>
+#include <mach/regs-clock.h>
+#include <mach/audio.h>
 #include <asm/dma.h>
-#include <asm/arch/dma.h>
+#include <mach/dma.h>
 
 #include "s3c24xx-pcm.h"
 #include "s3c24xx-ac97.h"
@@ -48,7 +44,7 @@ struct s3c24xx_ac97_info {
 };
 static struct s3c24xx_ac97_info s3c24xx_ac97;
 
-DECLARE_COMPLETION(ac97_completion);
+static DECLARE_COMPLETION(ac97_completion);
 static u32 codec_ready;
 static DECLARE_MUTEX(ac97_mutex);
 
@@ -213,7 +209,8 @@ static struct s3c24xx_pcm_dma_params s3c2443_ac97_mic_mono_in = {
 	.dma_size	= 4,
 };
 
-static int s3c2443_ac97_probe(struct platform_device *pdev)
+static int s3c2443_ac97_probe(struct platform_device *pdev,
+			      struct snd_soc_dai *dai)
 {
 	int ret;
 	u32 ac_glbctrl;
@@ -253,7 +250,7 @@ static int s3c2443_ac97_probe(struct platform_device *pdev)
 	ac_glbctrl |= S3C_AC97_GLBCTRL_TRANSFERDATAENABLE;
 	writel(ac_glbctrl, s3c24xx_ac97.regs + S3C_AC97_GLBCTRL);
 
-	ret = request_irq(IRQ_S3C2443_AC97, s3c2443_ac97_irq,
+	ret = request_irq(IRQ_S3C244x_AC97, s3c2443_ac97_irq,
 		IRQF_DISABLED, "AC97", NULL);
 	if (ret < 0) {
 		printk(KERN_ERR "s3c24xx-ac97: interrupt request failed.\n");
@@ -264,19 +261,21 @@ static int s3c2443_ac97_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void s3c2443_ac97_remove(struct platform_device *pdev)
+static void s3c2443_ac97_remove(struct platform_device *pdev,
+				struct snd_soc_dai *dai)
 {
-	free_irq(IRQ_S3C2443_AC97, NULL);
+	free_irq(IRQ_S3C244x_AC97, NULL);
 	clk_disable(s3c24xx_ac97.ac97_clk);
 	clk_put(s3c24xx_ac97.ac97_clk);
 	iounmap(s3c24xx_ac97.regs);
 }
 
 static int s3c2443_ac97_hw_params(struct snd_pcm_substream *substream,
-				struct snd_pcm_hw_params *params)
+				  struct snd_pcm_hw_params *params,
+				  struct snd_soc_dai *dai)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_cpu_dai *cpu_dai = rtd->dai->cpu_dai;
+	struct snd_soc_dai *cpu_dai = rtd->dai->cpu_dai;
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		cpu_dai->dma_data = &s3c2443_ac97_pcm_stereo_out;
@@ -286,12 +285,13 @@ static int s3c2443_ac97_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int s3c2443_ac97_trigger(struct snd_pcm_substream *substream, int cmd)
+static int s3c2443_ac97_trigger(struct snd_pcm_substream *substream, int cmd,
+				struct snd_soc_dai *dai)
 {
 	u32 ac_glbctrl;
 
 	ac_glbctrl = readl(s3c24xx_ac97.regs + S3C_AC97_GLBCTRL);
-	switch(cmd) {
+	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
@@ -315,10 +315,11 @@ static int s3c2443_ac97_trigger(struct snd_pcm_substream *substream, int cmd)
 }
 
 static int s3c2443_ac97_hw_mic_params(struct snd_pcm_substream *substream,
-	struct snd_pcm_hw_params *params)
+				      struct snd_pcm_hw_params *params,
+				      struct snd_soc_dai *dai)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_cpu_dai *cpu_dai = rtd->dai->cpu_dai;
+	struct snd_soc_dai *cpu_dai = rtd->dai->cpu_dai;
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		return -ENODEV;
@@ -329,12 +330,12 @@ static int s3c2443_ac97_hw_mic_params(struct snd_pcm_substream *substream,
 }
 
 static int s3c2443_ac97_mic_trigger(struct snd_pcm_substream *substream,
-	int cmd)
+				    int cmd, struct snd_soc_dai *dai)
 {
 	u32 ac_glbctrl;
 
 	ac_glbctrl = readl(s3c24xx_ac97.regs + S3C_AC97_GLBCTRL);
-	switch(cmd) {
+	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
@@ -354,11 +355,11 @@ static int s3c2443_ac97_mic_trigger(struct snd_pcm_substream *substream,
 		SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_22050 | \
 		SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000)
 
-struct snd_soc_cpu_dai s3c2443_ac97_dai[] = {
+struct snd_soc_dai s3c2443_ac97_dai[] = {
 {
 	.name = "s3c2443-ac97",
 	.id = 0,
-	.type = SND_SOC_DAI_AC97,
+	.ac97_control = 1,
 	.probe = s3c2443_ac97_probe,
 	.remove = s3c2443_ac97_remove,
 	.playback = {
@@ -380,7 +381,7 @@ struct snd_soc_cpu_dai s3c2443_ac97_dai[] = {
 {
 	.name = "pxa2xx-ac97-mic",
 	.id = 1,
-	.type = SND_SOC_DAI_AC97,
+	.ac97_control = 1,
 	.capture = {
 		.stream_name = "AC97 Mic Capture",
 		.channels_min = 1,
@@ -392,9 +393,23 @@ struct snd_soc_cpu_dai s3c2443_ac97_dai[] = {
 		.trigger = s3c2443_ac97_mic_trigger,},
 },
 };
-
 EXPORT_SYMBOL_GPL(s3c2443_ac97_dai);
 EXPORT_SYMBOL_GPL(soc_ac97_ops);
+
+static int __init s3c2443_ac97_init(void)
+{
+	return snd_soc_register_dais(s3c2443_ac97_dai,
+				     ARRAY_SIZE(s3c2443_ac97_dai));
+}
+module_init(s3c2443_ac97_init);
+
+static void __exit s3c2443_ac97_exit(void)
+{
+	snd_soc_unregister_dais(s3c2443_ac97_dai,
+				ARRAY_SIZE(s3c2443_ac97_dai));
+}
+module_exit(s3c2443_ac97_exit);
+
 
 MODULE_AUTHOR("Graeme Gregory");
 MODULE_DESCRIPTION("AC97 driver for the Samsung s3c2443 chip");

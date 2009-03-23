@@ -22,11 +22,11 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <asm/hardware.h>
+#include <linux/io.h>
+#include <mach/hardware.h>
 #include <asm/mach/map.h>
 #include <asm/hardware/vic.h>
-#include <asm/io.h>
-#include <asm/arch/netx-regs.h>
+#include <mach/netx-regs.h>
 #include <asm/mach/irq.h>
 
 static struct map_desc netx_io_desc[] __initdata = {
@@ -77,15 +77,12 @@ netx_hif_demux_handler(unsigned int irq_unused, struct irq_desc *desc)
 	stat = ((readl(NETX_DPMAS_INT_EN) &
 		readl(NETX_DPMAS_INT_STAT)) >> 24) & 0x1f;
 
-	desc = irq_desc + NETX_IRQ_HIF_CHAINED(0);
-
 	while (stat) {
 		if (stat & 1) {
 			DEBUG_IRQ("handling irq %d\n", irq);
-			desc_handle_irq(irq, desc);
+			generic_handle_irq(irq);
 		}
 		irq++;
-		desc++;
 		stat >>= 1;
 	}
 }
@@ -99,19 +96,19 @@ netx_hif_irq_type(unsigned int _irq, unsigned int type)
 
 	irq = _irq - NETX_IRQ_HIF_CHAINED(0);
 
-	if (type & __IRQT_RISEDGE) {
+	if (type & IRQ_TYPE_EDGE_RISING) {
 		DEBUG_IRQ("rising edges\n");
 		val |= (1 << 26) << irq;
 	}
-	if (type & __IRQT_FALEDGE) {
+	if (type & IRQ_TYPE_EDGE_FALLING) {
 		DEBUG_IRQ("falling edges\n");
 		val &= ~((1 << 26) << irq);
 	}
-	if (type & __IRQT_LOWLVL) {
+	if (type & IRQ_TYPE_LEVEL_LOW) {
 		DEBUG_IRQ("low level\n");
 		val &= ~((1 << 26) << irq);
 	}
-	if (type & __IRQT_HIGHLVL) {
+	if (type & IRQ_TYPE_LEVEL_HIGH) {
 		DEBUG_IRQ("high level\n");
 		val |= (1 << 26) << irq;
 	}
@@ -133,7 +130,7 @@ netx_hif_ack_irq(unsigned int _irq)
 	val &= ~((1 << 24) << irq);
 	writel(val, NETX_DPMAS_INT_EN);
 
-	DEBUG_IRQ("%s: irq %d\n", __FUNCTION__, _irq);
+	DEBUG_IRQ("%s: irq %d\n", __func__, _irq);
 }
 
 static void
@@ -145,7 +142,7 @@ netx_hif_mask_irq(unsigned int _irq)
 	val = readl(NETX_DPMAS_INT_EN);
 	val &= ~((1 << 24) << irq);
 	writel(val, NETX_DPMAS_INT_EN);
-	DEBUG_IRQ("%s: irq %d\n", __FUNCTION__, _irq);
+	DEBUG_IRQ("%s: irq %d\n", __func__, _irq);
 }
 
 static void
@@ -157,7 +154,7 @@ netx_hif_unmask_irq(unsigned int _irq)
 	val = readl(NETX_DPMAS_INT_EN);
 	val |= (1 << 24) << irq;
 	writel(val, NETX_DPMAS_INT_EN);
-	DEBUG_IRQ("%s: irq %d\n", __FUNCTION__, _irq);
+	DEBUG_IRQ("%s: irq %d\n", __func__, _irq);
 }
 
 static struct irq_chip netx_hif_chip = {

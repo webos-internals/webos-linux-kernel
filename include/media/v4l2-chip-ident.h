@@ -2,7 +2,7 @@
     v4l2 chip identifiers header
 
     This header provides a list of chip identifiers that can be returned
-    through the VIDIOC_G_CHIP_IDENT ioctl.
+    through the VIDIOC_DBG_G_CHIP_IDENT ioctl.
 
     Copyright (C) 2007 Hans Verkuil <hverkuil@xs4all.nl>
 
@@ -24,7 +24,7 @@
 #ifndef V4L2_CHIP_IDENT_H_
 #define V4L2_CHIP_IDENT_H_
 
-/* VIDIOC_G_CHIP_IDENT: identifies the actual chip installed on the board */
+/* VIDIOC_DBG_G_CHIP_IDENT: identifies the actual chip installed on the board */
 enum {
 	/* general idents: reserved range 0-49 */
 	V4L2_IDENT_NONE      = 0,       /* No chip matched */
@@ -60,19 +60,35 @@ enum {
 
 	/* OmniVision sensors: reserved range 250-299 */
 	V4L2_IDENT_OV7670 = 250,
+	V4L2_IDENT_OV7720 = 251,
+	V4L2_IDENT_OV7725 = 252,
 
 	/* Conexant MPEG encoder/decoders: reserved range 410-420 */
 	V4L2_IDENT_CX23415 = 415,
 	V4L2_IDENT_CX23416 = 416,
+	V4L2_IDENT_CX23418 = 418,
 
 	/* module vp27smpx: just ident 2700 */
 	V4L2_IDENT_VP27SMPX = 2700,
+
+	/* module tvp5150 */
+	V4L2_IDENT_TVP5150 = 5150,
+
+	/* module cs5345: just ident 5345 */
+	V4L2_IDENT_CS5345 = 5345,
+
+	/* module saa6752hs: reserved range 6750-6759 */
+	V4L2_IDENT_SAA6752HS = 6752,
+	V4L2_IDENT_SAA6752HS_AC3 = 6753,
 
 	/* module wm8739: just ident 8739 */
 	V4L2_IDENT_WM8739 = 8739,
 
 	/* module wm8775: just ident 8775 */
 	V4L2_IDENT_WM8775 = 8775,
+
+	/* module tw9910: just ident 9910 */
+	V4L2_IDENT_TW9910 = 9910,
 
 	/* module cs53132a: just ident 53132 */
 	V4L2_IDENT_CS53l32A = 53132,
@@ -83,7 +99,13 @@ enum {
 	/* module upd64083: just ident 64083 */
 	V4L2_IDENT_UPD64083 = 64083,
 
-	/* module msp34xx: reserved range 34000-34999 */
+	/* module m52790: just ident 52790 */
+	V4L2_IDENT_M52790 = 52790,
+
+	/* module msp3400: reserved range 34000-34999 and 44000-44999 */
+	V4L2_IDENT_MSPX4XX  = 34000, /* generic MSPX4XX identifier, only
+					use internally (tveeprom.c). */
+
 	V4L2_IDENT_MSP3400B = 34002,
 	V4L2_IDENT_MSP3410B = 34102,
 
@@ -135,7 +157,7 @@ enum {
 	V4L2_IDENT_MSP3457G = 34577,
 	V4L2_IDENT_MSP3467G = 34677,
 
-	/* module msp44xx: reserved range 44000-44999 */
+	/* module msp3400: reserved range 34000-34999 and 44000-44999 */
 	V4L2_IDENT_MSP4400G = 44007,
 	V4L2_IDENT_MSP4410G = 44107,
 	V4L2_IDENT_MSP4420G = 44207,
@@ -147,6 +169,15 @@ enum {
 	V4L2_IDENT_MSP4428G = 44287,
 	V4L2_IDENT_MSP4448G = 44487,
 	V4L2_IDENT_MSP4458G = 44587,
+
+	/* Micron CMOS sensor chips: 45000-45099 */
+	V4L2_IDENT_MT9M001C12ST		= 45000,
+	V4L2_IDENT_MT9M001C12STM	= 45005,
+	V4L2_IDENT_MT9M111		= 45007,
+	V4L2_IDENT_MT9M112		= 45008,
+	V4L2_IDENT_MT9V022IX7ATC	= 45010, /* No way to detect "normal" I77ATx */
+	V4L2_IDENT_MT9V022IX7ATM	= 45015, /* and "lead free" IA7ATx chips */
+	V4L2_IDENT_MT9T031		= 45020,
 };
 
 #endif

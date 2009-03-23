@@ -19,7 +19,7 @@
 #include <linux/netfilter_ipv6/ip6t_frag.h>
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("IPv6 FRAG match");
+MODULE_DESCRIPTION("Xtables: IPv6 fragment match");
 MODULE_AUTHOR("Andras Kis-Szabo <kisza@sch.bme.hu>");
 
 /* Returns 1 if the id is matched by the range, 0 otherwise */
@@ -35,31 +35,24 @@ id_match(u_int32_t min, u_int32_t max, u_int32_t id, bool invert)
 }
 
 static bool
-match(const struct sk_buff *skb,
-      const struct net_device *in,
-      const struct net_device *out,
-      const struct xt_match *match,
-      const void *matchinfo,
-      int offset,
-      unsigned int protoff,
-      bool *hotdrop)
+frag_mt6(const struct sk_buff *skb, const struct xt_match_param *par)
 {
 	struct frag_hdr _frag;
 	const struct frag_hdr *fh;
-	const struct ip6t_frag *fraginfo = matchinfo;
+	const struct ip6t_frag *fraginfo = par->matchinfo;
 	unsigned int ptr;
 	int err;
 
 	err = ipv6_find_hdr(skb, &ptr, NEXTHDR_FRAGMENT, NULL);
 	if (err < 0) {
 		if (err != -ENOENT)
-			*hotdrop = true;
+			*par->hotdrop = true;
 		return false;
 	}
 
 	fh = skb_header_pointer(skb, ptr, sizeof(_frag), &_frag);
 	if (fh == NULL) {
-		*hotdrop = true;
+		*par->hotdrop = true;
 		return false;
 	}
 
@@ -114,15 +107,9 @@ match(const struct sk_buff *skb,
 		 && (ntohs(fh->frag_off) & IP6_MF));
 }
 
-/* Called when user tries to insert an entry of this type. */
-static bool
-checkentry(const char *tablename,
-	   const void *ip,
-	   const struct xt_match *match,
-	   void *matchinfo,
-	   unsigned int hook_mask)
+static bool frag_mt6_check(const struct xt_mtchk_param *par)
 {
-	const struct ip6t_frag *fraginfo = matchinfo;
+	const struct ip6t_frag *fraginfo = par->matchinfo;
 
 	if (fraginfo->invflags & ~IP6T_FRAG_INV_MASK) {
 		pr_debug("ip6t_frag: unknown flags %X\n", fraginfo->invflags);
@@ -131,24 +118,24 @@ checkentry(const char *tablename,
 	return true;
 }
 
-static struct xt_match frag_match __read_mostly = {
+static struct xt_match frag_mt6_reg __read_mostly = {
 	.name		= "frag",
-	.family		= AF_INET6,
-	.match		= match,
+	.family		= NFPROTO_IPV6,
+	.match		= frag_mt6,
 	.matchsize	= sizeof(struct ip6t_frag),
-	.checkentry	= checkentry,
+	.checkentry	= frag_mt6_check,
 	.me		= THIS_MODULE,
 };
 
-static int __init ip6t_frag_init(void)
+static int __init frag_mt6_init(void)
 {
-	return xt_register_match(&frag_match);
+	return xt_register_match(&frag_mt6_reg);
 }
 
-static void __exit ip6t_frag_fini(void)
+static void __exit frag_mt6_exit(void)
 {
-	xt_unregister_match(&frag_match);
+	xt_unregister_match(&frag_mt6_reg);
 }
 
-module_init(ip6t_frag_init);
-module_exit(ip6t_frag_fini);
+module_init(frag_mt6_init);
+module_exit(frag_mt6_exit);

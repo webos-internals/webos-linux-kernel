@@ -29,6 +29,9 @@
 #include <asm/cputable.h>
 #include <asm/firmware.h>
 #include <asm/bug.h>
+#include <asm/ptrace.h>
+#include <asm/irqflags.h>
+#include <asm/ftrace.h>
 
 /*
  * System calls.
@@ -39,7 +42,7 @@
 
 /* This value is used to mark exception frames on the stack. */
 exception_marker:
-	.tc	ID_72656773_68657265[TC],0x7265677368657265
+	.tc	ID_EXC_MARKER[TC],STACK_FRAME_REGS_MARKER
 
 	.section	".text"
 	.align 7
@@ -54,12 +57,18 @@ system_call_common:
 	beq-	1f
 	ld	r1,PACAKSAVE(r13)
 1:	std	r10,0(r1)
-	crclr	so
 	std	r11,_NIP(r1)
 	std	r12,_MSR(r1)
 	std	r0,GPR0(r1)
 	std	r10,GPR1(r1)
 	ACCOUNT_CPU_USER_ENTRY(r10, r11)
+	/*
+	 * This "crclr so" clears CR0.SO, which is the error indication on
+	 * return from this system call.  There must be no cmp instruction
+	 * between it and the "mfcr r9" below, otherwise if XER.SO is set,
+	 * CR0.SO will get set, causing all system calls to appear to fail.
+	 */
+	crclr	so
 	std	r2,GPR2(r1)
 	std	r3,GPR3(r1)
 	std	r4,GPR4(r1)
@@ -88,6 +97,14 @@ system_call_common:
 	addi	r9,r1,STACK_FRAME_OVERHEAD
 	ld	r11,exception_marker@toc(r2)
 	std	r11,-16(r9)		/* "regshere" marker */
+#ifdef CONFIG_TRACE_IRQFLAGS
+	bl	.trace_hardirqs_on
+	REST_GPR(0,r1)
+	REST_4GPRS(3,r1)
+	REST_2GPRS(7,r1)
+	addi	r9,r1,STACK_FRAME_OVERHEAD
+	ld	r12,_MSR(r1)
+#endif /* CONFIG_TRACE_IRQFLAGS */
 	li	r10,1
 	stb	r10,PACASOFTIRQEN(r13)
 	stb	r10,PACAHARDIRQEN(r13)
@@ -102,7 +119,7 @@ BEGIN_FW_FTR_SECTION
 	b	hardware_interrupt_entry
 2:
 END_FW_FTR_SECTION_IFSET(FW_FEATURE_ISERIES)
-#endif
+#endif /* CONFIG_PPC_ISERIES */
 	mfmsr	r11
 	ori	r11,r11,MSR_EE
 	mtmsrd	r11,1
@@ -203,7 +220,12 @@ syscall_dotrace:
 	bl	.save_nvgprs
 	addi	r3,r1,STACK_FRAME_OVERHEAD
 	bl	.do_syscall_trace_enter
-	ld	r0,GPR0(r1)	/* Restore original registers */
+	/*
+	 * Restore argument registers possibly just changed.
+	 * We use the return value of do_syscall_trace_enter
+	 * for the call number to look up in the table (r0).
+	 */
+	mr	r0,r3
 	ld	r3,GPR3(r1)
 	ld	r4,GPR4(r1)
 	ld	r5,GPR5(r1)
@@ -343,6 +365,11 @@ _GLOBAL(_switch)
 	mflr	r20		/* Return to switch caller */
 	mfmsr	r22
 	li	r0, MSR_FP
+#ifdef CONFIG_VSX
+BEGIN_FTR_SECTION
+	oris	r0,r0,MSR_VSX@h	/* Disable VSX */
+END_FTR_SECTION_IFSET(CPU_FTR_VSX)
+#endif /* CONFIG_VSX */
 #ifdef CONFIG_ALTIVEC
 BEGIN_FTR_SECTION
 	oris	r0,r0,MSR_VEC@h	/* Disable altivec */
@@ -373,16 +400,16 @@ END_FTR_SECTION_IFSET(CPU_FTR_ALTIVEC)
 
 	ld	r8,KSP(r4)	/* new stack pointer */
 BEGIN_FTR_SECTION
-	b	2f
-END_FTR_SECTION_IFCLR(CPU_FTR_SLB)
-BEGIN_FTR_SECTION
+  BEGIN_FTR_SECTION_NESTED(95)
 	clrrdi	r6,r8,28	/* get its ESID */
 	clrrdi	r9,r1,28	/* get current sp ESID */
-END_FTR_SECTION_IFCLR(CPU_FTR_1T_SEGMENT)
-BEGIN_FTR_SECTION
+  FTR_SECTION_ELSE_NESTED(95)
 	clrrdi	r6,r8,40	/* get its 1T ESID */
 	clrrdi	r9,r1,40	/* get current sp 1T ESID */
-END_FTR_SECTION_IFSET(CPU_FTR_1T_SEGMENT)
+  ALT_FTR_SECTION_END_NESTED_IFCLR(CPU_FTR_1T_SEGMENT, 95)
+FTR_SECTION_ELSE
+	b	2f
+ALT_FTR_SECTION_END_IFSET(CPU_FTR_SLB)
 	clrldi.	r0,r6,2		/* is new ESID c00000000? */
 	cmpd	cr1,r6,r9	/* or is new ESID the same as current ESID? */
 	cror	eq,4*cr1+eq,eq
@@ -491,28 +518,13 @@ _GLOBAL(ret_from_except_lite)
 #endif
 
 restore:
-	ld	r5,SOFTE(r1)
-#ifdef CONFIG_PPC_ISERIES
 BEGIN_FW_FTR_SECTION
-	cmpdi	0,r5,0
-	beq	4f
-	/* Check for pending interrupts (iSeries) */
-	ld	r3,PACALPPACAPTR(r13)
-	ld	r3,LPPACAANYINT(r3)
-	cmpdi	r3,0
-	beq+	4f			/* skip do_IRQ if no interrupts */
-
-	li	r3,0
-	stb	r3,PACASOFTIRQEN(r13)	/* ensure we are soft-disabled */
-	ori	r10,r10,MSR_EE
-	mtmsrd	r10			/* hard-enable again */
-	addi	r3,r1,STACK_FRAME_OVERHEAD
-	bl	.do_IRQ
-	b	.ret_from_except_lite		/* loop back and handle more */
-4:
-END_FW_FTR_SECTION_IFSET(FW_FEATURE_ISERIES)
-#endif
-	stb	r5,PACASOFTIRQEN(r13)
+	ld	r5,SOFTE(r1)
+FW_FTR_SECTION_ELSE
+	b	iseries_check_pending_irqs
+ALT_FW_FTR_SECTION_END_IFCLR(FW_FEATURE_ISERIES)
+2:
+	TRACE_AND_RESTORE_IRQ(r5);
 
 	/* extract EE bit and use it to restore paca->hard_enabled */
 	ld	r3,_MSR(r1)
@@ -567,6 +579,30 @@ END_FW_FTR_SECTION_IFSET(FW_FEATURE_ISERIES)
 	rfid
 	b	.	/* prevent speculative execution */
 
+iseries_check_pending_irqs:
+#ifdef CONFIG_PPC_ISERIES
+	ld	r5,SOFTE(r1)
+	cmpdi	0,r5,0
+	beq	2b
+	/* Check for pending interrupts (iSeries) */
+	ld	r3,PACALPPACAPTR(r13)
+	ld	r3,LPPACAANYINT(r3)
+	cmpdi	r3,0
+	beq+	2b			/* skip do_IRQ if no interrupts */
+
+	li	r3,0
+	stb	r3,PACASOFTIRQEN(r13)	/* ensure we are soft-disabled */
+#ifdef CONFIG_TRACE_IRQFLAGS
+	bl	.trace_hardirqs_off
+	mfmsr	r10
+#endif
+	ori	r10,r10,MSR_EE
+	mtmsrd	r10			/* hard-enable again */
+	addi	r3,r1,STACK_FRAME_OVERHEAD
+	bl	.do_IRQ
+	b	.ret_from_except_lite		/* loop back and handle more */
+#endif
+
 do_work:
 #ifdef CONFIG_PREEMPT
 	andi.	r0,r3,MSR_PR	/* Returning to user mode? */
@@ -580,6 +616,16 @@ do_work:
 	bne	restore
 	/* here we are preempting the current task */
 1:
+#ifdef CONFIG_TRACE_IRQFLAGS
+	bl	.trace_hardirqs_on
+	/* Note: we just clobbered r10 which used to contain the previous
+	 * MSR before the hard-disabling done by the caller of do_work.
+	 * We don't have that value anymore, but it doesn't matter as
+	 * we will hard-enable unconditionally, we can just reload the
+	 * current MSR into r10
+	 */
+	mfmsr	r10
+#endif /* CONFIG_TRACE_IRQFLAGS */
 	li	r0,1
 	stb	r0,PACASOFTIRQEN(r13)
 	stb	r0,PACAHARDIRQEN(r13)
@@ -608,8 +654,7 @@ user_work:
 	b	.ret_from_except_lite
 
 1:	bl	.save_nvgprs
-	li	r3,0
-	addi	r4,r1,STACK_FRAME_OVERHEAD
+	addi	r3,r1,STACK_FRAME_OVERHEAD
 	bl	.do_signal
 	b	.ret_from_except
 
@@ -651,10 +696,6 @@ _GLOBAL(enter_rtas)
 	std	r7,_DAR(r1)
 	mfdsisr	r8
 	std	r8,_DSISR(r1)
-	mfsrr0	r9
-	std	r9,_SRR0(r1)
-	mfsrr1	r10
-	std	r10,_SRR1(r1)
 
 	/* Temporary workaround to clear CR until RTAS can be modified to
 	 * ignore all bits.
@@ -715,6 +756,10 @@ _STATIC(rtas_return_loc)
 	mfspr	r4,SPRN_SPRG3	        /* Get PACA */
 	clrldi	r4,r4,2			/* convert to realmode address */
 
+	bcl	20,31,$+4
+0:	mflr	r3
+	ld	r3,(1f-0b)(r3)		/* get &.rtas_restore_regs */
+
 	mfmsr   r6
 	li	r0,MSR_RI
 	andc	r6,r6,r0
@@ -722,13 +767,15 @@ _STATIC(rtas_return_loc)
 	mtmsrd  r6
         
         ld	r1,PACAR1(r4)           /* Restore our SP */
-	LOAD_REG_IMMEDIATE(r3,.rtas_restore_regs)
         ld	r4,PACASAVEDMSR(r4)     /* Restore our MSR */
 
 	mtspr	SPRN_SRR0,r3
 	mtspr	SPRN_SRR1,r4
 	rfid
 	b	.	/* prevent speculative execution */
+
+	.align	3
+1:	.llong	.rtas_restore_regs
 
 _STATIC(rtas_restore_regs)
 	/* relocation is on at this point */
@@ -749,10 +796,6 @@ _STATIC(rtas_restore_regs)
 	mtdar	r7
 	ld	r8,_DSISR(r1)
 	mtdsisr	r8
-	ld	r9,_SRR0(r1)
-	mtsrr0	r9
-	ld	r10,_SRR1(r1)
-	mtsrr1	r10
 
         addi	r1,r1,RTAS_FRAME_SIZE	/* Unstack our frame */
 	ld	r0,16(r1)		/* get return address */
@@ -846,3 +889,55 @@ _GLOBAL(enter_prom)
 	ld	r0,16(r1)
 	mtlr    r0
         blr
+
+#ifdef CONFIG_FUNCTION_TRACER
+#ifdef CONFIG_DYNAMIC_FTRACE
+_GLOBAL(mcount)
+_GLOBAL(_mcount)
+	blr
+
+_GLOBAL(ftrace_caller)
+	/* Taken from output of objdump from lib64/glibc */
+	mflr	r3
+	ld	r11, 0(r1)
+	stdu	r1, -112(r1)
+	std	r3, 128(r1)
+	ld	r4, 16(r11)
+	subi	r3, r3, MCOUNT_INSN_SIZE
+.globl ftrace_call
+ftrace_call:
+	bl	ftrace_stub
+	nop
+	ld	r0, 128(r1)
+	mtlr	r0
+	addi	r1, r1, 112
+_GLOBAL(ftrace_stub)
+	blr
+#else
+_GLOBAL(mcount)
+	blr
+
+_GLOBAL(_mcount)
+	/* Taken from output of objdump from lib64/glibc */
+	mflr	r3
+	ld	r11, 0(r1)
+	stdu	r1, -112(r1)
+	std	r3, 128(r1)
+	ld	r4, 16(r11)
+
+	subi	r3, r3, MCOUNT_INSN_SIZE
+	LOAD_REG_ADDR(r5,ftrace_trace_function)
+	ld	r5,0(r5)
+	ld	r5,0(r5)
+	mtctr	r5
+	bctrl
+
+	nop
+	ld	r0, 128(r1)
+	mtlr	r0
+	addi	r1, r1, 112
+_GLOBAL(ftrace_stub)
+	blr
+
+#endif
+#endif

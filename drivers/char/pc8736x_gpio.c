@@ -20,6 +20,7 @@
 #include <linux/mutex.h>
 #include <linux/nsc_gpio.h>
 #include <linux/platform_device.h>
+#include <linux/smp_lock.h>
 #include <asm/uaccess.h>
 
 #define DEVNAME "pc8736x_gpio"
@@ -40,7 +41,8 @@ static u8 pc8736x_gpio_shadow[4];
 #define SIO_BASE2       0x4E	/* alt command-reg to check */
 
 #define SIO_SID		0x20	/* SuperI/O ID Register */
-#define SIO_SID_VALUE	0xe9	/* Expected value in SuperI/O ID Register */
+#define SIO_SID_PC87365	0xe5	/* Expected value in ID Register for PC87365 */
+#define SIO_SID_PC87366	0xe9	/* Expected value in ID Register for PC87366 */
 
 #define SIO_CF1		0x21	/* chip config, bit0 is chip enable */
 
@@ -90,13 +92,17 @@ static inline int superio_inb(int addr)
 
 static int pc8736x_superio_present(void)
 {
+	int id;
+
 	/* try the 2 possible values, read a hardware reg to verify */
 	superio_cmd = SIO_BASE1;
-	if (superio_inb(SIO_SID) == SIO_SID_VALUE)
+	id = superio_inb(SIO_SID);
+	if (id == SIO_SID_PC87365 || id == SIO_SID_PC87366)
 		return superio_cmd;
 
 	superio_cmd = SIO_BASE2;
-	if (superio_inb(SIO_SID) == SIO_SID_VALUE)
+	id = superio_inb(SIO_SID);
+	if (id == SIO_SID_PC87365 || id == SIO_SID_PC87366)
 		return superio_cmd;
 
 	return 0;
@@ -217,6 +223,7 @@ static int pc8736x_gpio_open(struct inode *inode, struct file *file)
 	unsigned m = iminor(inode);
 	file->private_data = &pc8736x_gpio_ops;
 
+	cycle_kernel_lock();
 	dev_dbg(&pdev->dev, "open %d\n", m);
 
 	if (m >= PC8736X_GPIO_CT)

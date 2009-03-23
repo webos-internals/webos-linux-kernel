@@ -50,21 +50,11 @@ static void enable_sb1250_irq(unsigned int irq);
 static void disable_sb1250_irq(unsigned int irq);
 static void ack_sb1250_irq(unsigned int irq);
 #ifdef CONFIG_SMP
-static void sb1250_set_affinity(unsigned int irq, cpumask_t mask);
+static void sb1250_set_affinity(unsigned int irq, const struct cpumask *mask);
 #endif
 
 #ifdef CONFIG_SIBYTE_HAS_LDT
 extern unsigned long ldt_eoi_space;
-#endif
-
-#ifdef CONFIG_KGDB
-static int kgdb_irq;
-
-/* Default to UART1 */
-int kgdb_port = 1;
-#ifdef CONFIG_SERIAL_SB1250_DUART
-extern char sb1250_duart_present[];
-#endif
 #endif
 
 static struct irq_chip sb1250_irq_type = {
@@ -113,16 +103,16 @@ void sb1250_unmask_irq(int cpu, int irq)
 }
 
 #ifdef CONFIG_SMP
-static void sb1250_set_affinity(unsigned int irq, cpumask_t mask)
+static void sb1250_set_affinity(unsigned int irq, const struct cpumask *mask)
 {
 	int i = 0, old_cpu, cpu, int_on;
 	u64 cur_ints;
 	struct irq_desc *desc = irq_desc + irq;
 	unsigned long flags;
 
-	i = first_cpu(mask);
+	i = cpumask_first(mask);
 
-	if (cpus_weight(mask) > 1) {
+	if (cpumask_weight(mask) > 1) {
 		printk("attempted to set irq affinity for irq %d to multiple CPUs\n", irq);
 		return;
 	}
@@ -313,54 +303,9 @@ void __init arch_init_irq(void)
 	 * does its own management of IP7.
 	 */
 
-#ifdef CONFIG_KGDB
-	imask |= STATUSF_IP6;
-#endif
 	/* Enable necessary IPs, disable the rest */
 	change_c0_status(ST0_IM, imask);
-
-#ifdef CONFIG_KGDB
-	if (kgdb_flag) {
-		kgdb_irq = K_INT_UART_0 + kgdb_port;
-
-#ifdef CONFIG_SERIAL_SB1250_DUART
-		sb1250_duart_present[kgdb_port] = 0;
-#endif
-		/* Setup uart 1 settings, mapper */
-		__raw_writeq(M_DUART_IMR_BRK,
-			     IOADDR(A_DUART_IMRREG(kgdb_port)));
-
-		__raw_writeq(IMR_IP6_VAL,
-			     IOADDR(A_IMR_REGISTER(0,
-						   R_IMR_INTERRUPT_MAP_BASE) +
-				    (kgdb_irq << 3)));
-		sb1250_unmask_irq(0, kgdb_irq);
-	}
-#endif
 }
-
-#ifdef CONFIG_KGDB
-
-#include <linux/delay.h>
-
-#define duart_out(reg, val)     csr_out32(val, IOADDR(A_DUART_CHANREG(kgdb_port, reg)))
-#define duart_in(reg)           csr_in32(IOADDR(A_DUART_CHANREG(kgdb_port, reg)))
-
-static void sb1250_kgdb_interrupt(void)
-{
-	/*
-	 * Clear break-change status (allow some time for the remote
-	 * host to stop the break, since we would see another
-	 * interrupt on the end-of-break too)
-	 */
-	kstat_this_cpu.irqs[kgdb_irq]++;
-	mdelay(500);
-	duart_out(R_DUART_CMD, V_DUART_MISC_CMD_RESET_BREAK_INT |
-				M_DUART_RX_EN | M_DUART_TX_EN);
-	set_async_breakpoint(&get_irq_regs()->cp0_epc);
-}
-
-#endif 	/* CONFIG_KGDB */
 
 extern void sb1250_mailbox_interrupt(void);
 
@@ -405,11 +350,6 @@ asmlinkage void plat_irq_dispatch(void)
 #ifdef CONFIG_SMP
 	else if (pending & CAUSEF_IP3)
 		sb1250_mailbox_interrupt();
-#endif
-
-#ifdef CONFIG_KGDB
-	else if (pending & CAUSEF_IP6)			/* KGDB (uart 1) */
-		sb1250_kgdb_interrupt();
 #endif
 
 	else if (pending & CAUSEF_IP2)

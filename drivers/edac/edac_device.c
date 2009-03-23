@@ -36,7 +36,7 @@
  * is protected by the 'device_ctls_mutex' lock
  */
 static DEFINE_MUTEX(device_ctls_mutex);
-static struct list_head edac_device_list = LIST_HEAD_INIT(edac_device_list);
+static LIST_HEAD(edac_device_list);
 
 #ifdef CONFIG_EDAC_DEBUG
 static void edac_device_dump_device(struct edac_device_ctl_info *edac_dev)
@@ -154,6 +154,10 @@ struct edac_device_ctl_info *edac_device_alloc_ctl_info(
 	dev_ctl->nr_instances = nr_instances;
 	dev_ctl->instances = dev_inst;
 	dev_ctl->pvt_info = pvt;
+
+	/* Default logging of CEs and UEs */
+	dev_ctl->log_ce = 1;
+	dev_ctl->log_ue = 1;
 
 	/* Name of this edac device */
 	snprintf(dev_ctl->name,sizeof(dev_ctl->name),"%s",edac_device_name);
@@ -329,7 +333,7 @@ static int add_edac_dev_to_global_list(struct edac_device_ctl_info *edac_dev)
 fail0:
 	edac_printk(KERN_WARNING, EDAC_MC,
 			"%s (%s) %s %s already assigned %d\n",
-			rover->dev->bus_id, dev_name(rover),
+			dev_name(rover->dev), edac_dev_name(rover),
 			rover->mod_name, rover->ctl_name, rover->dev_idx);
 	return 1;
 
@@ -371,37 +375,6 @@ static void del_edac_device_from_global_list(struct edac_device_ctl_info
 	wait_for_completion(&edac_device->removal_complete);
 }
 
-/**
- * edac_device_find
- *	Search for a edac_device_ctl_info structure whose index is 'idx'.
- *
- * If found, return a pointer to the structure.
- * Else return NULL.
- *
- * Caller must hold device_ctls_mutex.
- */
-struct edac_device_ctl_info *edac_device_find(int idx)
-{
-	struct list_head *item;
-	struct edac_device_ctl_info *edac_dev;
-
-	/* Iterate over list, looking for exact match of ID */
-	list_for_each(item, &edac_device_list) {
-		edac_dev = list_entry(item, struct edac_device_ctl_info, link);
-
-		if (edac_dev->dev_idx >= idx) {
-			if (edac_dev->dev_idx == idx)
-				return edac_dev;
-
-			/* not on list, so terminate early */
-			break;
-		}
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(edac_device_find);
-
 /*
  * edac_device_workq_function
  *	performs the operation scheduled by a workq request
@@ -421,6 +394,12 @@ static void edac_device_workq_function(struct work_struct *work_req)
 
 	mutex_lock(&device_ctls_mutex);
 
+	/* If we are being removed, bail out immediately */
+	if (edac_dev->op_state == OP_OFFLINE) {
+		mutex_unlock(&device_ctls_mutex);
+		return;
+	}
+
 	/* Only poll controllers that are running polled and have a check */
 	if ((edac_dev->op_state == OP_RUNNING_POLL) &&
 		(edac_dev->edac_check != NULL)) {
@@ -436,7 +415,7 @@ static void edac_device_workq_function(struct work_struct *work_req)
 	 */
 	if (edac_dev->poll_msec == 1000)
 		queue_delayed_work(edac_workqueue, &edac_dev->work,
-				round_jiffies(edac_dev->delay));
+				round_jiffies_relative(edac_dev->delay));
 	else
 		queue_delayed_work(edac_workqueue, &edac_dev->work,
 				edac_dev->delay);
@@ -468,7 +447,7 @@ void edac_device_workq_setup(struct edac_device_ctl_info *edac_dev,
 	 */
 	if (edac_dev->poll_msec == 1000)
 		queue_delayed_work(edac_workqueue, &edac_dev->work,
-				round_jiffies(edac_dev->delay));
+				round_jiffies_relative(edac_dev->delay));
 	else
 		queue_delayed_work(edac_workqueue, &edac_dev->work,
 				edac_dev->delay);
@@ -565,7 +544,7 @@ int edac_device_add_device(struct edac_device_ctl_info *edac_dev)
 				"'%s': DEV '%s' (%s)\n",
 				edac_dev->mod_name,
 				edac_dev->ctl_name,
-				dev_name(edac_dev),
+				edac_dev_name(edac_dev),
 				edac_op_state_to_string(edac_dev->op_state));
 
 	mutex_unlock(&device_ctls_mutex);
@@ -612,13 +591,13 @@ struct edac_device_ctl_info *edac_device_del_device(struct device *dev)
 	/* mark this instance as OFFLINE */
 	edac_dev->op_state = OP_OFFLINE;
 
-	/* clear workq processing on this instance */
-	edac_device_workq_teardown(edac_dev);
-
 	/* deregister from global list */
 	del_edac_device_from_global_list(edac_dev);
 
 	mutex_unlock(&device_ctls_mutex);
+
+	/* clear workq processing on this instance */
+	edac_device_workq_teardown(edac_dev);
 
 	/* Tear down the sysfs entries for this instance */
 	edac_device_remove_sysfs(edac_dev);
@@ -626,7 +605,7 @@ struct edac_device_ctl_info *edac_device_del_device(struct device *dev)
 	edac_printk(KERN_INFO, EDAC_MC,
 		"Removed device %d for %s %s: DEV %s\n",
 		edac_dev->dev_idx,
-		edac_dev->mod_name, edac_dev->ctl_name, dev_name(edac_dev));
+		edac_dev->mod_name, edac_dev->ctl_name, edac_dev_name(edac_dev));
 
 	return edac_dev;
 }

@@ -154,15 +154,23 @@ struct mlx4_qp_context {
 	u32			reserved5[10];
 };
 
+/* Which firmware version adds support for NEC (NoErrorCompletion) bit */
+#define MLX4_FW_VER_WQE_CTRL_NEC mlx4_fw_ver(2, 2, 232)
+
 enum {
-	MLX4_WQE_CTRL_FENCE	= 1 << 6,
-	MLX4_WQE_CTRL_CQ_UPDATE	= 3 << 2,
-	MLX4_WQE_CTRL_SOLICITED	= 1 << 1,
+	MLX4_WQE_CTRL_NEC		= 1 << 29,
+	MLX4_WQE_CTRL_FENCE		= 1 << 6,
+	MLX4_WQE_CTRL_CQ_UPDATE		= 3 << 2,
+	MLX4_WQE_CTRL_SOLICITED		= 1 << 1,
+	MLX4_WQE_CTRL_IP_CSUM		= 1 << 4,
+	MLX4_WQE_CTRL_TCP_UDP_CSUM	= 1 << 5,
+	MLX4_WQE_CTRL_INS_VLAN		= 1 << 6,
 };
 
 struct mlx4_wqe_ctrl_seg {
 	__be32			owner_opcode;
-	u8			reserved2[3];
+	__be16			vlan_tag;
+	u8			ins_vlan;
 	u8			fence_size;
 	/*
 	 * High 24 bits are SRC remote buffer; low 8 bits are flags:
@@ -213,6 +221,11 @@ struct mlx4_wqe_datagram_seg {
 	__be32			reservd[2];
 };
 
+struct mlx4_wqe_lso_seg {
+	__be32			mss_hdr_size;
+	__be32			header[0];
+};
+
 struct mlx4_wqe_bind_seg {
 	__be32			flags1;
 	__be32			flags2;
@@ -220,6 +233,14 @@ struct mlx4_wqe_bind_seg {
 	__be32			lkey;
 	__be64			addr;
 	__be64			length;
+};
+
+enum {
+	MLX4_WQE_FMR_PERM_LOCAL_READ	= 1 << 27,
+	MLX4_WQE_FMR_PERM_LOCAL_WRITE	= 1 << 28,
+	MLX4_WQE_FMR_PERM_REMOTE_READ	= 1 << 29,
+	MLX4_WQE_FMR_PERM_REMOTE_WRITE	= 1 << 30,
+	MLX4_WQE_FMR_PERM_ATOMIC	= 1 << 31
 };
 
 struct mlx4_wqe_fmr_seg {
@@ -244,11 +265,11 @@ struct mlx4_wqe_fmr_ext_seg {
 };
 
 struct mlx4_wqe_local_inval_seg {
-	u8			flags;
-	u8			reserved1[3];
+	__be32			flags;
+	u32			reserved1;
 	__be32			mem_key;
-	u8			reserved2[3];
-	u8			guest_id;
+	u32			reserved2[2];
+	__be32			guest_id;
 	__be64			pa;
 };
 
@@ -284,6 +305,10 @@ int mlx4_qp_modify(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
 
 int mlx4_qp_query(struct mlx4_dev *dev, struct mlx4_qp *qp,
 		  struct mlx4_qp_context *context);
+
+int mlx4_qp_to_ready(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
+		     struct mlx4_qp_context *context,
+		     struct mlx4_qp *qp, enum mlx4_qp_state *qp_state);
 
 static inline struct mlx4_qp *__mlx4_qp_lookup(struct mlx4_dev *dev, u32 qpn)
 {

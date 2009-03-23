@@ -9,8 +9,6 @@
  * ----------------------------------------------------------------------- */
 
 /*
- * arch/i386/boot/video-vesa.c
- *
  * VESA text modes
  */
 
@@ -22,9 +20,13 @@
 static struct vesa_general_info vginfo;
 static struct vesa_mode_info vminfo;
 
-__videocard video_vesa;
+static __videocard video_vesa;
 
+#ifndef _WAKEUP
 static void vesa_store_mode_params_graphics(void);
+#else /* _WAKEUP */
+static inline void vesa_store_mode_params_graphics(void) {}
+#endif /* _WAKEUP */
 
 static int vesa_probe(void)
 {
@@ -36,8 +38,6 @@ static int vesa_probe(void)
 	int nmodes = 0;
 
 	video_vesa.modes = GET_HEAP(struct mode_info, 0);
-
-	vginfo.signature = VBE2_MAGIC;
 
 	ax = 0x4f00;
 	di = (size_t)&vginfo;
@@ -79,20 +79,25 @@ static int vesa_probe(void)
 			/* Text Mode, TTY BIOS supported,
 			   supported by hardware */
 			mi = GET_HEAP(struct mode_info, 1);
-			mi->mode = mode + VIDEO_FIRST_VESA;
-			mi->x    = vminfo.h_res;
-			mi->y    = vminfo.v_res;
+			mi->mode  = mode + VIDEO_FIRST_VESA;
+			mi->depth = 0; /* text */
+			mi->x     = vminfo.h_res;
+			mi->y     = vminfo.v_res;
 			nmodes++;
-		} else if ((vminfo.mode_attr & 0x99) == 0x99) {
-#ifdef CONFIG_FB
+		} else if ((vminfo.mode_attr & 0x99) == 0x99 &&
+			   (vminfo.memory_layout == 4 ||
+			    vminfo.memory_layout == 6) &&
+			   vminfo.memory_planes == 1) {
+#ifdef CONFIG_FB_BOOT_VESA_SUPPORT
 			/* Graphics mode, color, linear frame buffer
-			   supported -- register the mode but hide from
-			   the menu.  Only do this if framebuffer is
-			   configured, however, otherwise the user will
-			   be left without a screen. */
+			   supported.  Only register the mode if
+			   if framebuffer is configured, however,
+			   otherwise the user will be left without a screen. */
 			mi = GET_HEAP(struct mode_info, 1);
 			mi->mode = mode + VIDEO_FIRST_VESA;
-			mi->x = mi->y = 0;
+			mi->depth = vminfo.bpp;
+			mi->x = vminfo.h_res;
+			mi->y = vminfo.v_res;
 			nmodes++;
 #endif
 		}
@@ -125,10 +130,12 @@ static int vesa_set_mode(struct mode_info *mode)
 	if ((vminfo.mode_attr & 0x15) == 0x05) {
 		/* It's a supported text mode */
 		is_graphic = 0;
+#ifdef CONFIG_FB_BOOT_VESA_SUPPORT
 	} else if ((vminfo.mode_attr & 0x99) == 0x99) {
 		/* It's a graphics mode with linear frame buffer */
 		is_graphic = 1;
 		vesa_mode |= 0x4000; /* Request linear frame buffer */
+#endif
 	} else {
 		return -1;	/* Invalid mode */
 	}
@@ -158,6 +165,8 @@ static int vesa_set_mode(struct mode_info *mode)
 	return 0;
 }
 
+
+#ifndef _WAKEUP
 
 /* Switch DAC to 8-bit mode */
 static void vesa_dac_set_8bits(void)
@@ -214,7 +223,7 @@ static void vesa_store_pm_info(void)
 static void vesa_store_mode_params_graphics(void)
 {
 	/* Tell the kernel we're in VESA graphics mode */
-	boot_params.screen_info.orig_video_isVGA = 0x23;
+	boot_params.screen_info.orig_video_isVGA = VIDEO_TYPE_VLFB;
 
 	/* Mode parameters */
 	boot_params.screen_info.vesa_attributes = vminfo.mode_attr;
@@ -260,9 +269,8 @@ void vesa_store_edid(void)
 	   we genuinely have to assume all registers are destroyed here. */
 
 	asm("pushw %%es; movw %2,%%es; "INT10"; popw %%es"
-	    : "+a" (ax), "+b" (bx)
-	    :  "c" (cx), "D" (di)
-	    : "esi");
+	    : "+a" (ax), "+b" (bx), "+c" (cx), "+D" (di)
+	    : : "esi", "edx");
 
 	if (ax != 0x004f)
 		return;		/* No EDID */
@@ -276,13 +284,15 @@ void vesa_store_edid(void)
 	dx = 0;			/* EDID block number */
 	di =(size_t) &boot_params.edid_info; /* (ES:)Pointer to block */
 	asm(INT10
-	    : "+a" (ax), "+b" (bx), "+d" (dx), "=m" (boot_params.edid_info)
-	    : "c" (cx), "D" (di)
-	    : "esi");
+	    : "+a" (ax), "+b" (bx), "+d" (dx), "=m" (boot_params.edid_info),
+	      "+c" (cx), "+D" (di)
+	    : : "esi");
 #endif /* CONFIG_FIRMWARE_EDID */
 }
 
-__videocard video_vesa =
+#endif /* not _WAKEUP */
+
+static __videocard video_vesa =
 {
 	.card_name	= "VESA",
 	.probe		= vesa_probe,

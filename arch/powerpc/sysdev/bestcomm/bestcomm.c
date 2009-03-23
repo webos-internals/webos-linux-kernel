@@ -29,10 +29,16 @@
 
 #define DRIVER_NAME "bestcomm-core"
 
+/* MPC5200 device tree match tables */
+static struct of_device_id mpc52xx_sram_ids[] __devinitdata = {
+	{ .compatible = "fsl,mpc5200-sram", },
+	{ .compatible = "mpc5200-sram", },
+	{}
+};
+
 
 struct bcom_engine *bcom_eng = NULL;
 EXPORT_SYMBOL_GPL(bcom_eng);	/* needed for inline functions */
-
 
 /* ======================================================================== */
 /* Public and private API                                                   */
@@ -45,6 +51,10 @@ bcom_task_alloc(int bd_count, int bd_size, int priv_size)
 {
 	int i, tasknum = -1;
 	struct bcom_task *tsk;
+
+	/* Don't try to do anything if bestcomm init failed */
+	if (!bcom_eng)
+		return NULL;
 
 	/* Get and reserve a task num */
 	spin_lock(&bcom_eng->lock);
@@ -269,7 +279,6 @@ bcom_engine_init(void)
 	int task;
 	phys_addr_t tdt_pa, ctx_pa, var_pa, fdt_pa;
 	unsigned int tdt_size, ctx_size, var_size, fdt_size;
-	u16 regval;
 
 	/* Allocate & clear SRAM zones for FDT, TDTs, contexts and vars/incs */
 	tdt_size = BCOM_MAX_TASKS * sizeof(struct bcom_tdt);
@@ -321,10 +330,8 @@ bcom_engine_init(void)
 	out_8(&bcom_eng->regs->ipr[BCOM_INITIATOR_ALWAYS], BCOM_IPR_ALWAYS);
 
 	/* Disable COMM Bus Prefetch on the original 5200; it's broken */
-	if ((mfspr(SPRN_SVR) & MPC5200_SVR_MASK) == MPC5200_SVR) {
-		regval = in_be16(&bcom_eng->regs->PtdCntrl);
-		out_be16(&bcom_eng->regs->PtdCntrl,  regval | 1);
-	}
+	if ((mfspr(SPRN_SVR) & MPC5200_SVR_MASK) == MPC5200_SVR)
+		bcom_disable_prefetch();
 
 	/* Init lock */
 	spin_lock_init(&bcom_eng->lock);
@@ -373,7 +380,7 @@ mpc52xx_bcom_probe(struct of_device *op, const struct of_device_id *match)
 	of_node_get(op->node);
 
 	/* Prepare SRAM */
-	ofn_sram = of_find_compatible_node(NULL, "sram", "mpc5200-sram");
+	ofn_sram = of_find_matching_node(NULL, mpc52xx_sram_ids);
 	if (!ofn_sram) {
 		printk(KERN_ERR DRIVER_NAME ": "
 			"No SRAM found in device tree\n");
@@ -433,7 +440,7 @@ mpc52xx_bcom_probe(struct of_device *op, const struct of_device_id *match)
 
 	/* Done ! */
 	printk(KERN_INFO "DMA: MPC52xx BestComm engine @%08lx ok !\n",
-		bcom_eng->regs_base);
+		(long)bcom_eng->regs_base);
 
 	return 0;
 
@@ -478,10 +485,8 @@ mpc52xx_bcom_remove(struct of_device *op)
 }
 
 static struct of_device_id mpc52xx_bcom_of_match[] = {
-	{
-		.type		= "dma-controller",
-		.compatible	= "mpc5200-bestcomm",
-	},
+	{ .compatible = "fsl,mpc5200-bestcomm", },
+	{ .compatible = "mpc5200-bestcomm", },
 	{},
 };
 

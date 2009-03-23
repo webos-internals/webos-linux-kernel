@@ -126,6 +126,7 @@ struct snd_usb_audio {
 	u32 usb_id;
 	int shutdown;
 	int num_interfaces;
+	int num_suspended_intf;
 
 	struct list_head pcm_list;	/* list of pcm streams */
 	int pcm_devs;
@@ -155,11 +156,12 @@ enum quirk_type {
 	QUIRK_MIDI_RAW,
 	QUIRK_MIDI_EMAGIC,
 	QUIRK_MIDI_CME,
+	QUIRK_MIDI_US122L,
 	QUIRK_AUDIO_STANDARD_INTERFACE,
 	QUIRK_AUDIO_FIXED_ENDPOINT,
-	QUIRK_AUDIO_EDIROL_UA700_UA25,
 	QUIRK_AUDIO_EDIROL_UA1000,
 	QUIRK_AUDIO_EDIROL_UA101,
+	QUIRK_AUDIO_EDIROL_UAXX,
 
 	QUIRK_TYPE_COUNT
 };
@@ -221,7 +223,8 @@ int snd_usb_ctl_msg(struct usb_device *dev, unsigned int pipe,
 		    __u8 request, __u8 requesttype, __u16 value, __u16 index,
 		    void *data, __u16 size, int timeout);
 
-int snd_usb_create_mixer(struct snd_usb_audio *chip, int ctrlif);
+int snd_usb_create_mixer(struct snd_usb_audio *chip, int ctrlif,
+			 int ignore_error);
 void snd_usb_mixer_disconnect(struct list_head *p);
 
 int snd_usb_create_midi_interface(struct snd_usb_audio *chip, struct usb_interface *iface,

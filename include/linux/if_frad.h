@@ -26,8 +26,6 @@
 
 #include <linux/if.h>
 
-#if defined(CONFIG_DLCI) || defined(CONFIG_DLCI_MODULE)
-
 /* Structures and constants associated with the DLCI device driver */
 
 struct dlci_add
@@ -127,6 +125,8 @@ struct frad_conf
 
 #ifdef __KERNEL__
 
+#if defined(CONFIG_DLCI) || defined(CONFIG_DLCI_MODULE)
+
 /* these are the fields of an RFC 1490 header */
 struct frhdr
 {
@@ -137,7 +137,7 @@ struct frhdr
 
    unsigned char  NLPID;
    unsigned char  OUI[3];
-   unsigned short PID;
+   __be16 PID;
 
 #define IP_NLPID pad 
 } __attribute__((packed));
@@ -190,12 +190,10 @@ struct frad_local
    int               buffer;		/* current buffer for S508 firmware */
 };
 
-#endif /* __KERNEL__ */
-
 #endif /* CONFIG_DLCI || CONFIG_DLCI_MODULE */
 
-#ifdef __KERNEL__
 extern void dlci_ioctl_set(int (*hook)(unsigned int, void __user *));
-#endif
+
+#endif /* __KERNEL__ */
 
 #endif

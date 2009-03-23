@@ -96,7 +96,7 @@ static int slip_tramp(char **argv, int fd)
 	pid = err;
 
 	output_len = UM_KERN_PAGE_SIZE;
-	output = kmalloc(output_len, UM_GFP_KERNEL);
+	output = uml_kmalloc(output_len, UM_GFP_KERNEL);
 	if (output == NULL) {
 		printk(UM_KERN_ERR "slip_tramp : failed to allocate output "
 		       "buffer\n");
@@ -109,7 +109,7 @@ static int slip_tramp(char **argv, int fd)
 	read_output(fds[0], output, output_len);
 	printk("%s", output);
 
-	err = helper_wait(pid, 0, argv[0]);
+	err = helper_wait(pid);
 	close(fds[0]);
 
 out_free:

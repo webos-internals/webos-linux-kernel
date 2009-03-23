@@ -22,6 +22,7 @@
 #include <asm/page.h>
 #include <asm/setup.h>
 #include "boot.h"
+#include "offsets.h"
 
 SETUPSECTS	= 4			/* default nr of setup-sectors */
 BOOTSEG		= 0x07C0		/* original address of boot-sector */
@@ -29,7 +30,6 @@ SYSSEG		= DEF_SYSSEG		/* system loaded at 0x10000 (65536) */
 SYSSIZE		= DEF_SYSSIZE		/* system size: # of 16-byte clicks */
 					/* to be loaded */
 ROOT_DEV	= 0			/* ROOT_DEV is now written by "build" */
-SWAP_DEV	= 0			/* SWAP_DEV is now written by "build" */
 
 #ifndef SVGA_MODE
 #define SVGA_MODE ASK_VGA
@@ -119,7 +119,7 @@ _start:
 	# Part 2 of the header, from the old setup.S
 
 		.ascii	"HdrS"		# header signature
-		.word	0x0207		# header version number (>= 0x0105)
+		.word	0x0209		# header version number (>= 0x0105)
 					# or else old loadlin-1.5 will fail)
 		.globl realmode_swtch
 realmode_swtch:	.word	0, 0		# default_switch, SETUPSEG
@@ -195,10 +195,13 @@ cmd_line_ptr:	.long	0		# (Header version 0x0202 or later)
 					# can be located anywhere in
 					# low memory 0x10000 or higher.
 
-ramdisk_max:	.long (-__PAGE_OFFSET-(512 << 20)-1) & 0x7fffffff
+ramdisk_max:	.long 0x7fffffff
 					# (Header version 0x0203 or later)
 					# The highest safe address for
 					# the contents of an initrd
+					# The current kernel allows up to 4 GB,
+					# but leave it at 2 GB to avoid
+					# possible bootloader bugs.
 
 kernel_alignment:  .long CONFIG_PHYSICAL_ALIGN	#physical addr alignment
 						#required for protected mode
@@ -219,6 +222,13 @@ hardware_subarch:	.long 0			# subarchitecture, added with 2.07
 						# default to 0 for normal x86 PC
 
 hardware_subarch_data:	.quad 0
+
+payload_offset:		.long input_data
+payload_length:		.long input_data_end-input_data
+
+setup_data:		.quad 0			# 64-bit physical pointer to
+						# single linked list of
+						# struct setup_data
 
 # End of setup header #####################################################
 

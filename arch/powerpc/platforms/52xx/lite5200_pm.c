@@ -3,7 +3,6 @@
 #include <asm/io.h>
 #include <asm/time.h>
 #include <asm/mpc52xx.h>
-#include "mpc52xx_pic.h"
 
 /* defined in lite5200_sleep.S and only used here */
 extern void lite5200_low_power(void __iomem *sram, void __iomem *mbar);
@@ -14,6 +13,7 @@ static struct mpc52xx_sdma __iomem *bes;
 static struct mpc52xx_xlb __iomem *xlb;
 static struct mpc52xx_gpio __iomem *gps;
 static struct mpc52xx_gpio_wkup __iomem *gpw;
+static void __iomem *pci;
 static void __iomem *sram;
 static const int sram_size = 0x4000;	/* 16 kBytes */
 static void __iomem *mbar;
@@ -31,7 +31,7 @@ static int lite5200_pm_valid(suspend_state_t state)
 	}
 }
 
-static int lite5200_pm_set_target(suspend_state_t state)
+static int lite5200_pm_begin(suspend_state_t state)
 {
 	if (lite5200_pm_valid(state)) {
 		lite5200_pm_target_state = state;
@@ -42,6 +42,17 @@ static int lite5200_pm_set_target(suspend_state_t state)
 
 static int lite5200_pm_prepare(void)
 {
+	struct device_node *np;
+	const struct of_device_id immr_ids[] = {
+		{ .compatible = "fsl,mpc5200-immr", },
+		{ .compatible = "fsl,mpc5200b-immr", },
+		{ .type = "soc", .compatible = "mpc5200", }, /* lite5200 */
+		{ .type = "builtin", .compatible = "mpc5200", }, /* efika */
+		{}
+	};
+	u64 regaddr64 = 0;
+	const u32 *regaddr_p;
+
 	/* deep sleep? let mpc52xx code handle that */
 	if (lite5200_pm_target_state == PM_SUSPEND_STANDBY)
 		return mpc52xx_pm_prepare();
@@ -50,7 +61,13 @@ static int lite5200_pm_prepare(void)
 		return -EINVAL;
 
 	/* map registers */
-	mbar = mpc52xx_find_and_map("mpc5200");
+	np = of_find_matching_node(NULL, immr_ids);
+	regaddr_p = of_get_address(np, 0, NULL, NULL);
+	if (regaddr_p)
+		regaddr64 = of_translate_address(np, regaddr_p);
+	of_node_put(np);
+
+	mbar = ioremap((u32) regaddr64, 0xC000);
 	if (!mbar) {
 		printk(KERN_ERR "%s:%i Error mapping registers\n", __func__, __LINE__);
 		return -ENOSYS;
@@ -60,6 +77,7 @@ static int lite5200_pm_prepare(void)
 	pic = mbar + 0x500;
 	gps = mbar + 0xb00;
 	gpw = mbar + 0xc00;
+	pci = mbar + 0xd00;
 	bes = mbar + 0x1200;
 	xlb = mbar + 0x1f00;
 	sram = mbar + 0x8000;
@@ -74,6 +92,7 @@ static struct mpc52xx_sdma sbes;
 static struct mpc52xx_xlb sxlb;
 static struct mpc52xx_gpio sgps;
 static struct mpc52xx_gpio_wkup sgpw;
+static char spci[0x200];
 
 static void lite5200_save_regs(void)
 {
@@ -83,6 +102,7 @@ static void lite5200_save_regs(void)
 	_memcpy_fromio(&sxlb, xlb, sizeof(*xlb));
 	_memcpy_fromio(&sgps, gps, sizeof(*gps));
 	_memcpy_fromio(&sgpw, gpw, sizeof(*gpw));
+	_memcpy_fromio(spci, pci, 0x200);
 
 	_memcpy_fromio(saved_sram, sram, sram_size);
 }
@@ -92,6 +112,8 @@ static void lite5200_restore_regs(void)
 	int i;
 	_memcpy_toio(sram, saved_sram, sram_size);
 
+	/* PCI Configuration */
+	_memcpy_toio(pci, spci, 0x200);
 
 	/*
 	 * GPIOs. Interrupt Master Enable has higher address then other
@@ -208,12 +230,18 @@ static void lite5200_pm_finish(void)
 		mpc52xx_pm_finish();
 }
 
+static void lite5200_pm_end(void)
+{
+	lite5200_pm_target_state = PM_SUSPEND_ON;
+}
+
 static struct platform_suspend_ops lite5200_pm_ops = {
 	.valid		= lite5200_pm_valid,
-	.set_target	= lite5200_pm_set_target,
+	.begin		= lite5200_pm_begin,
 	.prepare	= lite5200_pm_prepare,
 	.enter		= lite5200_pm_enter,
 	.finish		= lite5200_pm_finish,
+	.end		= lite5200_pm_end,
 };
 
 int __init lite5200_pm_init(void)

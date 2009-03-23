@@ -247,9 +247,9 @@ static void ml_combine_effects(struct ff_effect *effect,
 		 * in s8, this should be changed to something more generic
 		 */
 		effect->u.ramp.start_level =
-			max(min(effect->u.ramp.start_level + x, 0x7f), -0x80);
+			clamp_val(effect->u.ramp.start_level + x, -0x80, 0x7f);
 		effect->u.ramp.end_level =
-			max(min(effect->u.ramp.end_level + y, 0x7f), -0x80);
+			clamp_val(effect->u.ramp.end_level + y, -0x80, 0x7f);
 		break;
 
 	case FF_RUMBLE:
@@ -397,8 +397,9 @@ static int ml_ff_playback(struct input_dev *dev, int effect_id, int value)
 {
 	struct ml_device *ml = dev->ff->private;
 	struct ml_effect_state *state = &ml->states[effect_id];
+	unsigned long flags;
 
-	spin_lock_bh(&ml->timer_lock);
+	spin_lock_irqsave(&ml->timer_lock, flags);
 
 	if (value > 0) {
 		debug("initiated play");
@@ -424,7 +425,7 @@ static int ml_ff_playback(struct input_dev *dev, int effect_id, int value)
 		ml_play_effects(ml);
 	}
 
-	spin_unlock_bh(&ml->timer_lock);
+	spin_unlock_irqrestore(&ml->timer_lock, flags);
 
 	return 0;
 }

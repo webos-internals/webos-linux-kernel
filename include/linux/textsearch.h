@@ -1,8 +1,6 @@
 #ifndef __LINUX_TEXTSEARCH_H
 #define __LINUX_TEXTSEARCH_H
 
-#ifdef __KERNEL__
-
 #include <linux/types.h>
 #include <linux/list.h>
 #include <linux/kernel.h>
@@ -12,10 +10,8 @@
 
 struct ts_config;
 
-/**
- * TS_AUTOLOAD - Automatically load textsearch modules when needed
- */
-#define TS_AUTOLOAD	1
+#define TS_AUTOLOAD	1 /* Automatically load textsearch modules when needed */
+#define TS_IGNORECASE	2 /* Searches string case insensitively */
 
 /**
  * struct ts_state - search state
@@ -41,7 +37,7 @@ struct ts_state
 struct ts_ops
 {
 	const char		*name;
-	struct ts_config *	(*init)(const void *, unsigned int, gfp_t);
+	struct ts_config *	(*init)(const void *, unsigned int, gfp_t, int);
 	unsigned int		(*find)(struct ts_config *,
 					struct ts_state *);
 	void			(*destroy)(struct ts_config *);
@@ -54,12 +50,14 @@ struct ts_ops
 /**
  * struct ts_config - search configuration
  * @ops: operations of chosen algorithm
+ * @flags: flags
  * @get_next_block: callback to fetch the next block to search in
  * @finish: callback to finalize a search
  */
 struct ts_config
 {
 	struct ts_ops		*ops;
+	int 			flags;
 
 	/**
 	 * get_next_block - fetch next block of data
@@ -164,11 +162,10 @@ static inline struct ts_config *alloc_ts_config(size_t payload,
 {
 	struct ts_config *conf;
 
-	conf = kmalloc(TS_PRIV_ALIGN(sizeof(*conf)) + payload, gfp_mask);
+	conf = kzalloc(TS_PRIV_ALIGN(sizeof(*conf)) + payload, gfp_mask);
 	if (conf == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	memset(conf, 0, TS_PRIV_ALIGN(sizeof(*conf)) + payload);
 	return conf;
 }
 
@@ -176,7 +173,5 @@ static inline void *ts_config_priv(struct ts_config *conf)
 {
 	return ((u8 *) conf + TS_PRIV_ALIGN(sizeof(struct ts_config)));
 }
-
-#endif /* __KERNEL__ */
 
 #endif

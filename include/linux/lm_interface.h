@@ -21,9 +21,15 @@ typedef void (*lm_callback_t) (void *ptr, unsigned int type, void *data);
  * modify the filesystem.  The lock module shouldn't assign a journal to the FS
  * mount.  It shouldn't send recovery callbacks to the FS mount.  If the node
  * dies or withdraws, all locks can be wiped immediately.
+ *
+ * LM_MFLAG_CONV_NODROP
+ * Do not allow the dlm to internally resolve conversion deadlocks by demoting
+ * the lock to unlocked and then reacquiring it in the requested mode. Instead,
+ * it should cancel the request and return LM_OUT_CONV_DEADLK.
  */
 
 #define LM_MFLAG_SPECTATOR	0x00000001
+#define LM_MFLAG_CONV_NODROP	0x00000002
 
 /*
  * lm_lockstruct flags
@@ -110,10 +116,12 @@ typedef void (*lm_callback_t) (void *ptr, unsigned int type, void *data);
  *
  * LM_OUT_ASYNC
  * The result of the request will be returned in an LM_CB_ASYNC callback.
+ *
+ * LM_OUT_CONV_DEADLK
+ * The lock request was canceled do to a conversion deadlock.
  */
 
 #define LM_OUT_ST_MASK		0x00000003
-#define LM_OUT_CACHEABLE	0x00000004
 #define LM_OUT_CANCELED		0x00000008
 #define LM_OUT_ASYNC		0x00000080
 #define LM_OUT_ERROR		0x00000100
@@ -128,9 +136,6 @@ typedef void (*lm_callback_t) (void *ptr, unsigned int type, void *data);
  * LM_CB_NEED_RECOVERY
  * The given journal needs to be recovered.
  *
- * LM_CB_DROPLOCKS
- * Reduce the number of cached locks.
- *
  * LM_CB_ASYNC
  * The given lock has been granted.
  */
@@ -139,7 +144,6 @@ typedef void (*lm_callback_t) (void *ptr, unsigned int type, void *data);
 #define LM_CB_NEED_D		258
 #define LM_CB_NEED_S		259
 #define LM_CB_NEED_RECOVERY	260
-#define LM_CB_DROPLOCKS		261
 #define LM_CB_ASYNC		262
 
 /*

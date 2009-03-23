@@ -2,7 +2,7 @@
 #define IEEE1394_HIGHLEVEL_H
 
 #include <linux/list.h>
-#include <linux/spinlock_types.h>
+#include <linux/spinlock.h>
 #include <linux/types.h>
 
 struct module;
@@ -15,7 +15,7 @@ struct hpsb_host;
 struct hpsb_address_serve {
 	struct list_head host_list;	/* per host list */
 	struct list_head hl_list;	/* hpsb_highlevel list */
-	struct hpsb_address_ops *op;
+	const struct hpsb_address_ops *op;
 	struct hpsb_host *host;
 	u64 start;	/* first address handled, quadlet aligned */
 	u64 end;	/* first address behind, quadlet aligned */
@@ -103,16 +103,28 @@ int highlevel_lock64(struct hpsb_host *host, int nodeid, octlet_t *store,
 void highlevel_fcp_request(struct hpsb_host *host, int nodeid, int direction,
 			   void *data, size_t length);
 
+/**
+ * hpsb_init_highlevel - initialize a struct hpsb_highlevel
+ *
+ * This is only necessary if hpsb_get_hostinfo_bykey can be called
+ * before hpsb_register_highlevel.
+ */
+static inline void hpsb_init_highlevel(struct hpsb_highlevel *hl)
+{
+	rwlock_init(&hl->host_info_lock);
+	INIT_LIST_HEAD(&hl->host_info_list);
+}
 void hpsb_register_highlevel(struct hpsb_highlevel *hl);
 void hpsb_unregister_highlevel(struct hpsb_highlevel *hl);
 
 u64 hpsb_allocate_and_register_addrspace(struct hpsb_highlevel *hl,
 					 struct hpsb_host *host,
-					 struct hpsb_address_ops *ops,
+					 const struct hpsb_address_ops *ops,
 					 u64 size, u64 alignment,
 					 u64 start, u64 end);
 int hpsb_register_addrspace(struct hpsb_highlevel *hl, struct hpsb_host *host,
-			    struct hpsb_address_ops *ops, u64 start, u64 end);
+			    const struct hpsb_address_ops *ops,
+			    u64 start, u64 end);
 int hpsb_unregister_addrspace(struct hpsb_highlevel *hl, struct hpsb_host *host,
 			      u64 start);
 

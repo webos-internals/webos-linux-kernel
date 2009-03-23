@@ -153,18 +153,19 @@ loop:
 #endif
 }
 
-static int dst_discard(struct sk_buff *skb)
+int dst_discard(struct sk_buff *skb)
 {
 	kfree_skb(skb);
 	return 0;
 }
+EXPORT_SYMBOL(dst_discard);
 
 void * dst_alloc(struct dst_ops * ops)
 {
 	struct dst_entry * dst;
 
 	if (ops->gc && atomic_read(&ops->entries) > ops->gc_thresh) {
-		if (ops->gc())
+		if (ops->gc(ops))
 			return NULL;
 	}
 	dst = kmem_cache_zalloc(ops->kmem_cachep, GFP_ATOMIC);
@@ -202,6 +203,7 @@ void __dst_free(struct dst_entry * dst)
 	if (dst_garbage.timer_inc > DST_GC_INC) {
 		dst_garbage.timer_inc = DST_GC_INC;
 		dst_garbage.timer_expires = DST_GC_MIN;
+		cancel_delayed_work(&dst_gc_work);
 		schedule_delayed_work(&dst_gc_work, dst_garbage.timer_expires);
 	}
 	spin_unlock_bh(&dst_garbage.lock);
@@ -258,6 +260,18 @@ again:
 	return NULL;
 }
 
+void dst_release(struct dst_entry *dst)
+{
+	if (dst) {
+               int newrefcnt;
+
+		smp_mb__before_atomic_dec();
+               newrefcnt = atomic_dec_return(&dst->__refcnt);
+               WARN_ON(newrefcnt < 0);
+	}
+}
+EXPORT_SYMBOL(dst_release);
+
 /* Dirty hack. We did it in 2.2 (in __dst_free),
  * we have _very_ good reasons not to repeat
  * this mistake in 2.3, but we have no choice
@@ -278,13 +292,13 @@ static inline void dst_ifdown(struct dst_entry *dst, struct net_device *dev,
 	if (!unregister) {
 		dst->input = dst->output = dst_discard;
 	} else {
-		dst->dev = init_net.loopback_dev;
+		dst->dev = dev_net(dst->dev)->loopback_dev;
 		dev_hold(dst->dev);
 		dev_put(dev);
 		if (dst->neighbour && dst->neighbour->dev == dev) {
-			dst->neighbour->dev = init_net.loopback_dev;
+			dst->neighbour->dev = dst->dev;
+			dev_hold(dst->dev);
 			dev_put(dev);
-			dev_hold(dst->neighbour->dev);
 		}
 	}
 }
@@ -293,9 +307,6 @@ static int dst_dev_event(struct notifier_block *this, unsigned long event, void 
 {
 	struct net_device *dev = ptr;
 	struct dst_entry *dst, *last = NULL;
-
-	if (dev->nd_net != &init_net)
-		return NOTIFY_DONE;
 
 	switch (event) {
 	case NETDEV_UNREGISTER:

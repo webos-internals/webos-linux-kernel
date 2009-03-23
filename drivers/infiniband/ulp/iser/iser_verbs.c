@@ -29,13 +29,10 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: iser_verbs.c 7051 2006-05-10 12:29:11Z ogerlitz $
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/delay.h>
-#include <linux/version.h>
 
 #include "iscsi_iser.h"
 
@@ -105,7 +102,7 @@ pd_err:
 }
 
 /**
- * iser_free_device_ib_res - destory/dealloc/dereg the DMA MR,
+ * iser_free_device_ib_res - destroy/dealloc/dereg the DMA MR,
  * CQ and PD created with the device associated with the adapator.
  */
 static void iser_free_device_ib_res(struct iser_device *device)
@@ -237,36 +234,32 @@ static int iser_free_ib_conn_res(struct iser_conn *ib_conn)
 static
 struct iser_device *iser_device_find_by_ib_device(struct rdma_cm_id *cma_id)
 {
-	struct list_head    *p_list;
-	struct iser_device  *device = NULL;
+	struct iser_device *device;
 
 	mutex_lock(&ig.device_list_mutex);
 
-	p_list = ig.device_list.next;
-	while (p_list != &ig.device_list) {
-		device = list_entry(p_list, struct iser_device, ig_list);
+	list_for_each_entry(device, &ig.device_list, ig_list)
 		/* find if there's a match using the node GUID */
 		if (device->ib_device->node_guid == cma_id->device->node_guid)
-			break;
-	}
+			goto inc_refcnt;
 
-	if (device == NULL) {
-		device = kzalloc(sizeof *device, GFP_KERNEL);
-		if (device == NULL)
-			goto out;
-		/* assign this device to the device */
-		device->ib_device = cma_id->device;
-		/* init the device and link it into ig device list */
-		if (iser_create_device_ib_res(device)) {
-			kfree(device);
-			device = NULL;
-			goto out;
-		}
-		list_add(&device->ig_list, &ig.device_list);
+	device = kzalloc(sizeof *device, GFP_KERNEL);
+	if (device == NULL)
+		goto out;
+
+	/* assign this device to the device */
+	device->ib_device = cma_id->device;
+	/* init the device and link it into ig device list */
+	if (iser_create_device_ib_res(device)) {
+		kfree(device);
+		device = NULL;
+		goto out;
 	}
-out:
-	BUG_ON(device == NULL);
+	list_add(&device->ig_list, &ig.device_list);
+
+inc_refcnt:
 	device->refcount++;
+out:
 	mutex_unlock(&ig.device_list_mutex);
 	return device;
 }
@@ -329,7 +322,18 @@ static void iser_conn_release(struct iser_conn *ib_conn)
 		iser_device_try_release(device);
 	if (ib_conn->iser_conn)
 		ib_conn->iser_conn->ib_conn = NULL;
-	kfree(ib_conn);
+	iscsi_destroy_endpoint(ib_conn->ep);
+}
+
+void iser_conn_get(struct iser_conn *ib_conn)
+{
+	atomic_inc(&ib_conn->refcount);
+}
+
+void iser_conn_put(struct iser_conn *ib_conn)
+{
+	if (atomic_dec_and_test(&ib_conn->refcount))
+		iser_conn_release(ib_conn);
 }
 
 /**
@@ -353,7 +357,7 @@ void iser_conn_terminate(struct iser_conn *ib_conn)
 	wait_event_interruptible(ib_conn->wait,
 				 ib_conn->state == ISER_CONN_DOWN);
 
-	iser_conn_release(ib_conn);
+	iser_conn_put(ib_conn);
 }
 
 static void iser_connect_error(struct rdma_cm_id *cma_id)
@@ -372,6 +376,12 @@ static void iser_addr_handler(struct rdma_cm_id *cma_id)
 	int    ret;
 
 	device = iser_device_find_by_ib_device(cma_id);
+	if (!device) {
+		iser_err("device lookup/creation failed\n");
+		iser_connect_error(cma_id);
+		return;
+	}
+
 	ib_conn = (struct iser_conn *)cma_id->context;
 	ib_conn->device = device;
 
@@ -380,7 +390,6 @@ static void iser_addr_handler(struct rdma_cm_id *cma_id)
 		iser_err("resolve route failed: %d\n", ret);
 		iser_connect_error(cma_id);
 	}
-	return;
 }
 
 static void iser_route_handler(struct rdma_cm_id *cma_id)
@@ -472,39 +481,27 @@ static int iser_cma_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *eve
 		iser_connect_error(cma_id);
 		break;
 	case RDMA_CM_EVENT_DISCONNECTED:
+	case RDMA_CM_EVENT_DEVICE_REMOVAL:
+	case RDMA_CM_EVENT_ADDR_CHANGE:
 		iser_disconnected_handler(cma_id);
 		break;
-	case RDMA_CM_EVENT_DEVICE_REMOVAL:
-		BUG();
-		break;
-	case RDMA_CM_EVENT_CONNECT_RESPONSE:
-		BUG();
-		break;
-	case RDMA_CM_EVENT_CONNECT_REQUEST:
 	default:
+		iser_err("Unexpected RDMA CM event (%d)\n", event->event);
 		break;
 	}
 	return ret;
 }
 
-int iser_conn_init(struct iser_conn **ibconn)
+void iser_conn_init(struct iser_conn *ib_conn)
 {
-	struct iser_conn *ib_conn;
-
-	ib_conn = kzalloc(sizeof *ib_conn, GFP_KERNEL);
-	if (!ib_conn) {
-		iser_err("can't alloc memory for struct iser_conn\n");
-		return -ENOMEM;
-	}
 	ib_conn->state = ISER_CONN_INIT;
 	init_waitqueue_head(&ib_conn->wait);
 	atomic_set(&ib_conn->post_recv_buf_count, 0);
 	atomic_set(&ib_conn->post_send_buf_count, 0);
+	atomic_set(&ib_conn->unexpected_pdu_count, 0);
+	atomic_set(&ib_conn->refcount, 1);
 	INIT_LIST_HEAD(&ib_conn->conn_list);
 	spin_lock_init(&ib_conn->lock);
-
-	*ibconn = ib_conn;
-	return 0;
 }
 
  /**
@@ -519,14 +516,14 @@ int iser_connect(struct iser_conn   *ib_conn,
 	struct sockaddr *src, *dst;
 	int err = 0;
 
-	sprintf(ib_conn->name,"%d.%d.%d.%d:%d",
-		NIPQUAD(dst_addr->sin_addr.s_addr), dst_addr->sin_port);
+	sprintf(ib_conn->name, "%pI4:%d",
+		&dst_addr->sin_addr.s_addr, dst_addr->sin_port);
 
 	/* the device is known only --after-- address resolution */
 	ib_conn->device = NULL;
 
-	iser_err("connecting to: %d.%d.%d.%d, port 0x%x\n",
-		 NIPQUAD(dst_addr->sin_addr), dst_addr->sin_port);
+	iser_err("connecting to: %pI4, port 0x%x\n",
+		 &dst_addr->sin_addr, dst_addr->sin_port);
 
 	ib_conn->state = ISER_CONN_PENDING;
 

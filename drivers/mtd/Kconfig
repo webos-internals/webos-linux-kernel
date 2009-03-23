@@ -1,5 +1,3 @@
-# $Id: Kconfig,v 1.11 2005/11/07 11:14:19 gleixner Exp $
-
 menuconfig MTD
 	tristate "Memory Technology Device (MTD) support"
 	depends on HAS_IOMEM
@@ -46,6 +44,14 @@ config MTD_PARTITIONS
 	  Note, however, that you don't need this option for the DiskOnChip
 	  devices. Partitioning on NFTL 'devices' is a different - that's the
 	  'normal' form of partitioning used on a block device.
+
+config MTD_TESTS
+	tristate "MTD tests support"
+	depends on m
+	help
+	  This option includes various MTD tests into compilation. The tests
+	  should normally be compiled as kernel modules. The modules perform
+	  various checks and verifications when loaded.
 
 config MTD_REDBOOT_PARTS
 	tristate "RedBoot partition table parsing"
@@ -150,6 +156,20 @@ config MTD_AFS_PARTS
 	  for your particular device. It won't happen automatically. The
 	  'armflash' map driver (CONFIG_MTD_ARMFLASH) does this, for example.
 
+config MTD_OF_PARTS
+	tristate "Flash partition map based on OF description"
+	depends on PPC_OF && MTD_PARTITIONS
+	help
+	  This provides a partition parsing function which derives
+	  the partition map from the children of the flash node,
+	  as described in Documentation/powerpc/booting-without-of.txt.
+
+config MTD_AR7_PARTS
+	tristate "TI AR7 partitioning support"
+	depends on MTD_PARTITIONS
+	---help---
+	  TI AR7 partitioning support
+
 comment "User Modules And Translation Layers"
 
 config MTD_CHAR
@@ -159,6 +179,11 @@ config MTD_CHAR
 	  the system, allowing the user to read and write directly to the
 	  memory chips, and also use ioctl() to obtain information about
 	  the device, or to erase parts of it.
+
+config HAVE_MTD_OTP
+	bool
+	help
+	  Enable access to OTP regions using MTD_CHAR.
 
 config MTD_BLKDEVS
 	tristate "Common interface to block layer for MTD 'translation layers'"
@@ -286,6 +311,9 @@ config MTD_OOPS
 	  buffer in a flash partition where it can be read back at some
 	  later point.
 
+	  To use, add console=ttyMTDx to the kernel command line,
+	  where x is the MTD device number to use.
+
 source "drivers/mtd/chips/Kconfig"
 
 source "drivers/mtd/maps/Kconfig"
@@ -295,6 +323,8 @@ source "drivers/mtd/devices/Kconfig"
 source "drivers/mtd/nand/Kconfig"
 
 source "drivers/mtd/onenand/Kconfig"
+
+source "drivers/mtd/lpddr/Kconfig"
 
 source "drivers/mtd/ubi/Kconfig"
 

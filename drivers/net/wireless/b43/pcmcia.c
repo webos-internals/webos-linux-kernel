@@ -43,14 +43,16 @@ MODULE_DEVICE_TABLE(pcmcia, b43_pcmcia_tbl);
 #ifdef CONFIG_PM
 static int b43_pcmcia_suspend(struct pcmcia_device *dev)
 {
-	//TODO
-	return 0;
+	struct ssb_bus *ssb = dev->priv;
+
+	return ssb_bus_suspend(ssb);
 }
 
 static int b43_pcmcia_resume(struct pcmcia_device *dev)
 {
-	//TODO
-	return 0;
+	struct ssb_bus *ssb = dev->priv;
+
+	return ssb_bus_resume(ssb);
 }
 #else /* CONFIG_PM */
 # define b43_pcmcia_suspend		NULL
@@ -80,17 +82,19 @@ static int __devinit b43_pcmcia_probe(struct pcmcia_device *dev)
 	tuple.TupleOffset = 0;
 
 	res = pcmcia_get_first_tuple(dev, &tuple);
-	if (res != CS_SUCCESS)
+	if (res != 0)
 		goto err_kfree_ssb;
 	res = pcmcia_get_tuple_data(dev, &tuple);
-	if (res != CS_SUCCESS)
+	if (res != 0)
 		goto err_kfree_ssb;
-	res = pcmcia_parse_tuple(dev, &tuple, &parse);
-	if (res != CS_SUCCESS)
+	res = pcmcia_parse_tuple(&tuple, &parse);
+	if (res != 0)
 		goto err_kfree_ssb;
 
 	dev->conf.ConfigBase = parse.config.base;
 	dev->conf.Present = parse.config.rmask[0];
+	dev->conf.Attributes = CONF_ENABLE_IRQ;
+	dev->conf.IntType = INT_MEMORY_AND_IO;
 
 	dev->io.BasePort2 = 0;
 	dev->io.NumPorts2 = 0;
@@ -103,25 +107,25 @@ static int __devinit b43_pcmcia_probe(struct pcmcia_device *dev)
 	win.Size = SSB_CORE_SIZE;
 	win.AccessSpeed = 250;
 	res = pcmcia_request_window(&dev, &win, &dev->win);
-	if (res != CS_SUCCESS)
+	if (res != 0)
 		goto err_kfree_ssb;
 
 	mem.CardOffset = 0;
 	mem.Page = 0;
 	res = pcmcia_map_mem_page(dev->win, &mem);
-	if (res != CS_SUCCESS)
+	if (res != 0)
 		goto err_disable;
 
-	dev->irq.Attributes = IRQ_TYPE_DYNAMIC_SHARING | IRQ_FIRST_SHARED;
-	dev->irq.IRQInfo1 = IRQ_LEVEL_ID | IRQ_SHARE_ID;
+	dev->irq.Attributes = IRQ_TYPE_DYNAMIC_SHARING;
+	dev->irq.IRQInfo1 = IRQ_LEVEL_ID;
 	dev->irq.Handler = NULL; /* The handler is registered later. */
 	dev->irq.Instance = NULL;
 	res = pcmcia_request_irq(dev, &dev->irq);
-	if (res != CS_SUCCESS)
+	if (res != 0)
 		goto err_disable;
 
 	res = pcmcia_request_configuration(dev, &dev->conf);
-	if (res != CS_SUCCESS)
+	if (res != 0)
 		goto err_disable;
 
 	err = ssb_bus_pcmciabus_register(ssb, dev, win.Base);

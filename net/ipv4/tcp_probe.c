@@ -153,12 +153,11 @@ static int tcpprobe_sprint(char *tbuf, int n)
 		= ktime_to_timespec(ktime_sub(p->tstamp, tcp_probe.start));
 
 	return snprintf(tbuf, n,
-			"%lu.%09lu %d.%d.%d.%d:%u %d.%d.%d.%d:%u"
-			" %d %#x %#x %u %u %u %u\n",
+			"%lu.%09lu %pI4:%u %pI4:%u %d %#x %#x %u %u %u %u\n",
 			(unsigned long) tv.tv_sec,
 			(unsigned long) tv.tv_nsec,
-			NIPQUAD(p->saddr), ntohs(p->sport),
-			NIPQUAD(p->daddr), ntohs(p->dport),
+			&p->saddr, ntohs(p->sport),
+			&p->daddr, ntohs(p->dport),
 			p->length, p->snd_nxt, p->snd_una,
 			p->snd_cwnd, p->ssthresh, p->snd_wnd, p->srtt);
 }
@@ -190,19 +189,18 @@ static ssize_t tcpprobe_read(struct file *file, char __user *buf,
 
 		width = tcpprobe_sprint(tbuf, sizeof(tbuf));
 
-		if (width < len)
+		if (cnt + width < len)
 			tcp_probe.tail = (tcp_probe.tail + 1) % bufsize;
 
 		spin_unlock_bh(&tcp_probe.lock);
 
 		/* if record greater than space available
 		   return partial buffer (so far) */
-		if (width >= len)
+		if (cnt + width >= len)
 			break;
 
-		error = copy_to_user(buf + cnt, tbuf, width);
-		if (error)
-			break;
+		if (copy_to_user(buf + cnt, tbuf, width))
+			return -EFAULT;
 		cnt += width;
 	}
 
@@ -225,7 +223,7 @@ static __init int tcpprobe_init(void)
 	if (bufsize < 0)
 		return -EINVAL;
 
-	tcp_probe.log = kcalloc(sizeof(struct tcp_log), bufsize, GFP_KERNEL);
+	tcp_probe.log = kcalloc(bufsize, sizeof(struct tcp_log), GFP_KERNEL);
 	if (!tcp_probe.log)
 		goto err0;
 

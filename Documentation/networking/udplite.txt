@@ -148,7 +148,7 @@
         getsockopt(sockfd, SOL_SOCKET, SO_NO_CHECK, &value, ...);
 
   is meaningless (as in TCP). Packets with a zero checksum field are
-  illegal (cf. RFC 3828, sec. 3.1) will be silently discarded.
+  illegal (cf. RFC 3828, sec. 3.1) and will be silently discarded.
 
   4) Fragmentation
 
@@ -236,7 +236,7 @@
 
   This displays UDP-Lite statistics variables, whose meaning is as follows.
 
-   InDatagrams:     Total number of received datagrams.
+   InDatagrams:     The total number of datagrams delivered to users.
 
    NoPorts:         Number of packets received to an unknown port.
                     These cases are counted separately (not as InErrors).

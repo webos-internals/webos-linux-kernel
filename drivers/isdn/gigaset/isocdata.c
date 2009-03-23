@@ -23,9 +23,9 @@
  */
 void gigaset_isowbuf_init(struct isowbuf_t *iwb, unsigned char idle)
 {
-	atomic_set(&iwb->read, 0);
-	atomic_set(&iwb->nextread, 0);
-	atomic_set(&iwb->write, 0);
+	iwb->read = 0;
+	iwb->nextread = 0;
+	iwb->write = 0;
 	atomic_set(&iwb->writesem, 1);
 	iwb->wbits = 0;
 	iwb->idle = idle;
@@ -39,8 +39,8 @@ static inline int isowbuf_freebytes(struct isowbuf_t *iwb)
 {
 	int read, write, freebytes;
 
-	read = atomic_read(&iwb->read);
-	write = atomic_read(&iwb->write);
+	read = iwb->read;
+	write = iwb->write;
 	if ((freebytes = read - write) > 0) {
 		/* no wraparound: need padding space within regular area */
 		return freebytes - BAS_OUTBUFPAD;
@@ -62,7 +62,7 @@ static inline int isowbuf_poscmp(struct isowbuf_t *iwb, int a, int b)
 	int read;
 	if (a == b)
 		return 0;
-	read = atomic_read(&iwb->read);
+	read = iwb->read;
 	if (a < b) {
 		if (a < read && read <= b)
 			return +1;
@@ -88,21 +88,19 @@ static inline int isowbuf_startwrite(struct isowbuf_t *iwb)
 			__func__);
 		return 0;
 	}
-#ifdef CONFIG_GIGASET_DEBUG
 	gig_dbg(DEBUG_ISO,
 		"%s: acquired iso write semaphore, data[write]=%02x, nbits=%d",
-		__func__, iwb->data[atomic_read(&iwb->write)], iwb->wbits);
-#endif
+		__func__, iwb->data[iwb->write], iwb->wbits);
 	return 1;
 }
 
 /* finish writing
- * release the write semaphore and update the maximum buffer fill level
+ * release the write semaphore
  * returns the current write position
  */
 static inline int isowbuf_donewrite(struct isowbuf_t *iwb)
 {
-	int write = atomic_read(&iwb->write);
+	int write = iwb->write;
 	atomic_inc(&iwb->writesem);
 	return write;
 }
@@ -116,7 +114,7 @@ static inline int isowbuf_donewrite(struct isowbuf_t *iwb)
  */
 static inline void isowbuf_putbits(struct isowbuf_t *iwb, u32 data, int nbits)
 {
-	int write = atomic_read(&iwb->write);
+	int write = iwb->write;
 	data <<= iwb->wbits;
 	data |= iwb->data[write];
 	nbits += iwb->wbits;
@@ -128,7 +126,7 @@ static inline void isowbuf_putbits(struct isowbuf_t *iwb, u32 data, int nbits)
 	}
 	iwb->wbits = nbits;
 	iwb->data[write] = data & 0xff;
-	atomic_set(&iwb->write, write);
+	iwb->write = write;
 }
 
 /* put final flag on HDLC bitstream
@@ -142,7 +140,7 @@ static inline void isowbuf_putflag(struct isowbuf_t *iwb)
 	/* add two flags, thus reliably covering one byte */
 	isowbuf_putbits(iwb, 0x7e7e, 8);
 	/* recover the idle flag byte */
-	write = atomic_read(&iwb->write);
+	write = iwb->write;
 	iwb->idle = iwb->data[write];
 	gig_dbg(DEBUG_ISO, "idle fill byte %02x", iwb->idle);
 	/* mask extraneous bits in buffer */
@@ -160,8 +158,8 @@ int gigaset_isowbuf_getbytes(struct isowbuf_t *iwb, int size)
 	int read, write, limit, src, dst;
 	unsigned char pbyte;
 
-	read = atomic_read(&iwb->nextread);
-	write = atomic_read(&iwb->write);
+	read = iwb->nextread;
+	write = iwb->write;
 	if (likely(read == write)) {
 		/* return idle frame */
 		return read < BAS_OUTBUFPAD ?
@@ -173,13 +171,13 @@ int gigaset_isowbuf_getbytes(struct isowbuf_t *iwb, int size)
 		__func__, read, write, limit);
 #ifdef CONFIG_GIGASET_DEBUG
 	if (unlikely(size < 0 || size > BAS_OUTBUFPAD)) {
-		err("invalid size %d", size);
+		pr_err("invalid size %d\n", size);
 		return -EINVAL;
 	}
-	src = atomic_read(&iwb->read);
+	src = iwb->read;
 	if (unlikely(limit > BAS_OUTBUFSIZE + BAS_OUTBUFPAD ||
 		     (read < src && limit >= src))) {
-		err("isoc write buffer frame reservation violated");
+		pr_err("isoc write buffer frame reservation violated\n");
 		return -EFAULT;
 	}
 #endif
@@ -191,7 +189,8 @@ int gigaset_isowbuf_getbytes(struct isowbuf_t *iwb, int size)
 			if (!isowbuf_startwrite(iwb))
 				return -EBUSY;
 			/* write position could have changed */
-			if (limit >= (write = atomic_read(&iwb->write))) {
+			write = iwb->write;
+			if (limit >= write) {
 				pbyte = iwb->data[write]; /* save
 							     partial byte */
 				limit = write + BAS_OUTBUFPAD;
@@ -213,7 +212,7 @@ int gigaset_isowbuf_getbytes(struct isowbuf_t *iwb, int size)
 					__func__, pbyte, limit);
 				iwb->data[limit] = pbyte; /* restore
 							     partial byte */
-				atomic_set(&iwb->write, limit);
+				iwb->write = limit;
 			}
 			isowbuf_donewrite(iwb);
 		}
@@ -233,7 +232,7 @@ int gigaset_isowbuf_getbytes(struct isowbuf_t *iwb, int size)
 			limit = src;
 		}
 	}
-	atomic_set(&iwb->nextread, limit);
+	iwb->nextread = limit;
 	return read;
 }
 
@@ -246,7 +245,6 @@ static inline void dump_bytes(enum debuglevel level, const char *tag,
 #ifdef CONFIG_GIGASET_DEBUG
 	unsigned char c;
 	static char dbgline[3 * 32 + 1];
-	static const char hexdigit[] = "0123456789abcdef";
 	int i = 0;
 	while (count-- > 0) {
 		if (i > sizeof(dbgline) - 4) {
@@ -257,8 +255,8 @@ static inline void dump_bytes(enum debuglevel level, const char *tag,
 		c = *bytes++;
 		dbgline[i] = (i && !(i % 12)) ? '-' : ' ';
 		i++;
-		dbgline[i++] = hexdigit[(c >> 4) & 0x0f];
-		dbgline[i++] = hexdigit[c & 0x0f];
+		dbgline[i++] = hex_asc_hi(c);
+		dbgline[i++] = hex_asc_lo(c);
 	}
 	dbgline[i] = '\0';
 	gig_dbg(level, "%s:%s", tag, dbgline);
@@ -477,7 +475,7 @@ static inline int trans_buildframe(struct isowbuf_t *iwb,
 	unsigned char c;
 
 	if (unlikely(count <= 0))
-		return atomic_read(&iwb->write); /* better ideas? */
+		return iwb->write;
 
 	if (isowbuf_freebytes(iwb) < count ||
 	    !isowbuf_startwrite(iwb)) {
@@ -486,13 +484,13 @@ static inline int trans_buildframe(struct isowbuf_t *iwb,
 	}
 
 	gig_dbg(DEBUG_STREAM, "put %d bytes", count);
-	write = atomic_read(&iwb->write);
+	write = iwb->write;
 	do {
 		c = bitrev8(*in++);
 		iwb->data[write++] = c;
 		write %= BAS_OUTBUFSIZE;
 	} while (--count > 0);
-	atomic_set(&iwb->write, write);
+	iwb->write = write;
 	iwb->idle = c;
 
 	return isowbuf_donewrite(iwb);
@@ -947,8 +945,8 @@ void gigaset_isoc_input(struct inbuf_t *inbuf)
 	unsigned tail, head, numbytes;
 	unsigned char *src;
 
-	head = atomic_read(&inbuf->head);
-	while (head != (tail = atomic_read(&inbuf->tail))) {
+	head = inbuf->head;
+	while (head != (tail = inbuf->tail)) {
 		gig_dbg(DEBUG_INTR, "buffer state: %u -> %u", head, tail);
 		if (head > tail)
 			tail = RBUFSIZE;
@@ -956,7 +954,7 @@ void gigaset_isoc_input(struct inbuf_t *inbuf)
 		numbytes = tail - head;
 		gig_dbg(DEBUG_INTR, "processing %u bytes", numbytes);
 
-		if (atomic_read(&cs->mstate) == MS_LOCKED) {
+		if (cs->mstate == MS_LOCKED) {
 			gigaset_dbg_buffer(DEBUG_LOCKCMD, "received response",
 					   numbytes, src);
 			gigaset_if_receive(inbuf->cs, src, numbytes);
@@ -970,7 +968,7 @@ void gigaset_isoc_input(struct inbuf_t *inbuf)
 		if (head == RBUFSIZE)
 			head = 0;
 		gig_dbg(DEBUG_INTR, "setting head to %u", head);
-		atomic_set(&inbuf->head, head);
+		inbuf->head = head;
 	}
 }
 

@@ -27,23 +27,11 @@
 
 	.text
 
-_GLOBAL(get_msr)
-	mfmsr	r3
-	blr
-
-_GLOBAL(get_srr0)
-	mfsrr0  r3
-	blr
-
-_GLOBAL(get_srr1)
-	mfsrr1  r3
-	blr
-
 #ifdef CONFIG_IRQSTACKS
 _GLOBAL(call_do_softirq)
 	mflr	r0
 	std	r0,16(r1)
-	stdu	r1,THREAD_SIZE-112(r3)
+	stdu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r3)
 	mr	r1,r3
 	bl	.__do_softirq
 	ld	r1,0(r1)
@@ -56,7 +44,7 @@ _GLOBAL(call_handle_irq)
 	mflr	r0
 	std	r0,16(r1)
 	mtctr	r8
-	stdu	r1,THREAD_SIZE-112(r5)
+	stdu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r5)
 	mr	r1,r5
 	bctrl
 	ld	r1,0(r1)
@@ -438,8 +426,10 @@ _GLOBAL(kernel_thread)
 	li	r4,0		/* new sp (unused) */
 	li	r0,__NR_clone
 	sc
-	cmpdi	0,r3,0		/* parent or child? */
-	bne	1f		/* return if parent */
+	bns+	1f		/* did system call indicate error? */
+	neg	r3,r3		/* if so, make return code negative */
+1:	cmpdi	0,r3,0		/* parent or child? */
+	bne	2f		/* return if parent */
 	li	r0,0
 	stdu	r0,-STACK_FRAME_OVERHEAD(r1)
 	ld	r2,8(r29)
@@ -450,7 +440,7 @@ _GLOBAL(kernel_thread)
 	li	r0,__NR_exit	/* exit after child exits */
         li	r3,0
 	sc
-1:	addi	r1,r1,STACK_FRAME_OVERHEAD	
+2:	addi	r1,r1,STACK_FRAME_OVERHEAD
 	ld	r29,-24(r1)
 	ld	r30,-16(r1)
 	blr
@@ -518,12 +508,38 @@ _GLOBAL(giveup_altivec)
 
 #endif /* CONFIG_ALTIVEC */
 
-_GLOBAL(kernel_execve)
-	li	r0,__NR_execve
-	sc
-	bnslr
-	neg	r3,r3
+#ifdef CONFIG_VSX
+/*
+ * __giveup_vsx(tsk)
+ * Disable VSX for the task given as the argument.
+ * Does NOT save vsx registers.
+ * Enables the VSX for use in the kernel on return.
+ */
+_GLOBAL(__giveup_vsx)
+	mfmsr	r5
+	oris	r5,r5,MSR_VSX@h
+	mtmsrd	r5			/* enable use of VSX now */
+	isync
+
+	cmpdi	0,r3,0
+	beqlr-				/* if no previous owner, done */
+	addi	r3,r3,THREAD		/* want THREAD of task */
+	ld	r5,PT_REGS(r3)
+	cmpdi	0,r5,0
+	beq	1f
+	ld	r4,_MSR-STACK_FRAME_OVERHEAD(r5)
+	lis	r3,MSR_VSX@h
+	andc	r4,r4,r3		/* disable VSX for previous task */
+	std	r4,_MSR-STACK_FRAME_OVERHEAD(r5)
+1:
+#ifndef CONFIG_SMP
+	li	r5,0
+	ld	r4,last_task_used_vsx@got(r2)
+	std	r5,0(r4)
+#endif /* CONFIG_SMP */
 	blr
+
+#endif /* CONFIG_VSX */
 
 /* kexec_wait(phys_cpu)
  *
@@ -606,7 +622,7 @@ _GLOBAL(kexec_sequence)
 	std	r0,16(r1)
 
 	/* switch stacks to newstack -- &kexec_stack.stack */
-	stdu	r1,THREAD_SIZE-112(r3)
+	stdu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r3)
 	mr	r1,r3
 
 	li	r0,0
@@ -623,7 +639,7 @@ _GLOBAL(kexec_sequence)
 	std	r26,-48(r1)
 	std	r25,-56(r1)
 
-	stdu	r1,-112-64(r1)
+	stdu	r1,-STACK_FRAME_OVERHEAD-64(r1)
 
 	/* save args into preserved regs */
 	mr	r31,r3			/* newstack (both) */

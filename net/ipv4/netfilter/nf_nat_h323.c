@@ -32,7 +32,8 @@ static int set_addr(struct sk_buff *skb,
 		__be32 ip;
 		__be16 port;
 	} __attribute__ ((__packed__)) buf;
-	struct tcphdr _tcph, *th;
+	const struct tcphdr *th;
+	struct tcphdr _tcph;
 
 	buf.ip = ip;
 	buf.port = port;
@@ -76,7 +77,7 @@ static int set_addr(struct sk_buff *skb,
 static int set_h225_addr(struct sk_buff *skb,
 			 unsigned char **data, int dataoff,
 			 TransportAddress *taddr,
-			 union nf_conntrack_address *addr, __be16 port)
+			 union nf_inet_addr *addr, __be16 port)
 {
 	return set_addr(skb, data, dataoff, taddr->ipAddress.ip,
 			addr->ip, port);
@@ -86,7 +87,7 @@ static int set_h225_addr(struct sk_buff *skb,
 static int set_h245_addr(struct sk_buff *skb,
 			 unsigned char **data, int dataoff,
 			 H245_TransportAddress *taddr,
-			 union nf_conntrack_address *addr, __be16 port)
+			 union nf_inet_addr *addr, __be16 port)
 {
 	return set_addr(skb, data, dataoff,
 			taddr->unicastAddress.iPAddress.network,
@@ -99,11 +100,11 @@ static int set_sig_addr(struct sk_buff *skb, struct nf_conn *ct,
 			unsigned char **data,
 			TransportAddress *taddr, int count)
 {
-	struct nf_ct_h323_master *info = &nfct_help(ct)->help.ct_h323_info;
+	const struct nf_ct_h323_master *info = &nfct_help(ct)->help.ct_h323_info;
 	int dir = CTINFO2DIR(ctinfo);
 	int i;
 	__be16 port;
-	union nf_conntrack_address addr;
+	union nf_inet_addr addr;
 
 	for (i = 0; i < count; i++) {
 		if (get_h225_addr(ct, *data, &taddr[i], &addr, &port)) {
@@ -118,10 +119,9 @@ static int set_sig_addr(struct sk_buff *skb, struct nf_conn *ct,
 				    (ntohl(addr.ip) & 0xff000000) == 0x7f000000)
 					i = 0;
 
-				pr_debug("nf_nat_ras: set signal address "
-					 "%u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-					 NIPQUAD(addr.ip), port,
-					 NIPQUAD(ct->tuplehash[!dir].tuple.dst.u3.ip),
+				pr_debug("nf_nat_ras: set signal address %pI4:%hu->%pI4:%hu\n",
+					 &addr.ip, port,
+					 &ct->tuplehash[!dir].tuple.dst.u3.ip,
 					 info->sig_port[!dir]);
 				return set_h225_addr(skb, data, 0, &taddr[i],
 						     &ct->tuplehash[!dir].
@@ -130,10 +130,9 @@ static int set_sig_addr(struct sk_buff *skb, struct nf_conn *ct,
 			} else if (addr.ip == ct->tuplehash[dir].tuple.dst.u3.ip &&
 				   port == info->sig_port[dir]) {
 				/* GK->GW */
-				pr_debug("nf_nat_ras: set signal address "
-					 "%u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-					 NIPQUAD(addr.ip), port,
-					 NIPQUAD(ct->tuplehash[!dir].tuple.src.u3.ip),
+				pr_debug("nf_nat_ras: set signal address %pI4:%hu->%pI4:%hu\n",
+					 &addr.ip, port,
+					 &ct->tuplehash[!dir].tuple.src.u3.ip,
 					 info->sig_port[!dir]);
 				return set_h225_addr(skb, data, 0, &taddr[i],
 						     &ct->tuplehash[!dir].
@@ -155,16 +154,15 @@ static int set_ras_addr(struct sk_buff *skb, struct nf_conn *ct,
 	int dir = CTINFO2DIR(ctinfo);
 	int i;
 	__be16 port;
-	union nf_conntrack_address addr;
+	union nf_inet_addr addr;
 
 	for (i = 0; i < count; i++) {
 		if (get_h225_addr(ct, *data, &taddr[i], &addr, &port) &&
 		    addr.ip == ct->tuplehash[dir].tuple.src.u3.ip &&
 		    port == ct->tuplehash[dir].tuple.src.u.udp.port) {
-			pr_debug("nf_nat_ras: set rasAddress "
-				 "%u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-				 NIPQUAD(addr.ip), ntohs(port),
-				 NIPQUAD(ct->tuplehash[!dir].tuple.dst.u3.ip),
+			pr_debug("nf_nat_ras: set rasAddress %pI4:%hu->%pI4:%hu\n",
+				 &addr.ip, ntohs(port),
+				 &ct->tuplehash[!dir].tuple.dst.u3.ip,
 				 ntohs(ct->tuplehash[!dir].tuple.dst.u.udp.port));
 			return set_h225_addr(skb, data, 0, &taddr[i],
 					     &ct->tuplehash[!dir].tuple.dst.u3,
@@ -256,15 +254,15 @@ static int nat_rtp_rtcp(struct sk_buff *skb, struct nf_conn *ct,
 	}
 
 	/* Success */
-	pr_debug("nf_nat_h323: expect RTP %u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-		 NIPQUAD(rtp_exp->tuple.src.u3.ip),
+	pr_debug("nf_nat_h323: expect RTP %pI4:%hu->%pI4:%hu\n",
+		 &rtp_exp->tuple.src.u3.ip,
 		 ntohs(rtp_exp->tuple.src.u.udp.port),
-		 NIPQUAD(rtp_exp->tuple.dst.u3.ip),
+		 &rtp_exp->tuple.dst.u3.ip,
 		 ntohs(rtp_exp->tuple.dst.u.udp.port));
-	pr_debug("nf_nat_h323: expect RTCP %u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-		 NIPQUAD(rtcp_exp->tuple.src.u3.ip),
+	pr_debug("nf_nat_h323: expect RTCP %pI4:%hu->%pI4:%hu\n",
+		 &rtcp_exp->tuple.src.u3.ip,
 		 ntohs(rtcp_exp->tuple.src.u.udp.port),
-		 NIPQUAD(rtcp_exp->tuple.dst.u3.ip),
+		 &rtcp_exp->tuple.dst.u3.ip,
 		 ntohs(rtcp_exp->tuple.dst.u.udp.port));
 
 	return 0;
@@ -306,10 +304,10 @@ static int nat_t120(struct sk_buff *skb, struct nf_conn *ct,
 		return -1;
 	}
 
-	pr_debug("nf_nat_h323: expect T.120 %u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-		 NIPQUAD(exp->tuple.src.u3.ip),
+	pr_debug("nf_nat_h323: expect T.120 %pI4:%hu->%pI4:%hu\n",
+		 &exp->tuple.src.u3.ip,
 		 ntohs(exp->tuple.src.u.tcp.port),
-		 NIPQUAD(exp->tuple.dst.u3.ip),
+		 &exp->tuple.dst.u3.ip,
 		 ntohs(exp->tuple.dst.u.tcp.port));
 
 	return 0;
@@ -360,10 +358,10 @@ static int nat_h245(struct sk_buff *skb, struct nf_conn *ct,
 		return -1;
 	}
 
-	pr_debug("nf_nat_q931: expect H.245 %u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-		 NIPQUAD(exp->tuple.src.u3.ip),
+	pr_debug("nf_nat_q931: expect H.245 %pI4:%hu->%pI4:%hu\n",
+		 &exp->tuple.src.u3.ip,
 		 ntohs(exp->tuple.src.u.tcp.port),
-		 NIPQUAD(exp->tuple.dst.u3.ip),
+		 &exp->tuple.dst.u3.ip,
 		 ntohs(exp->tuple.dst.u.tcp.port));
 
 	return 0;
@@ -389,18 +387,14 @@ static void ip_nat_q931_expect(struct nf_conn *new,
 	/* Change src to where master sends to */
 	range.flags = IP_NAT_RANGE_MAP_IPS;
 	range.min_ip = range.max_ip = new->tuplehash[!this->dir].tuple.src.u3.ip;
-
-	/* hook doesn't matter, but it has to do source manip */
-	nf_nat_setup_info(new, &range, NF_IP_POST_ROUTING);
+	nf_nat_setup_info(new, &range, IP_NAT_MANIP_SRC);
 
 	/* For DST manip, map port here to where it's expected. */
 	range.flags = (IP_NAT_RANGE_MAP_IPS | IP_NAT_RANGE_PROTO_SPECIFIED);
 	range.min = range.max = this->saved_proto;
 	range.min_ip = range.max_ip =
 	    new->master->tuplehash[!this->dir].tuple.src.u3.ip;
-
-	/* hook doesn't matter, but it has to do destination manip */
-	nf_nat_setup_info(new, &range, NF_IP_PRE_ROUTING);
+	nf_nat_setup_info(new, &range, IP_NAT_MANIP_DST);
 }
 
 /****************************************************************************/
@@ -412,7 +406,7 @@ static int nat_q931(struct sk_buff *skb, struct nf_conn *ct,
 	struct nf_ct_h323_master *info = &nfct_help(ct)->help.ct_h323_info;
 	int dir = CTINFO2DIR(ctinfo);
 	u_int16_t nated_port = ntohs(port);
-	union nf_conntrack_address addr;
+	union nf_inet_addr addr;
 
 	/* Set expectations for NAT */
 	exp->saved_proto.tcp.port = exp->tuple.dst.u.tcp.port;
@@ -458,10 +452,10 @@ static int nat_q931(struct sk_buff *skb, struct nf_conn *ct,
 	}
 
 	/* Success */
-	pr_debug("nf_nat_ras: expect Q.931 %u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-		 NIPQUAD(exp->tuple.src.u3.ip),
+	pr_debug("nf_nat_ras: expect Q.931 %pI4:%hu->%pI4:%hu\n",
+		 &exp->tuple.src.u3.ip,
 		 ntohs(exp->tuple.src.u.tcp.port),
-		 NIPQUAD(exp->tuple.dst.u3.ip),
+		 &exp->tuple.dst.u3.ip,
 		 ntohs(exp->tuple.dst.u.tcp.port));
 
 	return 0;
@@ -479,17 +473,13 @@ static void ip_nat_callforwarding_expect(struct nf_conn *new,
 	/* Change src to where master sends to */
 	range.flags = IP_NAT_RANGE_MAP_IPS;
 	range.min_ip = range.max_ip = new->tuplehash[!this->dir].tuple.src.u3.ip;
-
-	/* hook doesn't matter, but it has to do source manip */
-	nf_nat_setup_info(new, &range, NF_IP_POST_ROUTING);
+	nf_nat_setup_info(new, &range, IP_NAT_MANIP_SRC);
 
 	/* For DST manip, map port here to where it's expected. */
 	range.flags = (IP_NAT_RANGE_MAP_IPS | IP_NAT_RANGE_PROTO_SPECIFIED);
 	range.min = range.max = this->saved_proto;
 	range.min_ip = range.max_ip = this->saved_ip;
-
-	/* hook doesn't matter, but it has to do destination manip */
-	nf_nat_setup_info(new, &range, NF_IP_PRE_ROUTING);
+	nf_nat_setup_info(new, &range, IP_NAT_MANIP_DST);
 }
 
 /****************************************************************************/
@@ -531,11 +521,10 @@ static int nat_callforwarding(struct sk_buff *skb, struct nf_conn *ct,
 	}
 
 	/* Success */
-	pr_debug("nf_nat_q931: expect Call Forwarding "
-		 "%u.%u.%u.%u:%hu->%u.%u.%u.%u:%hu\n",
-		 NIPQUAD(exp->tuple.src.u3.ip),
+	pr_debug("nf_nat_q931: expect Call Forwarding %pI4:%hu->%pI4:%hu\n",
+		 &exp->tuple.src.u3.ip,
 		 ntohs(exp->tuple.src.u.tcp.port),
-		 NIPQUAD(exp->tuple.dst.u3.ip),
+		 &exp->tuple.dst.u3.ip,
 		 ntohs(exp->tuple.dst.u.tcp.port));
 
 	return 0;

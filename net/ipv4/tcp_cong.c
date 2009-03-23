@@ -115,7 +115,7 @@ int tcp_set_default_congestion_control(const char *name)
 
 	spin_lock(&tcp_cong_list_lock);
 	ca = tcp_ca_find(name);
-#ifdef CONFIG_KMOD
+#ifdef CONFIG_MODULES
 	if (!ca && capable(CAP_SYS_MODULE)) {
 		spin_unlock(&tcp_cong_list_lock);
 
@@ -244,7 +244,7 @@ int tcp_set_congestion_control(struct sock *sk, const char *name)
 	if (ca == icsk->icsk_ca_ops)
 		goto out;
 
-#ifdef CONFIG_KMOD
+#ifdef CONFIG_MODULES
 	/* not found attempt to autoload module */
 	if (!ca && capable(CAP_SYS_MODULE)) {
 		rcu_read_unlock();
@@ -274,6 +274,25 @@ int tcp_set_congestion_control(struct sock *sk, const char *name)
 	return err;
 }
 
+/* RFC2861 Check whether we are limited by application or congestion window
+ * This is the inverse of cwnd check in tcp_tso_should_defer
+ */
+int tcp_is_cwnd_limited(const struct sock *sk, u32 in_flight)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	u32 left;
+
+	if (in_flight >= tp->snd_cwnd)
+		return 1;
+
+	left = tp->snd_cwnd - in_flight;
+	if (sk_can_gso(sk) &&
+	    left * sysctl_tcp_tso_win_divisor < tp->snd_cwnd &&
+	    left * tp->mss_cache < sk->sk_gso_max_size)
+		return 1;
+	return left <= tcp_max_burst(tp);
+}
+EXPORT_SYMBOL_GPL(tcp_is_cwnd_limited);
 
 /*
  * Slow start is used when congestion window is less than slow start
@@ -324,7 +343,7 @@ EXPORT_SYMBOL_GPL(tcp_slow_start);
 /* This is Jacobson's slow start and congestion avoidance.
  * SIGCOMM '88, p. 328.
  */
-void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight, int flag)
+void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 

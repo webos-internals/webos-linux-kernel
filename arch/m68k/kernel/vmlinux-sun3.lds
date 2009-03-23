@@ -1,6 +1,7 @@
 /* ld script to make m68k Linux kernel */
 
 #include <asm-generic/vmlinux.lds.h>
+#include <asm/page.h>
 
 OUTPUT_FORMAT("elf32-m68k", "elf32-m68k", "elf32-m68k")
 OUTPUT_ARCH(m68k)
@@ -32,16 +33,17 @@ SECTIONS
 	} :data
   /* End of data goes *here* so that freeing init code works properly. */
   _edata = .;
+  NOTES
 
   /* will be freed after init */
-  . = ALIGN(8192);	/* Init code and data */
+  . = ALIGN(PAGE_SIZE);	/* Init code and data */
 __init_begin = .;
 	.init.text : {
 		_sinittext = .;
-		*(.init.text)
+		INIT_TEXT
 		_einittext = .;
 	}
-	.init.data : { *(.init.data) }
+	.init.data : { INIT_DATA }
 	. = ALIGN(16);
 	__setup_start = .;
 	.init.setup : { *(.init.setup) }
@@ -61,12 +63,12 @@ __init_begin = .;
 	}
 	SECURITY_INIT
 #ifdef CONFIG_BLK_DEV_INITRD
-	. = ALIGN(8192);
+	. = ALIGN(PAGE_SIZE);
 	__initramfs_start = .;
 	.init.ramfs : { *(.init.ramfs) }
 	__initramfs_end = .;
 #endif
-	. = ALIGN(8192);
+	. = ALIGN(PAGE_SIZE);
 	__init_end = .;
 	.data.init.task : { *(.data.init_task) }
 
@@ -77,8 +79,8 @@ __init_begin = .;
 
   /* Sections to be discarded */
   /DISCARD/ : {
-	*(.exit.text)
-	*(.exit.data)
+	EXIT_TEXT
+	EXIT_DATA
 	*(.exitcall.exit)
 	}
 

@@ -212,6 +212,12 @@ enum _DescStatusBit {
 	THOL2		= 0x20000000,
 	THOL1		= 0x10000000,
 	THOL0		= 0x00000000,
+
+	WND		= 0x00080000,
+	TABRT		= 0x00040000,
+	FIFO		= 0x00020000,
+	LINK		= 0x00010000,
+	ColCountMask	= 0x0000ffff,
 	/* RxDesc.status */
 	IPON		= 0x20000000,
 	TCPON		= 0x10000000,
@@ -311,6 +317,7 @@ static struct mii_chip_info {
         unsigned int type;
 	u32 feature;
 } mii_chip_table[] = {
+	{ "Atheros PHY AR8012",   { 0x004d, 0xd020 }, LAN, 0 },
 	{ "Broadcom PHY BCM5461", { 0x0020, 0x60c0 }, LAN, F_PHY_BCM5461 },
 	{ "Broadcom PHY AC131",   { 0x0143, 0xbc70 }, LAN, 0 },
 	{ "Agere PHY ET1101B",    { 0x0282, 0xf010 }, LAN, 0 },
@@ -326,7 +333,7 @@ static const struct {
 	{ "SiS 191 PCI Gigabit Ethernet adapter" },
 };
 
-static struct pci_device_id sis190_pci_tbl[] __devinitdata = {
+static struct pci_device_id sis190_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_SI, 0x0190), 0, 0, 0 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_SI, 0x0191), 0, 0, 1 },
 	{ 0, },
@@ -480,30 +487,23 @@ static inline void sis190_make_unusable_by_asic(struct RxDesc *desc)
 	desc->status = 0x0;
 }
 
-static int sis190_alloc_rx_skb(struct pci_dev *pdev, struct sk_buff **sk_buff,
-			       struct RxDesc *desc, u32 rx_buf_sz)
+static struct sk_buff *sis190_alloc_rx_skb(struct sis190_private *tp,
+					   struct RxDesc *desc)
 {
+	u32 rx_buf_sz = tp->rx_buf_sz;
 	struct sk_buff *skb;
-	dma_addr_t mapping;
-	int ret = 0;
 
-	skb = dev_alloc_skb(rx_buf_sz);
-	if (!skb)
-		goto err_out;
+	skb = netdev_alloc_skb(tp->dev, rx_buf_sz);
+	if (likely(skb)) {
+		dma_addr_t mapping;
 
-	*sk_buff = skb;
+		mapping = pci_map_single(tp->pci_dev, skb->data, tp->rx_buf_sz,
+					 PCI_DMA_FROMDEVICE);
+		sis190_map_to_asic(desc, mapping, rx_buf_sz);
+	} else
+		sis190_make_unusable_by_asic(desc);
 
-	mapping = pci_map_single(pdev, skb->data, rx_buf_sz,
-				 PCI_DMA_FROMDEVICE);
-
-	sis190_map_to_asic(desc, mapping, rx_buf_sz);
-out:
-	return ret;
-
-err_out:
-	ret = -ENOMEM;
-	sis190_make_unusable_by_asic(desc);
-	goto out;
+	return skb;
 }
 
 static u32 sis190_rx_fill(struct sis190_private *tp, struct net_device *dev,
@@ -512,37 +512,41 @@ static u32 sis190_rx_fill(struct sis190_private *tp, struct net_device *dev,
 	u32 cur;
 
 	for (cur = start; cur < end; cur++) {
-		int ret, i = cur % NUM_RX_DESC;
+		unsigned int i = cur % NUM_RX_DESC;
 
 		if (tp->Rx_skbuff[i])
 			continue;
 
-		ret = sis190_alloc_rx_skb(tp->pci_dev, tp->Rx_skbuff + i,
-					  tp->RxDescRing + i, tp->rx_buf_sz);
-		if (ret < 0)
+		tp->Rx_skbuff[i] = sis190_alloc_rx_skb(tp, tp->RxDescRing + i);
+
+		if (!tp->Rx_skbuff[i])
 			break;
 	}
 	return cur - start;
 }
 
-static inline int sis190_try_rx_copy(struct sk_buff **sk_buff, int pkt_size,
-				     struct RxDesc *desc, int rx_buf_sz)
+static bool sis190_try_rx_copy(struct sis190_private *tp,
+			       struct sk_buff **sk_buff, int pkt_size,
+			       dma_addr_t addr)
 {
-	int ret = -1;
+	struct sk_buff *skb;
+	bool done = false;
 
-	if (pkt_size < rx_copybreak) {
-		struct sk_buff *skb;
+	if (pkt_size >= rx_copybreak)
+		goto out;
 
-		skb = dev_alloc_skb(pkt_size + NET_IP_ALIGN);
-		if (skb) {
-			skb_reserve(skb, NET_IP_ALIGN);
-			skb_copy_to_linear_data(skb, sk_buff[0]->data, pkt_size);
-			*sk_buff = skb;
-			sis190_give_to_asic(desc, rx_buf_sz);
-			ret = 0;
-		}
-	}
-	return ret;
+	skb = netdev_alloc_skb(tp->dev, pkt_size + 2);
+	if (!skb)
+		goto out;
+
+	pci_dma_sync_single_for_device(tp->pci_dev, addr, pkt_size,
+				       PCI_DMA_FROMDEVICE);
+	skb_reserve(skb, 2);
+	skb_copy_to_linear_data(skb, sk_buff[0]->data, pkt_size);
+	*sk_buff = skb;
+	done = true;
+out:
+	return done;
 }
 
 static inline int sis190_rx_pkt_err(u32 status, struct net_device_stats *stats)
@@ -592,9 +596,9 @@ static int sis190_rx_interrupt(struct net_device *dev,
 			sis190_give_to_asic(desc, tp->rx_buf_sz);
 		else {
 			struct sk_buff *skb = tp->Rx_skbuff[entry];
+			dma_addr_t addr = le32_to_cpu(desc->addr);
 			int pkt_size = (status & RxSizeMask) - 4;
-			void (*pci_action)(struct pci_dev *, dma_addr_t,
-				size_t, int) = pci_dma_sync_single_for_device;
+			struct pci_dev *pdev = tp->pci_dev;
 
 			if (unlikely(pkt_size > tp->rx_buf_sz)) {
 				net_intr(tp, KERN_INFO
@@ -606,26 +610,23 @@ static int sis190_rx_interrupt(struct net_device *dev,
 				continue;
 			}
 
-			pci_dma_sync_single_for_cpu(tp->pci_dev,
-				le32_to_cpu(desc->addr), tp->rx_buf_sz,
-				PCI_DMA_FROMDEVICE);
 
-			if (sis190_try_rx_copy(&skb, pkt_size, desc,
-					       tp->rx_buf_sz)) {
-				pci_action = pci_unmap_single;
+			if (sis190_try_rx_copy(tp, &skb, pkt_size, addr)) {
+				pci_dma_sync_single_for_device(pdev, addr,
+					tp->rx_buf_sz, PCI_DMA_FROMDEVICE);
+				sis190_give_to_asic(desc, tp->rx_buf_sz);
+			} else {
+				pci_unmap_single(pdev, addr, tp->rx_buf_sz,
+						 PCI_DMA_FROMDEVICE);
 				tp->Rx_skbuff[entry] = NULL;
 				sis190_make_unusable_by_asic(desc);
 			}
-
-			pci_action(tp->pci_dev, le32_to_cpu(desc->addr),
-				   tp->rx_buf_sz, PCI_DMA_FROMDEVICE);
 
 			skb_put(skb, pkt_size);
 			skb->protocol = eth_type_trans(skb, dev);
 
 			sis190_rx_skb(skb);
 
-			dev->last_rx = jiffies;
 			stats->rx_packets++;
 			stats->rx_bytes += pkt_size;
 			if ((status & BCAST) == MCAST)
@@ -658,9 +659,31 @@ static void sis190_unmap_tx_skb(struct pci_dev *pdev, struct sk_buff *skb,
 	memset(desc, 0x00, sizeof(*desc));
 }
 
+static inline int sis190_tx_pkt_err(u32 status, struct net_device_stats *stats)
+{
+#define TxErrMask	(WND | TABRT | FIFO | LINK)
+
+	if (!unlikely(status & TxErrMask))
+		return 0;
+
+	if (status & WND)
+		stats->tx_window_errors++;
+	if (status & TABRT)
+		stats->tx_aborted_errors++;
+	if (status & FIFO)
+		stats->tx_fifo_errors++;
+	if (status & LINK)
+		stats->tx_carrier_errors++;
+
+	stats->tx_errors++;
+
+	return -1;
+}
+
 static void sis190_tx_interrupt(struct net_device *dev,
 				struct sis190_private *tp, void __iomem *ioaddr)
 {
+	struct net_device_stats *stats = &dev->stats;
 	u32 pending, dirty_tx = tp->dirty_tx;
 	/*
 	 * It would not be needed if queueing was allowed to be enabled
@@ -675,15 +698,19 @@ static void sis190_tx_interrupt(struct net_device *dev,
 	for (; pending; pending--, dirty_tx++) {
 		unsigned int entry = dirty_tx % NUM_TX_DESC;
 		struct TxDesc *txd = tp->TxDescRing + entry;
+		u32 status = le32_to_cpu(txd->status);
 		struct sk_buff *skb;
 
-		if (le32_to_cpu(txd->status) & OWNbit)
+		if (status & OWNbit)
 			break;
 
 		skb = tp->Tx_skbuff[entry];
 
-		dev->stats.tx_packets++;
-		dev->stats.tx_bytes += skb->len;
+		if (likely(sis190_tx_pkt_err(status, stats) == 0)) {
+			stats->tx_packets++;
+			stats->tx_bytes += skb->len;
+			stats->collisions += ((status & ColCountMask) - 1);
+		}
 
 		sis190_unmap_tx_skb(tp->pci_dev, skb, txd);
 		tp->Tx_skbuff[entry] = NULL;
@@ -904,10 +931,9 @@ static void sis190_phy_task(struct work_struct *work)
 		mod_timer(&tp->timer, jiffies + HZ/10);
 	} else if (!(mdio_read_latched(ioaddr, phy_id, MII_BMSR) &
 		     BMSR_ANEGCOMPLETE)) {
-		net_link(tp, KERN_WARNING "%s: PHY reset until link up.\n",
-			 dev->name);
 		netif_carrier_off(dev);
-		mdio_write(ioaddr, phy_id, MII_BMCR, val | BMCR_RESET);
+		net_link(tp, KERN_WARNING "%s: auto-negotiating...\n",
+			 dev->name);
 		mod_timer(&tp->timer, jiffies + SIS190_PHY_TIMEOUT);
 	} else {
 		/* Rejoice ! */
@@ -1630,15 +1656,21 @@ static inline void sis190_init_rxfilter(struct net_device *dev)
 	SIS_PCI_COMMIT();
 }
 
-static int sis190_get_mac_addr(struct pci_dev *pdev, struct net_device *dev)
+static int __devinit sis190_get_mac_addr(struct pci_dev *pdev,
+					 struct net_device *dev)
 {
-	u8 from;
+	int rc;
 
-	pci_read_config_byte(pdev, 0x73, &from);
+	rc = sis190_get_mac_addr_from_eeprom(pdev, dev);
+	if (rc < 0) {
+		u8 reg;
 
-	return (from & 0x00000001) ?
-		sis190_get_mac_addr_from_apc(pdev, dev) :
-		sis190_get_mac_addr_from_eeprom(pdev, dev);
+		pci_read_config_byte(pdev, 0x73, &reg);
+
+		if (reg & 0x00000001)
+			rc = sis190_get_mac_addr_from_apc(pdev, dev);
+	}
+	return rc;
 }
 
 static void sis190_set_speed_auto(struct net_device *dev)
@@ -1750,6 +1782,21 @@ static int sis190_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		generic_mii_ioctl(&tp->mii_if, if_mii(ifr), cmd, NULL);
 }
 
+static const struct net_device_ops sis190_netdev_ops = {
+	.ndo_open		= sis190_open,
+	.ndo_stop		= sis190_close,
+	.ndo_do_ioctl		= sis190_ioctl,
+	.ndo_start_xmit		= sis190_start_xmit,
+	.ndo_tx_timeout		= sis190_tx_timeout,
+	.ndo_set_multicast_list = sis190_set_rx_mode,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_validate_addr	= eth_validate_addr,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	 = sis190_netpoll,
+#endif
+};
+
 static int __devinit sis190_init_one(struct pci_dev *pdev,
 				     const struct pci_device_id *ent)
 {
@@ -1758,7 +1805,6 @@ static int __devinit sis190_init_one(struct pci_dev *pdev,
 	struct net_device *dev;
 	void __iomem *ioaddr;
 	int rc;
-	DECLARE_MAC_BUF(mac);
 
 	if (!printed_version) {
 		net_drv(&debug, KERN_INFO SIS190_DRIVER_NAME " loaded.\n");
@@ -1784,19 +1830,12 @@ static int __devinit sis190_init_one(struct pci_dev *pdev,
 
 	INIT_WORK(&tp->phy_task, sis190_phy_task);
 
-	dev->open = sis190_open;
-	dev->stop = sis190_close;
-	dev->do_ioctl = sis190_ioctl;
-	dev->tx_timeout = sis190_tx_timeout;
-	dev->watchdog_timeo = SIS190_TX_TIMEOUT;
-	dev->hard_start_xmit = sis190_start_xmit;
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	dev->poll_controller = sis190_netpoll;
-#endif
-	dev->set_multicast_list = sis190_set_rx_mode;
+	dev->netdev_ops = &sis190_netdev_ops;
+
 	SET_ETHTOOL_OPS(dev, &sis190_ethtool_ops);
 	dev->irq = pdev->irq;
 	dev->base_addr = (unsigned long) 0xdead;
+	dev->watchdog_timeo = SIS190_TX_TIMEOUT;
 
 	spin_lock_init(&tp->lock);
 
@@ -1808,10 +1847,9 @@ static int __devinit sis190_init_one(struct pci_dev *pdev,
 	if (rc < 0)
 		goto err_remove_mii;
 
-	net_probe(tp, KERN_INFO "%s: %s at %p (IRQ: %d), "
-		  "%s\n",
+	net_probe(tp, KERN_INFO "%s: %s at %p (IRQ: %d), %pM\n",
 		  pci_name(pdev), sis_chip_info[ent->driver_data].name,
-		  ioaddr, dev->irq, print_mac(mac, dev->dev_addr));
+		  ioaddr, dev->irq, dev->dev_addr);
 
 	net_probe(tp, KERN_INFO "%s: %s mode.\n", dev->name,
 		  (tp->features & F_HAS_RGMII) ? "RGMII" : "GMII");

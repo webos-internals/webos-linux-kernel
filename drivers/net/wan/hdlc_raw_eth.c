@@ -9,21 +9,19 @@
  * as published by the Free Software Foundation.
  */
 
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/slab.h>
-#include <linux/poll.h>
 #include <linux/errno.h>
-#include <linux/if_arp.h>
-#include <linux/init.h>
-#include <linux/skbuff.h>
-#include <linux/pkt_sched.h>
-#include <linux/random.h>
-#include <linux/inetdevice.h>
-#include <linux/lapb.h>
-#include <linux/rtnetlink.h>
 #include <linux/etherdevice.h>
 #include <linux/hdlc.h>
+#include <linux/if_arp.h>
+#include <linux/inetdevice.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/pkt_sched.h>
+#include <linux/poll.h>
+#include <linux/rtnetlink.h>
+#include <linux/skbuff.h>
+#include <linux/slab.h>
 
 static int raw_eth_ioctl(struct net_device *dev, struct ifreq *ifr);
 
@@ -34,7 +32,7 @@ static int eth_tx(struct sk_buff *skb, struct net_device *dev)
 		int len = skb->len;
 		if (skb_tailroom(skb) < pad)
 			if (pskb_expand_head(skb, 0, pad, GFP_ATOMIC)) {
-				hdlc_stats(dev)->tx_dropped++;
+				dev->stats.tx_dropped++;
 				dev_kfree_skb(skb);
 				return 0;
 			}
@@ -59,7 +57,7 @@ static int raw_eth_ioctl(struct net_device *dev, struct ifreq *ifr)
 	raw_hdlc_proto new_settings;
 	hdlc_device *hdlc = dev_to_hdlc(dev);
 	int result;
-	void *old_ch_mtu;
+	int (*old_ch_mtu)(struct net_device *, int);
 	int old_qlen;
 
 	switch (ifr->ifr_settings.type) {
@@ -96,7 +94,7 @@ static int raw_eth_ioctl(struct net_device *dev, struct ifreq *ifr)
 		if (result)
 			return result;
 
-		result = attach_hdlc_protocol(dev, &proto, NULL,
+		result = attach_hdlc_protocol(dev, &proto,
 					      sizeof(raw_hdlc_proto));
 		if (result)
 			return result;
@@ -107,8 +105,7 @@ static int raw_eth_ioctl(struct net_device *dev, struct ifreq *ifr)
 		ether_setup(dev);
 		dev->change_mtu = old_ch_mtu;
 		dev->tx_queue_len = old_qlen;
-		memcpy(dev->dev_addr, "\x00\x01", 2);
-                get_random_bytes(dev->dev_addr + 2, ETH_ALEN - 2);
+		random_ether_addr(dev->dev_addr);
 		netif_dormant_off(dev);
 		return 0;
 	}

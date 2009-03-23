@@ -21,17 +21,9 @@ DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
 #include "asm/smp.h"
 #include "asm/processor.h"
 #include "asm/spinlock.h"
-#include "kern_util.h"
 #include "kern.h"
 #include "irq_user.h"
 #include "os.h"
-
-/* CPU online map, set by smp_boot_cpus */
-cpumask_t cpu_online_map = CPU_MASK_NONE;
-cpumask_t cpu_possible_map = CPU_MASK_NONE;
-
-EXPORT_SYMBOL(cpu_online_map);
-EXPORT_SYMBOL(cpu_possible_map);
 
 /* Per CPU bogomips and other parameters
  * The only piece used here is the ipi pipe, which is set before SMP is
@@ -61,7 +53,7 @@ void smp_send_stop(void)
 			continue;
 		os_write_file(cpu_data[i].ipi_pipe[1], "S", 1);
 	}
-	printk(KERN_INFO "done\n");
+	printk(KERN_CONT "done\n");
 }
 
 static cpumask_t smp_commenced_mask = CPU_MASK_NONE;
@@ -75,8 +67,7 @@ static int idle_proc(void *cpup)
 	if (err < 0)
 		panic("CPU#%d failed to create IPI pipe, err = %d", cpu, -err);
 
-	os_set_fd_async(cpu_data[cpu].ipi_pipe[0],
-		     current->thread.mode.tt.extern_pid);
+	os_set_fd_async(cpu_data[cpu].ipi_pipe[0]);
 
 	wmb();
 	if (cpu_test_and_set(cpu, cpu_callin_map)) {
@@ -87,6 +78,7 @@ static int idle_proc(void *cpup)
 	while (!cpu_isset(cpu, smp_commenced_mask))
 		cpu_relax();
 
+	notify_cpu_starting(cpu);
 	cpu_set(cpu, cpu_online_map);
 	default_idle();
 	return 0;
@@ -129,8 +121,7 @@ void smp_prepare_cpus(unsigned int maxcpus)
 	if (err < 0)
 		panic("CPU#0 failed to create IPI pipe, errno = %d", -err);
 
-	os_set_fd_async(cpu_data[me].ipi_pipe[0],
-		     current->thread.mode.tt.extern_pid);
+	os_set_fd_async(cpu_data[me].ipi_pipe[0]);
 
 	for (cpu = 1; cpu < ncpus; cpu++) {
 		printk(KERN_INFO "Booting processor %d...\n", cpu);
@@ -143,9 +134,8 @@ void smp_prepare_cpus(unsigned int maxcpus)
 		while (waittime-- && !cpu_isset(cpu, cpu_callin_map))
 			cpu_relax();
 
-		if (cpu_isset(cpu, cpu_callin_map))
-			printk(KERN_INFO "done\n");
-		else printk(KERN_INFO "failed\n");
+		printk(KERN_INFO "%s\n",
+		       cpu_isset(cpu, cpu_calling_map) ? "done" : "failed");
 	}
 }
 
@@ -218,8 +208,7 @@ void smp_call_function_slave(int cpu)
 	atomic_inc(&scf_finished);
 }
 
-int smp_call_function(void (*_func)(void *info), void *_info, int nonatomic,
-		      int wait)
+int smp_call_function(void (*_func)(void *info), void *_info, int wait)
 {
 	int cpus = num_online_cpus() - 1;
 	int i;

@@ -57,9 +57,10 @@
 #include <linux/vmalloc.h>	/* vmalloc, vfree */
 #include <asm/uaccess.h>        /* copy_to/from_user */
 #include <linux/init.h>         /* __initfunc et al. */
-#include <net/syncppp.h>
 
 #define KMEM_SAFETYZONE 8
+
+#define DEV_TO_SLAVE(dev)	(*((struct net_device **)netdev_priv(dev)))
 
 /*
  * 	Function Prototypes
@@ -350,9 +351,9 @@ __be16 wanrouter_type_trans(struct sk_buff *skb, struct net_device *dev)
  *	o execute requested action or pass command to the device driver
  */
 
-int wanrouter_ioctl(struct inode *inode, struct file *file,
-		unsigned int cmd, unsigned long arg)
+long wanrouter_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+	struct inode *inode = file->f_path.dentry->d_inode;
 	int err = 0;
 	struct proc_dir_entry *dent;
 	struct wan_device *wandev;
@@ -372,6 +373,7 @@ int wanrouter_ioctl(struct inode *inode, struct file *file,
 	if (wandev->magic != ROUTER_MAGIC)
 		return -EINVAL;
 
+	lock_kernel();
 	switch (cmd) {
 	case ROUTER_SETUP:
 		err = wanrouter_device_setup(wandev, data);
@@ -403,6 +405,7 @@ int wanrouter_ioctl(struct inode *inode, struct file *file,
 			err = wandev->ioctl(wandev, cmd, arg);
 		else err = -EINVAL;
 	}
+	unlock_kernel();
 	return err;
 }
 
@@ -510,7 +513,7 @@ static int wanrouter_device_shutdown(struct wan_device *wandev)
 		if (err)
 			return err;
 		/* The above function deallocates the current dev
-		 * structure. Therefore, we cannot use dev->priv
+		 * structure. Therefore, we cannot use netdev_priv(dev)
 		 * as the next element: wandev->dev points to the
 		 * next element */
 		dev = wandev->dev;
@@ -565,9 +568,6 @@ static int wanrouter_device_new_if(struct wan_device *wandev,
 {
 	wanif_conf_t *cnf;
 	struct net_device *dev = NULL;
-#ifdef CONFIG_WANPIPE_MULTPPP
-	struct ppp_device *pppdev=NULL;
-#endif
 	int err;
 
 	if ((wandev->state == WAN_UNCONFIGURED) || (wandev->new_if == NULL))
@@ -586,30 +586,11 @@ static int wanrouter_device_new_if(struct wan_device *wandev,
 		goto out;
 
 	if (cnf->config_id == WANCONFIG_MPPP) {
-#ifdef CONFIG_WANPIPE_MULTPPP
-		pppdev = kzalloc(sizeof(struct ppp_device), GFP_KERNEL);
-		err = -ENOBUFS;
-		if (pppdev == NULL)
-			goto out;
-		pppdev->dev = kzalloc(sizeof(struct net_device), GFP_KERNEL);
-		if (pppdev->dev == NULL) {
-			kfree(pppdev);
-			err = -ENOBUFS;
-			goto out;
-		}
-		err = wandev->new_if(wandev, (struct net_device *)pppdev, cnf);
-		dev = pppdev->dev;
-#else
 		printk(KERN_INFO "%s: Wanpipe Mulit-Port PPP support has not been compiled in!\n",
 				wandev->name);
 		err = -EPROTONOSUPPORT;
 		goto out;
-#endif
 	} else {
-		dev = kzalloc(sizeof(struct net_device), GFP_KERNEL);
-		err = -ENOBUFS;
-		if (dev == NULL)
-			goto out;
 		err = wandev->new_if(wandev, dev, cnf);
 	}
 
@@ -639,10 +620,9 @@ static int wanrouter_device_new_if(struct wan_device *wandev,
 					wandev->dev = dev;
 				} else {
 					for (slave=wandev->dev;
-					 *((struct net_device **)slave->priv);
-				 slave = *((struct net_device **)slave->priv));
-
-				     *((struct net_device **)slave->priv) = dev;
+					     DEV_TO_SLAVE(slave);
+					     slave = DEV_TO_SLAVE(slave))
+						DEV_TO_SLAVE(slave) = dev;
 				}
 				++wandev->ndev;
 
@@ -653,22 +633,8 @@ static int wanrouter_device_new_if(struct wan_device *wandev,
 		}
 		if (wandev->del_if)
 			wandev->del_if(wandev, dev);
+		free_netdev(dev);
 	}
-
-	/* This code has moved from del_if() function */
-	kfree(dev->priv);
-	dev->priv = NULL;
-
-#ifdef CONFIG_WANPIPE_MULTPPP
-	if (cnf->config_id == WANCONFIG_MPPP)
-		kfree(pppdev);
-	else
-		kfree(dev);
-#else
-	/* Sync PPP is disabled */
-	if (cnf->config_id != WANCONFIG_MPPP)
-		kfree(dev);
-#endif
 
 out:
 	kfree(cnf);
@@ -759,7 +725,7 @@ static int wanrouter_delete_interface(struct wan_device *wandev, char *name)
 	dev = wandev->dev;
 	prev = NULL;
 	while (dev && strcmp(name, dev->name)) {
-		struct net_device **slave = dev->priv;
+		struct net_device **slave = netdev_priv(dev);
 		prev = dev;
 		dev = *slave;
 	}
@@ -776,23 +742,18 @@ static int wanrouter_delete_interface(struct wan_device *wandev, char *name)
 
 	lock_adapter_irq(&wandev->lock, &smp_flags);
 	if (prev) {
-		struct net_device **prev_slave = prev->priv;
-		struct net_device **slave = dev->priv;
+		struct net_device **prev_slave = netdev_priv(prev);
+		struct net_device **slave = netdev_priv(dev);
 
 		*prev_slave = *slave;
 	} else {
-		struct net_device **slave = dev->priv;
+		struct net_device **slave = netdev_priv(dev);
 		wandev->dev = *slave;
 	}
 	--wandev->ndev;
 	unlock_adapter_irq(&wandev->lock, &smp_flags);
 
 	printk(KERN_INFO "%s: unregistering '%s'\n", wandev->name, dev->name);
-
-	/* Due to new interface linking method using dev->priv,
-	 * this code has moved from del_if() function.*/
-	kfree(dev->priv);
-	dev->priv=NULL;
 
 	unregister_netdev(dev);
 

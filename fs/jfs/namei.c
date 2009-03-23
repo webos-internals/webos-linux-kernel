@@ -155,7 +155,6 @@ static int jfs_create(struct inode *dip, struct dentry *dentry, int mode,
 	ip->i_fop = &jfs_file_operations;
 	ip->i_mapping->a_ops = &jfs_aops;
 
-	insert_inode_hash(ip);
 	mark_inode_dirty(ip);
 
 	dip->i_ctime = dip->i_mtime = CURRENT_TIME;
@@ -171,9 +170,12 @@ static int jfs_create(struct inode *dip, struct dentry *dentry, int mode,
 	if (rc) {
 		free_ea_wmap(ip);
 		ip->i_nlink = 0;
+		unlock_new_inode(ip);
 		iput(ip);
-	} else
+	} else {
 		d_instantiate(dentry, ip);
+		unlock_new_inode(ip);
+	}
 
       out2:
 	free_UCSname(&dname);
@@ -289,7 +291,6 @@ static int jfs_mkdir(struct inode *dip, struct dentry *dentry, int mode)
 	ip->i_op = &jfs_dir_inode_operations;
 	ip->i_fop = &jfs_dir_operations;
 
-	insert_inode_hash(ip);
 	mark_inode_dirty(ip);
 
 	/* update parent directory inode */
@@ -306,9 +307,12 @@ static int jfs_mkdir(struct inode *dip, struct dentry *dentry, int mode)
 	if (rc) {
 		free_ea_wmap(ip);
 		ip->i_nlink = 0;
+		unlock_new_inode(ip);
 		iput(ip);
-	} else
+	} else {
 		d_instantiate(dentry, ip);
+		unlock_new_inode(ip);
+	}
 
       out2:
 	free_UCSname(&dname);
@@ -1019,7 +1023,6 @@ static int jfs_symlink(struct inode *dip, struct dentry *dentry,
 		goto out3;
 	}
 
-	insert_inode_hash(ip);
 	mark_inode_dirty(ip);
 
 	dip->i_ctime = dip->i_mtime = CURRENT_TIME;
@@ -1039,9 +1042,12 @@ static int jfs_symlink(struct inode *dip, struct dentry *dentry,
 	if (rc) {
 		free_ea_wmap(ip);
 		ip->i_nlink = 0;
+		unlock_new_inode(ip);
 		iput(ip);
-	} else
+	} else {
 		d_instantiate(dentry, ip);
+		unlock_new_inode(ip);
+	}
 
       out2:
 	free_UCSname(&dname);
@@ -1103,8 +1109,8 @@ static int jfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	 * Make sure dest inode number (if any) is what we think it is
 	 */
 	rc = dtSearch(new_dir, &new_dname, &ino, &btstack, JFS_LOOKUP);
-	if (rc == 0) {
-		if ((new_ip == 0) || (ino != new_ip->i_ino)) {
+	if (!rc) {
+		if ((!new_ip) || (ino != new_ip->i_ino)) {
 			rc = -ESTALE;
 			goto out3;
 		}
@@ -1399,7 +1405,6 @@ static int jfs_mknod(struct inode *dir, struct dentry *dentry,
 	jfs_ip->dev = new_encode_dev(rdev);
 	init_special_inode(ip, ip->i_mode, rdev);
 
-	insert_inode_hash(ip);
 	mark_inode_dirty(ip);
 
 	dir->i_ctime = dir->i_mtime = CURRENT_TIME;
@@ -1417,9 +1422,12 @@ static int jfs_mknod(struct inode *dir, struct dentry *dentry,
 	if (rc) {
 		free_ea_wmap(ip);
 		ip->i_nlink = 0;
+		unlock_new_inode(ip);
 		iput(ip);
-	} else
+	} else {
 		d_instantiate(dentry, ip);
+		unlock_new_inode(ip);
+	}
 
       out1:
 	free_UCSname(&dname);
@@ -1455,19 +1463,17 @@ static struct dentry *jfs_lookup(struct inode *dip, struct dentry *dentry, struc
 		free_UCSname(&key);
 		if (rc == -ENOENT) {
 			d_add(dentry, NULL);
-			return ERR_PTR(0);
+			return NULL;
 		} else if (rc) {
 			jfs_err("jfs_lookup: dtSearch returned %d", rc);
 			return ERR_PTR(rc);
 		}
 	}
 
-	ip = iget(dip->i_sb, inum);
-	if (ip == NULL || is_bad_inode(ip)) {
+	ip = jfs_iget(dip->i_sb, inum);
+	if (IS_ERR(ip)) {
 		jfs_err("jfs_lookup: iget failed on inum %d", (uint) inum);
-		if (ip)
-			iput(ip);
-		return ERR_PTR(-EACCES);
+		return ERR_CAST(ip);
 	}
 
 	dentry = d_splice_alias(ip, dentry);
@@ -1485,12 +1491,11 @@ static struct inode *jfs_nfs_get_inode(struct super_block *sb,
 
 	if (ino == 0)
 		return ERR_PTR(-ESTALE);
-	inode = iget(sb, ino);
-	if (inode == NULL)
-		return ERR_PTR(-ENOMEM);
+	inode = jfs_iget(sb, ino);
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
 
-	if (is_bad_inode(inode) ||
-	    (generation && inode->i_generation != generation)) {
+	if (generation && inode->i_generation != generation) {
 		iput(inode);
 		return ERR_PTR(-ESTALE);
 	}
@@ -1514,28 +1519,12 @@ struct dentry *jfs_fh_to_parent(struct super_block *sb, struct fid *fid,
 
 struct dentry *jfs_get_parent(struct dentry *dentry)
 {
-	struct super_block *sb = dentry->d_inode->i_sb;
-	struct dentry *parent = ERR_PTR(-ENOENT);
-	struct inode *inode;
 	unsigned long parent_ino;
 
 	parent_ino =
 		le32_to_cpu(JFS_IP(dentry->d_inode)->i_dtroot.header.idotdot);
-	inode = iget(sb, parent_ino);
-	if (inode) {
-		if (is_bad_inode(inode)) {
-			iput(inode);
-			parent = ERR_PTR(-EACCES);
-		} else {
-			parent = d_alloc_anon(inode);
-			if (!parent) {
-				parent = ERR_PTR(-ENOMEM);
-				iput(inode);
-			}
-		}
-	}
 
-	return parent;
+	return d_obtain_alias(jfs_iget(dentry->d_inode->i_sb, parent_ino));
 }
 
 const struct inode_operations jfs_dir_inode_operations = {
@@ -1562,7 +1551,11 @@ const struct file_operations jfs_dir_operations = {
 	.read		= generic_read_dir,
 	.readdir	= jfs_readdir,
 	.fsync		= jfs_fsync,
-	.ioctl		= jfs_ioctl,
+	.unlocked_ioctl = jfs_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= jfs_compat_ioctl,
+#endif
+	.llseek		= generic_file_llseek,
 };
 
 static int jfs_ci_hash(struct dentry *dir, struct qstr *this)

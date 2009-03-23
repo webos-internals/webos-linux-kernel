@@ -16,7 +16,6 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -327,7 +326,7 @@ static void camelot_pcm_free(struct snd_pcm *pcm)
 }
 
 static int camelot_pcm_new(struct snd_card *card,
-			   struct snd_soc_codec_dai *dai,
+			   struct snd_soc_dai *dai,
 			   struct snd_pcm *pcm)
 {
 	/* dont use SNDRV_DMA_TYPE_DEV, since it will oops the SH kernel
@@ -348,6 +347,18 @@ struct snd_soc_platform sh7760_soc_platform = {
 	.pcm_free	= camelot_pcm_free,
 };
 EXPORT_SYMBOL_GPL(sh7760_soc_platform);
+
+static int __init sh7760_soc_platform_init(void)
+{
+	return snd_soc_register_platform(&sh7760_soc_platform);
+}
+module_init(sh7760_soc_platform_init);
+
+static void __exit sh7760_soc_platform_exit(void)
+{
+	snd_soc_unregister_platform(&sh7760_soc_platform);
+}
+module_exit(sh7760_soc_platform_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SH7760 Audio DMA (DMABRG) driver");

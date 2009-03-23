@@ -29,10 +29,12 @@
 #include <linux/vmalloc.h>
 #include <linux/clk.h>
 
-#include <asm/arch/dma.h>
-#include <asm/arch/omapfb.h>
+#include <mach/dma.h>
+#include <mach/omapfb.h>
 
 #include <asm/mach-types.h>
+
+#include "lcdc.h"
 
 #define MODULE_NAME			"lcdc"
 
@@ -312,7 +314,7 @@ static irqreturn_t lcdc_irq_handler(int irq, void *dev_id)
 /*
  * Change to a new video mode. We defer this to a later time to avoid any
  * flicker and not to mess up the current LCD DMA context. For this we disable
- * the LCD controler, which will generate a DONE irq after the last frame has
+ * the LCD controller, which will generate a DONE irq after the last frame has
  * been transferred. Then it'll be safe to reconfigure both the LCD controller
  * as well as the LCD DMA.
  */
@@ -798,14 +800,14 @@ static int omap_lcdc_init(struct omapfb_device *fbdev, int ext_mode,
 	/* FIXME:
 	 * According to errata some platforms have a clock rate limitiation
 	 */
-	lcdc.lcd_ck = clk_get(NULL, "lcd_ck");
+	lcdc.lcd_ck = clk_get(fbdev->dev, "lcd_ck");
 	if (IS_ERR(lcdc.lcd_ck)) {
 		dev_err(fbdev->dev, "unable to access LCD clock\n");
 		r = PTR_ERR(lcdc.lcd_ck);
 		goto fail0;
 	}
 
-	tc_ck = clk_get(NULL, "tc_ck");
+	tc_ck = clk_get(fbdev->dev, "tc_ck");
 	if (IS_ERR(tc_ck)) {
 		dev_err(fbdev->dev, "unable to access TC clock\n");
 		r = PTR_ERR(tc_ck);

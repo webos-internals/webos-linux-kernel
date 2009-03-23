@@ -29,7 +29,7 @@ show up in /proc/sys/kernel:
 - java-interpreter            [ binfmt_java, obsolete ]
 - kstack_depth_to_print       [ X86 only ]
 - l2cr                        [ PPC only ]
-- modprobe                    ==> Documentation/kmod.txt
+- modprobe                    ==> Documentation/debugging-modules.txt
 - msgmax
 - msgmnb
 - msgmni
@@ -41,6 +41,7 @@ show up in /proc/sys/kernel:
 - pid_max
 - powersave-nap               [ PPC only ]
 - printk
+- randomize_va_space
 - real-root-dev               ==> Documentation/initrd.txt
 - reboot-cmd                  [ SPARC only ]
 - rtsig-max
@@ -280,6 +281,34 @@ send before ratelimiting kicks in.
 
 ==============================================================
 
+randomize-va-space:
+
+This option can be used to select the type of process address
+space randomization that is used in the system, for architectures
+that support this feature.
+
+0 - Turn the process address space randomization off by default.
+
+1 - Make the addresses of mmap base, stack and VDSO page randomized.
+    This, among other things, implies that shared libraries will be
+    loaded to random addresses. Also for PIE-linked binaries, the location
+    of code start is randomized.
+
+    With heap randomization, the situation is a little bit more
+    complicated.
+    There a few legacy applications out there (such as some ancient
+    versions of libc.so.5 from 1996) that assume that brk area starts
+    just after the end of the code+bss. These applications break when
+    start of the brk area is randomized. There are however no known
+    non-legacy applications that would be broken this way, so for most
+    systems it is safe to choose full randomization. However there is
+    a CONFIG_COMPAT_BRK option for systems with ancient and/or broken
+    binaries, that makes heap non-randomized, but keeps all other
+    parts of process address space randomized if randomize_va_space
+    sysctl is turned on.
+
+==============================================================
+
 reboot-cmd: (Sparc only)
 
 ??? This seems to be a way to give an argument to the Sparc
@@ -322,9 +351,10 @@ kernel.  This value defaults to SHMMAX.
 
 softlockup_thresh:
 
-This value can be used to lower the softlockup tolerance
-threshold. The default threshold is 10s.  If a cpu is locked up
-for 10s, the kernel complains.  Valid values are 1-60s.
+This value can be used to lower the softlockup tolerance threshold.  The
+default threshold is 60 seconds.  If a cpu is locked up for 60 seconds,
+the kernel complains.  Valid values are 1-60 seconds.  Setting this
+tunable to zero will disable the softlockup detection altogether.
 
 ==============================================================
 
@@ -333,10 +363,21 @@ tainted:
 Non-zero if the kernel has been tainted.  Numeric values, which
 can be ORed together:
 
-  1 - A module with a non-GPL license has been loaded, this
-      includes modules with no license.
-      Set by modutils >= 2.4.9 and module-init-tools.
-  2 - A module was force loaded by insmod -f.
-      Set by modutils >= 2.4.9 and module-init-tools.
-  4 - Unsafe SMP processors: SMP with CPUs not designed for SMP.
+   1 - A module with a non-GPL license has been loaded, this
+       includes modules with no license.
+       Set by modutils >= 2.4.9 and module-init-tools.
+   2 - A module was force loaded by insmod -f.
+       Set by modutils >= 2.4.9 and module-init-tools.
+   4 - Unsafe SMP processors: SMP with CPUs not designed for SMP.
+   8 - A module was forcibly unloaded from the system by rmmod -f.
+  16 - A hardware machine check error occurred on the system.
+  32 - A bad page was discovered on the system.
+  64 - The user has asked that the system be marked "tainted".  This
+       could be because they are running software that directly modifies
+       the hardware, or for other reasons.
+ 128 - The system has died.
+ 256 - The ACPI DSDT has been overridden with one supplied by the user
+        instead of using the one provided by the hardware.
+ 512 - A kernel warning has occurred.
+1024 - A module from drivers/staging was loaded.
 

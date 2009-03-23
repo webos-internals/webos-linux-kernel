@@ -100,6 +100,10 @@ struct atm_dev_stats {
 					/* use backend to make new if */
 #define ATM_ADDPARTY  	_IOW('a', ATMIOC_SPECIAL+4,struct atm_iobuf)
  					/* add party to p2mp call */
+#ifdef CONFIG_COMPAT
+/* It actually takes struct sockaddr_atmsvc, not struct atm_iobuf */
+#define COMPAT_ATM_ADDPARTY  	_IOW('a', ATMIOC_SPECIAL+4,struct compat_atm_iobuf)
+#endif
 #define ATM_DROPPARTY 	_IOW('a', ATMIOC_SPECIAL+5,int)
 					/* drop party from p2mp call */
 
@@ -224,6 +228,13 @@ struct atm_cirange {
 extern struct proc_dir_entry *atm_proc_root;
 #endif
 
+#ifdef CONFIG_COMPAT
+#include <linux/compat.h>
+struct compat_atm_iobuf {
+	int length;
+	compat_uptr_t buffer;
+};
+#endif
 
 struct k_atm_aal_stats {
 #define __HANDLE_ITEM(i) atomic_t i
@@ -359,7 +370,7 @@ struct atm_dev {
 	struct proc_dir_entry *proc_entry; /* proc entry */
 	char *proc_name;		/* proc entry name */
 #endif
-	struct class_device class_dev;	/* sysfs class device */
+	struct device class_dev;	/* sysfs device */
 	struct list_head dev_list;	/* linkage */
 };
 
@@ -379,6 +390,10 @@ struct atmdev_ops { /* only send is required */
 	int (*open)(struct atm_vcc *vcc);
 	void (*close)(struct atm_vcc *vcc);
 	int (*ioctl)(struct atm_dev *dev,unsigned int cmd,void __user *arg);
+#ifdef CONFIG_COMPAT
+	int (*compat_ioctl)(struct atm_dev *dev,unsigned int cmd,
+			    void __user *arg);
+#endif
 	int (*getsockopt)(struct atm_vcc *vcc,int level,int optname,
 	    void __user *optval,int optlen);
 	int (*setsockopt)(struct atm_vcc *vcc,int level,int optname,
@@ -461,7 +476,7 @@ static inline void atm_dev_put(struct atm_dev *dev)
 		BUG_ON(!test_bit(ATM_DF_REMOVED, &dev->flags));
 		if (dev->ops->dev_close)
 			dev->ops->dev_close(dev);
-		class_device_put(&dev->class_dev);
+		put_device(&dev->class_dev);
 	}
 }
 

@@ -23,7 +23,7 @@
 #include <linux/mtd/physmap.h>
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <asm/mach/arch.h>
@@ -31,7 +31,7 @@
 #include <asm/mach/pci.h>
 #include <asm/mach/time.h>
 #include <asm/mach-types.h>
-#include <asm/arch/time.h>
+#include <mach/time.h>
 
 static void __init em7210_timer_init(void)
 {
@@ -50,8 +50,7 @@ static struct sys_timer em7210_timer = {
  */
 static struct i2c_board_info __initdata em7210_i2c_devices[] = {
 	{
-		I2C_BOARD_INFO("rtc-rs5c372", 0x32),
-		.type = "rs5c372a",
+		I2C_BOARD_INFO("rs5c372a", 0x32),
 	},
 };
 

@@ -406,19 +406,15 @@ static int register_snoop_agent(struct ib_mad_qp_info *qp_info,
 
 	if (i == qp_info->snoop_table_size) {
 		/* Grow table. */
-		new_snoop_table = kmalloc(sizeof mad_snoop_priv *
-					  qp_info->snoop_table_size + 1,
-					  GFP_ATOMIC);
+		new_snoop_table = krealloc(qp_info->snoop_table,
+					   sizeof mad_snoop_priv *
+					   (qp_info->snoop_table_size + 1),
+					   GFP_ATOMIC);
 		if (!new_snoop_table) {
 			i = -ENOMEM;
 			goto out;
 		}
-		if (qp_info->snoop_table) {
-			memcpy(new_snoop_table, qp_info->snoop_table,
-			       sizeof mad_snoop_priv *
-			       qp_info->snoop_table_size);
-			kfree(qp_info->snoop_table);
-		}
+
 		qp_info->snoop_table = new_snoop_table;
 		qp_info->snoop_table_size++;
 	}
@@ -701,7 +697,8 @@ static int handle_outgoing_dr_smp(struct ib_mad_agent_private *mad_agent_priv,
 	}
 
 	/* Check to post send on QP or process locally */
-	if (smi_check_local_smp(smp, device) == IB_SMI_DISCARD)
+	if (smi_check_local_smp(smp, device) == IB_SMI_DISCARD &&
+	    smi_check_local_returning_smp(smp, device) == IB_SMI_DISCARD)
 		goto out;
 
 	local = kmalloc(sizeof *local, GFP_ATOMIC);
@@ -746,14 +743,15 @@ static int handle_outgoing_dr_smp(struct ib_mad_agent_private *mad_agent_priv,
 		break;
 	case IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_CONSUMED:
 		kmem_cache_free(ib_mad_cache, mad_priv);
-		break;
+		kfree(local);
+		ret = 1;
+		goto out;
 	case IB_MAD_RESULT_SUCCESS:
 		/* Treat like an incoming receive MAD */
 		port_priv = ib_get_mad_port(mad_agent_priv->agent.device,
 					    mad_agent_priv->agent.port_num);
 		if (port_priv) {
-			mad_priv->mad.mad.mad_hdr.tid =
-				((struct ib_mad *)smp)->mad_hdr.tid;
+			memcpy(&mad_priv->mad.mad, smp, sizeof(struct ib_mad));
 			recv_mad_agent = find_mad_agent(port_priv,
 						        &mad_priv->mad.mad);
 		}
@@ -1100,7 +1098,9 @@ int ib_post_send_mad(struct ib_mad_send_buf *send_buf,
 		mad_send_wr->tid = ((struct ib_mad_hdr *) send_buf->mad)->tid;
 		/* Timeout will be updated after send completes */
 		mad_send_wr->timeout = msecs_to_jiffies(send_buf->timeout_ms);
-		mad_send_wr->retries = send_buf->retries;
+		mad_send_wr->max_retries = send_buf->retries;
+		mad_send_wr->retries_left = send_buf->retries;
+		send_buf->retries = 0;
 		/* Reference for work request to QP + response */
 		mad_send_wr->refcount = 1 + (mad_send_wr->timeout > 0);
 		mad_send_wr->status = IB_WC_SUCCESS;
@@ -1693,9 +1693,8 @@ static inline int rcv_has_same_gid(struct ib_mad_agent_private *mad_agent_priv,
 	u8 port_num = mad_agent_priv->agent.port_num;
 	u8 lmc;
 
-	send_resp = ((struct ib_mad *)(wr->send_buf.mad))->
-		     mad_hdr.method & IB_MGMT_METHOD_RESP;
-	rcv_resp = rwc->recv_buf.mad->mad_hdr.method & IB_MGMT_METHOD_RESP;
+	send_resp = ib_response_mad((struct ib_mad *)wr->send_buf.mad);
+	rcv_resp = ib_response_mad(rwc->recv_buf.mad);
 
 	if (send_resp == rcv_resp)
 		/* both requests, or both responses. GIDs different */
@@ -1930,15 +1929,6 @@ local:
 	/* Give driver "right of first refusal" on incoming MAD */
 	if (port_priv->device->process_mad) {
 		int ret;
-
-		if (!response) {
-			printk(KERN_ERR PFX "No memory for response MAD\n");
-			/*
-			 * Is it better to assume that
-			 * it wouldn't be processed ?
-			 */
-			goto out;
-		}
 
 		ret = port_priv->device->process_mad(port_priv->device, 0,
 						     port_priv->port_num,
@@ -2282,8 +2272,6 @@ static void cancel_mads(struct ib_mad_agent_private *mad_agent_priv)
 
 	/* Empty wait list to prevent receives from finding a request */
 	list_splice_init(&mad_agent_priv->wait_list, &cancel_list);
-	/* Empty local completion list as well */
-	list_splice_init(&mad_agent_priv->local_list, &cancel_list);
 	spin_unlock_irqrestore(&mad_agent_priv->lock, flags);
 
 	/* Report all cancelled requests */
@@ -2445,8 +2433,11 @@ static int retry_send(struct ib_mad_send_wr_private *mad_send_wr)
 {
 	int ret;
 
-	if (!mad_send_wr->retries--)
+	if (!mad_send_wr->retries_left)
 		return -ETIMEDOUT;
+
+	mad_send_wr->retries_left--;
+	mad_send_wr->send_buf.retries++;
 
 	mad_send_wr->timeout = msecs_to_jiffies(mad_send_wr->send_buf.timeout_ms);
 

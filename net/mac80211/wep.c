@@ -17,6 +17,7 @@
 #include <linux/err.h>
 #include <linux/mm.h>
 #include <linux/scatterlist.h>
+#include <asm/unaligned.h>
 
 #include <net/mac80211.h>
 #include "ieee80211_i.h"
@@ -31,13 +32,13 @@ int ieee80211_wep_init(struct ieee80211_local *local)
 	local->wep_tx_tfm = crypto_alloc_blkcipher("ecb(arc4)", 0,
 						CRYPTO_ALG_ASYNC);
 	if (IS_ERR(local->wep_tx_tfm))
-		return -ENOMEM;
+		return PTR_ERR(local->wep_tx_tfm);
 
 	local->wep_rx_tfm = crypto_alloc_blkcipher("ecb(arc4)", 0,
 						CRYPTO_ALG_ASYNC);
 	if (IS_ERR(local->wep_rx_tfm)) {
 		crypto_free_blkcipher(local->wep_tx_tfm);
-		return -ENOMEM;
+		return PTR_ERR(local->wep_rx_tfm);
 	}
 
 	return 0;
@@ -49,17 +50,19 @@ void ieee80211_wep_free(struct ieee80211_local *local)
 	crypto_free_blkcipher(local->wep_rx_tfm);
 }
 
-static inline int ieee80211_wep_weak_iv(u32 iv, int keylen)
+static inline bool ieee80211_wep_weak_iv(u32 iv, int keylen)
 {
-	/* Fluhrer, Mantin, and Shamir have reported weaknesses in the
+	/*
+	 * Fluhrer, Mantin, and Shamir have reported weaknesses in the
 	 * key scheduling algorithm of RC4. At least IVs (KeyByte + 3,
-	 * 0xff, N) can be used to speedup attacks, so avoid using them. */
+	 * 0xff, N) can be used to speedup attacks, so avoid using them.
+	 */
 	if ((iv & 0xff00) == 0xff00) {
 		u8 B = (iv >> 16) & 0xff;
 		if (B >= 3 && B < 3 + keylen)
-			return 1;
+			return true;
 	}
-	return 0;
+	return false;
 }
 
 
@@ -84,24 +87,17 @@ static u8 *ieee80211_wep_add_iv(struct ieee80211_local *local,
 				struct sk_buff *skb,
 				struct ieee80211_key *key)
 {
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
-	u16 fc;
-	int hdrlen;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+	unsigned int hdrlen;
 	u8 *newhdr;
 
-	fc = le16_to_cpu(hdr->frame_control);
-	fc |= IEEE80211_FCTL_PROTECTED;
-	hdr->frame_control = cpu_to_le16(fc);
+	hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_PROTECTED);
 
-	if ((skb_headroom(skb) < WEP_IV_LEN ||
-	     skb_tailroom(skb) < WEP_ICV_LEN)) {
-		I802_DEBUG_INC(local->tx_expand_skb_head);
-		if (unlikely(pskb_expand_head(skb, WEP_IV_LEN, WEP_ICV_LEN,
-					      GFP_ATOMIC)))
-			return NULL;
-	}
+	if (WARN_ON(skb_tailroom(skb) < WEP_ICV_LEN ||
+		    skb_headroom(skb) < WEP_IV_LEN))
+		return NULL;
 
-	hdrlen = ieee80211_get_hdrlen(fc);
+	hdrlen = ieee80211_hdrlen(hdr->frame_control);
 	newhdr = skb_push(skb, WEP_IV_LEN);
 	memmove(newhdr, newhdr + WEP_IV_LEN, hdrlen);
 	ieee80211_wep_get_iv(local, key, newhdr + hdrlen);
@@ -113,12 +109,10 @@ static void ieee80211_wep_remove_iv(struct ieee80211_local *local,
 				    struct sk_buff *skb,
 				    struct ieee80211_key *key)
 {
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
-	u16 fc;
-	int hdrlen;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+	unsigned int hdrlen;
 
-	fc = le16_to_cpu(hdr->frame_control);
-	hdrlen = ieee80211_get_hdrlen(fc);
+	hdrlen = ieee80211_hdrlen(hdr->frame_control);
 	memmove(skb->data + WEP_IV_LEN, skb->data, hdrlen);
 	skb_pull(skb, WEP_IV_LEN);
 }
@@ -132,10 +126,10 @@ void ieee80211_wep_encrypt_data(struct crypto_blkcipher *tfm, u8 *rc4key,
 {
 	struct blkcipher_desc desc = { .tfm = tfm };
 	struct scatterlist sg;
-	__le32 *icv;
+	__le32 icv;
 
-	icv = (__le32 *)(data + data_len);
-	*icv = cpu_to_le32(~crc32_le(~0, data, data_len));
+	icv = cpu_to_le32(~crc32_le(~0, data, data_len));
+	put_unaligned(icv, (__le32 *)(data + data_len));
 
 	crypto_blkcipher_setkey(tfm, rc4key, klen);
 	sg_init_one(&sg, data, data_len + WEP_ICV_LEN);
@@ -228,22 +222,19 @@ int ieee80211_wep_decrypt(struct ieee80211_local *local, struct sk_buff *skb,
 	u32 klen;
 	u8 *rc4key;
 	u8 keyidx;
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
-	u16 fc;
-	int hdrlen;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+	unsigned int hdrlen;
 	size_t len;
 	int ret = 0;
 
-	fc = le16_to_cpu(hdr->frame_control);
-	if (!(fc & IEEE80211_FCTL_PROTECTED))
+	if (!ieee80211_has_protected(hdr->frame_control))
 		return -1;
 
-	hdrlen = ieee80211_get_hdrlen(fc);
-
-	if (skb->len < 8 + hdrlen)
+	hdrlen = ieee80211_hdrlen(hdr->frame_control);
+	if (skb->len < hdrlen + WEP_IV_LEN + WEP_ICV_LEN)
 		return -1;
 
-	len = skb->len - hdrlen - 8;
+	len = skb->len - hdrlen - WEP_IV_LEN - WEP_ICV_LEN;
 
 	keyidx = skb->data[hdrlen + 3] >> 6;
 
@@ -264,11 +255,8 @@ int ieee80211_wep_decrypt(struct ieee80211_local *local, struct sk_buff *skb,
 
 	if (ieee80211_wep_decrypt_data(local->wep_rx_tfm, rc4key, klen,
 				       skb->data + hdrlen + WEP_IV_LEN,
-				       len)) {
-		if (net_ratelimit())
-			printk(KERN_DEBUG "WEP decrypt failed (ICV)\n");
+				       len))
 		ret = -1;
-	}
 
 	kfree(rc4key);
 
@@ -283,61 +271,53 @@ int ieee80211_wep_decrypt(struct ieee80211_local *local, struct sk_buff *skb,
 }
 
 
-u8 * ieee80211_wep_is_weak_iv(struct sk_buff *skb, struct ieee80211_key *key)
+bool ieee80211_wep_is_weak_iv(struct sk_buff *skb, struct ieee80211_key *key)
 {
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
-	u16 fc;
-	int hdrlen;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+	unsigned int hdrlen;
 	u8 *ivpos;
 	u32 iv;
 
-	fc = le16_to_cpu(hdr->frame_control);
-	if (!(fc & IEEE80211_FCTL_PROTECTED))
-		return NULL;
+	if (!ieee80211_has_protected(hdr->frame_control))
+		return false;
 
-	hdrlen = ieee80211_get_hdrlen(fc);
+	hdrlen = ieee80211_hdrlen(hdr->frame_control);
 	ivpos = skb->data + hdrlen;
 	iv = (ivpos[0] << 16) | (ivpos[1] << 8) | ivpos[2];
 
-	if (ieee80211_wep_weak_iv(iv, key->conf.keylen))
-		return ivpos;
-
-	return NULL;
+	return ieee80211_wep_weak_iv(iv, key->conf.keylen);
 }
 
-ieee80211_txrx_result
-ieee80211_crypto_wep_decrypt(struct ieee80211_txrx_data *rx)
+ieee80211_rx_result
+ieee80211_crypto_wep_decrypt(struct ieee80211_rx_data *rx)
 {
-	if ((rx->fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_DATA &&
-	    ((rx->fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_MGMT ||
-	     (rx->fc & IEEE80211_FCTL_STYPE) != IEEE80211_STYPE_AUTH))
-		return TXRX_CONTINUE;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)rx->skb->data;
 
-	if (!(rx->u.rx.status->flag & RX_FLAG_DECRYPTED)) {
-		if (ieee80211_wep_decrypt(rx->local, rx->skb, rx->key)) {
-#ifdef CONFIG_MAC80211_DEBUG
-			if (net_ratelimit())
-				printk(KERN_DEBUG "%s: RX WEP frame, decrypt "
-				       "failed\n", rx->dev->name);
-#endif /* CONFIG_MAC80211_DEBUG */
-			return TXRX_DROP;
-		}
-	} else if (!(rx->u.rx.status->flag & RX_FLAG_IV_STRIPPED)) {
+	if (!ieee80211_is_data(hdr->frame_control) &&
+	    !ieee80211_is_auth(hdr->frame_control))
+		return RX_CONTINUE;
+
+	if (!(rx->status->flag & RX_FLAG_DECRYPTED)) {
+		if (ieee80211_wep_decrypt(rx->local, rx->skb, rx->key))
+			return RX_DROP_UNUSABLE;
+	} else if (!(rx->status->flag & RX_FLAG_IV_STRIPPED)) {
 		ieee80211_wep_remove_iv(rx->local, rx->skb, rx->key);
 		/* remove ICV */
-		skb_trim(rx->skb, rx->skb->len - 4);
+		skb_trim(rx->skb, rx->skb->len - WEP_ICV_LEN);
 	}
 
-	return TXRX_CONTINUE;
+	return RX_CONTINUE;
 }
 
-static int wep_encrypt_skb(struct ieee80211_txrx_data *tx, struct sk_buff *skb)
+static int wep_encrypt_skb(struct ieee80211_tx_data *tx, struct sk_buff *skb)
 {
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+
 	if (!(tx->key->flags & KEY_FLAG_UPLOADED_TO_HARDWARE)) {
 		if (ieee80211_wep_encrypt(tx->local, skb, tx->key))
 			return -1;
 	} else {
-		tx->u.tx.control->key_idx = tx->key->conf.hw_key_idx;
+		info->control.hw_key = &tx->key->conf;
 		if (tx->key->conf.flags & IEEE80211_KEY_FLAG_GENERATE_IV) {
 			if (!ieee80211_wep_add_iv(tx->local, skb, tx->key))
 				return -1;
@@ -346,38 +326,27 @@ static int wep_encrypt_skb(struct ieee80211_txrx_data *tx, struct sk_buff *skb)
 	return 0;
 }
 
-ieee80211_txrx_result
-ieee80211_crypto_wep_encrypt(struct ieee80211_txrx_data *tx)
+ieee80211_tx_result
+ieee80211_crypto_wep_encrypt(struct ieee80211_tx_data *tx)
 {
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) tx->skb->data;
-	u16 fc;
+	int i;
 
-	fc = le16_to_cpu(hdr->frame_control);
-
-	if (((fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_DATA &&
-	     ((fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_MGMT ||
-	      (fc & IEEE80211_FCTL_STYPE) != IEEE80211_STYPE_AUTH)))
-		return TXRX_CONTINUE;
-
-	tx->u.tx.control->iv_len = WEP_IV_LEN;
-	tx->u.tx.control->icv_len = WEP_ICV_LEN;
-	ieee80211_tx_set_iswep(tx);
+	ieee80211_tx_set_protected(tx);
 
 	if (wep_encrypt_skb(tx, tx->skb) < 0) {
 		I802_DEBUG_INC(tx->local->tx_handlers_drop_wep);
-		return TXRX_DROP;
+		return TX_DROP;
 	}
 
-	if (tx->u.tx.extra_frag) {
-		int i;
-		for (i = 0; i < tx->u.tx.num_extra_frag; i++) {
-			if (wep_encrypt_skb(tx, tx->u.tx.extra_frag[i]) < 0) {
+	if (tx->extra_frag) {
+		for (i = 0; i < tx->num_extra_frag; i++) {
+			if (wep_encrypt_skb(tx, tx->extra_frag[i])) {
 				I802_DEBUG_INC(tx->local->
 					       tx_handlers_drop_wep);
-				return TXRX_DROP;
+				return TX_DROP;
 			}
 		}
 	}
 
-	return TXRX_CONTINUE;
+	return TX_CONTINUE;
 }

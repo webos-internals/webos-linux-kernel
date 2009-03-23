@@ -6,7 +6,7 @@
  *  Authors: Dave Boutcher <boutcher@us.ibm.com>
  *           Ryan Arnold <ryanarn@us.ibm.com>
  *           Colin Devilbiss <devilbis@us.ibm.com>
- *           Stephen Rothwell <sfr@au1.ibm.com>
+ *           Stephen Rothwell
  *
  * (C) Copyright 2000-2004 IBM Corporation
  *
@@ -46,6 +46,7 @@
 #include <linux/completion.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/smp_lock.h>
 
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
@@ -249,6 +250,7 @@ static int proc_viotape_open(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations proc_viotape_operations = {
+	.owner		= THIS_MODULE,
 	.open		= proc_viotape_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
@@ -676,6 +678,17 @@ free_op:
 	return ret;
 }
 
+static long viotap_unlocked_ioctl(struct file *file,
+		unsigned int cmd, unsigned long arg)
+{
+	long rc;
+
+	lock_kernel();
+	rc = viotap_ioctl(file->f_path.dentry->d_inode, file, cmd, arg);
+	unlock_kernel();
+	return rc;
+}
+
 static int viotap_open(struct inode *inode, struct file *file)
 {
 	HvLpEvent_Rc hvrc;
@@ -686,6 +699,7 @@ static int viotap_open(struct inode *inode, struct file *file)
 	if (op == NULL)
 		return -ENOMEM;
 
+	lock_kernel();
 	get_dev_info(file->f_path.dentry->d_inode, &devi);
 
 	/* Note: We currently only support one mode! */
@@ -716,6 +730,7 @@ static int viotap_open(struct inode *inode, struct file *file)
 
 free_op:
 	free_op_struct(op);
+	unlock_kernel();
 	return ret;
 }
 
@@ -782,12 +797,12 @@ free_op:
 }
 
 const struct file_operations viotap_fops = {
-	.owner =	THIS_MODULE,
-	.read =		viotap_read,
-	.write =	viotap_write,
-	.ioctl =	viotap_ioctl,
-	.open =		viotap_open,
-	.release =	viotap_release,
+	.owner =		THIS_MODULE,
+	.read =			viotap_read,
+	.write =		viotap_write,
+	.unlocked_ioctl =	viotap_unlocked_ioctl,
+	.open =			viotap_open,
+	.release =		viotap_release,
 };
 
 /* Handle interrupt events for tape */
@@ -871,10 +886,10 @@ static int viotape_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	state[i].cur_part = 0;
 	for (j = 0; j < MAX_PARTITIONS; ++j)
 		state[i].part_stat_rwi[j] = VIOT_IDLE;
-	device_create(tape_class, NULL, MKDEV(VIOTAPE_MAJOR, i),
-			"iseries!vt%d", i);
-	device_create(tape_class, NULL, MKDEV(VIOTAPE_MAJOR, i | 0x80),
-			"iseries!nvt%d", i);
+	device_create(tape_class, NULL, MKDEV(VIOTAPE_MAJOR, i), NULL,
+		      "iseries!vt%d", i);
+	device_create(tape_class, NULL, MKDEV(VIOTAPE_MAJOR, i | 0x80), NULL,
+		      "iseries!nvt%d", i);
 	printk(VIOTAPE_KERN_INFO "tape iseries/vt%d is iSeries "
 			"resource %10.10s type %4.4s, model %3.3s\n",
 			i, viotape_unitinfo[i].rsrcname,
@@ -915,7 +930,6 @@ static struct vio_driver viotape_driver = {
 int __init viotap_init(void)
 {
 	int ret;
-	struct proc_dir_entry *e;
 
 	if (!firmware_has_feature(FW_FEATURE_ISERIES))
 		return -ENODEV;
@@ -968,11 +982,8 @@ int __init viotap_init(void)
 	if (ret)
 		goto unreg_class;
 
-	e = create_proc_entry("iSeries/viotape", S_IFREG|S_IRUGO, NULL);
-	if (e) {
-		e->owner = THIS_MODULE;
-		e->proc_fops = &proc_viotape_operations;
-	}
+	proc_create("iSeries/viotape", S_IFREG|S_IRUGO, NULL,
+		    &proc_viotape_operations);
 
 	return 0;
 

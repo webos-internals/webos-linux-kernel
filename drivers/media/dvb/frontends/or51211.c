@@ -69,7 +69,7 @@ struct or51211_state {
 	u32 current_frequency;
 };
 
-static int i2c_writebytes (struct or51211_state* state, u8 reg, u8 *buf,
+static int i2c_writebytes (struct or51211_state* state, u8 reg, const u8 *buf,
 			   int len)
 {
 	int err;
@@ -77,7 +77,7 @@ static int i2c_writebytes (struct or51211_state* state, u8 reg, u8 *buf,
 	msg.addr	= reg;
 	msg.flags	= 0;
 	msg.len		= len;
-	msg.buf		= buf;
+	msg.buf		= (u8 *)buf;
 
 	if ((err = i2c_transfer (state->i2c, &msg, 1)) != 1) {
 		printk(KERN_WARNING "or51211: i2c_writebytes error "
@@ -88,7 +88,7 @@ static int i2c_writebytes (struct or51211_state* state, u8 reg, u8 *buf,
 	return 0;
 }
 
-static u8 i2c_readbytes (struct or51211_state* state, u8 reg, u8* buf, int len)
+static int i2c_readbytes(struct or51211_state *state, u8 reg, u8 *buf, int len)
 {
 	int err;
 	struct i2c_msg msg;
@@ -307,19 +307,19 @@ static int or51211_read_snr(struct dvb_frontend* fe, u16* snr)
 
 	if (i2c_writebytes(state,state->config->demod_address,snd_buf,3)) {
 		printk(KERN_WARNING "%s: error writing snr reg\n",
-		       __FUNCTION__);
+		       __func__);
 		return -1;
 	}
 	if (i2c_readbytes(state,state->config->demod_address,rec_buf,2)) {
 		printk(KERN_WARNING "%s: read_status read error\n",
-		       __FUNCTION__);
+		       __func__);
 		return -1;
 	}
 
 	state->snr = calculate_snr(rec_buf[0], 89599047);
 	*snr = (state->snr) >> 16;
 
-	dprintk("%s: noise = 0x%02x, snr = %d.%02d dB\n", __FUNCTION__, rec_buf[0],
+	dprintk("%s: noise = 0x%02x, snr = %d.%02d dB\n", __func__, rec_buf[0],
 		state->snr >> 24, (((state->snr>>8) & 0xffff) * 100) >> 16);
 
 	return 0;
@@ -529,7 +529,7 @@ struct dvb_frontend* or51211_attach(const struct or51211_config* config,
 	/* Allocate memory for the internal state */
 	state = kmalloc(sizeof(struct or51211_state), GFP_KERNEL);
 	if (state == NULL)
-		goto error;
+		return NULL;
 
 	/* Setup the state */
 	state->config = config;
@@ -541,10 +541,6 @@ struct dvb_frontend* or51211_attach(const struct or51211_config* config,
 	memcpy(&state->frontend.ops, &or51211_ops, sizeof(struct dvb_frontend_ops));
 	state->frontend.demodulator_priv = state;
 	return &state->frontend;
-
-error:
-	kfree(state);
-	return NULL;
 }
 
 static struct dvb_frontend_ops or51211_ops = {

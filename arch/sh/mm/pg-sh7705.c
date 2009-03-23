@@ -14,6 +14,7 @@
 #include <linux/mman.h>
 #include <linux/mm.h>
 #include <linux/threads.h>
+#include <linux/fs.h>
 #include <asm/addrspace.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
@@ -117,7 +118,7 @@ void copy_user_page(void *to, void *from, unsigned long address, struct page *pg
  * For SH7705, we have our own implementation for ptep_get_and_clear
  * Copied from pg-sh4.c
  */
-inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
+pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
 {
 	pte_t pte = *ptep;
 

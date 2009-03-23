@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
+#include <linux/smp_lock.h>
 #include <linux/miscdevice.h>
 #include <linux/proc_fs.h>
 #include <linux/hdpu_features.h>
@@ -151,7 +152,13 @@ static ssize_t cpustate_write(struct file *file, const char *buf,
 
 static int cpustate_open(struct inode *inode, struct file *file)
 {
-	return cpustate_get_ref((file->f_flags & O_EXCL));
+	int ret;
+
+	lock_kernel();
+	ret = cpustate_get_ref((file->f_flags & O_EXCL));
+	unlock_kernel();
+
+	return ret;
 }
 
 static int cpustate_release(struct inode *inode, struct file *file)
@@ -164,6 +171,7 @@ static struct platform_driver hdpu_cpustate_driver = {
 	.remove = hdpu_cpustate_remove,
 	.driver = {
 		.name = HDPU_CPUSTATE_NAME,
+		.owner = THIS_MODULE,
 	},
 };
 
@@ -209,13 +217,10 @@ static int hdpu_cpustate_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	proc_de = create_proc_entry("sky_cpustate", 0666, &proc_root);
+	proc_de = proc_create("sky_cpustate", 0666, NULL, &proc_cpustate);
 	if (!proc_de) {
 		printk(KERN_WARNING "sky_cpustate: "
 		       "Unable to create proc entry\n");
-	} else {
-		proc_de->proc_fops = &proc_cpustate;
-		proc_de->owner = THIS_MODULE;
 	}
 
 	printk(KERN_INFO "Sky CPU State Driver v" SKY_CPUSTATE_VERSION "\n");
@@ -248,3 +253,4 @@ module_exit(cpustate_exit);
 
 MODULE_AUTHOR("Brian Waite");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:" HDPU_CPUSTATE_NAME);

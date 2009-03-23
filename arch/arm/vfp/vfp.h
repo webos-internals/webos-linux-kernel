@@ -265,7 +265,11 @@ struct vfp_double {
  * which returns (double)0.0.  This is useful for the compare with
  * zero instructions.
  */
+#ifdef CONFIG_VFPv3
+#define VFP_REG_ZERO	32
+#else
 #define VFP_REG_ZERO	16
+#endif
 extern u64 vfp_get_double(unsigned int reg);
 extern void vfp_put_double(u64 val, unsigned int reg);
 
@@ -373,6 +377,6 @@ struct op {
 	u32 flags;
 };
 
-#ifdef CONFIG_SMP
+#if defined(CONFIG_SMP) || defined(CONFIG_PM)
 extern void vfp_save_state(void *location, u32 fpexc);
 #endif

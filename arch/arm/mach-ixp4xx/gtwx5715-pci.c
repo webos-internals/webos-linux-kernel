@@ -28,8 +28,8 @@
 #include <linux/irq.h>
 
 #include <asm/mach-types.h>
-#include <asm/hardware.h>
-#include <asm/arch/gtwx5715.h>
+#include <mach/hardware.h>
+#include <mach/gtwx5715.h>
 #include <asm/mach/pci.h>
 
 /*
@@ -41,10 +41,10 @@
  */
 void __init gtwx5715_pci_preinit(void)
 {
-	set_irq_type(GTWX5715_PCI_SLOT0_INTA_IRQ, IRQT_LOW);
-	set_irq_type(GTWX5715_PCI_SLOT0_INTB_IRQ, IRQT_LOW);
-	set_irq_type(GTWX5715_PCI_SLOT1_INTA_IRQ, IRQT_LOW);
-	set_irq_type(GTWX5715_PCI_SLOT1_INTB_IRQ, IRQT_LOW);
+	set_irq_type(GTWX5715_PCI_SLOT0_INTA_IRQ, IRQ_TYPE_LEVEL_LOW);
+	set_irq_type(GTWX5715_PCI_SLOT0_INTB_IRQ, IRQ_TYPE_LEVEL_LOW);
+	set_irq_type(GTWX5715_PCI_SLOT1_INTA_IRQ, IRQ_TYPE_LEVEL_LOW);
+	set_irq_type(GTWX5715_PCI_SLOT1_INTB_IRQ, IRQ_TYPE_LEVEL_LOW);
 
 	ixp4xx_pci_preinit();
 }
@@ -65,7 +65,7 @@ static int __init gtwx5715_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
 	else
 		rc = gtwx5715_irqmap[slot][pin-1];
 
-	printk("%s: Mapped slot %d pin %d to IRQ %d\n", __FUNCTION__,slot, pin, rc);
+	printk("%s: Mapped slot %d pin %d to IRQ %d\n", __func__, slot, pin, rc);
 	return(rc);
 }
 

@@ -11,28 +11,6 @@
 #include "ql4_inline.h"
 
 /**
- * qla2x00_process_completed_request() - Process a Fast Post response.
- * @ha: SCSI driver HA context
- * @index: SRB index
- **/
-static void qla4xxx_process_completed_request(struct scsi_qla_host *ha,
-					      uint32_t index)
-{
-	struct srb *srb;
-
-	srb = qla4xxx_del_from_active_array(ha, index);
-	if (srb) {
-		/* Save ISP completion status */
-		srb->cmd->result = DID_OK << 16;
-		qla4xxx_srb_compl(ha, srb);
-	} else {
-		DEBUG2(printk("scsi%ld: Invalid ISP SCSI completion handle = "
-			      "%d\n", ha->host_no, index));
-		set_bit(DPC_RESET_HA, &ha->dpc_flags);
-	}
-}
-
-/**
  * qla4xxx_status_entry - processes status IOCBs
  * @ha: Pointer to host adapter structure.
  * @sts_entry: Pointer to status entry structure.
@@ -47,14 +25,6 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 	uint32_t residual;
 	uint16_t sensebytecnt;
 
-	if (sts_entry->completionStatus == SCS_COMPLETE &&
-	    sts_entry->scsiStatus == 0) {
-		qla4xxx_process_completed_request(ha,
-						  le32_to_cpu(sts_entry->
-							      handle));
-		return;
-	}
-
 	srb = qla4xxx_del_from_active_array(ha, le32_to_cpu(sts_entry->handle));
 	if (!srb) {
 		/* FIXMEdg: Don't we need to reset ISP in this case??? */
@@ -62,6 +32,9 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 			      "handle 0x%x, sp=%p. This cmd may have already "
 			      "been completed.\n", ha->host_no, __func__,
 			      le32_to_cpu(sts_entry->handle), srb));
+		dev_warn(&ha->pdev->dev, "%s invalid status entry:"
+			" handle=0x%0x\n", __func__, sts_entry->handle);
+		set_bit(DPC_RESET_HA, &ha->dpc_flags);
 		return;
 	}
 
@@ -88,10 +61,6 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 	scsi_status = sts_entry->scsiStatus;
 	switch (sts_entry->completionStatus) {
 	case SCS_COMPLETE:
-		if (scsi_status == 0) {
-			cmd->result = DID_OK << 16;
-			break;
-		}
 
 		if (sts_entry->iscsiFlags & ISCSI_FLAG_RESIDUAL_OVER) {
 			cmd->result = DID_ERROR << 16;
@@ -123,15 +92,14 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 			break;
 
 		/* Copy Sense Data into sense buffer. */
-		memset(cmd->sense_buffer, 0, sizeof(cmd->sense_buffer));
+		memset(cmd->sense_buffer, 0, SCSI_SENSE_BUFFERSIZE);
 
 		sensebytecnt = le16_to_cpu(sts_entry->senseDataByteCnt);
 		if (sensebytecnt == 0)
 			break;
 
 		memcpy(cmd->sense_buffer, sts_entry->senseData,
-		       min(sensebytecnt,
-			   (uint16_t) sizeof(cmd->sense_buffer)));
+		       min_t(uint16_t, sensebytecnt, SCSI_SENSE_BUFFERSIZE));
 
 		DEBUG2(printk("scsi%ld:%d:%d:%d: %s: sense key = %x, "
 			      "ASC/ASCQ = %02x/%02x\n", ha->host_no,
@@ -171,7 +139,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 			      ha->host_no, cmd->device->channel,
 			      cmd->device->id, cmd->device->lun));
 
-		cmd->result = DID_BUS_BUSY << 16;
+		cmd->result = DID_TRANSPORT_DISRUPTED << 16;
 
 		/*
 		 * Mark device missing so that we won't continue to send
@@ -208,8 +176,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 				break;
 
 			/* Copy Sense Data into sense buffer. */
-			memset(cmd->sense_buffer, 0,
-			       sizeof(cmd->sense_buffer));
+			memset(cmd->sense_buffer, 0, SCSI_SENSE_BUFFERSIZE);
 
 			sensebytecnt =
 				le16_to_cpu(sts_entry->senseDataByteCnt);
@@ -217,8 +184,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 				break;
 
 			memcpy(cmd->sense_buffer, sts_entry->senseData,
-			       min(sensebytecnt,
-				   (uint16_t) sizeof(cmd->sense_buffer)));
+			       min_t(uint16_t, sensebytecnt, SCSI_SENSE_BUFFERSIZE));
 
 			DEBUG2(printk("scsi%ld:%d:%d:%d: %s: sense key = %x, "
 				      "ASC/ASCQ = %02x/%02x\n", ha->host_no,
@@ -277,7 +243,7 @@ static void qla4xxx_status_entry(struct scsi_qla_host *ha,
 		if (atomic_read(&ddb_entry->state) == DDB_STATE_ONLINE)
 			qla4xxx_mark_device_missing(ha, ddb_entry);
 
-		cmd->result = DID_BUS_BUSY << 16;
+		cmd->result = DID_TRANSPORT_DISRUPTED << 16;
 		break;
 
 	case SCS_QUEUE_FULL:

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -32,7 +32,9 @@ void gfs2_rgrp_repolish_clones(struct gfs2_rgrpd *rgd);
 struct gfs2_alloc *gfs2_alloc_get(struct gfs2_inode *ip);
 static inline void gfs2_alloc_put(struct gfs2_inode *ip)
 {
-	return; /* So we can see where ip->i_alloc is used */
+	BUG_ON(ip->i_alloc == NULL);
+	kfree(ip->i_alloc);
+	ip->i_alloc = NULL;
 }
 
 int gfs2_inplace_reserve_i(struct gfs2_inode *ip,
@@ -44,8 +46,7 @@ void gfs2_inplace_release(struct gfs2_inode *ip);
 
 unsigned char gfs2_get_block_type(struct gfs2_rgrpd *rgd, u64 block);
 
-u64 gfs2_alloc_data(struct gfs2_inode *ip);
-u64 gfs2_alloc_meta(struct gfs2_inode *ip);
+u64 gfs2_alloc_block(struct gfs2_inode *ip, unsigned int *n);
 u64 gfs2_alloc_di(struct gfs2_inode *ip, u64 *generation);
 
 void gfs2_free_data(struct gfs2_inode *ip, u64 bstart, u32 blen);
@@ -62,8 +63,7 @@ struct gfs2_rgrp_list {
 
 void gfs2_rlist_add(struct gfs2_sbd *sdp, struct gfs2_rgrp_list *rlist,
 		    u64 block);
-void gfs2_rlist_alloc(struct gfs2_rgrp_list *rlist, unsigned int state,
-		      int flags);
+void gfs2_rlist_alloc(struct gfs2_rgrp_list *rlist, unsigned int state);
 void gfs2_rlist_free(struct gfs2_rgrp_list *rlist);
 u64 gfs2_ri_total(struct gfs2_sbd *sdp);
 

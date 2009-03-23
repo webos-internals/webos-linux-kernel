@@ -37,12 +37,13 @@
 #include <linux/kernel.h>
 #include <linux/timer.h>
 #include <linux/mm.h>
+#include <linux/mutex.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/spinlock.h>
 #include <linux/cpufreq.h>
 
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/io.h>
 #include <asm/system.h>
 
@@ -50,10 +51,10 @@
 
 /* FIXME: platform dependent resource declaration has to move out of this file */
 #ifdef CONFIG_ARCH_PXA
-#include <asm/arch/pxa-regs.h>
+#include <mach/pxa-regs.h>
 #endif
 
-#ifdef DEBUG
+#ifdef CONFIG_PCMCIA_DEBUG
 
 static int pc_debug;
 module_param(pc_debug, int, 0644);
@@ -148,10 +149,10 @@ soc_common_pcmcia_config_skt(struct soc_pcmcia_socket *skt, socket_state_t *stat
 		 */
 		if (skt->irq_state != 1 && state->io_irq) {
 			skt->irq_state = 1;
-			set_irq_type(skt->irq, IRQT_FALLING);
+			set_irq_type(skt->irq, IRQ_TYPE_EDGE_FALLING);
 		} else if (skt->irq_state == 1 && state->io_irq == 0) {
 			skt->irq_state = 0;
-			set_irq_type(skt->irq, IRQT_NOEDGE);
+			set_irq_type(skt->irq, IRQ_TYPE_NONE);
 		}
 
 		skt->cs_state = *state;
@@ -353,7 +354,7 @@ soc_common_pcmcia_set_io_map(struct pcmcia_socket *sock, struct pccard_io_map *m
 		(map->flags&MAP_PREFETCH)?"PREFETCH ":"");
 
 	if (map->map >= MAX_IO_WIN) {
-		printk(KERN_ERR "%s(): map (%d) out of range\n", __FUNCTION__,
+		printk(KERN_ERR "%s(): map (%d) out of range\n", __func__,
 		       map->map);
 		return -1;
 	}
@@ -526,7 +527,7 @@ int soc_pcmcia_request_irqs(struct soc_pcmcia_socket *skt,
 				  IRQF_DISABLED, irqs[i].str, skt);
 		if (res)
 			break;
-		set_irq_type(irqs[i].irq, IRQT_NOEDGE);
+		set_irq_type(irqs[i].irq, IRQ_TYPE_NONE);
 	}
 
 	if (res) {
@@ -559,7 +560,7 @@ void soc_pcmcia_disable_irqs(struct soc_pcmcia_socket *skt,
 
 	for (i = 0; i < nr; i++)
 		if (irqs[i].sock == skt->nr)
-			set_irq_type(irqs[i].irq, IRQT_NOEDGE);
+			set_irq_type(irqs[i].irq, IRQ_TYPE_NONE);
 }
 EXPORT_SYMBOL(soc_pcmcia_disable_irqs);
 
@@ -570,15 +571,15 @@ void soc_pcmcia_enable_irqs(struct soc_pcmcia_socket *skt,
 
 	for (i = 0; i < nr; i++)
 		if (irqs[i].sock == skt->nr) {
-			set_irq_type(irqs[i].irq, IRQT_RISING);
-			set_irq_type(irqs[i].irq, IRQT_BOTHEDGE);
+			set_irq_type(irqs[i].irq, IRQ_TYPE_EDGE_RISING);
+			set_irq_type(irqs[i].irq, IRQ_TYPE_EDGE_BOTH);
 		}
 }
 EXPORT_SYMBOL(soc_pcmcia_enable_irqs);
 
 
 LIST_HEAD(soc_pcmcia_sockets);
-DECLARE_MUTEX(soc_pcmcia_sockets_lock);
+static DEFINE_MUTEX(soc_pcmcia_sockets_lock);
 
 static const char *skt_names[] = {
 	"PCMCIA socket 0",
@@ -601,11 +602,11 @@ soc_pcmcia_notifier(struct notifier_block *nb, unsigned long val, void *data)
 	struct cpufreq_freqs *freqs = data;
 	int ret = 0;
 
-	down(&soc_pcmcia_sockets_lock);
+	mutex_lock(&soc_pcmcia_sockets_lock);
 	list_for_each_entry(skt, &soc_pcmcia_sockets, node)
 		if ( skt->ops->frequency_change )
 			ret += skt->ops->frequency_change(skt, val, freqs);
-	up(&soc_pcmcia_sockets_lock);
+	mutex_unlock(&soc_pcmcia_sockets_lock);
 
 	return ret;
 }
@@ -642,7 +643,7 @@ int soc_common_drv_pcmcia_probe(struct device *dev, struct pcmcia_low_level *ops
 	struct soc_pcmcia_socket *skt;
 	int ret, i;
 
-	down(&soc_pcmcia_sockets_lock);
+	mutex_lock(&soc_pcmcia_sockets_lock);
 
 	sinfo = kzalloc(SKT_DEV_INFO_SIZE(nr), GFP_KERNEL);
 	if (!sinfo) {
@@ -747,7 +748,9 @@ int soc_common_drv_pcmcia_probe(struct device *dev, struct pcmcia_low_level *ops
 
 		add_timer(&skt->poll_timer);
 
-		device_create_file(&skt->socket.dev, &dev_attr_status);
+		ret = device_create_file(&skt->socket.dev, &dev_attr_status);
+		if (ret)
+			goto out_err_8;
 	}
 
 	dev_set_drvdata(dev, sinfo);
@@ -757,6 +760,8 @@ int soc_common_drv_pcmcia_probe(struct device *dev, struct pcmcia_low_level *ops
 	do {
 		skt = &sinfo->skt[i];
 
+		device_remove_file(&skt->socket.dev, &dev_attr_status);
+ out_err_8:
 		del_timer_sync(&skt->poll_timer);
 		pcmcia_unregister_socket(&skt->socket);
 
@@ -782,7 +787,7 @@ int soc_common_drv_pcmcia_probe(struct device *dev, struct pcmcia_low_level *ops
 	kfree(sinfo);
 
  out:
-	up(&soc_pcmcia_sockets_lock);
+	mutex_unlock(&soc_pcmcia_sockets_lock);
 	return ret;
 }
 
@@ -793,7 +798,7 @@ int soc_common_drv_pcmcia_remove(struct device *dev)
 
 	dev_set_drvdata(dev, NULL);
 
-	down(&soc_pcmcia_sockets_lock);
+	mutex_lock(&soc_pcmcia_sockets_lock);
 	for (i = 0; i < sinfo->nskt; i++) {
 		struct soc_pcmcia_socket *skt = &sinfo->skt[i];
 
@@ -818,7 +823,7 @@ int soc_common_drv_pcmcia_remove(struct device *dev)
 	if (list_empty(&soc_pcmcia_sockets))
 		soc_pcmcia_cpufreq_unregister();
 
-	up(&soc_pcmcia_sockets_lock);
+	mutex_unlock(&soc_pcmcia_sockets_lock);
 
 	kfree(sinfo);
 

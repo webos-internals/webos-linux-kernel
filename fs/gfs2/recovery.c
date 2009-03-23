@@ -14,13 +14,14 @@
 #include <linux/gfs2_ondisk.h>
 #include <linux/crc32.h>
 #include <linux/lm_interface.h>
+#include <linux/kthread.h>
+#include <linux/freezer.h>
 
 #include "gfs2.h"
 #include "incore.h"
 #include "bmap.h"
 #include "glock.h"
 #include "glops.h"
-#include "lm.h"
 #include "lops.h"
 #include "meta_io.h"
 #include "recovery.h"
@@ -69,7 +70,7 @@ int gfs2_revoke_add(struct gfs2_sbd *sdp, u64 blkno, unsigned int where)
 		return 0;
 	}
 
-	rr = kmalloc(sizeof(struct gfs2_revoke_replay), GFP_KERNEL);
+	rr = kmalloc(sizeof(struct gfs2_revoke_replay), GFP_NOFS);
 	if (!rr)
 		return -ENOMEM;
 
@@ -150,7 +151,7 @@ static int get_log_header(struct gfs2_jdesc *jd, unsigned int blk,
 			  struct gfs2_log_header_host *head)
 {
 	struct buffer_head *bh;
-	struct gfs2_log_header_host lh;
+	struct gfs2_log_header_host uninitialized_var(lh);
 	const u32 nothing = 0;
 	u32 hash;
 	int error;
@@ -391,7 +392,7 @@ static int clean_journal(struct gfs2_jdesc *jd, struct gfs2_log_header_host *hea
 	lblock = head->lh_blkno;
 	gfs2_replay_incr_blk(sdp, &lblock);
 	bh_map.b_size = 1 << ip->i_inode.i_blkbits;
-	error = gfs2_block_map(&ip->i_inode, lblock, 0, &bh_map);
+	error = gfs2_block_map(&ip->i_inode, lblock, &bh_map, 0);
 	if (error)
 		return error;
 	if (!bh_map.b_blocknr) {
@@ -425,6 +426,19 @@ static int clean_journal(struct gfs2_jdesc *jd, struct gfs2_log_header_host *hea
 	return error;
 }
 
+
+static void gfs2_lm_recovery_done(struct gfs2_sbd *sdp, unsigned int jid,
+				  unsigned int message)
+{
+	if (!sdp->sd_lockstruct.ls_ops->lm_recovery_done)
+		return;
+
+	if (likely(!test_bit(SDF_SHUTDOWN, &sdp->sd_flags)))
+		sdp->sd_lockstruct.ls_ops->lm_recovery_done(
+			sdp->sd_lockstruct.ls_lockspace, jid, message);
+}
+
+
 /**
  * gfs2_recover_journal - recovery a given journal
  * @jd: the struct gfs2_jdesc describing the journal
@@ -450,7 +464,7 @@ int gfs2_recover_journal(struct gfs2_jdesc *jd)
 		fs_info(sdp, "jid=%u: Trying to acquire journal lock...\n",
 			jd->jd_jid);
 
-		/* Aquire the journal lock so we can do recovery */
+		/* Acquire the journal lock so we can do recovery */
 
 		error = gfs2_glock_nq_num(sdp, jd->jd_jid, &gfs2_journal_glops,
 					  LM_ST_EXCLUSIVE,
@@ -496,7 +510,7 @@ int gfs2_recover_journal(struct gfs2_jdesc *jd)
 
 		error = gfs2_glock_nq_init(sdp->sd_trans_gl, LM_ST_SHARED,
 					   LM_FLAG_NOEXP | LM_FLAG_PRIORITY |
-					   GL_NOCANCEL | GL_NOCACHE, &t_gh);
+					   GL_NOCACHE, &t_gh);
 		if (error)
 			goto fail_gunlock_ji;
 
@@ -504,13 +518,21 @@ int gfs2_recover_journal(struct gfs2_jdesc *jd)
 			if (!test_bit(SDF_JOURNAL_LIVE, &sdp->sd_flags))
 				ro = 1;
 		} else {
-			if (sdp->sd_vfs->s_flags & MS_RDONLY)
-				ro = 1;
+			if (sdp->sd_vfs->s_flags & MS_RDONLY) {
+				/* check if device itself is read-only */
+				ro = bdev_read_only(sdp->sd_vfs->s_bdev);
+				if (!ro) {
+					fs_info(sdp, "recovery required on "
+						"read-only filesystem.\n");
+					fs_info(sdp, "write access will be "
+						"enabled during recovery.\n");
+				}
+			}
 		}
 
 		if (ro) {
-			fs_warn(sdp, "jid=%u: Can't replay: read-only FS\n",
-				jd->jd_jid);
+			fs_warn(sdp, "jid=%u: Can't replay: read-only block "
+				"device\n", jd->jd_jid);
 			error = -EROFS;
 			goto fail_gunlock_tr;
 		}
@@ -563,13 +585,35 @@ fail:
 	return error;
 }
 
+static struct gfs2_jdesc *gfs2_jdesc_find_dirty(struct gfs2_sbd *sdp)
+{
+	struct gfs2_jdesc *jd;
+	int found = 0;
+
+	spin_lock(&sdp->sd_jindex_spin);
+
+	list_for_each_entry(jd, &sdp->sd_jindex_list, jd_list) {
+		if (jd->jd_dirty) {
+			jd->jd_dirty = 0;
+			found = 1;
+			break;
+		}
+	}
+	spin_unlock(&sdp->sd_jindex_spin);
+
+	if (!found)
+		jd = NULL;
+
+	return jd;
+}
+
 /**
  * gfs2_check_journals - Recover any dirty journals
  * @sdp: the filesystem
  *
  */
 
-void gfs2_check_journals(struct gfs2_sbd *sdp)
+static void gfs2_check_journals(struct gfs2_sbd *sdp)
 {
 	struct gfs2_jdesc *jd;
 
@@ -581,5 +625,27 @@ void gfs2_check_journals(struct gfs2_sbd *sdp)
 		if (jd != sdp->sd_jdesc)
 			gfs2_recover_journal(jd);
 	}
+}
+
+/**
+ * gfs2_recoverd - Recover dead machine's journals
+ * @sdp: Pointer to GFS2 superblock
+ *
+ */
+
+int gfs2_recoverd(void *data)
+{
+	struct gfs2_sbd *sdp = data;
+	unsigned long t;
+
+	while (!kthread_should_stop()) {
+		gfs2_check_journals(sdp);
+		t = gfs2_tune_get(sdp,  gt_recoverd_secs) * HZ;
+		if (freezing(current))
+			refrigerator();
+		schedule_timeout_interruptible(t);
+	}
+
+	return 0;
 }
 

@@ -9,9 +9,9 @@
 #include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/capability.h>
 #include <linux/dnotify.h>
-#include <linux/smp_lock.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/security.h>
@@ -19,12 +19,13 @@
 #include <linux/signal.h>
 #include <linux/rcupdate.h>
 #include <linux/pid_namespace.h>
+#include <linux/smp_lock.h>
 
 #include <asm/poll.h>
 #include <asm/siginfo.h>
 #include <asm/uaccess.h>
 
-void fastcall set_close_on_exec(unsigned int fd, int flag)
+void set_close_on_exec(unsigned int fd, int flag)
 {
 	struct files_struct *files = current->files;
 	struct fdtable *fdt;
@@ -49,157 +50,94 @@ static int get_close_on_exec(unsigned int fd)
 	return res;
 }
 
-/*
- * locate_fd finds a free file descriptor in the open_fds fdset,
- * expanding the fd arrays if necessary.  Must be called with the
- * file_lock held for write.
- */
-
-static int locate_fd(struct files_struct *files, 
-			    struct file *file, unsigned int orig_start)
-{
-	unsigned int newfd;
-	unsigned int start;
-	int error;
-	struct fdtable *fdt;
-
-	error = -EINVAL;
-	if (orig_start >= current->signal->rlim[RLIMIT_NOFILE].rlim_cur)
-		goto out;
-
-repeat:
-	fdt = files_fdtable(files);
-	/*
-	 * Someone might have closed fd's in the range
-	 * orig_start..fdt->next_fd
-	 */
-	start = orig_start;
-	if (start < files->next_fd)
-		start = files->next_fd;
-
-	newfd = start;
-	if (start < fdt->max_fds)
-		newfd = find_next_zero_bit(fdt->open_fds->fds_bits,
-					   fdt->max_fds, start);
-	
-	error = -EMFILE;
-	if (newfd >= current->signal->rlim[RLIMIT_NOFILE].rlim_cur)
-		goto out;
-
-	error = expand_files(files, newfd);
-	if (error < 0)
-		goto out;
-
-	/*
-	 * If we needed to expand the fs array we
-	 * might have blocked - try again.
-	 */
-	if (error)
-		goto repeat;
-
-	/*
-	 * We reacquired files_lock, so we are safe as long as
-	 * we reacquire the fdtable pointer and use it while holding
-	 * the lock, no one can free it during that time.
-	 */
-	if (start <= files->next_fd)
-		files->next_fd = newfd + 1;
-
-	error = newfd;
-	
-out:
-	return error;
-}
-
-static int dupfd(struct file *file, unsigned int start, int cloexec)
-{
-	struct files_struct * files = current->files;
-	struct fdtable *fdt;
-	int fd;
-
-	spin_lock(&files->file_lock);
-	fd = locate_fd(files, file, start);
-	if (fd >= 0) {
-		/* locate_fd() may have expanded fdtable, load the ptr */
-		fdt = files_fdtable(files);
-		FD_SET(fd, fdt->open_fds);
-		if (cloexec)
-			FD_SET(fd, fdt->close_on_exec);
-		else
-			FD_CLR(fd, fdt->close_on_exec);
-		spin_unlock(&files->file_lock);
-		fd_install(fd, file);
-	} else {
-		spin_unlock(&files->file_lock);
-		fput(file);
-	}
-
-	return fd;
-}
-
-asmlinkage long sys_dup2(unsigned int oldfd, unsigned int newfd)
+SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 {
 	int err = -EBADF;
 	struct file * file, *tofree;
 	struct files_struct * files = current->files;
 	struct fdtable *fdt;
 
+	if ((flags & ~O_CLOEXEC) != 0)
+		return -EINVAL;
+
+	if (unlikely(oldfd == newfd))
+		return -EINVAL;
+
 	spin_lock(&files->file_lock);
-	if (!(file = fcheck(oldfd)))
-		goto out_unlock;
-	err = newfd;
-	if (newfd == oldfd)
-		goto out_unlock;
-	err = -EBADF;
-	if (newfd >= current->signal->rlim[RLIMIT_NOFILE].rlim_cur)
-		goto out_unlock;
-	get_file(file);			/* We are now finished with oldfd */
-
 	err = expand_files(files, newfd);
-	if (err < 0)
-		goto out_fput;
-
-	/* To avoid races with open() and dup(), we will mark the fd as
-	 * in-use in the open-file bitmap throughout the entire dup2()
-	 * process.  This is quite safe: do_close() uses the fd array
-	 * entry, not the bitmap, to decide what work needs to be
-	 * done.  --sct */
-	/* Doesn't work. open() might be there first. --AV */
-
-	/* Yes. It's a race. In user space. Nothing sane to do */
+	file = fcheck(oldfd);
+	if (unlikely(!file))
+		goto Ebadf;
+	if (unlikely(err < 0)) {
+		if (err == -EMFILE)
+			goto Ebadf;
+		goto out_unlock;
+	}
+	/*
+	 * We need to detect attempts to do dup2() over allocated but still
+	 * not finished descriptor.  NB: OpenBSD avoids that at the price of
+	 * extra work in their equivalent of fget() - they insert struct
+	 * file immediately after grabbing descriptor, mark it larval if
+	 * more work (e.g. actual opening) is needed and make sure that
+	 * fget() treats larval files as absent.  Potentially interesting,
+	 * but while extra work in fget() is trivial, locking implications
+	 * and amount of surgery on open()-related paths in VFS are not.
+	 * FreeBSD fails with -EBADF in the same situation, NetBSD "solution"
+	 * deadlocks in rather amusing ways, AFAICS.  All of that is out of
+	 * scope of POSIX or SUS, since neither considers shared descriptor
+	 * tables and this condition does not arise without those.
+	 */
 	err = -EBUSY;
 	fdt = files_fdtable(files);
 	tofree = fdt->fd[newfd];
 	if (!tofree && FD_ISSET(newfd, fdt->open_fds))
-		goto out_fput;
-
+		goto out_unlock;
+	get_file(file);
 	rcu_assign_pointer(fdt->fd[newfd], file);
 	FD_SET(newfd, fdt->open_fds);
-	FD_CLR(newfd, fdt->close_on_exec);
+	if (flags & O_CLOEXEC)
+		FD_SET(newfd, fdt->close_on_exec);
+	else
+		FD_CLR(newfd, fdt->close_on_exec);
 	spin_unlock(&files->file_lock);
 
 	if (tofree)
 		filp_close(tofree, files);
-	err = newfd;
-out:
-	return err;
+
+	return newfd;
+
+Ebadf:
+	err = -EBADF;
 out_unlock:
 	spin_unlock(&files->file_lock);
-	goto out;
-
-out_fput:
-	spin_unlock(&files->file_lock);
-	fput(file);
-	goto out;
+	return err;
 }
 
-asmlinkage long sys_dup(unsigned int fildes)
+SYSCALL_DEFINE2(dup2, unsigned int, oldfd, unsigned int, newfd)
+{
+	if (unlikely(newfd == oldfd)) { /* corner case */
+		struct files_struct *files = current->files;
+		rcu_read_lock();
+		if (!fcheck_files(files, oldfd))
+			oldfd = -EBADF;
+		rcu_read_unlock();
+		return oldfd;
+	}
+	return sys_dup3(oldfd, newfd, 0);
+}
+
+SYSCALL_DEFINE1(dup, unsigned int, fildes)
 {
 	int ret = -EBADF;
-	struct file * file = fget(fildes);
+	struct file *file = fget(fildes);
 
-	if (file)
-		ret = dupfd(file, 0, 0);
+	if (file) {
+		ret = get_unused_fd();
+		if (ret >= 0)
+			fd_install(ret, file);
+		else
+			fput(file);
+	}
 	return ret;
 }
 
@@ -238,6 +176,10 @@ static int setfl(int fd, struct file * filp, unsigned long arg)
 	if (error)
 		return error;
 
+	/*
+	 * We still need a lock here for now to keep multiple FASYNC calls
+	 * from racing with each other.
+	 */
 	lock_kernel();
 	if ((arg ^ filp->f_flags) & FASYNC) {
 		if (filp->f_op && filp->f_op->fasync) {
@@ -270,13 +212,14 @@ static void f_modown(struct file *filp, struct pid *pid, enum pid_type type,
 int __f_setown(struct file *filp, struct pid *pid, enum pid_type type,
 		int force)
 {
+	const struct cred *cred = current_cred();
 	int err;
 	
 	err = security_file_set_fowner(filp);
 	if (err)
 		return err;
 
-	f_modown(filp, pid, type, current->uid, current->euid, force);
+	f_modown(filp, pid, type, cred->uid, cred->euid, force);
 	return 0;
 }
 EXPORT_SYMBOL(__f_setown);
@@ -309,7 +252,7 @@ pid_t f_getown(struct file *filp)
 {
 	pid_t pid;
 	read_lock(&filp->f_owner.lock);
-	pid = pid_nr_ns(filp->f_owner.pid, current->nsproxy->pid_ns);
+	pid = pid_vnr(filp->f_owner.pid);
 	if (filp->f_owner.pid_type == PIDTYPE_PGID)
 		pid = -pid;
 	read_unlock(&filp->f_owner.lock);
@@ -324,8 +267,13 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	switch (cmd) {
 	case F_DUPFD:
 	case F_DUPFD_CLOEXEC:
-		get_file(filp);
-		err = dupfd(filp, arg, cmd == F_DUPFD_CLOEXEC);
+		if (arg >= current->signal->rlim[RLIMIT_NOFILE].rlim_cur)
+			break;
+		err = alloc_fd(arg, cmd == F_DUPFD_CLOEXEC ? O_CLOEXEC : 0);
+		if (err >= 0) {
+			get_file(filp);
+			fd_install(err, filp);
+		}
 		break;
 	case F_GETFD:
 		err = get_close_on_exec(fd) ? FD_CLOEXEC : 0;
@@ -387,7 +335,7 @@ static long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
 	return err;
 }
 
-asmlinkage long sys_fcntl(unsigned int fd, unsigned int cmd, unsigned long arg)
+SYSCALL_DEFINE3(fcntl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 {	
 	struct file *filp;
 	long err = -EBADF;
@@ -410,7 +358,8 @@ out:
 }
 
 #if BITS_PER_LONG == 32
-asmlinkage long sys_fcntl64(unsigned int fd, unsigned int cmd, unsigned long arg)
+SYSCALL_DEFINE3(fcntl64, unsigned int, fd, unsigned int, cmd,
+		unsigned long, arg)
 {	
 	struct file * filp;
 	long err;
@@ -460,10 +409,17 @@ static const long band_table[NSIGPOLL] = {
 static inline int sigio_perm(struct task_struct *p,
                              struct fown_struct *fown, int sig)
 {
-	return (((fown->euid == 0) ||
-		 (fown->euid == p->suid) || (fown->euid == p->uid) ||
-		 (fown->uid == p->suid) || (fown->uid == p->uid)) &&
-		!security_file_send_sigiotask(p, fown, sig));
+	const struct cred *cred;
+	int ret;
+
+	rcu_read_lock();
+	cred = __task_cred(p);
+	ret = ((fown->euid == 0 ||
+		fown->euid == cred->suid || fown->euid == cred->uid ||
+		fown->uid  == cred->suid || fown->uid  == cred->uid) &&
+	       !security_file_send_sigiotask(p, fown, sig));
+	rcu_read_unlock();
+	return ret;
 }
 
 static void send_sigio_to_task(struct task_struct *p,

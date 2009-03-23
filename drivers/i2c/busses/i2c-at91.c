@@ -14,7 +14,6 @@
 */
 
 #include <linux/module.h>
-#include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/err.h>
 #include <linux/slab.h>
@@ -27,9 +26,9 @@
 
 #include <asm/io.h>
 
-#include <asm/arch/at91_twi.h>
-#include <asm/arch/board.h>
-#include <asm/arch/cpu.h>
+#include <mach/at91_twi.h>
+#include <mach/board.h>
+#include <mach/cpu.h>
 
 #define TWI_CLOCK		100000		/* Hz. max 400 Kbits/sec */
 
@@ -223,7 +222,7 @@ static int __devinit at91_i2c_probe(struct platform_device *pdev)
 		rc = -ENOMEM;
 		goto fail2;
 	}
-	sprintf(adapter->name, "AT91");
+	snprintf(adapter->name, sizeof(adapter->name), "AT91");
 	adapter->algo = &at91_algorithm;
 	adapter->class = I2C_CLASS_HWMON;
 	adapter->dev.parent = &pdev->dev;
@@ -298,7 +297,7 @@ static int at91_i2c_resume(struct platform_device *pdev)
 #endif
 
 /* work with "modprobe at91_i2c" from hotplugging or coldplugging */
-MODULE_ALIAS("at91_i2c");
+MODULE_ALIAS("platform:at91_i2c");
 
 static struct platform_driver at91_i2c_driver = {
 	.probe		= at91_i2c_probe,

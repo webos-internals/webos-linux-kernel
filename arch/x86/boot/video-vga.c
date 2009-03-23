@@ -9,8 +9,6 @@
  * ----------------------------------------------------------------------- */
 
 /*
- * arch/i386/boot/video-vga.c
- *
  * Common all-VGA modes
  */
 
@@ -18,25 +16,25 @@
 #include "video.h"
 
 static struct mode_info vga_modes[] = {
-	{ VIDEO_80x25,  80, 25 },
-	{ VIDEO_8POINT, 80, 50 },
-	{ VIDEO_80x43,  80, 43 },
-	{ VIDEO_80x28,  80, 28 },
-	{ VIDEO_80x30,  80, 30 },
-	{ VIDEO_80x34,  80, 34 },
-	{ VIDEO_80x60,  80, 60 },
+	{ VIDEO_80x25,  80, 25, 0 },
+	{ VIDEO_8POINT, 80, 50, 0 },
+	{ VIDEO_80x43,  80, 43, 0 },
+	{ VIDEO_80x28,  80, 28, 0 },
+	{ VIDEO_80x30,  80, 30, 0 },
+	{ VIDEO_80x34,  80, 34, 0 },
+	{ VIDEO_80x60,  80, 60, 0 },
 };
 
 static struct mode_info ega_modes[] = {
-	{ VIDEO_80x25,  80, 25 },
-	{ VIDEO_8POINT, 80, 43 },
+	{ VIDEO_80x25,  80, 25, 0 },
+	{ VIDEO_8POINT, 80, 43, 0 },
 };
 
 static struct mode_info cga_modes[] = {
-	{ VIDEO_80x25,  80, 25 },
+	{ VIDEO_80x25,  80, 25, 0 },
 };
 
-__videocard video_vga;
+static __videocard video_vga;
 
 /* Set basic 80x25 mode */
 static u8 vga_set_basic_mode(void)
@@ -210,6 +208,8 @@ static int vga_set_mode(struct mode_info *mode)
  */
 static int vga_probe(void)
 {
+	u16 ega_bx;
+
 	static const char *card_name[] = {
 		"CGA/MDA/HGC", "EGA", "VGA"
 	};
@@ -226,12 +226,16 @@ static int vga_probe(void)
 	u8 vga_flag;
 
 	asm(INT10
-	    : "=b" (boot_params.screen_info.orig_video_ega_bx)
+	    : "=b" (ega_bx)
 	    : "a" (0x1200), "b" (0x10) /* Check EGA/VGA */
 	    : "ecx", "edx", "esi", "edi");
 
+#ifndef _WAKEUP
+	boot_params.screen_info.orig_video_ega_bx = ega_bx;
+#endif
+
 	/* If we have MDA/CGA/HGC then BL will be unchanged at 0x10 */
-	if ((u8)boot_params.screen_info.orig_video_ega_bx != 0x10) {
+	if ((u8)ega_bx != 0x10) {
 		/* EGA/VGA */
 		asm(INT10
 		    : "=a" (vga_flag)
@@ -240,7 +244,9 @@ static int vga_probe(void)
 
 		if (vga_flag == 0x1a) {
 			adapter = ADAPTER_VGA;
+#ifndef _WAKEUP
 			boot_params.screen_info.orig_video_isVGA = 1;
+#endif
 		} else {
 			adapter = ADAPTER_EGA;
 		}
@@ -253,8 +259,7 @@ static int vga_probe(void)
 	return mode_count[adapter];
 }
 
-__videocard video_vga =
-{
+static __videocard video_vga = {
 	.card_name	= "VGA",
 	.probe		= vga_probe,
 	.set_mode	= vga_set_mode,

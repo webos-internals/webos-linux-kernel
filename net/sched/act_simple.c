@@ -6,7 +6,7 @@
  *		as published by the Free Software Foundation; either version
  *		2 of the License, or (at your option) any later version.
  *
- * Authors:	Jamal Hadi Salim (2005)
+ * Authors:	Jamal Hadi Salim (2005-8)
  *
  */
 
@@ -34,13 +34,14 @@ static struct tcf_hashinfo simp_hash_info = {
 	.lock	=	&simp_lock,
 };
 
+#define SIMP_MAX_DATA	32
 static int tcf_simp(struct sk_buff *skb, struct tc_action *a, struct tcf_result *res)
 {
 	struct tcf_defact *d = a->priv;
 
 	spin_lock(&d->tcf_lock);
 	d->tcf_tm.lastuse = jiffies;
-	d->tcf_bstats.bytes += skb->len;
+	d->tcf_bstats.bytes += qdisc_pkt_len(skb);
 	d->tcf_bstats.packets++;
 
 	/* print policy string followed by _ then packet count
@@ -69,61 +70,70 @@ static int tcf_simp_release(struct tcf_defact *d, int bind)
 	return ret;
 }
 
-static int alloc_defdata(struct tcf_defact *d, u32 datalen, void *defdata)
+static int alloc_defdata(struct tcf_defact *d, char *defdata)
 {
-	d->tcfd_defdata = kmemdup(defdata, datalen, GFP_KERNEL);
+	d->tcfd_defdata = kstrndup(defdata, SIMP_MAX_DATA, GFP_KERNEL);
 	if (unlikely(!d->tcfd_defdata))
 		return -ENOMEM;
-	d->tcfd_datalen = datalen;
+
 	return 0;
 }
 
-static int realloc_defdata(struct tcf_defact *d, u32 datalen, void *defdata)
+static void reset_policy(struct tcf_defact *d, char *defdata,
+			 struct tc_defact *p)
 {
-	kfree(d->tcfd_defdata);
-	return alloc_defdata(d, datalen, defdata);
+	spin_lock_bh(&d->tcf_lock);
+	d->tcf_action = p->action;
+	memset(d->tcfd_defdata, 0, SIMP_MAX_DATA);
+	strlcpy(d->tcfd_defdata, defdata, SIMP_MAX_DATA);
+	spin_unlock_bh(&d->tcf_lock);
 }
 
-static int tcf_simp_init(struct rtattr *rta, struct rtattr *est,
+static const struct nla_policy simple_policy[TCA_DEF_MAX + 1] = {
+	[TCA_DEF_PARMS]	= { .len = sizeof(struct tc_defact) },
+	[TCA_DEF_DATA]	= { .type = NLA_STRING, .len = SIMP_MAX_DATA },
+};
+
+static int tcf_simp_init(struct nlattr *nla, struct nlattr *est,
 			 struct tc_action *a, int ovr, int bind)
 {
-	struct rtattr *tb[TCA_DEF_MAX];
+	struct nlattr *tb[TCA_DEF_MAX + 1];
 	struct tc_defact *parm;
 	struct tcf_defact *d;
 	struct tcf_common *pc;
-	void *defdata;
-	u32 datalen = 0;
-	int ret = 0;
+	char *defdata;
+	int ret = 0, err;
 
-	if (rta == NULL || rtattr_parse_nested(tb, TCA_DEF_MAX, rta) < 0)
+	if (nla == NULL)
 		return -EINVAL;
 
-	if (tb[TCA_DEF_PARMS - 1] == NULL ||
-	    RTA_PAYLOAD(tb[TCA_DEF_PARMS - 1]) < sizeof(*parm))
+	err = nla_parse_nested(tb, TCA_DEF_MAX, nla, simple_policy);
+	if (err < 0)
+		return err;
+
+	if (tb[TCA_DEF_PARMS] == NULL)
 		return -EINVAL;
 
-	parm = RTA_DATA(tb[TCA_DEF_PARMS - 1]);
-	defdata = RTA_DATA(tb[TCA_DEF_DATA - 1]);
-	if (defdata == NULL)
+	if (tb[TCA_DEF_DATA] == NULL)
 		return -EINVAL;
 
-	datalen = RTA_PAYLOAD(tb[TCA_DEF_DATA - 1]);
-	if (datalen <= 0)
-		return -EINVAL;
+	parm = nla_data(tb[TCA_DEF_PARMS]);
+	defdata = nla_data(tb[TCA_DEF_DATA]);
 
 	pc = tcf_hash_check(parm->index, a, bind, &simp_hash_info);
 	if (!pc) {
 		pc = tcf_hash_create(parm->index, est, a, sizeof(*d), bind,
 				     &simp_idx_gen, &simp_hash_info);
-		if (unlikely(!pc))
-			return -ENOMEM;
+		if (IS_ERR(pc))
+		    return PTR_ERR(pc);
 
 		d = to_defact(pc);
-		ret = alloc_defdata(d, datalen, defdata);
+		ret = alloc_defdata(d, defdata);
 		if (ret < 0) {
 			kfree(pc);
 			return ret;
 		}
+		d->tcf_action = parm->action;
 		ret = ACT_P_CREATED;
 	} else {
 		d = to_defact(pc);
@@ -131,12 +141,8 @@ static int tcf_simp_init(struct rtattr *rta, struct rtattr *est,
 			tcf_simp_release(d, bind);
 			return -EEXIST;
 		}
-		realloc_defdata(d, datalen, defdata);
+		reset_policy(d, defdata, parm);
 	}
-
-	spin_lock_bh(&d->tcf_lock);
-	d->tcf_action = parm->action;
-	spin_unlock_bh(&d->tcf_lock);
 
 	if (ret == ACT_P_CREATED)
 		tcf_hash_insert(pc, &simp_hash_info);
@@ -164,15 +170,15 @@ static inline int tcf_simp_dump(struct sk_buff *skb, struct tc_action *a,
 	opt.refcnt = d->tcf_refcnt - ref;
 	opt.bindcnt = d->tcf_bindcnt - bind;
 	opt.action = d->tcf_action;
-	RTA_PUT(skb, TCA_DEF_PARMS, sizeof(opt), &opt);
-	RTA_PUT(skb, TCA_DEF_DATA, d->tcfd_datalen, d->tcfd_defdata);
+	NLA_PUT(skb, TCA_DEF_PARMS, sizeof(opt), &opt);
+	NLA_PUT_STRING(skb, TCA_DEF_DATA, d->tcfd_defdata);
 	t.install = jiffies_to_clock_t(jiffies - d->tcf_tm.install);
 	t.lastuse = jiffies_to_clock_t(jiffies - d->tcf_tm.lastuse);
 	t.expires = jiffies_to_clock_t(d->tcf_tm.expires);
-	RTA_PUT(skb, TCA_DEF_TM, sizeof(t), &t);
+	NLA_PUT(skb, TCA_DEF_TM, sizeof(t), &t);
 	return skb->len;
 
-rtattr_failure:
+nla_put_failure:
 	nlmsg_trim(skb, b);
 	return -1;
 }

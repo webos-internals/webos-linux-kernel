@@ -27,6 +27,7 @@
 #include <linux/namei.h>
 #include <linux/mount.h>
 #include <linux/syscalls.h>
+#include <linux/fs.h>
 
 #include <asm/uaccess.h>
 
@@ -110,10 +111,13 @@ static int load_misc_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	char *iname_addr = iname;
 	int retval;
 	int fd_binary = -1;
-	struct files_struct *files = NULL;
 
 	retval = -ENOEXEC;
 	if (!enabled)
+		goto _ret;
+
+	retval = -ENOEXEC;
+	if (bprm->recursion_depth > BINPRM_MAX_RECURSION)
 		goto _ret;
 
 	/* to keep locking time low, we copy the interpreter string */
@@ -133,21 +137,13 @@ static int load_misc_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 
 	if (fmt->flags & MISC_FMT_OPEN_BINARY) {
 
-		files = current->files;
-		retval = unshare_files();
-		if (retval < 0)
-			goto _ret;
-		if (files == current->files) {
-			put_files_struct(files);
-			files = NULL;
-		}
 		/* if the binary should be opened on behalf of the
 		 * interpreter than keep it open and assign descriptor
 		 * to it */
  		fd_binary = get_unused_fd();
  		if (fd_binary < 0) {
  			retval = fd_binary;
- 			goto _unshare;
+ 			goto _ret;
  		}
  		fd_install(fd_binary, bprm->file);
 
@@ -201,14 +197,12 @@ static int load_misc_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	if (retval < 0)
 		goto _error;
 
+	bprm->recursion_depth++;
+
 	retval = search_binary_handler (bprm, regs);
 	if (retval < 0)
 		goto _error;
 
-	if (files) {
-		put_files_struct(files);
-		files = NULL;
-	}
 _ret:
 	return retval;
 _error:
@@ -216,9 +210,6 @@ _error:
 		sys_close(fd_binary);
 	bprm->interp_flags = 0;
 	bprm->interp_data = 0;
-_unshare:
-	if (files)
-		reset_files_struct(current, files);
 	goto _ret;
 }
 
@@ -505,9 +496,6 @@ static struct inode *bm_get_inode(struct super_block *sb, int mode)
 
 	if (inode) {
 		inode->i_mode = mode;
-		inode->i_uid = 0;
-		inode->i_gid = 0;
-		inode->i_blocks = 0;
 		inode->i_atime = inode->i_mtime = inode->i_ctime =
 			current_fs_time(inode->i_sb);
 	}
@@ -545,31 +533,16 @@ static ssize_t
 bm_entry_read(struct file * file, char __user * buf, size_t nbytes, loff_t *ppos)
 {
 	Node *e = file->f_path.dentry->d_inode->i_private;
-	loff_t pos = *ppos;
 	ssize_t res;
 	char *page;
-	int len;
 
 	if (!(page = (char*) __get_free_page(GFP_KERNEL)))
 		return -ENOMEM;
 
 	entry_status(e, page);
-	len = strlen(page);
 
-	res = -EINVAL;
-	if (pos < 0)
-		goto out;
-	res = 0;
-	if (pos >= len)
-		goto out;
-	if (len < pos + nbytes)
-		nbytes = len - pos;
-	res = -EFAULT;
-	if (copy_to_user(buf, page + pos, nbytes))
-		goto out;
-	*ppos = pos + nbytes;
-	res = nbytes;
-out:
+	res = simple_read_from_buffer(buf, nbytes, ppos, page, strlen(page));
+
 	free_page((unsigned long) page);
 	return res;
 }
@@ -676,7 +649,7 @@ static const struct file_operations bm_register_operations = {
 static ssize_t
 bm_status_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 {
-	char *s = enabled ? "enabled" : "disabled";
+	char *s = enabled ? "enabled\n" : "disabled\n";
 
 	return simple_read_from_buffer(buf, nbytes, ppos, s, strlen(s));
 }

@@ -36,8 +36,8 @@
 #include <linux/mii.h>
 #include <linux/phy.h>
 #include <linux/fsl_devices.h>
+#include <linux/of_platform.h>
 
-#include <asm/of_platform.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/uaccess.h>
@@ -104,12 +104,12 @@ int uec_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 }
 
 /* Reset the MIIM registers, and wait for the bus to free */
-int uec_mdio_reset(struct mii_bus *bus)
+static int uec_mdio_reset(struct mii_bus *bus)
 {
 	struct ucc_mii_mng __iomem *regs = (void __iomem *)bus->priv;
-	unsigned int timeout = PHY_INIT_TIMEOUT;
+	int timeout = PHY_INIT_TIMEOUT;
 
-	spin_lock_bh(&bus->mdio_lock);
+	mutex_lock(&bus->mdio_lock);
 
 	/* Reset the management interface */
 	out_be32(&regs->miimcfg, MIIMCFG_RESET_MANAGEMENT);
@@ -121,9 +121,9 @@ int uec_mdio_reset(struct mii_bus *bus)
 	while ((in_be32(&regs->miimind) & MIIMIND_BUSY) && timeout--)
 		cpu_relax();
 
-	spin_unlock_bh(&bus->mdio_lock);
+	mutex_unlock(&bus->mdio_lock);
 
-	if (timeout <= 0) {
+	if (timeout < 0) {
 		printk(KERN_ERR "%s: The MII Bus is stuck!\n", bus->name);
 		return -EBUSY;
 	}
@@ -141,8 +141,7 @@ static int uec_mdio_probe(struct of_device *ofdev, const struct of_device_id *ma
 	struct resource res;
 	int k, err = 0;
 
-	new_bus = kzalloc(sizeof(struct mii_bus), GFP_KERNEL);
-
+	new_bus = mdiobus_alloc();
 	if (NULL == new_bus)
 		return -ENOMEM;
 
@@ -157,7 +156,7 @@ static int uec_mdio_probe(struct of_device *ofdev, const struct of_device_id *ma
 	if (err)
 		goto reg_map_fail;
 
-	new_bus->id = res.start;
+	uec_mdio_bus_name(new_bus->id, np);
 
 	new_bus->irq = kmalloc(32 * sizeof(int), GFP_KERNEL);
 
@@ -187,7 +186,7 @@ static int uec_mdio_probe(struct of_device *ofdev, const struct of_device_id *ma
 
 	new_bus->priv = (void __force *)regs;
 
-	new_bus->dev = device;
+	new_bus->parent = device;
 	dev_set_drvdata(device, new_bus);
 
 	/* Read MII management master from device tree */
@@ -203,9 +202,14 @@ static int uec_mdio_probe(struct of_device *ofdev, const struct of_device_id *ma
 		if ((res.start >= tempres.start) &&
 		    (res.end <= tempres.end)) {
 			/* set this UCC to be the MII master */
-			const u32 *id = of_get_property(tempnp, "device-id", NULL);
-			if (id == NULL)
-				goto bus_register_fail;
+			const u32 *id;
+
+			id = of_get_property(tempnp, "cell-index", NULL);
+			if (!id) {
+				id = of_get_property(tempnp, "device-id", NULL);
+				if (!id)
+					goto bus_register_fail;
+			}
 
 			ucc_set_qe_mux_mii_mng(*id - 1);
 
@@ -230,12 +234,12 @@ bus_register_fail:
 ioremap_fail:
 	kfree(new_bus->irq);
 reg_map_fail:
-	kfree(new_bus);
+	mdiobus_free(new_bus);
 
 	return err;
 }
 
-int uec_mdio_remove(struct of_device *ofdev)
+static int uec_mdio_remove(struct of_device *ofdev)
 {
 	struct device *device = &ofdev->dev;
 	struct mii_bus *bus = dev_get_drvdata(device);
@@ -246,7 +250,7 @@ int uec_mdio_remove(struct of_device *ofdev)
 
 	iounmap((void __iomem *)bus->priv);
 	bus->priv = NULL;
-	kfree(bus);
+	mdiobus_free(bus);
 
 	return 0;
 }
@@ -255,6 +259,9 @@ static struct of_device_id uec_mdio_match[] = {
 	{
 		.type = "mdio",
 		.compatible = "ucc_geth_phy",
+	},
+	{
+		.compatible = "fsl,ucc-mdio",
 	},
 	{},
 };
@@ -276,3 +283,13 @@ void uec_mdio_exit(void)
 {
 	of_unregister_platform_driver(&uec_mdio_driver);
 }
+
+void uec_mdio_bus_name(char *name, struct device_node *np)
+{
+        const u32 *reg;
+
+        reg = of_get_property(np, "reg", NULL);
+
+        snprintf(name, MII_BUS_ID_SIZE, "%s@%x", np->name, reg ? *reg : 0);
+}
+

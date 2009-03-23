@@ -66,14 +66,12 @@ EXPORT_SYMBOL(get_vir_csrbase);
 static int __init tsi108_eth_of_init(void)
 {
 	struct device_node *np;
-	unsigned int i;
+	unsigned int i = 0;
 	struct platform_device *tsi_eth_dev;
 	struct resource res;
 	int ret;
 
-	for (np = NULL, i = 0;
-	     (np = of_find_compatible_node(np, "network", "tsi108-ethernet")) != NULL;
-	     i++) {
+	for_each_compatible_node(np, "network", "tsi108-ethernet") {
 		struct resource r[2];
 		struct device_node *phy, *mdio;
 		hw_info tsi_eth_data;
@@ -86,7 +84,7 @@ static int __init tsi108_eth_of_init(void)
 
 		ret = of_address_to_resource(np, 0, &r[0]);
 		DBG("%s: name:start->end = %s:0x%lx-> 0x%lx\n",
-			__FUNCTION__,r[0].name, r[0].start, r[0].end);
+			__func__,r[0].name, r[0].start, r[0].end);
 		if (ret)
 			goto err;
 
@@ -95,10 +93,10 @@ static int __init tsi108_eth_of_init(void)
 		r[1].end = irq_of_parse_and_map(np, 0);
 		r[1].flags = IORESOURCE_IRQ;
 		DBG("%s: name:start->end = %s:0x%lx-> 0x%lx\n",
-			__FUNCTION__,r[1].name, r[1].start, r[1].end);
+			__func__,r[1].name, r[1].start, r[1].end);
 
 		tsi_eth_dev =
-		    platform_device_register_simple("tsi-ethernet", i, &r[0],
+		    platform_device_register_simple("tsi-ethernet", i++, &r[0],
 						    1);
 
 		if (IS_ERR(tsi_eth_dev)) {
@@ -154,6 +152,7 @@ static int __init tsi108_eth_of_init(void)
 unreg:
 	platform_device_unregister(tsi_eth_dev);
 err:
+	of_node_put(np);
 	return ret;
 }
 

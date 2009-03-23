@@ -893,7 +893,7 @@ static long video1394_ioctl(struct file *file,
 		if (unlikely(d == NULL))
 			return -EFAULT;
 
-		if (unlikely((v.buffer<0) || (v.buffer>=d->num_desc - 1))) {
+		if (unlikely(v.buffer >= d->num_desc - 1)) {
 			PRINT(KERN_ERR, ohci->host->id,
 			      "Buffer %d out of range",v.buffer);
 			return -EINVAL;
@@ -959,7 +959,7 @@ static long video1394_ioctl(struct file *file,
 		if (unlikely(d == NULL))
 			return -EFAULT;
 
-		if (unlikely((v.buffer<0) || (v.buffer>d->num_desc - 1))) {
+		if (unlikely(v.buffer > d->num_desc - 1)) {
 			PRINT(KERN_ERR, ohci->host->id,
 			      "Buffer %d out of range",v.buffer);
 			return -EINVAL;
@@ -1030,7 +1030,7 @@ static long video1394_ioctl(struct file *file,
 		d = find_ctx(&ctx->context_list, OHCI_ISO_TRANSMIT, v.channel);
 		if (d == NULL) return -EFAULT;
 
-		if ((v.buffer<0) || (v.buffer>=d->num_desc - 1)) {
+		if (v.buffer >= d->num_desc - 1) {
 			PRINT(KERN_ERR, ohci->host->id,
 			      "Buffer %d out of range",v.buffer);
 			return -EINVAL;
@@ -1137,7 +1137,7 @@ static long video1394_ioctl(struct file *file,
 		d = find_ctx(&ctx->context_list, OHCI_ISO_TRANSMIT, v.channel);
 		if (d == NULL) return -EFAULT;
 
-		if ((v.buffer<0) || (v.buffer>=d->num_desc-1)) {
+		if (v.buffer >= d->num_desc - 1) {
 			PRINT(KERN_ERR, ohci->host->id,
 			      "Buffer %d out of range",v.buffer);
 			return -EINVAL;
@@ -1293,6 +1293,7 @@ static const struct file_operations video1394_fops=
 /*
  * Export information about protocols/devices supported by this driver.
  */
+#ifdef MODULE
 static struct ieee1394_device_id video1394_id_table[] = {
 	{
 		.match_flags	= IEEE1394_MATCH_SPECIFIER_ID | IEEE1394_MATCH_VERSION,
@@ -1313,10 +1314,10 @@ static struct ieee1394_device_id video1394_id_table[] = {
 };
 
 MODULE_DEVICE_TABLE(ieee1394, video1394_id_table);
+#endif /* MODULE */
 
 static struct hpsb_protocol_driver video1394_driver = {
-	.name		= VIDEO1394_DRIVER_NAME,
-	.id_table	= video1394_id_table,
+	.name = VIDEO1394_DRIVER_NAME,
 };
 
 
@@ -1340,9 +1341,8 @@ static void video1394_add_host (struct hpsb_host *host)
 	hpsb_set_hostinfo_key(&video1394_highlevel, host, ohci->host->id);
 
 	minor = IEEE1394_MINOR_BLOCK_VIDEO1394 * 16 + ohci->host->id;
-	device_create(hpsb_protocol_class, NULL,
-		      MKDEV(IEEE1394_MAJOR, minor),
-		      "%s-%d", VIDEO1394_DRIVER_NAME, ohci->host->id);
+	device_create(hpsb_protocol_class, NULL, MKDEV(IEEE1394_MAJOR, minor),
+		      NULL, "%s-%d", VIDEO1394_DRIVER_NAME, ohci->host->id);
 }
 
 
@@ -1502,9 +1502,10 @@ static int __init video1394_init_module (void)
 {
 	int ret;
 
+	hpsb_init_highlevel(&video1394_highlevel);
+
 	cdev_init(&video1394_cdev, &video1394_fops);
 	video1394_cdev.owner = THIS_MODULE;
-	kobject_set_name(&video1394_cdev.kobj, VIDEO1394_DRIVER_NAME);
 	ret = cdev_add(&video1394_cdev, IEEE1394_VIDEO1394_DEV, 16);
 	if (ret) {
 		PRINT_G(KERN_ERR, "video1394: unable to get minor device block");

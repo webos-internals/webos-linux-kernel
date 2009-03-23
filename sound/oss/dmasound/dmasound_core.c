@@ -211,12 +211,8 @@ static int state_unit = -1;
 static int irq_installed;
 #endif /* MODULE */
 
-/* software implemented recording volume! */
-uint software_input_volume = SW_INPUT_VOLUME_SCALE * SW_INPUT_VOLUME_DEFAULT;
-EXPORT_SYMBOL(software_input_volume);
-
 /* control over who can modify resources shared between play/record */
-static mode_t shared_resource_owner;
+static fmode_t shared_resource_owner;
 static int shared_resources_initialised;
 
     /*
@@ -607,7 +603,7 @@ static ssize_t sq_write(struct file *file, const char __user *src, size_t uLeft,
 	while (uLeft) {
 		while (write_sq.count >= write_sq.max_active) {
 			sq_play();
-			if (write_sq.open_mode & O_NONBLOCK)
+			if (write_sq.non_blocking)
 				return uWritten > 0 ? uWritten : -EAGAIN;
 			SLEEP(write_sq.action_queue);
 			if (signal_pending(current))
@@ -672,7 +668,7 @@ static inline void sq_init_waitqueue(struct sound_queue *sq)
 
 #if 0 /* blocking open() */
 static inline void sq_wake_up(struct sound_queue *sq, struct file *file,
-			      mode_t mode)
+			      fmode_t mode)
 {
 	if (file->f_mode & mode) {
 		sq->busy = 0; /* CHECK: IS THIS OK??? */
@@ -681,7 +677,7 @@ static inline void sq_wake_up(struct sound_queue *sq, struct file *file,
 }
 #endif
 
-static int sq_open2(struct sound_queue *sq, struct file *file, mode_t mode,
+static int sq_open2(struct sound_queue *sq, struct file *file, fmode_t mode,
 		    int numbufs, int bufsize)
 {
 	int rc = 0;
@@ -722,7 +718,7 @@ static int sq_open2(struct sound_queue *sq, struct file *file, mode_t mode,
 			return rc;
 		}
 
-		sq->open_mode = file->f_mode;
+		sq->non_blocking = file->f_flags & O_NONBLOCK;
 	}
 	return rc;
 }
@@ -895,10 +891,10 @@ static int sq_release(struct inode *inode, struct file *file)
    is the owner - if we have problems.
 */
 
-static int shared_resources_are_mine(mode_t md)
+static int shared_resources_are_mine(fmode_t md)
 {
 	if (shared_resource_owner)
-		return (shared_resource_owner & md ) ;
+		return (shared_resource_owner & md) != 0;
 	else {
 		shared_resource_owner = md ;
 		return 1 ;
@@ -1188,7 +1184,7 @@ static struct {
 
 /* publish this function for use by low-level code, if required */
 
-char *get_afmt_string(int afmt)
+static char *get_afmt_string(int afmt)
 {
         switch(afmt) {
             case AFMT_MU_LAW:
@@ -1551,4 +1547,3 @@ EXPORT_SYMBOL(dmasound_catchRadius);
 EXPORT_SYMBOL(dmasound_ulaw2dma8);
 EXPORT_SYMBOL(dmasound_alaw2dma8);
 #endif
-EXPORT_SYMBOL(get_afmt_string) ;

@@ -29,19 +29,20 @@
 #include <linux/sysdev.h>
 #include <linux/clk.h>
 #include <linux/mutex.h>
-#include <linux/delay.h>
 #include <linux/serial_core.h>
+#include <linux/io.h>
 
 #include <asm/mach/map.h>
 
-#include <asm/hardware.h>
-#include <asm/io.h>
+#include <mach/hardware.h>
 
-#include <asm/arch/regs-s3c2443-clock.h>
+#include <mach/regs-s3c2443-clock.h>
 
-#include <asm/plat-s3c24xx/s3c2443.h>
-#include <asm/plat-s3c24xx/clock.h>
-#include <asm/plat-s3c24xx/cpu.h>
+#include <plat/cpu-freq.h>
+
+#include <plat/s3c2443.h>
+#include <plat/clock.h>
+#include <plat/cpu.h>
 
 /* We currently have to assume that the system is running
  * from the XTPll input, and that all ***REFCLKs are being
@@ -81,7 +82,7 @@ static int s3c2443_clkcon_enable_p(struct clk *clk, int enable)
 	else
 		clkcon &= ~clocks;
 
-	__raw_writel(clkcon, S3C2443_HCLKCON);
+	__raw_writel(clkcon, S3C2443_PCLKCON);
 
 	return 0;
 }
@@ -145,12 +146,6 @@ static unsigned long s3c2443_roundrate_clksrc256(struct clk *clk,
 
 /* clock selections */
 
-/* CPU EXTCLK input */
-static struct clk clk_ext = {
-	.name		= "ext",
-	.id		= -1,
-};
-
 static struct clk clk_mpllref = {
 	.name		= "mpllref",
 	.parent		= &clk_xtal,
@@ -164,14 +159,6 @@ static struct clk clk_mpll = {
 	.id		= -1,
 };
 #endif
-
-static struct clk clk_epllref;
-
-static struct clk clk_epll = {
-	.name		= "epll",
-	.parent		= &clk_epllref,
-	.id		= -1,
-};
 
 static struct clk clk_i2s_ext = {
 	.name		= "i2s-ext",
@@ -221,7 +208,6 @@ static struct clk clk_mdivclk = {
 	.get_rate	= s3c2443_getrate_mdivclk,
 };
 
-
 static int s3c2443_setparent_msysclk(struct clk *clk, struct clk *parent)
 {
 	unsigned long clksrc = __raw_readl(S3C2443_CLKSRC);
@@ -249,6 +235,46 @@ static struct clk clk_msysclk = {
 	.set_parent	= s3c2443_setparent_msysclk,
 };
 
+/* armdiv
+ *
+ * this clock is sourced from msysclk and can have a number of
+ * divider values applied to it to then be fed into armclk.
+*/
+
+static struct clk clk_armdiv = {
+	.name		= "armdiv",
+	.id		= -1,
+	.parent		= &clk_msysclk,
+};
+
+/* armclk
+ *
+ * this is the clock fed into the ARM core itself, either from
+ * armdiv or from hclk.
+ */
+
+static int s3c2443_setparent_armclk(struct clk *clk, struct clk *parent)
+{
+	unsigned long clkdiv0;
+
+	clkdiv0 = __raw_readl(S3C2443_CLKDIV0);
+
+	if (parent == &clk_armdiv)
+		clkdiv0 &= ~S3C2443_CLKDIV0_DVS;
+	else if (parent == &clk_h)
+		clkdiv0 |= S3C2443_CLKDIV0_DVS;
+	else
+		return -EINVAL;
+
+	__raw_writel(clkdiv0, S3C2443_CLKDIV0);
+	return 0;
+}
+
+static struct clk clk_arm = {
+	.name		= "armclk",
+	.id		= -1,
+	.set_parent	= s3c2443_setparent_armclk,
+};
 
 /* esysclk
  *
@@ -639,6 +665,29 @@ static struct clk clk_display = {
 	.round_rate	= s3c2443_roundrate_clksrc256,
 };
 
+/* prediv
+ *
+ * this divides the msysclk down to pass to h/p/etc.
+ */
+
+static unsigned long s3c2443_prediv_getrate(struct clk *clk)
+{
+	unsigned long rate = clk_get_rate(clk->parent);
+	unsigned long clkdiv0 = __raw_readl(S3C2443_CLKDIV0);
+
+	clkdiv0 &= S3C2443_CLKDIV0_PREDIV_MASK;
+	clkdiv0 >>= S3C2443_CLKDIV0_PREDIV_SHIFT;
+
+	return rate / (clkdiv0 + 1);
+}
+
+static struct clk clk_prediv = {
+	.name		= "prediv",
+	.id		= -1,
+	.parent		= &clk_msysclk,
+	.get_rate	= s3c2443_prediv_getrate,
+};
+
 /* standard clock definitions */
 
 static struct clk init_clocks_disable[] = {
@@ -887,6 +936,15 @@ static void __init s3c2443_clk_initparents(void)
 	}
 
 	clk_init_set_parent(&clk_msysclk, parent);
+
+	/* arm */
+
+	if (__raw_readl(S3C2443_CLKDIV0) & S3C2443_CLKDIV0_DVS)
+		parent = &clk_h;
+	else
+		parent = &clk_armdiv;
+
+	clk_init_set_parent(&clk_arm, parent);
 }
 
 /* armdiv divisor table */
@@ -909,10 +967,9 @@ static inline unsigned int s3c2443_fclk_div(unsigned long clkcon0)
 	return armdiv[clkcon0 >> S3C2443_CLKDIV0_ARMDIV_SHIFT];
 }
 
-static inline unsigned long s3c2443_get_prediv(unsigned long clkcon0)
+static inline unsigned long s3c2443_get_hdiv(unsigned long clkcon0)
 {
-	clkcon0 &= S3C2443_CLKDIV0_PREDIV_MASK;
-	clkcon0 >>= S3C2443_CLKDIV0_PREDIV_SHIFT;
+	clkcon0 &= S3C2443_CLKDIV0_HCLKDIV_MASK;
 
 	return clkcon0 + 1;
 }
@@ -936,35 +993,57 @@ static struct clk *clks[] __initdata = {
 	&clk_hsspi,
 	&clk_hsmmc_div,
 	&clk_hsmmc,
+	&clk_armdiv,
+	&clk_arm,
+	&clk_prediv,
 };
 
-void __init s3c2443_init_clocks(int xtal)
+void __init_or_cpufreq s3c2443_setup_clocks(void)
 {
-	unsigned long epllcon = __raw_readl(S3C2443_EPLLCON);
 	unsigned long mpllcon = __raw_readl(S3C2443_MPLLCON);
 	unsigned long clkdiv0 = __raw_readl(S3C2443_CLKDIV0);
+	struct clk *xtal_clk;
+	unsigned long xtal;
 	unsigned long pll;
 	unsigned long fclk;
 	unsigned long hclk;
 	unsigned long pclk;
-	struct clk *clkp;
-	int ret;
-	int ptr;
+
+	xtal_clk = clk_get(NULL, "xtal");
+	xtal = clk_get_rate(xtal_clk);
+	clk_put(xtal_clk);
 
 	pll = s3c2443_get_mpll(mpllcon, xtal);
+	clk_msysclk.rate = pll;
 
 	fclk = pll / s3c2443_fclk_div(clkdiv0);
-	hclk = fclk / s3c2443_get_prediv(clkdiv0);
-	hclk = hclk / ((clkdiv0 & S3C2443_CLKDIV0_HALF_HCLK) ? 2 : 1);
+	hclk = s3c2443_prediv_getrate(&clk_prediv);
+	hclk /= s3c2443_get_hdiv(clkdiv0);
  	pclk = hclk / ((clkdiv0 & S3C2443_CLKDIV0_HALF_PCLK) ? 2 : 1);
 
-	s3c24xx_setup_clocks(xtal, fclk, hclk, pclk);
+	s3c24xx_setup_clocks(fclk, hclk, pclk);
 
 	printk("S3C2443: mpll %s %ld.%03ld MHz, cpu %ld.%03ld MHz, mem %ld.%03ld MHz, pclk %ld.%03ld MHz\n",
 	       (mpllcon & S3C2443_PLLCON_OFF) ? "off":"on",
 	       print_mhz(pll), print_mhz(fclk),
 	       print_mhz(hclk), print_mhz(pclk));
 
+	s3c24xx_setup_clocks(fclk, hclk, pclk);
+}
+
+void __init s3c2443_init_clocks(int xtal)
+{
+	struct clk *clkp;
+	unsigned long epllcon = __raw_readl(S3C2443_EPLLCON);
+	int ret;
+	int ptr;
+
+	/* s3c2443 parents h and p clocks from prediv */
+	clk_h.parent = &clk_prediv;
+	clk_p.parent = &clk_prediv;
+
+	s3c24xx_register_baseclocks(xtal);
+	s3c2443_setup_clocks();
 	s3c2443_clk_initparents();
 
 	for (ptr = 0; ptr < ARRAY_SIZE(clks); ptr++) {
@@ -978,7 +1057,7 @@ void __init s3c2443_init_clocks(int xtal)
 	}
 
 	clk_epll.rate = s3c2443_get_epll(epllcon, xtal);
-
+	clk_epll.parent = &clk_epllref;
 	clk_usb_bus.parent = &clk_usb_bus_host;
 
 	/* ensure usb bus clock is within correct rate of 48MHz */
@@ -1027,4 +1106,6 @@ void __init s3c2443_init_clocks(int xtal)
 
 		(clkp->enable)(clkp, 0);
 	}
+
+	s3c_pwmclk_init();
 }

@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2007 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -37,8 +37,6 @@
  * Signal information.
  * Defaul offset is required for RSSI <-> dBm conversion.
  */
-#define MAX_SIGNAL			100
-#define MAX_RX_SSI			-1
 #define DEFAULT_RSSI_OFFSET		100
 
 /*
@@ -48,8 +46,15 @@
 #define CSR_REG_SIZE			0x014c
 #define EEPROM_BASE			0x0000
 #define EEPROM_SIZE			0x0100
+#define BBP_BASE			0x0000
 #define BBP_SIZE			0x0020
+#define RF_BASE				0x0000
 #define RF_SIZE				0x0010
+
+/*
+ * Number of TX queues.
+ */
+#define NUM_TX_QUEUES			2
 
 /*
  * Control/Status Registers(CSR).
@@ -803,8 +808,8 @@
 /*
  * DMA descriptor defines.
  */
-#define TXD_DESC_SIZE			( 8 * sizeof(struct data_desc) )
-#define RXD_DESC_SIZE			( 8 * sizeof(struct data_desc) )
+#define TXD_DESC_SIZE			( 8 * sizeof(__le32) )
+#define RXD_DESC_SIZE			( 8 * sizeof(__le32) )
 
 /*
  * TX descriptor format for TX, PRIO, ATIM and Beacon Ring.
@@ -839,11 +844,21 @@
 
 /*
  * Word3 & 4: PLCP information
+ * The PLCP values should be treated as if they were BBP values.
  */
-#define TXD_W3_PLCP_SIGNAL		FIELD32(0x0000ffff)
-#define TXD_W3_PLCP_SERVICE		FIELD32(0xffff0000)
-#define TXD_W4_PLCP_LENGTH_LOW		FIELD32(0x0000ffff)
-#define TXD_W4_PLCP_LENGTH_HIGH		FIELD32(0xffff0000)
+#define TXD_W3_PLCP_SIGNAL		FIELD32(0x000000ff)
+#define TXD_W3_PLCP_SIGNAL_REGNUM	FIELD32(0x00007f00)
+#define TXD_W3_PLCP_SIGNAL_BUSY		FIELD32(0x00008000)
+#define TXD_W3_PLCP_SERVICE		FIELD32(0x00ff0000)
+#define TXD_W3_PLCP_SERVICE_REGNUM	FIELD32(0x7f000000)
+#define TXD_W3_PLCP_SERVICE_BUSY	FIELD32(0x80000000)
+
+#define TXD_W4_PLCP_LENGTH_LOW		FIELD32(0x000000ff)
+#define TXD_W3_PLCP_LENGTH_LOW_REGNUM	FIELD32(0x00007f00)
+#define TXD_W3_PLCP_LENGTH_LOW_BUSY	FIELD32(0x00008000)
+#define TXD_W4_PLCP_LENGTH_HIGH		FIELD32(0x00ff0000)
+#define TXD_W3_PLCP_LENGTH_HIGH_REGNUM	FIELD32(0x7f000000)
+#define TXD_W3_PLCP_LENGTH_HIGH_BUSY	FIELD32(0x80000000)
 
 /*
  * Word5
@@ -889,13 +904,13 @@
  * Word2
  */
 #define RXD_W2_BUFFER_LENGTH		FIELD32(0x0000ffff)
-#define RXD_W2_SIGNAL			FIELD32(0x00ff0000)
-#define RXD_W2_RSSI			FIELD32(0xff000000)
+#define RXD_W2_BBR0			FIELD32(0x00ff0000)
+#define RXD_W2_SIGNAL			FIELD32(0xff000000)
 
 /*
  * Word3
  */
-#define RXD_W3_BBR2			FIELD32(0x000000ff)
+#define RXD_W3_RSSI			FIELD32(0x000000ff)
 #define RXD_W3_BBR3			FIELD32(0x0000ff00)
 #define RXD_W3_BBR4			FIELD32(0x00ff0000)
 #define RXD_W3_BBR5			FIELD32(0xff000000)
@@ -913,31 +928,25 @@
 #define RXD_W7_RESERVED			FIELD32(0xffffffff)
 
 /*
- * Macro's for converting txpower from EEPROM to dscape value
- * and from dscape value to register value.
+ * Macro's for converting txpower from EEPROM to mac80211 value
+ * and from mac80211 value to register value.
  * NOTE: Logics in rt2400pci for txpower are reversed
  * compared to the other rt2x00 drivers. A higher txpower
  * value means that the txpower must be lowered. This is
  * important when converting the value coming from the
- * dscape stack to the rt2400 acceptable value.
+ * mac80211 stack to the rt2400 acceptable value.
  */
 #define MIN_TXPOWER	31
 #define MAX_TXPOWER	62
 #define DEFAULT_TXPOWER	39
 
-#define TXPOWER_FROM_DEV(__txpower)					\
-({									\
-	((__txpower) > MAX_TXPOWER) ? DEFAULT_TXPOWER - MIN_TXPOWER :	\
-	((__txpower) < MIN_TXPOWER) ? DEFAULT_TXPOWER - MIN_TXPOWER :	\
-	(((__txpower) - MAX_TXPOWER) + MIN_TXPOWER);			\
-})
+#define __CLAMP_TX(__txpower) \
+	clamp_t(char, (__txpower), MIN_TXPOWER, MAX_TXPOWER)
 
-#define TXPOWER_TO_DEV(__txpower)			\
-({							\
-	(__txpower) += MIN_TXPOWER;			\
-	((__txpower) <= MIN_TXPOWER) ? MAX_TXPOWER :	\
-	(((__txpower) >= MAX_TXPOWER) ? MIN_TXPOWER :	\
-	(MAX_TXPOWER - ((__txpower) - MIN_TXPOWER)));	\
-})
+#define TXPOWER_FROM_DEV(__txpower) \
+	((__CLAMP_TX(__txpower) - MAX_TXPOWER) + MIN_TXPOWER)
+
+#define TXPOWER_TO_DEV(__txpower) \
+	MAX_TXPOWER - (__CLAMP_TX(__txpower) - MIN_TXPOWER)
 
 #endif /* RT2400PCI_H */

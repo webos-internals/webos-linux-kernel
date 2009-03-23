@@ -34,8 +34,7 @@
 #include <linux/hardirq.h>
 #include <linux/irq.h>
 #include <linux/thread_info.h>
-
-#define DEFINE(sym, val) asm volatile("\n->" #sym " %0 " #val : : "i" (val))
+#include <linux/kbuild.h>
 
 int main(void)
 {
@@ -64,6 +63,7 @@ int main(void)
 	DEFINE(KERNEL_STACK_SIZE, THREAD_SIZE);
 
 	/* offsets into the pt_regs */
+	DEFINE(PT_ORIG_R0, offsetof(struct pt_regs, orig_r0));
 	DEFINE(PT_ORIG_P0, offsetof(struct pt_regs, orig_p0));
 	DEFINE(PT_ORIG_PC, offsetof(struct pt_regs, orig_pc));
 	DEFINE(PT_R0, offsetof(struct pt_regs, r0));
@@ -130,6 +130,32 @@ int main(void)
 	/* signal defines */
 	DEFINE(SIGSEGV, SIGSEGV);
 	DEFINE(SIGTRAP, SIGTRAP);
+
+	/* PDA management (in L1 scratchpad) */
+	DEFINE(PDA_SYSCFG, offsetof(struct blackfin_pda, syscfg));
+#ifdef CONFIG_SMP
+	DEFINE(PDA_IRQFLAGS, offsetof(struct blackfin_pda, imask));
+#endif
+	DEFINE(PDA_IPDT, offsetof(struct blackfin_pda, ipdt));
+	DEFINE(PDA_IPDT_SWAPCOUNT, offsetof(struct blackfin_pda, ipdt_swapcount));
+	DEFINE(PDA_DPDT, offsetof(struct blackfin_pda, dpdt));
+	DEFINE(PDA_DPDT_SWAPCOUNT, offsetof(struct blackfin_pda, dpdt_swapcount));
+	DEFINE(PDA_EXIPTR, offsetof(struct blackfin_pda, ex_iptr));
+	DEFINE(PDA_EXOPTR, offsetof(struct blackfin_pda, ex_optr));
+	DEFINE(PDA_EXBUF, offsetof(struct blackfin_pda, ex_buf));
+	DEFINE(PDA_EXIMASK, offsetof(struct blackfin_pda, ex_imask));
+	DEFINE(PDA_EXSTACK, offsetof(struct blackfin_pda, ex_stack));
+#ifdef ANOMALY_05000261
+	DEFINE(PDA_LFRETX, offsetof(struct blackfin_pda, last_cplb_fault_retx));
+#endif
+	DEFINE(PDA_DCPLB, offsetof(struct blackfin_pda, dcplb_fault_addr));
+	DEFINE(PDA_ICPLB, offsetof(struct blackfin_pda, icplb_fault_addr));
+	DEFINE(PDA_RETX, offsetof(struct blackfin_pda, retx));
+	DEFINE(PDA_SEQSTAT, offsetof(struct blackfin_pda, seqstat));
+#ifdef CONFIG_SMP
+	/* Inter-core lock (in L2 SRAM) */
+	DEFINE(SIZEOF_CORELOCK, sizeof(struct corelock_slot));
+#endif
 
 	return 0;
 }

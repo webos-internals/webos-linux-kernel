@@ -181,13 +181,13 @@ static void pnx8xxx_enable_ms(struct uart_port *port)
 
 static void pnx8xxx_rx_chars(struct pnx8xxx_port *sport)
 {
-	struct tty_struct *tty = sport->port.info->tty;
+	struct tty_struct *tty = sport->port.info->port.tty;
 	unsigned int status, ch, flg;
 
 	status = FIFO_TO_SM(serial_in(sport, PNX8XXX_FIFO)) |
 		 ISTAT_TO_SM(serial_in(sport, PNX8XXX_ISTAT));
 	while (status & FIFO_TO_SM(PNX8XXX_UART_FIFO_RXFIFO)) {
-		ch = serial_in(sport, PNX8XXX_FIFO);
+		ch = serial_in(sport, PNX8XXX_FIFO) & 0xff;
 
 		sport->port.icount.rx++;
 
@@ -198,9 +198,16 @@ static void pnx8xxx_rx_chars(struct pnx8xxx_port *sport)
 		 * out of the main execution path
 		 */
 		if (status & (FIFO_TO_SM(PNX8XXX_UART_FIFO_RXFE |
-					PNX8XXX_UART_FIFO_RXPAR) |
+					PNX8XXX_UART_FIFO_RXPAR |
+					PNX8XXX_UART_FIFO_RXBRK) |
 			      ISTAT_TO_SM(PNX8XXX_UART_INT_RXOVRN))) {
-			if (status & FIFO_TO_SM(PNX8XXX_UART_FIFO_RXPAR))
+			if (status & FIFO_TO_SM(PNX8XXX_UART_FIFO_RXBRK)) {
+				status &= ~(FIFO_TO_SM(PNX8XXX_UART_FIFO_RXFE) |
+					FIFO_TO_SM(PNX8XXX_UART_FIFO_RXPAR));
+				sport->port.icount.brk++;
+				if (uart_handle_break(&sport->port))
+					goto ignore_char;
+			} else if (status & FIFO_TO_SM(PNX8XXX_UART_FIFO_RXPAR))
 				sport->port.icount.parity++;
 			else if (status & FIFO_TO_SM(PNX8XXX_UART_FIFO_RXFE))
 				sport->port.icount.frame++;
@@ -284,14 +291,8 @@ static irqreturn_t pnx8xxx_int(int irq, void *dev_id)
 	/* Get the interrupts */
 	status  = serial_in(sport, PNX8XXX_ISTAT) & serial_in(sport, PNX8XXX_IEN);
 
-	/* Break signal received */
-	if (status & PNX8XXX_UART_INT_BREAK) {
-		sport->port.icount.brk++;
-		uart_handle_break(&sport->port);
-	}
-
-	/* Byte received */
-	if (status & PNX8XXX_UART_INT_RX)
+	/* Byte or break signal received */
+	if (status & (PNX8XXX_UART_INT_RX | PNX8XXX_UART_INT_BREAK))
 		pnx8xxx_rx_chars(sport);
 
 	/* TX holding register empty - transmit a byte */
@@ -824,7 +825,7 @@ static int __init pnx8xxx_serial_init(void)
 {
 	int ret;
 
-	printk(KERN_INFO "Serial: PNX8XXX driver $Revision: 1.2 $\n");
+	printk(KERN_INFO "Serial: PNX8XXX driver\n");
 
 	pnx8xxx_init_ports();
 
@@ -850,3 +851,4 @@ MODULE_AUTHOR("Embedded Alley Solutions, Inc.");
 MODULE_DESCRIPTION("PNX8XXX SoCs serial port driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_CHARDEV_MAJOR(SERIAL_PNX8XXX_MAJOR);
+MODULE_ALIAS("platform:pnx8xxx-uart");

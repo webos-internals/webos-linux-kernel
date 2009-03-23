@@ -45,7 +45,6 @@
 #include <linux/spinlock.h>
 #include <linux/dma-mapping.h>
 
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/control.h>
@@ -869,7 +868,8 @@ snd_harmony_mixer_init(struct snd_harmony *h)
 	struct snd_card *card = h->card;
 	int idx, err;
 
-	snd_assert(h != NULL, return -EINVAL);
+	if (snd_BUG_ON(!h))
+		return -EINVAL;
 	strcpy(card->mixername, "Harmony Gain control interface");
 
 	for (idx = 0; idx < HARMONY_CONTROLS; idx++) {

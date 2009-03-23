@@ -13,6 +13,9 @@
 #define PL2303_PRODUCT_ID_DCU11		0x1234
 #define PL2303_PRODUCT_ID_PHAROS	0xaaa0
 #define PL2303_PRODUCT_ID_RSAQ3		0xaaa2
+#define PL2303_PRODUCT_ID_ALDIGA	0x0611
+#define PL2303_PRODUCT_ID_MMX		0x0612
+#define PL2303_PRODUCT_ID_GPRS		0x0609
 
 #define ATEN_VENDOR_ID		0x0557
 #define ATEN_VENDOR_ID2		0x0547
@@ -96,10 +99,6 @@
 #define ALCOR_VENDOR_ID		0x058F
 #define ALCOR_PRODUCT_ID	0x9720
 
-/* Huawei E620 UMTS/HSDPA card (ID: 12d1:1001) */
-#define HUAWEI_VENDOR_ID	0x12d1
-#define HUAWEI_PRODUCT_ID	0x1001
-
 /* Willcom WS002IN Data Driver (by NetIndex Inc.) */
 #define WS002IN_VENDOR_ID	0x11f6
 #define WS002IN_PRODUCT_ID	0x2001
@@ -107,3 +106,15 @@
 /* Corega CG-USBRS232R Serial Adapter */
 #define COREGA_VENDOR_ID	0x07aa
 #define COREGA_PRODUCT_ID	0x002a
+
+/* Y.C. Cable U.S.A., Inc - USB to RS-232 */
+#define YCCABLE_VENDOR_ID	0x05ad
+#define YCCABLE_PRODUCT_ID	0x0fba
+
+/* "Superial" USB - Serial */
+#define SUPERIAL_VENDOR_ID	0x5372
+#define SUPERIAL_PRODUCT_ID	0x2303
+
+/* Hewlett-Packard LD220-HP POS Pole Display */
+#define HP_VENDOR_ID		0x03f0
+#define HP_LD220_PRODUCT_ID	0x3524

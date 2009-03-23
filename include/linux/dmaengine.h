@@ -29,32 +29,6 @@
 #include <linux/dma-mapping.h>
 
 /**
- * enum dma_state - resource PNP/power managment state
- * @DMA_RESOURCE_SUSPEND: DMA device going into low power state
- * @DMA_RESOURCE_RESUME: DMA device returning to full power
- * @DMA_RESOURCE_AVAILABLE: DMA device available to the system
- * @DMA_RESOURCE_REMOVED: DMA device removed from the system
- */
-enum dma_state {
-	DMA_RESOURCE_SUSPEND,
-	DMA_RESOURCE_RESUME,
-	DMA_RESOURCE_AVAILABLE,
-	DMA_RESOURCE_REMOVED,
-};
-
-/**
- * enum dma_state_client - state of the channel in the client
- * @DMA_ACK: client would like to use, or was using this channel
- * @DMA_DUP: client has already seen this channel, or is not using this channel
- * @DMA_NAK: client does not want to see any more channels
- */
-enum dma_state_client {
-	DMA_ACK,
-	DMA_DUP,
-	DMA_NAK,
-};
-
-/**
  * typedef dma_cookie_t - an opaque DMA cookie
  *
  * if dma_cookie_t is >0 it's a DMA request cookie, <0 it's an error code
@@ -89,10 +63,31 @@ enum dma_transaction_type {
 	DMA_MEMSET,
 	DMA_MEMCPY_CRC32C,
 	DMA_INTERRUPT,
+	DMA_PRIVATE,
+	DMA_SLAVE,
 };
 
 /* last transaction type for creation of the capabilities mask */
-#define DMA_TX_TYPE_END (DMA_INTERRUPT + 1)
+#define DMA_TX_TYPE_END (DMA_SLAVE + 1)
+
+
+/**
+ * enum dma_ctrl_flags - DMA flags to augment operation preparation,
+ * 	control completion, and communicate status.
+ * @DMA_PREP_INTERRUPT - trigger an interrupt (callback) upon completion of
+ * 	this transaction
+ * @DMA_CTRL_ACK - the descriptor cannot be reused until the client
+ * 	acknowledges receipt, i.e. has has a chance to establish any
+ * 	dependency chains
+ * @DMA_COMPL_SKIP_SRC_UNMAP - set to disable dma-unmapping the source buffer(s)
+ * @DMA_COMPL_SKIP_DEST_UNMAP - set to disable dma-unmapping the destination(s)
+ */
+enum dma_ctrl_flags {
+	DMA_PREP_INTERRUPT = (1 << 0),
+	DMA_CTRL_ACK = (1 << 1),
+	DMA_COMPL_SKIP_SRC_UNMAP = (1 << 2),
+	DMA_COMPL_SKIP_DEST_UNMAP = (1 << 3),
+};
 
 /**
  * dma_cap_mask_t - capabilities bitmap modeled after cpumask_t.
@@ -102,13 +97,11 @@ typedef struct { DECLARE_BITMAP(bits, DMA_TX_TYPE_END); } dma_cap_mask_t;
 
 /**
  * struct dma_chan_percpu - the per-CPU part of struct dma_chan
- * @refcount: local_t used for open-coded "bigref" counting
  * @memcpy_count: transaction counter
  * @bytes_transferred: byte counter
  */
 
 struct dma_chan_percpu {
-	local_t refcount;
 	/* stats */
 	unsigned long memcpy_count;
 	unsigned long bytes_transferred;
@@ -119,12 +112,12 @@ struct dma_chan_percpu {
  * @device: ptr to the dma device who supplies this channel, always !%NULL
  * @cookie: last cookie value returned to client
  * @chan_id: channel ID for sysfs
- * @class_dev: class device for sysfs
- * @refcount: kref, used in "bigref" slow-mode
- * @slow_ref: indicates that the DMA channel is free
- * @rcu: the DMA channel's RCU head
+ * @dev: class device for sysfs
  * @device_node: used to add this to the device chan list
  * @local: per-cpu pointer to a struct dma_chan_percpu
+ * @client-count: how many clients are using this channel
+ * @table_count: number of appearances in the mem-to-mem allocation table
+ * @private: private data for certain client-channel associations
  */
 struct dma_chan {
 	struct dma_device *device;
@@ -132,68 +125,48 @@ struct dma_chan {
 
 	/* sysfs */
 	int chan_id;
-	struct class_device class_dev;
-
-	struct kref refcount;
-	int slow_ref;
-	struct rcu_head rcu;
+	struct dma_chan_dev *dev;
 
 	struct list_head device_node;
 	struct dma_chan_percpu *local;
+	int client_count;
+	int table_count;
+	void *private;
 };
 
+/**
+ * struct dma_chan_dev - relate sysfs device node to backing channel device
+ * @chan - driver channel device
+ * @device - sysfs device
+ * @dev_id - parent dma_device dev_id
+ * @idr_ref - reference count to gate release of dma_device dev_id
+ */
+struct dma_chan_dev {
+	struct dma_chan *chan;
+	struct device device;
+	int dev_id;
+	atomic_t *idr_ref;
+};
+
+static inline const char *dma_chan_name(struct dma_chan *chan)
+{
+	return dev_name(&chan->dev->device);
+}
 
 void dma_chan_cleanup(struct kref *kref);
 
-static inline void dma_chan_get(struct dma_chan *chan)
-{
-	if (unlikely(chan->slow_ref))
-		kref_get(&chan->refcount);
-	else {
-		local_inc(&(per_cpu_ptr(chan->local, get_cpu())->refcount));
-		put_cpu();
-	}
-}
-
-static inline void dma_chan_put(struct dma_chan *chan)
-{
-	if (unlikely(chan->slow_ref))
-		kref_put(&chan->refcount, dma_chan_cleanup);
-	else {
-		local_dec(&(per_cpu_ptr(chan->local, get_cpu())->refcount));
-		put_cpu();
-	}
-}
-
-/*
- * typedef dma_event_callback - function pointer to a DMA event callback
- * For each channel added to the system this routine is called for each client.
- * If the client would like to use the channel it returns '1' to signal (ack)
- * the dmaengine core to take out a reference on the channel and its
- * corresponding device.  A client must not 'ack' an available channel more
- * than once.  When a channel is removed all clients are notified.  If a client
- * is using the channel it must 'ack' the removal.  A client must not 'ack' a
- * removed channel more than once.
- * @client - 'this' pointer for the client context
- * @chan - channel to be acted upon
- * @state - available or removed
- */
-struct dma_client;
-typedef enum dma_state_client (*dma_event_callback) (struct dma_client *client,
-		struct dma_chan *chan, enum dma_state state);
-
 /**
- * struct dma_client - info on the entity making use of DMA services
- * @event_callback: func ptr to call when something happens
- * @cap_mask: only return channels that satisfy the requested capabilities
- *  a value of zero corresponds to any capability
- * @global_node: list_head for global dma_client_list
+ * typedef dma_filter_fn - callback filter for dma_request_channel
+ * @chan: channel to be reviewed
+ * @filter_param: opaque parameter passed through dma_request_channel
+ *
+ * When this optional parameter is specified in a call to dma_request_channel a
+ * suitable channel is passed to this routine for further dispositioning before
+ * being returned.  Where 'suitable' indicates a non-busy channel that
+ * satisfies the given capability mask.  It returns 'true' to indicate that the
+ * channel is suitable.
  */
-struct dma_client {
-	dma_event_callback	event_callback;
-	dma_cap_mask_t		cap_mask;
-	struct list_head	global_node;
-};
+typedef bool (*dma_filter_fn)(struct dma_chan *chan, void *filter_param);
 
 typedef void (*dma_async_tx_callback)(void *dma_async_param);
 /**
@@ -201,39 +174,30 @@ typedef void (*dma_async_tx_callback)(void *dma_async_param);
  * ---dma generic offload fields---
  * @cookie: tracking cookie for this transaction, set to -EBUSY if
  *	this tx is sitting on a dependency list
- * @ack: the descriptor can not be reused until the client acknowledges
- *	receipt, i.e. has has a chance to establish any dependency chains
+ * @flags: flags to augment operation preparation, control completion, and
+ * 	communicate status
  * @phys: physical address of the descriptor
  * @tx_list: driver common field for operations that require multiple
  *	descriptors
  * @chan: target channel for this operation
  * @tx_submit: set the prepared descriptor(s) to be executed by the engine
- * @tx_set_dest: set a destination address in a hardware descriptor
- * @tx_set_src: set a source address in a hardware descriptor
  * @callback: routine to call after this operation is complete
  * @callback_param: general parameter to pass to the callback routine
  * ---async_tx api specific fields---
- * @depend_list: at completion this list of transactions are submitted
- * @depend_node: allow this transaction to be executed after another
- *	transaction has completed, possibly on another channel
+ * @next: at completion submit this descriptor
  * @parent: pointer to the next level up in the dependency chain
- * @lock: protect the dependency list
+ * @lock: protect the parent and next pointers
  */
 struct dma_async_tx_descriptor {
 	dma_cookie_t cookie;
-	int ack;
+	enum dma_ctrl_flags flags; /* not a 'long' to pack with cookie */
 	dma_addr_t phys;
 	struct list_head tx_list;
 	struct dma_chan *chan;
 	dma_cookie_t (*tx_submit)(struct dma_async_tx_descriptor *tx);
-	void (*tx_set_dest)(dma_addr_t addr,
-		struct dma_async_tx_descriptor *tx, int index);
-	void (*tx_set_src)(dma_addr_t addr,
-		struct dma_async_tx_descriptor *tx, int index);
 	dma_async_tx_callback callback;
 	void *callback_param;
-	struct list_head depend_list;
-	struct list_head depend_node;
+	struct dma_async_tx_descriptor *next;
 	struct dma_async_tx_descriptor *parent;
 	spinlock_t lock;
 };
@@ -245,8 +209,6 @@ struct dma_async_tx_descriptor {
  * @global_node: list_head for global dma_device_list
  * @cap_mask: one or more dma_capability flags
  * @max_xor: maximum number of xor sources, 0 if no capability
- * @refcount: reference count
- * @done: IO completion struct
  * @dev_id: unique device ID
  * @dev: struct device reference for dma mapping api
  * @device_alloc_chan_resources: allocate resources and return the
@@ -257,7 +219,9 @@ struct dma_async_tx_descriptor {
  * @device_prep_dma_zero_sum: prepares a zero_sum operation
  * @device_prep_dma_memset: prepares a memset operation
  * @device_prep_dma_interrupt: prepares an end of chain interrupt operation
- * @device_dependency_added: async_tx notifies the channel about new deps
+ * @device_prep_slave_sg: prepares a slave dma operation
+ * @device_terminate_all: terminate all pending operations
+ * @device_is_tx_complete: poll for transaction completion
  * @device_issue_pending: push pending transactions to hardware
  */
 struct dma_device {
@@ -268,9 +232,6 @@ struct dma_device {
 	dma_cap_mask_t  cap_mask;
 	int max_xor;
 
-	struct kref refcount;
-	struct completion done;
-
 	int dev_id;
 	struct device *dev;
 
@@ -278,19 +239,26 @@ struct dma_device {
 	void (*device_free_chan_resources)(struct dma_chan *chan);
 
 	struct dma_async_tx_descriptor *(*device_prep_dma_memcpy)(
-		struct dma_chan *chan, size_t len, int int_en);
+		struct dma_chan *chan, dma_addr_t dest, dma_addr_t src,
+		size_t len, unsigned long flags);
 	struct dma_async_tx_descriptor *(*device_prep_dma_xor)(
-		struct dma_chan *chan, unsigned int src_cnt, size_t len,
-		int int_en);
+		struct dma_chan *chan, dma_addr_t dest, dma_addr_t *src,
+		unsigned int src_cnt, size_t len, unsigned long flags);
 	struct dma_async_tx_descriptor *(*device_prep_dma_zero_sum)(
-		struct dma_chan *chan, unsigned int src_cnt, size_t len,
-		u32 *result, int int_en);
+		struct dma_chan *chan, dma_addr_t *src,	unsigned int src_cnt,
+		size_t len, u32 *result, unsigned long flags);
 	struct dma_async_tx_descriptor *(*device_prep_dma_memset)(
-		struct dma_chan *chan, int value, size_t len, int int_en);
+		struct dma_chan *chan, dma_addr_t dest, int value, size_t len,
+		unsigned long flags);
 	struct dma_async_tx_descriptor *(*device_prep_dma_interrupt)(
-		struct dma_chan *chan);
+		struct dma_chan *chan, unsigned long flags);
 
-	void (*device_dependency_added)(struct dma_chan *chan);
+	struct dma_async_tx_descriptor *(*device_prep_slave_sg)(
+		struct dma_chan *chan, struct scatterlist *sgl,
+		unsigned int sg_len, enum dma_data_direction direction,
+		unsigned long flags);
+	void (*device_terminate_all)(struct dma_chan *chan);
+
 	enum dma_status (*device_is_tx_complete)(struct dma_chan *chan,
 			dma_cookie_t cookie, dma_cookie_t *last,
 			dma_cookie_t *used);
@@ -299,9 +267,30 @@ struct dma_device {
 
 /* --- public DMA engine API --- */
 
-void dma_async_client_register(struct dma_client *client);
-void dma_async_client_unregister(struct dma_client *client);
-void dma_async_client_chan_request(struct dma_client *client);
+#ifdef CONFIG_DMA_ENGINE
+void dmaengine_get(void);
+void dmaengine_put(void);
+#else
+static inline void dmaengine_get(void)
+{
+}
+static inline void dmaengine_put(void)
+{
+}
+#endif
+
+#ifdef CONFIG_NET_DMA
+#define net_dmaengine_get()	dmaengine_get()
+#define net_dmaengine_put()	dmaengine_put()
+#else
+static inline void net_dmaengine_get(void)
+{
+}
+static inline void net_dmaengine_put(void)
+{
+}
+#endif
+
 dma_cookie_t dma_async_memcpy_buf_to_buf(struct dma_chan *chan,
 	void *dest, void *src, size_t len);
 dma_cookie_t dma_async_memcpy_buf_to_pg(struct dma_chan *chan,
@@ -312,10 +301,19 @@ dma_cookie_t dma_async_memcpy_pg_to_pg(struct dma_chan *chan,
 void dma_async_tx_descriptor_init(struct dma_async_tx_descriptor *tx,
 	struct dma_chan *chan);
 
-static inline void
-async_tx_ack(struct dma_async_tx_descriptor *tx)
+static inline void async_tx_ack(struct dma_async_tx_descriptor *tx)
 {
-	tx->ack = 1;
+	tx->flags |= DMA_CTRL_ACK;
+}
+
+static inline void async_tx_clear_ack(struct dma_async_tx_descriptor *tx)
+{
+	tx->flags &= ~DMA_CTRL_ACK;
+}
+
+static inline bool async_tx_test_ack(struct dma_async_tx_descriptor *tx)
+{
+	return (tx->flags & DMA_CTRL_ACK) == DMA_CTRL_ACK;
 }
 
 #define first_dma_cap(mask) __first_dma_cap(&(mask))
@@ -339,6 +337,12 @@ __dma_cap_set(enum dma_transaction_type tx_type, dma_cap_mask_t *dstp)
 	set_bit(tx_type, dstp->bits);
 }
 
+#define dma_cap_zero(mask) __dma_cap_zero(&(mask))
+static inline void __dma_cap_zero(dma_cap_mask_t *dstp)
+{
+	bitmap_zero(dstp->bits, DMA_TX_TYPE_END);
+}
+
 #define dma_has_cap(tx, mask) __dma_has_cap((tx), &(mask))
 static inline int
 __dma_has_cap(enum dma_transaction_type tx_type, dma_cap_mask_t *srcp)
@@ -360,7 +364,7 @@ __dma_has_cap(enum dma_transaction_type tx_type, dma_cap_mask_t *srcp)
  */
 static inline void dma_async_issue_pending(struct dma_chan *chan)
 {
-	return chan->device->device_issue_pending(chan);
+	chan->device->device_issue_pending(chan);
 }
 
 #define dma_async_memcpy_issue_pending(chan) dma_async_issue_pending(chan)
@@ -392,7 +396,7 @@ static inline enum dma_status dma_async_is_tx_complete(struct dma_chan *chan,
  * @last_used: last cookie value handed out
  *
  * dma_async_is_complete() is used in dma_async_memcpy_complete()
- * the test logic is seperated for lightweight testing of multiple cookies
+ * the test logic is separated for lightweight testing of multiple cookies
  */
 static inline enum dma_status dma_async_is_complete(dma_cookie_t cookie,
 			dma_cookie_t last_complete, dma_cookie_t last_used)
@@ -408,16 +412,34 @@ static inline enum dma_status dma_async_is_complete(dma_cookie_t cookie,
 }
 
 enum dma_status dma_sync_wait(struct dma_chan *chan, dma_cookie_t cookie);
+#ifdef CONFIG_DMA_ENGINE
+enum dma_status dma_wait_for_async_tx(struct dma_async_tx_descriptor *tx);
+void dma_issue_pending_all(void);
+#else
+static inline enum dma_status dma_wait_for_async_tx(struct dma_async_tx_descriptor *tx)
+{
+	return DMA_SUCCESS;
+}
+static inline void dma_issue_pending_all(void)
+{
+	do { } while (0);
+}
+#endif
 
 /* --- DMA device --- */
 
 int dma_async_device_register(struct dma_device *device);
 void dma_async_device_unregister(struct dma_device *device);
+void dma_run_dependencies(struct dma_async_tx_descriptor *tx);
+struct dma_chan *dma_find_channel(enum dma_transaction_type tx_type);
+#define dma_request_channel(mask, x, y) __dma_request_channel(&(mask), x, y)
+struct dma_chan *__dma_request_channel(dma_cap_mask_t *mask, dma_filter_fn fn, void *fn_param);
+void dma_release_channel(struct dma_chan *chan);
 
 /* --- Helper iov-locking functions --- */
 
 struct dma_page_list {
-	char *base_address;
+	char __user *base_address;
 	int nr_pages;
 	struct page **pages;
 };

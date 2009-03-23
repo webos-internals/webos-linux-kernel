@@ -41,12 +41,9 @@ static inline void *kmalloc(size_t size, gfp_t flags)
 			goto found; \
 		else \
 			i++;
-#include "kmalloc_sizes.h"
+#include <linux/kmalloc_sizes.h>
 #undef CACHE
-		{
-			extern void __you_cannot_kmalloc_that_much(void);
-			__you_cannot_kmalloc_that_much();
-		}
+		return NULL;
 found:
 #ifdef CONFIG_ZONE_DMA
 		if (flags & GFP_DMA)
@@ -75,12 +72,9 @@ static inline void *kmalloc_node(size_t size, gfp_t flags, int node)
 			goto found; \
 		else \
 			i++;
-#include "kmalloc_sizes.h"
+#include <linux/kmalloc_sizes.h>
 #undef CACHE
-		{
-			extern void __you_cannot_kmalloc_that_much(void);
-			__you_cannot_kmalloc_that_much();
-		}
+		return NULL;
 found:
 #ifdef CONFIG_ZONE_DMA
 		if (flags & GFP_DMA)

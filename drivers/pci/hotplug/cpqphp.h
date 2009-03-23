@@ -449,6 +449,11 @@ extern u8 cpqhp_disk_irq;
 
 /* inline functions */
 
+static inline char *slot_name(struct slot *slot)
+{
+	return hotplug_slot_name(slot->hotplug_slot);
+}
+
 /*
  * return_resource
  *
@@ -674,7 +679,7 @@ static inline int cpq_get_latch_status(struct controller *ctrl, struct slot *slo
 
 	hp_slot = slot->device - ctrl->slot_device_offset;
 	dbg("%s: slot->device = %d, ctrl->slot_device_offset = %d \n",
-	    __FUNCTION__, slot->device, ctrl->slot_device_offset);
+	    __func__, slot->device, ctrl->slot_device_offset);
 
 	status = (readl(ctrl->hpc_reg + INT_INPUT_CLEAR) & (0x01L << hp_slot));
 
@@ -696,20 +701,12 @@ static inline int get_presence_status(struct controller *ctrl, struct slot *slot
 	return presence_save;
 }
 
-#define SLOT_NAME_SIZE 10
-
-static inline void make_slot_name(char *buffer, int buffer_size, struct slot *slot)
-{
-	snprintf(buffer, buffer_size, "%d", slot->number);
-}
-
-
 static inline int wait_for_ctrl_irq(struct controller *ctrl)
 {
         DECLARE_WAITQUEUE(wait, current);
 	int retval = 0;
 
-	dbg("%s - start\n", __FUNCTION__);
+	dbg("%s - start\n", __func__);
 	add_wait_queue(&ctrl->queue, &wait);
 	/* Sleep for up to 1 second to wait for the LED to change. */
 	msleep_interruptible(1000);
@@ -717,7 +714,7 @@ static inline int wait_for_ctrl_irq(struct controller *ctrl)
 	if (signal_pending(current))
 		retval =  -EINTR;
 
-	dbg("%s - end\n", __FUNCTION__);
+	dbg("%s - end\n", __func__);
 	return retval;
 }
 

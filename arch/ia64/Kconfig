@@ -7,6 +7,8 @@ mainmenu "IA-64 Linux Kernel Configuration"
 
 source "init/Kconfig"
 
+source "kernel/Kconfig.freezer"
+
 menu "Processor type and features"
 
 config IA64
@@ -15,6 +17,14 @@ config IA64
 	select ACPI if (!IA64_HP_SIM)
 	select PM if (!IA64_HP_SIM)
 	select ARCH_SUPPORTS_MSI
+	select HAVE_UNSTABLE_SCHED_CLOCK
+	select HAVE_IDE
+	select HAVE_OPROFILE
+	select HAVE_KPROBES
+	select HAVE_KRETPROBES
+	select HAVE_DMA_ATTRS
+	select HAVE_KVM
+	select HAVE_ARCH_TRACEHOOK
 	default y
 	help
 	  The Itanium Processor Family is Intel's 64-bit successor to
@@ -42,17 +52,17 @@ config MMU
 config SWIOTLB
        bool
 
+config IOMMU_HELPER
+       bool
+
+config GENERIC_LOCKBREAK
+	bool
+	default y
+	depends on SMP && PREEMPT
+
 config RWSEM_XCHGADD_ALGORITHM
 	bool
 	default y
-
-config ARCH_HAS_ILOG2_U32
-	bool
-	default n
-
-config ARCH_HAS_ILOG2_U64
-	bool
-	default n
 
 config HUGETLB_PAGE_SIZE_VARIABLE
 	bool
@@ -75,6 +85,9 @@ config GENERIC_TIME_VSYSCALL
 	bool
 	default y
 
+config HAVE_SETUP_PER_CPU_AREA
+	def_bool y
+
 config DMI
 	bool
 	default y
@@ -87,7 +100,7 @@ config GENERIC_IOMAP
 	bool
 	default y
 
-config SCHED_NO_NO_OMIT_FRAME_POINTER
+config SCHED_OMIT_FRAME_POINTER
 	bool
 	default y
 
@@ -99,6 +112,33 @@ config AUDIT_ARCH
 	bool
 	default y
 
+menuconfig PARAVIRT_GUEST
+	bool "Paravirtualized guest support"
+	help
+	  Say Y here to get to see options related to running Linux under
+	  various hypervisors.  This option alone does not add any kernel code.
+
+	  If you say N, all options in this submenu will be skipped and disabled.
+
+if PARAVIRT_GUEST
+
+config PARAVIRT
+	bool "Enable paravirtualization code"
+	depends on PARAVIRT_GUEST
+	default y
+	bool
+	default y
+	help
+	  This changes the kernel so it can modify itself when it is run
+	  under a hypervisor, potentially improving performance significantly
+	  over full virtualization.  However, when run without a hypervisor
+	  the kernel is theoretically slower and slightly larger.
+
+
+source "arch/ia64/xen/Kconfig"
+
+endif
+
 choice
 	prompt "System type"
 	default IA64_GENERIC
@@ -108,6 +148,8 @@ config IA64_GENERIC
 	select NUMA
 	select ACPI_NUMA
 	select SWIOTLB
+	select PCI_MSI
+	select DMAR
 	help
 	  This selects the system type of your hardware.  A "generic" kernel
 	  will run on any supported IA-64 system.  However, if you configure
@@ -115,16 +157,24 @@ config IA64_GENERIC
 
 	  generic		For any supported IA-64 system
 	  DIG-compliant		For DIG ("Developer's Interface Guide") compliant systems
+	  DIG+Intel+IOMMU	For DIG systems with Intel IOMMU
 	  HP-zx1/sx1000		For HP systems
 	  HP-zx1/sx1000+swiotlb	For HP systems with (broken) DMA-constrained devices.
 	  SGI-SN2		For SGI Altix systems
+	  SGI-UV		For SGI UV systems
 	  Ski-simulator		For the HP simulator <http://www.hpl.hp.com/research/linux/ski/>
+	  Xen-domU		For xen domU system
 
 	  If you don't know what to do, choose "generic".
 
 config IA64_DIG
 	bool "DIG-compliant"
 	select SWIOTLB
+
+config IA64_DIG_VTD
+	bool "DIG+Intel+IOMMU"
+	select DMAR
+	select PCI_MSI
 
 config IA64_HP_ZX1
 	bool "HP-zx1/sx1000"
@@ -144,6 +194,8 @@ config IA64_HP_ZX1_SWIOTLB
 
 config IA64_SGI_SN2
 	bool "SGI-SN2"
+	select NUMA
+	select ACPI_NUMA
 	help
 	  Selecting this option will optimize the kernel for use on sn2 based
 	  systems, but the resulting kernel binary will not run on other
@@ -151,9 +203,29 @@ config IA64_SGI_SN2
 	  to select this option.  If in doubt, select ia64 generic support
 	  instead.
 
+config IA64_SGI_UV
+	bool "SGI-UV"
+	select NUMA
+	select ACPI_NUMA
+	select SWIOTLB
+	help
+	  Selecting this option will optimize the kernel for use on UV based
+	  systems, but the resulting kernel binary will not run on other
+	  types of ia64 systems.  If you have an SGI UV system, it's safe
+	  to select this option.  If in doubt, select ia64 generic support
+	  instead.
+
 config IA64_HP_SIM
 	bool "Ski-simulator"
 	select SWIOTLB
+
+config IA64_XEN_GUEST
+	bool "Xen guest"
+	select SWIOTLB
+	depends on XEN
+	help
+	  Build a kernel that runs on Xen guest domain. At this moment only
+	  16KB page size in supported.
 
 endchoice
 
@@ -221,7 +293,14 @@ config PGTABLE_4
 
 endchoice
 
+if IA64_HP_SIM
+config HZ
+	default 32
+endif
+
+if !IA64_HP_SIM
 source kernel/Kconfig.hz
+endif
 
 config IA64_BRL_EMU
 	bool
@@ -245,25 +324,26 @@ config IOSAPIC
 	depends on !IA64_HP_SIM
 	default y
 
-config IA64_SGI_SN_XP
-	tristate "Support communication between SGI SSIs"
-	depends on IA64_GENERIC || IA64_SGI_SN2
-	select IA64_UNCACHED_ALLOCATOR
-	help
-	  An SGI machine can be divided into multiple Single System
-	  Images which act independently of each other and have
-	  hardware based memory protection from the others.  Enabling
-	  this feature will allow for direct communication between SSIs
-	  based on a network adapter and DMA messaging.
-
 config FORCE_MAX_ZONEORDER
 	int "MAX_ORDER (11 - 17)"  if !HUGETLB_PAGE
 	range 11 17  if !HUGETLB_PAGE
 	default "17" if HUGETLB_PAGE
 	default "11"
 
+config VIRT_CPU_ACCOUNTING
+	bool "Deterministic task and CPU time accounting"
+	default n
+	help
+	  Select this option to enable more accurate task and CPU time
+	  accounting.  This is done by reading a CPU counter on each
+	  kernel entry and exit and on transitions within the kernel
+	  between system, softirq and hardirq state, so there is a
+	  small performance impact.
+	  If in doubt, say N here.
+
 config SMP
 	bool "Symmetric multi-processing support"
+	select USE_GENERIC_SMP_HELPERS
 	help
 	  This enables support for systems with more than one CPU. If you have
 	  a system with only one CPU, say N.  If you have a system with more
@@ -275,16 +355,16 @@ config SMP
 	  single processor systems.  On a single processor system, the kernel
 	  will run faster if you say N here.
 
-	  See also the <file:Documentation/smp.txt> and the SMP-HOWTO
-	  available at <http://www.tldp.org/docs.html#howto>.
+	  See also the SMP-HOWTO available at
+	  <http://www.tldp.org/docs.html#howto>.
 
 	  If you don't know what to do here, say N.
 
 config NR_CPUS
-	int "Maximum number of CPUs (2-1024)"
-	range 2 1024
+	int "Maximum number of CPUs (2-4096)"
+	range 2 4096
 	depends on SMP
-	default "1024"
+	default "4096"
 	help
 	  You should set this to the number of CPUs in your system, but
 	  keep in mind that a kernel compiled for, e.g., 2 CPUs will boot but
@@ -403,8 +483,7 @@ config HOLES_IN_ZONE
 	default y if VIRTUAL_MEM_MAP
 
 config HAVE_ARCH_EARLY_PFN_TO_NID
-	def_bool y
-	depends on NEED_MULTIPLE_NODES
+	def_bool NUMA && SPARSEMEM
 
 config HAVE_ARCH_NODEDATA_EXTENSION
 	def_bool y
@@ -500,8 +579,8 @@ config KEXEC
 	  strongly in flux, so no good recommendation can be made.
 
 config CRASH_DUMP
-	  bool "kernel crash dumps (EXPERIMENTAL)"
-	  depends on EXPERIMENTAL && IA64_MCA_RECOVERY && !IA64_HP_SIM && (!SMP || HOTPLUG_CPU)
+	  bool "kernel crash dumps"
+	  depends on IA64_MCA_RECOVERY && !IA64_HP_SIM && (!SMP || HOTPLUG_CPU)
 	  help
 	    Generate crash dump after being started by kexec.
 
@@ -511,7 +590,7 @@ source "fs/Kconfig.binfmt"
 
 endmenu
 
-menu "Power management and ACPI"
+menu "Power management and ACPI options"
 
 source "kernel/power/Kconfig"
 
@@ -549,6 +628,27 @@ source "drivers/pci/hotplug/Kconfig"
 
 source "drivers/pcmcia/Kconfig"
 
+config DMAR
+        bool "Support for DMA Remapping Devices (EXPERIMENTAL)"
+        depends on IA64_GENERIC && ACPI && EXPERIMENTAL
+	help
+	  DMA remapping (DMAR) devices support enables independent address
+	  translations for Direct Memory Access (DMA) from devices.
+	  These DMA remapping devices are reported via ACPI tables
+	  and include PCI device scope covered by these DMA
+	  remapping devices.
+
+config DMAR_DEFAULT_ON
+	def_bool y
+	prompt "Enable DMA Remapping Devices by default"
+	depends on DMAR
+	help
+	  Selecting this option will enable a DMAR device at boot time if
+	  one is found. If this option is not selected, DMAR support can
+	  be enabled by passing intel_iommu=on to the kernel. It is
+	  recommended you say N here while the DMAR code remains
+	  experimental.
+
 endmenu
 
 endif
@@ -556,6 +656,8 @@ endif
 source "net/Kconfig"
 
 source "drivers/Kconfig"
+
+source "arch/ia64/hp/sim/Kconfig"
 
 config MSPEC
 	tristate "Memory special operations driver"
@@ -567,6 +669,14 @@ config MSPEC
 	  otherwise say N.
 
 source "fs/Kconfig"
+
+source "arch/ia64/Kconfig.debug"
+
+source "security/Kconfig"
+
+source "crypto/Kconfig"
+
+source "arch/ia64/kvm/Kconfig"
 
 source "lib/Kconfig"
 
@@ -590,12 +700,8 @@ config IRQ_PER_CPU
 	bool
 	default y
 
-source "arch/ia64/hp/sim/Kconfig"
+config IOMMU_HELPER
+	def_bool (IA64_HP_ZX1 || IA64_HP_ZX1_SWIOTLB || IA64_GENERIC || SWIOTLB)
 
-source "kernel/Kconfig.instrumentation"
-
-source "arch/ia64/Kconfig.debug"
-
-source "security/Kconfig"
-
-source "crypto/Kconfig"
+config IOMMU_API
+	def_bool (DMAR)

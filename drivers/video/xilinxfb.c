@@ -24,7 +24,6 @@
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/version.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/mm.h>
@@ -299,8 +298,9 @@ static int xilinxfb_assign(struct device *dev, unsigned long physaddr,
 
 	/* Put a banner in the log (for DEBUG) */
 	dev_dbg(dev, "regs: phys=%lx, virt=%p\n", physaddr, drvdata->regs);
-	dev_dbg(dev, "fb: phys=%p, virt=%p, size=%x\n",
-		(void*)drvdata->fb_phys, drvdata->fb_virt, fbsize);
+	dev_dbg(dev, "fb: phys=%llx, virt=%p, size=%x\n",
+		(unsigned long long) drvdata->fb_phys, drvdata->fb_virt,
+		fbsize);
 
 	return 0;	/* success */
 
@@ -459,8 +459,8 @@ static int __devexit xilinxfb_of_remove(struct of_device *op)
 }
 
 /* Match table for of_platform binding */
-static struct of_device_id __devinit xilinxfb_of_match[] = {
-	{ .compatible = "xilinx,ml300-fb", },
+static struct of_device_id xilinxfb_of_match[] __devinitdata = {
+	{ .compatible = "xlnx,plb-tft-cntlr-ref-1.00.a", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, xilinxfb_of_match);

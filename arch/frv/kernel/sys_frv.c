@@ -28,23 +28,6 @@
 #include <asm/setup.h>
 #include <asm/uaccess.h>
 
-/*
- * sys_pipe() is the normal C calling standard for creating
- * a pipe. It's not the way unix traditionally does this, though.
- */
-asmlinkage long sys_pipe(unsigned long __user * fildes)
-{
-	int fd[2];
-	int error;
-
-	error = do_pipe(fd);
-	if (!error) {
-		if (copy_to_user(fildes, fd, 2*sizeof(int)))
-			error = -EFAULT;
-	}
-	return error;
-}
-
 asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
 			  unsigned long prot, unsigned long flags,
 			  unsigned long fd, unsigned long pgoff)
@@ -52,22 +35,21 @@ asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
 	int error = -EBADF;
 	struct file * file = NULL;
 
+	/* As with sparc32, make sure the shift for mmap2 is constant
+	   (12), no matter what PAGE_SIZE we have.... */
+
+	/* But unlike sparc32, don't just silently break if we're
+	   trying to map something we can't */
+	if (pgoff & ((1 << (PAGE_SHIFT - 12)) - 1))
+		return -EINVAL;
+	pgoff >>= PAGE_SHIFT - 12;
+
 	flags &= ~(MAP_EXECUTABLE | MAP_DENYWRITE);
 	if (!(flags & MAP_ANONYMOUS)) {
 		file = fget(fd);
 		if (!file)
 			goto out;
 	}
-
-	/* As with sparc32, make sure the shift for mmap2 is constant
-	   (12), no matter what PAGE_SIZE we have.... */
-
-	/* But unlike sparc32, don't just silently break if we're
-	   trying to map something we can't */
-	if (pgoff & ((1<<(PAGE_SHIFT-12))-1))
-		return -EINVAL;
-
-	pgoff >>= (PAGE_SHIFT - 12);
 
 	down_write(&current->mm->mmap_sem);
 	error = do_mmap_pgoff(file, addr, len, prot, flags, pgoff);

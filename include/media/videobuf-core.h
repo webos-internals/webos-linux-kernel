@@ -13,6 +13,9 @@
  * the Free Software Foundation; either version 2
  */
 
+#ifndef _VIDEOBUF_CORE_H
+#define _VIDEOBUF_CORE_H
+
 #include <linux/poll.h>
 #ifdef CONFIG_VIDEO_V4L1_COMPAT
 #include <linux/videodev.h>
@@ -56,13 +59,13 @@ struct videobuf_mapping {
 };
 
 enum videobuf_state {
-	STATE_NEEDS_INIT = 0,
-	STATE_PREPARED   = 1,
-	STATE_QUEUED     = 2,
-	STATE_ACTIVE     = 3,
-	STATE_DONE       = 4,
-	STATE_ERROR      = 5,
-	STATE_IDLE       = 6,
+	VIDEOBUF_NEEDS_INIT = 0,
+	VIDEOBUF_PREPARED   = 1,
+	VIDEOBUF_QUEUED     = 2,
+	VIDEOBUF_ACTIVE     = 3,
+	VIDEOBUF_DONE       = 4,
+	VIDEOBUF_ERROR      = 5,
+	VIDEOBUF_IDLE       = 6,
 };
 
 struct videobuf_buffer {
@@ -123,7 +126,8 @@ struct videobuf_queue_ops {
 struct videobuf_qtype_ops {
 	u32                     magic;
 
-	void* (*alloc)		(size_t size);
+	void *(*alloc)		(size_t size);
+	void *(*vmalloc)	(struct videobuf_buffer *buf);
 	int (*iolock)		(struct videobuf_queue* q,
 				 struct videobuf_buffer *vb,
 				 struct v4l2_framebuffer *fbuf);
@@ -149,9 +153,11 @@ struct videobuf_qtype_ops {
 };
 
 struct videobuf_queue {
-	struct mutex               lock;
+	struct mutex               vb_lock;
 	spinlock_t                 *irqlock;
-	void			   *dev; /* on pci, points to struct pci_dev */
+	struct device		   *dev;
+
+	wait_queue_head_t	   wait; /* wait if queue is empty */
 
 	enum v4l2_buf_type         type;
 	unsigned int               inputs; /* for V4L2_BUF_FLAG_INPUT */
@@ -162,12 +168,14 @@ struct videobuf_queue {
 	struct videobuf_queue_ops  *ops;
 	struct videobuf_qtype_ops  *int_ops;
 
+	unsigned int               streaming:1;
+	unsigned int               reading:1;
+	unsigned int		   is_mmapped:1;
+
 	/* capture via mmap() + ioctl(QBUF/DQBUF) */
-	unsigned int               streaming;
 	struct list_head           stream;
 
 	/* capture via read() */
-	unsigned int               reading;
 	unsigned int               read_off;
 	struct videobuf_buffer     *read_buf;
 
@@ -181,9 +189,13 @@ int videobuf_iolock(struct videobuf_queue* q, struct videobuf_buffer *vb,
 
 void *videobuf_alloc(struct videobuf_queue* q);
 
+/* Used on videobuf-dvb */
+void *videobuf_queue_to_vmalloc (struct videobuf_queue* q,
+				 struct videobuf_buffer *buf);
+
 void videobuf_queue_core_init(struct videobuf_queue *q,
 			 struct videobuf_queue_ops *ops,
-			 void *dev,
+			 struct device *dev,
 			 spinlock_t *irqlock,
 			 enum v4l2_buf_type type,
 			 enum v4l2_field field,
@@ -225,14 +237,11 @@ unsigned int videobuf_poll_stream(struct file *file,
 int videobuf_mmap_setup(struct videobuf_queue *q,
 			unsigned int bcount, unsigned int bsize,
 			enum v4l2_memory memory);
+int __videobuf_mmap_setup(struct videobuf_queue *q,
+			unsigned int bcount, unsigned int bsize,
+			enum v4l2_memory memory);
 int videobuf_mmap_free(struct videobuf_queue *q);
 int videobuf_mmap_mapper(struct videobuf_queue *q,
 			 struct vm_area_struct *vma);
 
-/* --------------------------------------------------------------------- */
-
-/*
- * Local variables:
- * c-basic-offset: 8
- * End:
- */
+#endif

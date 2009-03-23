@@ -3,7 +3,7 @@
  *
  *  Copyright (C) 2003-2004 Russell King, All Rights Reserved.
  *  SD support Copyright (C) 2004 Ian Molton, All Rights Reserved.
- *  Copyright (C) 2005-2007 Pierre Ossman, All Rights Reserved.
+ *  Copyright (C) 2005-2008 Pierre Ossman, All Rights Reserved.
  *  MMCv4 support Copyright (C) 2006 Philip Langdale, All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,6 +20,7 @@
 #include <linux/err.h>
 #include <linux/leds.h>
 #include <linux/scatterlist.h>
+#include <linux/log2.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
@@ -34,10 +35,6 @@
 #include "mmc_ops.h"
 #include "sd_ops.h"
 #include "sdio_ops.h"
-
-extern int mmc_attach_mmc(struct mmc_host *host, u32 ocr);
-extern int mmc_attach_sd(struct mmc_host *host, u32 ocr);
-extern int mmc_attach_sdio(struct mmc_host *host, u32 ocr);
 
 static struct workqueue_struct *workqueue;
 
@@ -125,6 +122,7 @@ mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 {
 #ifdef CONFIG_MMC_DEBUG
 	unsigned int i, sz;
+	struct scatterlist *sg;
 #endif
 
 	pr_debug("%s: starting CMD%u arg %08x flags %08x\n",
@@ -160,8 +158,8 @@ mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 
 #ifdef CONFIG_MMC_DEBUG
 		sz = 0;
-		for (i = 0;i < mrq->data->sg_len;i++)
-			sz += mrq->data->sg[i].length;
+		for_each_sg(mrq->data->sg, sg, mrq->data->sg_len, i)
+			sz += sg->length;
 		BUG_ON(sz != mrq->data->blocks * mrq->data->blksz);
 #endif
 
@@ -283,7 +281,11 @@ void mmc_set_data_timeout(struct mmc_data *data, const struct mmc_card *card)
 			(card->host->ios.clock / 1000);
 
 		if (data->flags & MMC_DATA_WRITE)
-			limit_us = 250000;
+			/*
+			 * The limit is really 250 ms, but that is
+			 * insufficient for some crappy cards.
+			 */
+			limit_us = 300000;
 		else
 			limit_us = 100000;
 
@@ -297,6 +299,33 @@ void mmc_set_data_timeout(struct mmc_data *data, const struct mmc_card *card)
 	}
 }
 EXPORT_SYMBOL(mmc_set_data_timeout);
+
+/**
+ *	mmc_align_data_size - pads a transfer size to a more optimal value
+ *	@card: the MMC card associated with the data transfer
+ *	@sz: original transfer size
+ *
+ *	Pads the original data size with a number of extra bytes in
+ *	order to avoid controller bugs and/or performance hits
+ *	(e.g. some controllers revert to PIO for certain sizes).
+ *
+ *	Returns the improved size, which might be unmodified.
+ *
+ *	Note that this function is only relevant when issuing a
+ *	single scatter gather entry.
+ */
+unsigned int mmc_align_data_size(struct mmc_card *card, unsigned int sz)
+{
+	/*
+	 * FIXME: We don't have a system for the controller to tell
+	 * the core about its problems yet, so for now we just 32-bit
+	 * align the size.
+	 */
+	sz = ((sz + 3) / 4) * 4;
+
+	return sz;
+}
+EXPORT_SYMBOL(mmc_align_data_size);
 
 /**
  *	__mmc_claim_host - exclusively claim a host
@@ -420,6 +449,80 @@ void mmc_set_bus_width(struct mmc_host *host, unsigned int width)
 	mmc_set_ios(host);
 }
 
+/**
+ * mmc_vdd_to_ocrbitnum - Convert a voltage to the OCR bit number
+ * @vdd:	voltage (mV)
+ * @low_bits:	prefer low bits in boundary cases
+ *
+ * This function returns the OCR bit number according to the provided @vdd
+ * value. If conversion is not possible a negative errno value returned.
+ *
+ * Depending on the @low_bits flag the function prefers low or high OCR bits
+ * on boundary voltages. For example,
+ * with @low_bits = true, 3300 mV translates to ilog2(MMC_VDD_32_33);
+ * with @low_bits = false, 3300 mV translates to ilog2(MMC_VDD_33_34);
+ *
+ * Any value in the [1951:1999] range translates to the ilog2(MMC_VDD_20_21).
+ */
+static int mmc_vdd_to_ocrbitnum(int vdd, bool low_bits)
+{
+	const int max_bit = ilog2(MMC_VDD_35_36);
+	int bit;
+
+	if (vdd < 1650 || vdd > 3600)
+		return -EINVAL;
+
+	if (vdd >= 1650 && vdd <= 1950)
+		return ilog2(MMC_VDD_165_195);
+
+	if (low_bits)
+		vdd -= 1;
+
+	/* Base 2000 mV, step 100 mV, bit's base 8. */
+	bit = (vdd - 2000) / 100 + 8;
+	if (bit > max_bit)
+		return max_bit;
+	return bit;
+}
+
+/**
+ * mmc_vddrange_to_ocrmask - Convert a voltage range to the OCR mask
+ * @vdd_min:	minimum voltage value (mV)
+ * @vdd_max:	maximum voltage value (mV)
+ *
+ * This function returns the OCR mask bits according to the provided @vdd_min
+ * and @vdd_max values. If conversion is not possible the function returns 0.
+ *
+ * Notes wrt boundary cases:
+ * This function sets the OCR bits for all boundary voltages, for example
+ * [3300:3400] range is translated to MMC_VDD_32_33 | MMC_VDD_33_34 |
+ * MMC_VDD_34_35 mask.
+ */
+u32 mmc_vddrange_to_ocrmask(int vdd_min, int vdd_max)
+{
+	u32 mask = 0;
+
+	if (vdd_max < vdd_min)
+		return 0;
+
+	/* Prefer high bits for the boundary vdd_max values. */
+	vdd_max = mmc_vdd_to_ocrbitnum(vdd_max, false);
+	if (vdd_max < 0)
+		return 0;
+
+	/* Prefer low bits for the boundary vdd_min values. */
+	vdd_min = mmc_vdd_to_ocrbitnum(vdd_min, true);
+	if (vdd_min < 0)
+		return 0;
+
+	/* Fill the mask, from max bit to min bit. */
+	while (vdd_max >= vdd_min)
+		mask |= 1 << vdd_max--;
+
+	return mask;
+}
+EXPORT_SYMBOL(mmc_vddrange_to_ocrmask);
+
 /*
  * Mask off any voltages we don't support and select
  * the lowest voltage
@@ -439,6 +542,8 @@ u32 mmc_select_voltage(struct mmc_host *host, u32 ocr)
 		host->ios.vdd = bit;
 		mmc_set_ios(host);
 	} else {
+		pr_warning("%s: host doesn't support card's voltages\n",
+				mmc_hostname(host));
 		ocr = 0;
 	}
 
@@ -516,7 +621,7 @@ static void mmc_power_off(struct mmc_host *host)
 /*
  * Cleanup when the last reference to the bus operator is dropped.
  */
-void __mmc_release_bus(struct mmc_host *host)
+static void __mmc_release_bus(struct mmc_host *host)
 {
 	BUG_ON(!host);
 	BUG_ON(host->bus_refs);
@@ -642,6 +747,9 @@ void mmc_rescan(struct work_struct *work)
 		 */
 		mmc_bus_put(host);
 
+		if (host->ops->get_cd && host->ops->get_cd(host) == 0)
+			goto out;
+
 		mmc_claim_host(host);
 
 		mmc_power_up(host);
@@ -656,7 +764,7 @@ void mmc_rescan(struct work_struct *work)
 		if (!err) {
 			if (mmc_attach_sdio(host, ocr))
 				mmc_power_off(host);
-			return;
+			goto out;
 		}
 
 		/*
@@ -666,7 +774,7 @@ void mmc_rescan(struct work_struct *work)
 		if (!err) {
 			if (mmc_attach_sd(host, ocr))
 				mmc_power_off(host);
-			return;
+			goto out;
 		}
 
 		/*
@@ -676,7 +784,7 @@ void mmc_rescan(struct work_struct *work)
 		if (!err) {
 			if (mmc_attach_mmc(host, ocr))
 				mmc_power_off(host);
-			return;
+			goto out;
 		}
 
 		mmc_release_host(host);
@@ -687,6 +795,9 @@ void mmc_rescan(struct work_struct *work)
 
 		mmc_bus_put(host);
 	}
+out:
+	if (host->caps & MMC_CAP_NEEDS_POLL)
+		mmc_schedule_delayed_work(&host->detect, HZ);
 }
 
 void mmc_start_host(struct mmc_host *host)

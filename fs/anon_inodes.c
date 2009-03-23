@@ -57,22 +57,19 @@ static struct dentry_operations anon_inodefs_dentry_operations = {
  *                    anonymous inode, and a dentry that describe the "class"
  *                    of the file
  *
- * @pfd:     [out]   pointer to the file descriptor
- * @dpinode: [out]   pointer to the inode
- * @pfile:   [out]   pointer to the file struct
  * @name:    [in]    name of the "class" of the new file
- * @fops     [in]    file operations for the new file
- * @priv     [in]    private data for the new file (will be file's private_data)
+ * @fops:    [in]    file operations for the new file
+ * @priv:    [in]    private data for the new file (will be file's private_data)
+ * @flags:   [in]    flags
  *
  * Creates a new file by hooking it on a single inode. This is useful for files
  * that do not need to have a full-fledged inode in order to operate correctly.
  * All the files created with anon_inode_getfd() will share a single inode,
  * hence saving memory and avoiding code duplication for the file/inode/dentry
- * setup.
+ * setup.  Returns new descriptor or -error.
  */
-int anon_inode_getfd(int *pfd, struct inode **pinode, struct file **pfile,
-		     const char *name, const struct file_operations *fops,
-		     void *priv)
+int anon_inode_getfd(const char *name, const struct file_operations *fops,
+		     void *priv, int flags)
 {
 	struct qstr this;
 	struct dentry *dentry;
@@ -81,13 +78,13 @@ int anon_inode_getfd(int *pfd, struct inode **pinode, struct file **pfile,
 
 	if (IS_ERR(anon_inode_inode))
 		return -ENODEV;
-	file = get_empty_filp();
-	if (!file)
-		return -ENFILE;
 
-	error = get_unused_fd();
+	if (fops->owner && !try_module_get(fops->owner))
+		return -ENOENT;
+
+	error = get_unused_fd_flags(flags);
 	if (error < 0)
-		goto err_put_filp;
+		goto err_module;
 	fd = error;
 
 	/*
@@ -114,28 +111,28 @@ int anon_inode_getfd(int *pfd, struct inode **pinode, struct file **pfile,
 	dentry->d_flags &= ~DCACHE_UNHASHED;
 	d_instantiate(dentry, anon_inode_inode);
 
-	file->f_path.mnt = mntget(anon_inode_mnt);
-	file->f_path.dentry = dentry;
+	error = -ENFILE;
+	file = alloc_file(anon_inode_mnt, dentry,
+			  FMODE_READ | FMODE_WRITE, fops);
+	if (!file)
+		goto err_dput;
 	file->f_mapping = anon_inode_inode->i_mapping;
 
 	file->f_pos = 0;
-	file->f_flags = O_RDWR;
-	file->f_op = fops;
-	file->f_mode = FMODE_READ | FMODE_WRITE;
+	file->f_flags = O_RDWR | (flags & O_NONBLOCK);
 	file->f_version = 0;
 	file->private_data = priv;
 
 	fd_install(fd, file);
 
-	*pfd = fd;
-	*pinode = anon_inode_inode;
-	*pfile = file;
-	return 0;
+	return fd;
 
+err_dput:
+	dput(dentry);
 err_put_unused_fd:
 	put_unused_fd(fd);
-err_put_filp:
-	put_filp(file);
+err_module:
+	module_put(fops->owner);
 	return error;
 }
 EXPORT_SYMBOL_GPL(anon_inode_getfd);
@@ -162,8 +159,8 @@ static struct inode *anon_inode_mkinode(void)
 	 */
 	inode->i_state = I_DIRTY;
 	inode->i_mode = S_IRUSR | S_IWUSR;
-	inode->i_uid = current->fsuid;
-	inode->i_gid = current->fsgid;
+	inode->i_uid = current_fsuid();
+	inode->i_gid = current_fsgid();
 	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
 	return inode;
 }

@@ -12,12 +12,12 @@
  *
  * Updated: Frank Mayer <mayerf@tresys.com> and Karl MacMillan <kmacmillan@tresys.com>
  *
- * 	Added conditional policy language extensions
+ *	Added conditional policy language extensions
  *
  * Copyright (C) 2004-2005 Trusted Computer Solutions, Inc.
  * Copyright (C) 2003 - 2004 Tresys Technology, LLC
  *	This program is free software; you can redistribute it and/or modify
- *  	it under the terms of the GNU General Public License as published by
+ *	it under the terms of the GNU General Public License as published by
  *	the Free Software Foundation, version 2.
  */
 
@@ -61,6 +61,7 @@ struct class_datum {
 /* Role attributes */
 struct role_datum {
 	u32 value;			/* internal role value */
+	u32 bounds;			/* boundary of role */
 	struct ebitmap dominates;	/* set of roles dominated by this role */
 	struct ebitmap types;		/* set of authorized types for role */
 };
@@ -81,12 +82,15 @@ struct role_allow {
 /* Type attributes */
 struct type_datum {
 	u32 value;		/* internal type value */
+	u32 bounds;		/* boundary of type */
 	unsigned char primary;	/* primary name? */
+	unsigned char attribute;/* attribute ?*/
 };
 
 /* User attributes */
 struct user_datum {
 	u32 value;			/* internal user value */
+	u32 bounds;			/* bounds of user */
 	struct ebitmap roles;		/* set of authorized roles for user */
 	struct mls_range range;		/* MLS range (min - max) for user */
 	struct mls_level dfltlevel;	/* default login MLS level for user */
@@ -209,6 +213,7 @@ struct policydb {
 	struct class_datum **class_val_to_struct;
 	struct role_datum **role_val_to_struct;
 	struct user_datum **user_val_to_struct;
+	struct type_datum **type_val_to_struct;
 
 	/* type enforcement access vectors and transitions */
 	struct avtab te_avtab;
@@ -221,7 +226,7 @@ struct policydb {
 	/* type enforcement conditional access vectors and transitions */
 	struct avtab te_cond_avtab;
 	/* linked list indexing te_cond_avtab by conditional */
-	struct cond_node* cond_list;
+	struct cond_node *cond_list;
 
 	/* role allows */
 	struct role_allow *role_allow;
@@ -230,16 +235,20 @@ struct policydb {
 	   TCP or UDP port numbers, network interfaces and nodes */
 	struct ocontext *ocontexts[OCON_NUM];
 
-        /* security contexts for files in filesystems that cannot support
+	/* security contexts for files in filesystems that cannot support
 	   a persistent label mapping or use another
 	   fixed labeling behavior. */
-  	struct genfs *genfs;
+	struct genfs *genfs;
 
 	/* range transitions */
 	struct range_trans *range_tr;
 
 	/* type -> attribute reverse mapping */
 	struct ebitmap *type_attr_map;
+
+	struct ebitmap policycaps;
+
+	struct ebitmap permissive_map;
 
 	unsigned int policyvers;
 

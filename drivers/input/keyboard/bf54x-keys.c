@@ -8,7 +8,7 @@
  *
  *
  * Modified:
- *               Copyright 2007 Analog Devices Inc.
+ *               Copyright 2007-2008 Analog Devices Inc.
  *
  * Bugs:         Enter bugs at http://blackfin.uclinux.org/
  *
@@ -29,7 +29,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/version.h>
 
 #include <linux/init.h>
 #include <linux/fs.h>
@@ -42,10 +41,9 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
-#include <linux/irq.h>
 
 #include <asm/portmux.h>
-#include <asm/mach/bf54x_keys.h>
+#include <mach/bf54x_keys.h>
 
 #define DRV_NAME	"bf54x-keys"
 #define TIME_SCALE	100	/* 100 ns */
@@ -83,6 +81,9 @@ struct bf54x_kpad {
 	unsigned short *keycode;
 	struct timer_list timer;
 	unsigned int keyup_test_jiffies;
+	unsigned short kpad_msel;
+	unsigned short kpad_prescale;
+	unsigned short kpad_ctl;
 };
 
 static inline int bfin_kpad_find_key(struct bf54x_kpad *bf54x_kpad,
@@ -208,8 +209,8 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	if (!pdata->debounce_time || !pdata->debounce_time > MAX_MULT ||
-	    !pdata->coldrive_time || !pdata->coldrive_time > MAX_MULT) {
+	if (!pdata->debounce_time || pdata->debounce_time > MAX_MULT ||
+	    !pdata->coldrive_time || pdata->coldrive_time > MAX_MULT) {
 		printk(KERN_ERR DRV_NAME
 			": Invalid Debounce/Columdrive Time from pdata\n");
 		bfin_write_KPAD_MSEL(0xFF0);	/* Default MSEL	*/
@@ -313,6 +314,8 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 
 	bfin_write_KPAD_CTL(bfin_read_KPAD_CTL() | KPAD_EN);
 
+	device_init_wakeup(&pdev->dev, 1);
+
 	printk(KERN_ERR DRV_NAME
 		": Blackfin BF54x Keypad registered IRQ %d\n", bf54x_kpad->irq);
 
@@ -355,12 +358,48 @@ static int __devexit bfin_kpad_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int bfin_kpad_suspend(struct platform_device *pdev, pm_message_t state)
+{
+	struct bf54x_kpad *bf54x_kpad = platform_get_drvdata(pdev);
+
+	bf54x_kpad->kpad_msel = bfin_read_KPAD_MSEL();
+	bf54x_kpad->kpad_prescale = bfin_read_KPAD_PRESCALE();
+	bf54x_kpad->kpad_ctl = bfin_read_KPAD_CTL();
+
+	if (device_may_wakeup(&pdev->dev))
+		enable_irq_wake(bf54x_kpad->irq);
+
+	return 0;
+}
+
+static int bfin_kpad_resume(struct platform_device *pdev)
+{
+	struct bf54x_kpad *bf54x_kpad = platform_get_drvdata(pdev);
+
+	bfin_write_KPAD_MSEL(bf54x_kpad->kpad_msel);
+	bfin_write_KPAD_PRESCALE(bf54x_kpad->kpad_prescale);
+	bfin_write_KPAD_CTL(bf54x_kpad->kpad_ctl);
+
+	if (device_may_wakeup(&pdev->dev))
+		disable_irq_wake(bf54x_kpad->irq);
+
+	return 0;
+}
+#else
+# define bfin_kpad_suspend NULL
+# define bfin_kpad_resume  NULL
+#endif
+
 struct platform_driver bfin_kpad_device_driver = {
-	.probe		= bfin_kpad_probe,
-	.remove		= __devexit_p(bfin_kpad_remove),
 	.driver		= {
 		.name	= DRV_NAME,
-	}
+		.owner	= THIS_MODULE,
+	},
+	.probe		= bfin_kpad_probe,
+	.remove		= __devexit_p(bfin_kpad_remove),
+	.suspend	= bfin_kpad_suspend,
+	.resume		= bfin_kpad_resume,
 };
 
 static int __init bfin_kpad_init(void)
@@ -379,3 +418,4 @@ module_exit(bfin_kpad_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
 MODULE_DESCRIPTION("Keypad driver for BF54x Processors");
+MODULE_ALIAS("platform:bf54x-keys");

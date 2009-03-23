@@ -18,30 +18,6 @@ static int add_nondir(struct dentry *dentry, struct inode *inode)
 	return err;
 }
 
-static int minix_hash(struct dentry *dentry, struct qstr *qstr)
-{
-	unsigned long hash;
-	int i;
-	const unsigned char *name;
-
-	i = minix_sb(dentry->d_inode->i_sb)->s_namelen;
-	if (i >= qstr->len)
-		return 0;
-	/* Truncate the name in place, avoids having to define a compare
-	   function. */
-	qstr->len = i;
-	name = qstr->name;
-	hash = init_name_hash();
-	while (i--)
-		hash = partial_name_hash(*name++, hash);
-	qstr->hash = end_name_hash(hash);
-	return 0;
-}
-
-struct dentry_operations minix_dentry_operations = {
-	.d_hash		= minix_hash,
-};
-
 static struct dentry *minix_lookup(struct inode * dir, struct dentry *dentry, struct nameidata *nd)
 {
 	struct inode * inode = NULL;
@@ -54,10 +30,9 @@ static struct dentry *minix_lookup(struct inode * dir, struct dentry *dentry, st
 
 	ino = minix_inode_by_name(dentry);
 	if (ino) {
-		inode = iget(dir->i_sb, ino);
- 
-		if (!inode)
-			return ERR_PTR(-EACCES);
+		inode = minix_iget(dir->i_sb, ino);
+		if (IS_ERR(inode))
+			return ERR_CAST(inode);
 	}
 	d_add(dentry, inode);
 	return NULL;

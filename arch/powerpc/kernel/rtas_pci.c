@@ -56,21 +56,6 @@ static inline int config_access_valid(struct pci_dn *dn, int where)
 	return 0;
 }
 
-static int of_device_available(struct device_node * dn)
-{
-        const char *status;
-
-        status = of_get_property(dn, "status", NULL);
-
-        if (!status)
-                return 1;
-
-        if (!strcmp(status, "okay"))
-                return 1;
-
-        return 0;
-}
-
 int rtas_read_config(struct pci_dn *pdn, int where, int size, u32 *val)
 {
 	int returnval = -1;
@@ -117,7 +102,7 @@ static int rtas_pci_read_config(struct pci_bus *bus,
 	for (dn = busdn->child; dn; dn = dn->sibling) {
 		struct pci_dn *pdn = PCI_DN(dn);
 		if (pdn && pdn->devfn == devfn
-		    && of_device_available(dn))
+		    && of_device_is_available(dn))
 			return rtas_read_config(pdn, where, size, val);
 	}
 
@@ -164,18 +149,18 @@ static int rtas_pci_write_config(struct pci_bus *bus,
 	for (dn = busdn->child; dn; dn = dn->sibling) {
 		struct pci_dn *pdn = PCI_DN(dn);
 		if (pdn && pdn->devfn == devfn
-		    && of_device_available(dn))
+		    && of_device_is_available(dn))
 			return rtas_write_config(pdn, where, size, val);
 	}
 	return PCIBIOS_DEVICE_NOT_FOUND;
 }
 
-struct pci_ops rtas_pci_ops = {
+static struct pci_ops rtas_pci_ops = {
 	.read = rtas_pci_read_config,
 	.write = rtas_pci_write_config,
 };
 
-int is_python(struct device_node *dev)
+static int is_python(struct device_node *dev)
 {
 	const char *model = of_get_property(dev, "model", NULL);
 
@@ -260,7 +245,7 @@ static int phb_set_bus_ranges(struct device_node *dev,
 
 int __devinit rtas_setup_phb(struct pci_controller *phb)
 {
-	struct device_node *dev = phb->arch_data;
+	struct device_node *dev = phb->dn;
 
 	if (is_python(dev))
 		python_countermeasures(dev);
@@ -280,10 +265,7 @@ void __init find_and_init_phbs(void)
 	struct pci_controller *phb;
 	struct device_node *root = of_find_node_by_path("/");
 
-	for (node = of_get_next_child(root, NULL);
-	     node != NULL;
-	     node = of_get_next_child(root, node)) {
-
+	for_each_child_of_node(root, node) {
 		if (node->type == NULL || (strcmp(node->type, "pci") != 0 &&
 					   strcmp(node->type, "pciex") != 0))
 			continue;
@@ -311,57 +293,11 @@ void __init find_and_init_phbs(void)
 		if (prop)
 			pci_probe_only = *prop;
 
+#ifdef CONFIG_PPC32 /* Will be made generic soon */
 		prop = of_get_property(of_chosen,
 				"linux,pci-assign-all-buses", NULL);
-		if (prop)
-			pci_assign_all_buses = *prop;
+		if (prop && *prop)
+			ppc_pci_flags |= PPC_PCI_REASSIGN_ALL_BUS;
+#endif /* CONFIG_PPC32 */
 	}
 }
-
-/* RPA-specific bits for removing PHBs */
-int pcibios_remove_root_bus(struct pci_controller *phb)
-{
-	struct pci_bus *b = phb->bus;
-	struct resource *res;
-	int rc, i;
-
-	res = b->resource[0];
-	if (!res->flags) {
-		printk(KERN_ERR "%s: no IO resource for PHB %s\n", __FUNCTION__,
-				b->name);
-		return 1;
-	}
-
-	rc = pcibios_unmap_io_space(b);
-	if (rc) {
-		printk(KERN_ERR "%s: failed to unmap IO on bus %s\n",
-			__FUNCTION__, b->name);
-		return 1;
-	}
-
-	if (release_resource(res)) {
-		printk(KERN_ERR "%s: failed to release IO on bus %s\n",
-				__FUNCTION__, b->name);
-		return 1;
-	}
-
-	for (i = 1; i < 3; ++i) {
-		res = b->resource[i];
-		if (!res->flags && i == 0) {
-			printk(KERN_ERR "%s: no MEM resource for PHB %s\n",
-				__FUNCTION__, b->name);
-			return 1;
-		}
-		if (res->flags && release_resource(res)) {
-			printk(KERN_ERR
-			       "%s: failed to release IO %d on bus %s\n",
-				__FUNCTION__, i, b->name);
-			return 1;
-		}
-	}
-
-	pcibios_free_controller(phb);
-
-	return 0;
-}
-EXPORT_SYMBOL(pcibios_remove_root_bus);

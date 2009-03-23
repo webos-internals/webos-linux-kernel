@@ -37,6 +37,7 @@
 #include <asm/timer.h>
 #include <asm/vmi_time.h>
 #include <asm/kmap_types.h>
+#include <asm/setup.h>
 
 /* Convenient for calling VMI functions indirectly in the ROM */
 typedef u32 __attribute__((regparm(1))) (VROMFUNC)(void);
@@ -62,7 +63,10 @@ static struct {
 	void (*cpuid)(void /* non-c */);
 	void (*_set_ldt)(u32 selector);
 	void (*set_tr)(u32 selector);
-	void (*set_kernel_stack)(u32 selector, u32 esp0);
+	void (*write_idt_entry)(struct desc_struct *, int, u32, u32);
+	void (*write_gdt_entry)(struct desc_struct *, int, u32, u32);
+	void (*write_ldt_entry)(struct desc_struct *, int, u32, u32);
+	void (*set_kernel_stack)(u32 selector, u32 sp0);
 	void (*allocate_page)(u32, u32, u32, u32, u32);
 	void (*release_page)(u32, u32);
 	void (*set_pte)(pte_t, pte_t *, unsigned);
@@ -88,13 +92,13 @@ struct vmi_timer_ops vmi_timer_ops;
 #define IRQ_PATCH_DISABLE  5
 
 static inline void patch_offset(void *insnbuf,
-				unsigned long eip, unsigned long dest)
+				unsigned long ip, unsigned long dest)
 {
-        *(unsigned long *)(insnbuf+1) = dest-eip-5;
+        *(unsigned long *)(insnbuf+1) = dest-ip-5;
 }
 
 static unsigned patch_internal(int call, unsigned len, void *insnbuf,
-			       unsigned long eip)
+			       unsigned long ip)
 {
 	u64 reloc;
 	struct vmi_relocation_info *const rel = (struct vmi_relocation_info *)&reloc;
@@ -103,13 +107,13 @@ static unsigned patch_internal(int call, unsigned len, void *insnbuf,
 		case VMI_RELOCATION_CALL_REL:
 			BUG_ON(len < 5);
 			*(char *)insnbuf = MNEM_CALL;
-			patch_offset(insnbuf, eip, (unsigned long)rel->eip);
+			patch_offset(insnbuf, ip, (unsigned long)rel->eip);
 			return 5;
 
 		case VMI_RELOCATION_JUMP_REL:
 			BUG_ON(len < 5);
 			*(char *)insnbuf = MNEM_JMP;
-			patch_offset(insnbuf, eip, (unsigned long)rel->eip);
+			patch_offset(insnbuf, ip, (unsigned long)rel->eip);
 			return 5;
 
 		case VMI_RELOCATION_NOP:
@@ -131,25 +135,25 @@ static unsigned patch_internal(int call, unsigned len, void *insnbuf,
  * sequence.  The callee does nop padding for us.
  */
 static unsigned vmi_patch(u8 type, u16 clobbers, void *insns,
-			  unsigned long eip, unsigned len)
+			  unsigned long ip, unsigned len)
 {
 	switch (type) {
 		case PARAVIRT_PATCH(pv_irq_ops.irq_disable):
 			return patch_internal(VMI_CALL_DisableInterrupts, len,
-					      insns, eip);
+					      insns, ip);
 		case PARAVIRT_PATCH(pv_irq_ops.irq_enable):
 			return patch_internal(VMI_CALL_EnableInterrupts, len,
-					      insns, eip);
+					      insns, ip);
 		case PARAVIRT_PATCH(pv_irq_ops.restore_fl):
 			return patch_internal(VMI_CALL_SetInterruptMask, len,
-					      insns, eip);
+					      insns, ip);
 		case PARAVIRT_PATCH(pv_irq_ops.save_fl):
 			return patch_internal(VMI_CALL_GetInterruptMask, len,
-					      insns, eip);
+					      insns, ip);
 		case PARAVIRT_PATCH(pv_cpu_ops.iret):
-			return patch_internal(VMI_CALL_IRET, len, insns, eip);
+			return patch_internal(VMI_CALL_IRET, len, insns, ip);
 		case PARAVIRT_PATCH(pv_cpu_ops.irq_enable_sysexit):
-			return patch_internal(VMI_CALL_SYSEXIT, len, insns, eip);
+			return patch_internal(VMI_CALL_SYSEXIT, len, insns, ip);
 		default:
 			break;
 	}
@@ -157,36 +161,36 @@ static unsigned vmi_patch(u8 type, u16 clobbers, void *insns,
 }
 
 /* CPUID has non-C semantics, and paravirt-ops API doesn't match hardware ISA */
-static void vmi_cpuid(unsigned int *eax, unsigned int *ebx,
-                               unsigned int *ecx, unsigned int *edx)
+static void vmi_cpuid(unsigned int *ax, unsigned int *bx,
+                               unsigned int *cx, unsigned int *dx)
 {
 	int override = 0;
-	if (*eax == 1)
+	if (*ax == 1)
 		override = 1;
         asm volatile ("call *%6"
-                      : "=a" (*eax),
-                        "=b" (*ebx),
-                        "=c" (*ecx),
-                        "=d" (*edx)
-                      : "0" (*eax), "2" (*ecx), "r" (vmi_ops.cpuid));
+                      : "=a" (*ax),
+                        "=b" (*bx),
+                        "=c" (*cx),
+                        "=d" (*dx)
+                      : "0" (*ax), "2" (*cx), "r" (vmi_ops.cpuid));
 	if (override) {
 		if (disable_pse)
-			*edx &= ~X86_FEATURE_PSE;
+			*dx &= ~X86_FEATURE_PSE;
 		if (disable_pge)
-			*edx &= ~X86_FEATURE_PGE;
+			*dx &= ~X86_FEATURE_PGE;
 		if (disable_sep)
-			*edx &= ~X86_FEATURE_SEP;
+			*dx &= ~X86_FEATURE_SEP;
 		if (disable_tsc)
-			*edx &= ~X86_FEATURE_TSC;
+			*dx &= ~X86_FEATURE_TSC;
 		if (disable_mtrr)
-			*edx &= ~X86_FEATURE_MTRR;
+			*dx &= ~X86_FEATURE_MTRR;
 	}
 }
 
 static inline void vmi_maybe_load_tls(struct desc_struct *gdt, int nr, struct desc_struct *new)
 {
 	if (gdt[nr].a != new->a || gdt[nr].b != new->b)
-		write_gdt_entry(gdt, nr, new->a, new->b);
+		write_gdt_entry(gdt, nr, new, 0);
 }
 
 static void vmi_load_tls(struct thread_struct *t, unsigned int cpu)
@@ -200,12 +204,12 @@ static void vmi_load_tls(struct thread_struct *t, unsigned int cpu)
 static void vmi_set_ldt(const void *addr, unsigned entries)
 {
 	unsigned cpu = smp_processor_id();
-	u32 low, high;
+	struct desc_struct desc;
 
-	pack_descriptor(&low, &high, (unsigned long)addr,
+	pack_descriptor(&desc, (unsigned long)addr,
 			entries * sizeof(struct desc_struct) - 1,
-			DESCTYPE_LDT, 0);
-	write_gdt_entry(get_cpu_gdt_table(cpu), GDT_ENTRY_LDT, low, high);
+			DESC_LDT, 0);
+	write_gdt_entry(get_cpu_gdt_table(cpu), GDT_ENTRY_LDT, &desc, DESC_LDT);
 	vmi_ops._set_ldt(entries ? GDT_ENTRY_LDT*sizeof(struct desc_struct) : 0);
 }
 
@@ -214,17 +218,37 @@ static void vmi_set_tr(void)
 	vmi_ops.set_tr(GDT_ENTRY_TSS*sizeof(struct desc_struct));
 }
 
-static void vmi_load_esp0(struct tss_struct *tss,
+static void vmi_write_idt_entry(gate_desc *dt, int entry, const gate_desc *g)
+{
+	u32 *idt_entry = (u32 *)g;
+	vmi_ops.write_idt_entry(dt, entry, idt_entry[0], idt_entry[1]);
+}
+
+static void vmi_write_gdt_entry(struct desc_struct *dt, int entry,
+				const void *desc, int type)
+{
+	u32 *gdt_entry = (u32 *)desc;
+	vmi_ops.write_gdt_entry(dt, entry, gdt_entry[0], gdt_entry[1]);
+}
+
+static void vmi_write_ldt_entry(struct desc_struct *dt, int entry,
+				const void *desc)
+{
+	u32 *ldt_entry = (u32 *)desc;
+	vmi_ops.write_ldt_entry(dt, entry, ldt_entry[0], ldt_entry[1]);
+}
+
+static void vmi_load_sp0(struct tss_struct *tss,
 				   struct thread_struct *thread)
 {
-	tss->x86_tss.esp0 = thread->esp0;
+	tss->x86_tss.sp0 = thread->sp0;
 
 	/* This can only happen when SEP is enabled, no need to test "SEP"arately */
 	if (unlikely(tss->x86_tss.ss1 != thread->sysenter_cs)) {
 		tss->x86_tss.ss1 = thread->sysenter_cs;
 		wrmsr(MSR_IA32_SYSENTER_CS, thread->sysenter_cs, 0);
 	}
-	vmi_ops.set_kernel_stack(__KERNEL_DS, tss->x86_tss.esp0);
+	vmi_ops.set_kernel_stack(__KERNEL_DS, tss->x86_tss.sp0);
 }
 
 static void vmi_flush_tlb_user(void)
@@ -241,109 +265,6 @@ static void vmi_flush_tlb_kernel(void)
 static void vmi_nop(void)
 {
 }
-
-#ifdef CONFIG_DEBUG_PAGE_TYPE
-
-#ifdef CONFIG_X86_PAE
-#define MAX_BOOT_PTS (2048+4+1)
-#else
-#define MAX_BOOT_PTS (1024+1)
-#endif
-
-/*
- * During boot, mem_map is not yet available in paging_init, so stash
- * all the boot page allocations here.
- */
-static struct {
-	u32 pfn;
-	int type;
-} boot_page_allocations[MAX_BOOT_PTS];
-static int num_boot_page_allocations;
-static int boot_allocations_applied;
-
-void vmi_apply_boot_page_allocations(void)
-{
-	int i;
-	BUG_ON(!mem_map);
-	for (i = 0; i < num_boot_page_allocations; i++) {
-		struct page *page = pfn_to_page(boot_page_allocations[i].pfn);
-		page->type = boot_page_allocations[i].type;
-		page->type = boot_page_allocations[i].type &
-				~(VMI_PAGE_ZEROED | VMI_PAGE_CLONE);
-	}
-	boot_allocations_applied = 1;
-}
-
-static void record_page_type(u32 pfn, int type)
-{
-	BUG_ON(num_boot_page_allocations >= MAX_BOOT_PTS);
-	boot_page_allocations[num_boot_page_allocations].pfn = pfn;
-	boot_page_allocations[num_boot_page_allocations].type = type;
-	num_boot_page_allocations++;
-}
-
-static void check_zeroed_page(u32 pfn, int type, struct page *page)
-{
-	u32 *ptr;
-	int i;
-	int limit = PAGE_SIZE / sizeof(int);
-
-	if (page_address(page))
-		ptr = (u32 *)page_address(page);
-	else
-		ptr = (u32 *)__va(pfn << PAGE_SHIFT);
-	/*
-	 * When cloning the root in non-PAE mode, only the userspace
-	 * pdes need to be zeroed.
-	 */
-	if (type & VMI_PAGE_CLONE)
-		limit = USER_PTRS_PER_PGD;
-	for (i = 0; i < limit; i++)
-		BUG_ON(ptr[i]);
-}
-
-/*
- * We stash the page type into struct page so we can verify the page
- * types are used properly.
- */
-static void vmi_set_page_type(u32 pfn, int type)
-{
-	/* PAE can have multiple roots per page - don't track */
-	if (PTRS_PER_PMD > 1 && (type & VMI_PAGE_PDP))
-		return;
-
-	if (boot_allocations_applied) {
-		struct page *page = pfn_to_page(pfn);
-		if (type != VMI_PAGE_NORMAL)
-			BUG_ON(page->type);
-		else
-			BUG_ON(page->type == VMI_PAGE_NORMAL);
-		page->type = type & ~(VMI_PAGE_ZEROED | VMI_PAGE_CLONE);
-		if (type & VMI_PAGE_ZEROED)
-			check_zeroed_page(pfn, type, page);
-	} else {
-		record_page_type(pfn, type);
-	}
-}
-
-static void vmi_check_page_type(u32 pfn, int type)
-{
-	/* PAE can have multiple roots per page - skip checks */
-	if (PTRS_PER_PMD > 1 && (type & VMI_PAGE_PDP))
-		return;
-
-	type &= ~(VMI_PAGE_ZEROED | VMI_PAGE_CLONE);
-	if (boot_allocations_applied) {
-		struct page *page = pfn_to_page(pfn);
-		BUG_ON((page->type ^ type) & VMI_PAGE_PAE);
-		BUG_ON(type == VMI_PAGE_NORMAL && page->type);
-		BUG_ON((type & page->type) == 0);
-	}
-}
-#else
-#define vmi_set_page_type(p,t) do { } while (0)
-#define vmi_check_page_type(p,t) do { } while (0)
-#endif
 
 #ifdef CONFIG_HIGHPTE
 static void *vmi_kmap_atomic_pte(struct page *page, enum km_type type)
@@ -369,40 +290,44 @@ static void *vmi_kmap_atomic_pte(struct page *page, enum km_type type)
 }
 #endif
 
-static void vmi_allocate_pt(struct mm_struct *mm, u32 pfn)
+static void vmi_allocate_pte(struct mm_struct *mm, unsigned long pfn)
 {
-	vmi_set_page_type(pfn, VMI_PAGE_L1);
 	vmi_ops.allocate_page(pfn, VMI_PAGE_L1, 0, 0, 0);
 }
 
-static void vmi_allocate_pd(u32 pfn)
+static void vmi_allocate_pmd(struct mm_struct *mm, unsigned long pfn)
 {
  	/*
 	 * This call comes in very early, before mem_map is setup.
 	 * It is called only for swapper_pg_dir, which already has
 	 * data on it.
 	 */
- 	vmi_set_page_type(pfn, VMI_PAGE_L2);
 	vmi_ops.allocate_page(pfn, VMI_PAGE_L2, 0, 0, 0);
 }
 
-static void vmi_allocate_pd_clone(u32 pfn, u32 clonepfn, u32 start, u32 count)
+static void vmi_allocate_pmd_clone(unsigned long pfn, unsigned long clonepfn, unsigned long start, unsigned long count)
 {
- 	vmi_set_page_type(pfn, VMI_PAGE_L2 | VMI_PAGE_CLONE);
-	vmi_check_page_type(clonepfn, VMI_PAGE_L2);
 	vmi_ops.allocate_page(pfn, VMI_PAGE_L2 | VMI_PAGE_CLONE, clonepfn, start, count);
 }
 
-static void vmi_release_pt(u32 pfn)
+static void vmi_release_pte(unsigned long pfn)
 {
 	vmi_ops.release_page(pfn, VMI_PAGE_L1);
-	vmi_set_page_type(pfn, VMI_PAGE_NORMAL);
 }
 
-static void vmi_release_pd(u32 pfn)
+static void vmi_release_pmd(unsigned long pfn)
 {
 	vmi_ops.release_page(pfn, VMI_PAGE_L2);
-	vmi_set_page_type(pfn, VMI_PAGE_NORMAL);
+}
+
+/*
+ * We use the pgd_free hook for releasing the pgd page:
+ */
+static void vmi_pgd_free(struct mm_struct *mm, pgd_t *pgd)
+{
+	unsigned long pfn = __pa(pgd) >> PAGE_SHIFT;
+
+	vmi_ops.release_page(pfn, VMI_PAGE_L2);
 }
 
 /*
@@ -426,37 +351,31 @@ static void vmi_release_pd(u32 pfn)
 
 static void vmi_update_pte(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
 {
-	vmi_check_page_type(__pa(ptep) >> PAGE_SHIFT, VMI_PAGE_PTE);
 	vmi_ops.update_pte(ptep, vmi_flags_addr(mm, addr, VMI_PAGE_PT, 0));
 }
 
 static void vmi_update_pte_defer(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
 {
-	vmi_check_page_type(__pa(ptep) >> PAGE_SHIFT, VMI_PAGE_PTE);
 	vmi_ops.update_pte(ptep, vmi_flags_addr_defer(mm, addr, VMI_PAGE_PT, 0));
 }
 
 static void vmi_set_pte(pte_t *ptep, pte_t pte)
 {
 	/* XXX because of set_pmd_pte, this can be called on PT or PD layers */
-	vmi_check_page_type(__pa(ptep) >> PAGE_SHIFT, VMI_PAGE_PTE | VMI_PAGE_PD);
 	vmi_ops.set_pte(pte, ptep, VMI_PAGE_PT);
 }
 
 static void vmi_set_pte_at(struct mm_struct *mm, unsigned long addr, pte_t *ptep, pte_t pte)
 {
-	vmi_check_page_type(__pa(ptep) >> PAGE_SHIFT, VMI_PAGE_PTE);
 	vmi_ops.set_pte(pte, ptep, vmi_flags_addr(mm, addr, VMI_PAGE_PT, 0));
 }
 
 static void vmi_set_pmd(pmd_t *pmdp, pmd_t pmdval)
 {
 #ifdef CONFIG_X86_PAE
-	const pte_t pte = { pmdval.pmd, pmdval.pmd >> 32 };
-	vmi_check_page_type(__pa(pmdp) >> PAGE_SHIFT, VMI_PAGE_PMD);
+	const pte_t pte = { .pte = pmdval.pmd };
 #else
 	const pte_t pte = { pmdval.pud.pgd.pgd };
-	vmi_check_page_type(__pa(pmdp) >> PAGE_SHIFT, VMI_PAGE_PGD);
 #endif
 	vmi_ops.set_pte(pte, (pte_t *)pmdp, VMI_PAGE_PD);
 }
@@ -478,29 +397,25 @@ static void vmi_set_pte_atomic(pte_t *ptep, pte_t pteval)
 
 static void vmi_set_pte_present(struct mm_struct *mm, unsigned long addr, pte_t *ptep, pte_t pte)
 {
-	vmi_check_page_type(__pa(ptep) >> PAGE_SHIFT, VMI_PAGE_PTE);
 	vmi_ops.set_pte(pte, ptep, vmi_flags_addr_defer(mm, addr, VMI_PAGE_PT, 1));
 }
 
 static void vmi_set_pud(pud_t *pudp, pud_t pudval)
 {
 	/* Um, eww */
-	const pte_t pte = { pudval.pgd.pgd, pudval.pgd.pgd >> 32 };
-	vmi_check_page_type(__pa(pudp) >> PAGE_SHIFT, VMI_PAGE_PGD);
+	const pte_t pte = { .pte = pudval.pgd.pgd };
 	vmi_ops.set_pte(pte, (pte_t *)pudp, VMI_PAGE_PDP);
 }
 
 static void vmi_pte_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
 {
-	const pte_t pte = { 0 };
-	vmi_check_page_type(__pa(ptep) >> PAGE_SHIFT, VMI_PAGE_PTE);
+	const pte_t pte = { .pte = 0 };
 	vmi_ops.set_pte(pte, ptep, vmi_flags_addr(mm, addr, VMI_PAGE_PT, 0));
 }
 
 static void vmi_pmd_clear(pmd_t *pmd)
 {
-	const pte_t pte = { 0 };
-	vmi_check_page_type(__pa(pmd) >> PAGE_SHIFT, VMI_PAGE_PMD);
+	const pte_t pte = { .pte = 0 };
 	vmi_ops.set_pte(pte, (pte_t *)pmd, VMI_PAGE_PD);
 }
 #endif
@@ -660,7 +575,7 @@ void vmi_bringup(void)
 {
  	/* We must establish the lowmem mapping for MMU ops to work */
 	if (vmi_ops.set_linear_mapping)
-		vmi_ops.set_linear_mapping(0, (void *)__PAGE_OFFSET, max_low_pfn, 0);
+		vmi_ops.set_linear_mapping(0, (void *)__PAGE_OFFSET, MAXMEM_PFN, 0);
 }
 
 /*
@@ -790,10 +705,13 @@ static inline int __init activate_vmi(void)
 	para_fill(pv_cpu_ops.store_idt, GetIDT);
 	para_fill(pv_cpu_ops.store_tr, GetTR);
 	pv_cpu_ops.load_tls = vmi_load_tls;
-	para_fill(pv_cpu_ops.write_ldt_entry, WriteLDTEntry);
-	para_fill(pv_cpu_ops.write_gdt_entry, WriteGDTEntry);
-	para_fill(pv_cpu_ops.write_idt_entry, WriteIDTEntry);
-	para_wrap(pv_cpu_ops.load_esp0, vmi_load_esp0, set_kernel_stack, UpdateKernelStack);
+	para_wrap(pv_cpu_ops.write_ldt_entry, vmi_write_ldt_entry,
+		  write_ldt_entry, WriteLDTEntry);
+	para_wrap(pv_cpu_ops.write_gdt_entry, vmi_write_gdt_entry,
+		  write_gdt_entry, WriteGDTEntry);
+	para_wrap(pv_cpu_ops.write_idt_entry, vmi_write_idt_entry,
+		  write_idt_entry, WriteIDTEntry);
+	para_wrap(pv_cpu_ops.load_sp0, vmi_load_sp0, set_kernel_stack, UpdateKernelStack);
 	para_fill(pv_cpu_ops.set_iopl_mask, SetIOPLMask);
 	para_fill(pv_cpu_ops.io_delay, IODelay);
 
@@ -845,15 +763,16 @@ static inline int __init activate_vmi(void)
 
 	vmi_ops.allocate_page = vmi_get_function(VMI_CALL_AllocatePage);
 	if (vmi_ops.allocate_page) {
-		pv_mmu_ops.alloc_pt = vmi_allocate_pt;
-		pv_mmu_ops.alloc_pd = vmi_allocate_pd;
-		pv_mmu_ops.alloc_pd_clone = vmi_allocate_pd_clone;
+		pv_mmu_ops.alloc_pte = vmi_allocate_pte;
+		pv_mmu_ops.alloc_pmd = vmi_allocate_pmd;
+		pv_mmu_ops.alloc_pmd_clone = vmi_allocate_pmd_clone;
 	}
 
 	vmi_ops.release_page = vmi_get_function(VMI_CALL_ReleasePage);
 	if (vmi_ops.release_page) {
-		pv_mmu_ops.release_pt = vmi_release_pt;
-		pv_mmu_ops.release_pd = vmi_release_pd;
+		pv_mmu_ops.release_pte = vmi_release_pte;
+		pv_mmu_ops.release_pmd = vmi_release_pmd;
+		pv_mmu_ops.pgd_free = vmi_pgd_free;
 	}
 
 	/* Set linear is needed in all cases */
@@ -878,9 +797,8 @@ static inline int __init activate_vmi(void)
 #endif
 
 #ifdef CONFIG_X86_LOCAL_APIC
-	para_fill(pv_apic_ops.apic_read, APICRead);
-	para_fill(pv_apic_ops.apic_write, APICWrite);
-	para_fill(pv_apic_ops.apic_write_atomic, APICWrite);
+       para_fill(apic_ops->read, APICRead);
+       para_fill(apic_ops->write, APICWrite);
 #endif
 
 	/*
@@ -906,7 +824,7 @@ static inline int __init activate_vmi(void)
 		pv_apic_ops.setup_secondary_clock = vmi_time_ap_init;
 #endif
 		pv_time_ops.sched_clock = vmi_sched_clock;
- 		pv_time_ops.get_cpu_khz = vmi_cpu_khz;
+		pv_time_ops.get_tsc_khz = vmi_tsc_khz;
 
 		/* We have true wallclock functions; disable CMOS clock sync */
 		no_sync_cmos_clock = 1;
@@ -934,8 +852,6 @@ static inline int __init activate_vmi(void)
 
 void __init vmi_init(void)
 {
-	unsigned long flags;
-
 	if (!vmi_rom)
 		probe_vmi_rom();
 	else
@@ -947,13 +863,21 @@ void __init vmi_init(void)
 
 	reserve_top_address(-vmi_rom->virtual_top);
 
-	local_irq_save(flags);
-	activate_vmi();
-
 #ifdef CONFIG_X86_IO_APIC
 	/* This is virtual hardware; timer routing is wired correctly */
 	no_timer_check = 1;
 #endif
+}
+
+void __init vmi_activate(void)
+{
+	unsigned long flags;
+
+	if (!vmi_rom)
+		return;
+
+	local_irq_save(flags);
+	activate_vmi();
 	local_irq_restore(flags & X86_EFLAGS_IF);
 }
 
@@ -963,19 +887,19 @@ static int __init parse_vmi(char *arg)
 		return -EINVAL;
 
 	if (!strcmp(arg, "disable_pge")) {
-		clear_bit(X86_FEATURE_PGE, boot_cpu_data.x86_capability);
+		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_PGE);
 		disable_pge = 1;
 	} else if (!strcmp(arg, "disable_pse")) {
-		clear_bit(X86_FEATURE_PSE, boot_cpu_data.x86_capability);
+		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_PSE);
 		disable_pse = 1;
 	} else if (!strcmp(arg, "disable_sep")) {
-		clear_bit(X86_FEATURE_SEP, boot_cpu_data.x86_capability);
+		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_SEP);
 		disable_sep = 1;
 	} else if (!strcmp(arg, "disable_tsc")) {
-		clear_bit(X86_FEATURE_TSC, boot_cpu_data.x86_capability);
+		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_TSC);
 		disable_tsc = 1;
 	} else if (!strcmp(arg, "disable_mtrr")) {
-		clear_bit(X86_FEATURE_MTRR, boot_cpu_data.x86_capability);
+		clear_cpu_cap(&boot_cpu_data, X86_FEATURE_MTRR);
 		disable_mtrr = 1;
 	} else if (!strcmp(arg, "disable_timer")) {
 		disable_vmi_timer = 1;

@@ -40,12 +40,15 @@ struct dt_ops {
 			const int buflen);
 	int	(*setprop)(const void *phandle, const char *name,
 			const void *buf, const int buflen);
+	int (*del_node)(const void *phandle);
 	void *(*get_parent)(const void *phandle);
 	/* The node must not already exist. */
 	void *(*create_node)(const void *parent, const char *name);
 	void *(*find_node_by_prop_value)(const void *prev,
 	                                 const char *propname,
 	                                 const char *propval, int proplen);
+	void *(*find_node_by_compatible)(const void *prev,
+	                                 const char *compat);
 	unsigned long (*finalize)(void);
 	char *(*get_path)(const void *phandle, char *buf, int len);
 };
@@ -79,7 +82,7 @@ struct loader_info {
 extern struct loader_info loader_info;
 
 void start(void);
-int ft_init(void *dt_blob, unsigned int max_size, unsigned int max_find_device);
+void fdt_init(void *blob);
 int serial_console_init(void);
 int ns16550_console_init(void *devp, struct serial_console_data *scdp);
 int mpsc_console_init(void *devp, struct serial_console_data *scdp);
@@ -93,6 +96,7 @@ int dt_xlate_reg(void *node, int res, unsigned long *addr, unsigned long *size);
 int dt_xlate_addr(void *node, u32 *buf, int buflen, unsigned long *xlated_addr);
 int dt_is_compatible(void *node, const char *compat);
 void dt_get_reg_format(void *node, u32 *naddr, u32 *nsize);
+int dt_get_virtual_reg(void *node, void **addr, int nres);
 
 static inline void *finddevice(const char *name)
 {
@@ -121,6 +125,11 @@ static inline int setprop_str(void *devp, const char *name, const char *buf)
 		return dt_ops.setprop(devp, name, buf, strlen(buf) + 1);
 
 	return -1;
+}
+
+static inline int del_node(const void *devp)
+{
+	return dt_ops.del_node ? dt_ops.del_node(devp) : -1;
 }
 
 static inline void *get_parent(const char *devp)
@@ -159,9 +168,32 @@ static inline void *find_node_by_devtype(const void *prev,
 	return find_node_by_prop_value_str(prev, "device_type", type);
 }
 
+static inline void *find_node_by_alias(const char *alias)
+{
+	void *devp = finddevice("/aliases");
+
+	if (devp) {
+		char path[MAX_PATH_LEN];
+		if (getprop(devp, alias, path, MAX_PATH_LEN) > 0)
+			return finddevice(path);
+	}
+
+	return NULL;
+}
+
+static inline void *find_node_by_compatible(const void *prev,
+                                            const char *compat)
+{
+	if (dt_ops.find_node_by_compatible)
+		return dt_ops.find_node_by_compatible(prev, compat);
+
+	return NULL;
+}
+
 void dt_fixup_memory(u64 start, u64 size);
 void dt_fixup_cpu_clocks(u32 cpufreq, u32 tbfreq, u32 busfreq);
 void dt_fixup_clock(const char *path, u32 freq);
+void dt_fixup_mac_address_by_alias(const char *alias, const u8 *addr);
 void dt_fixup_mac_address(u32 index, const u8 *addr);
 void __dt_fixup_mac_addresses(u32 startindex, ...);
 #define dt_fixup_mac_addresses(...) \

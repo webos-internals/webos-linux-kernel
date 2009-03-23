@@ -30,11 +30,9 @@
 #include <asm/irq.h>
 #include <asm/io.h>
 
-#define IN_CARD_SERVICES
 #include <pcmcia/cs_types.h>
 #include <pcmcia/ss.h>
 #include <pcmcia/cs.h>
-#include <pcmcia/bulkmem.h>
 #include <pcmcia/cistpl.h>
 #include "cs_internal.h"
 
@@ -143,7 +141,7 @@ int read_cb_mem(struct pcmcia_socket * s, int space, u_int addr, u_int len, void
 	/* Config space? */
 	if (space == 0) {
 		if (addr + len > 0x100)
-			goto fail;
+			goto failput;
 		for (; len; addr++, ptr++, len--)
 			pci_read_config_byte(dev, addr, ptr);
 		return 0;
@@ -171,6 +169,8 @@ int read_cb_mem(struct pcmcia_socket * s, int space, u_int addr, u_int len, void
 	memcpy_fromio(ptr, s->cb_cis_virt + addr, len);
 	return 0;
 
+failput:
+	pci_dev_put(dev);
 fail:
 	memset(ptr, 0xff, len);
 	return -1;
@@ -207,7 +207,7 @@ static void cardbus_assign_irqs(struct pci_bus *bus, int irq)
 	}
 }
 
-int cb_alloc(struct pcmcia_socket * s)
+int __ref cb_alloc(struct pcmcia_socket * s)
 {
 	struct pci_bus *bus = s->cb_dev->subordinate;
 	struct pci_dev *dev;
@@ -238,7 +238,7 @@ int cb_alloc(struct pcmcia_socket * s)
 	pci_bus_add_devices(bus);
 
 	s->irq.AssignedIRQ = s->pci_irq;
-	return CS_SUCCESS;
+	return 0;
 }
 
 void cb_free(struct pcmcia_socket * s)

@@ -187,10 +187,17 @@ int ehca_dealloc_ucontext(struct ib_ucontext *context);
 
 int ehca_mmap(struct ib_ucontext *context, struct vm_area_struct *vma);
 
+int ehca_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
+		     struct ib_wc *in_wc, struct ib_grh *in_grh,
+		     struct ib_mad *in_mad,
+		     struct ib_mad *out_mad);
+
 void ehca_poll_eqs(unsigned long data);
 
 int ehca_calc_ipd(struct ehca_shca *shca, int port,
 		  enum ib_rate path_rate, u32 *ipd);
+
+void ehca_add_to_err_list(struct ehca_qp *qp, int on_sq);
 
 #ifdef CONFIG_PPC_64K_PAGES
 void *ehca_alloc_fw_ctrlblock(gfp_t flags);
@@ -199,5 +206,7 @@ void ehca_free_fw_ctrlblock(void *ptr);
 #define ehca_alloc_fw_ctrlblock(flags) ((void *)get_zeroed_page(flags))
 #define ehca_free_fw_ctrlblock(ptr) free_page((unsigned long)(ptr))
 #endif
+
+void ehca_recover_sqp(struct ib_qp *sqp);
 
 #endif

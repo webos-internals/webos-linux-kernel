@@ -9,7 +9,14 @@ config HW_RANDOM
 	  Hardware Random Number Generator Core infrastructure.
 
 	  To compile this driver as a module, choose M here: the
-	  module will be called rng-core.
+	  module will be called rng-core.  This provides a device
+	  that's usually called /dev/hw_random, and which exposes one
+	  of possibly several hardware random number generators.
+
+	  These hardware random number generators do not feed directly
+	  into the kernel's random number generator.  That is usually
+	  handled by the "rngd" daemon.  Documentation/hw_random.txt
+	  has more information.
 
 	  If unsure, say Y.
 
@@ -49,6 +56,19 @@ config HW_RANDOM_GEODE
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called geode-rng.
+
+	  If unsure, say Y.
+
+config HW_RANDOM_N2RNG
+	tristate "Niagara2 Random Number Generator support"
+	depends on HW_RANDOM && SPARC64
+	default HW_RANDOM
+	---help---
+	  This driver provides kernel-side support for the Random Number
+	  Generator hardware found on Niagara2 cpus.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called n2-rng.
 
 	  If unsure, say Y.
 
@@ -98,10 +118,19 @@ config HW_RANDOM_PASEMI
 	default HW_RANDOM
 	---help---
 	  This driver provides kernel-side support for the Random Number
-	  Generator hardware found on PA6T-1682M processor.
+	  Generator hardware found on PA Semi PWRficient SoCs.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called pasemi-rng.
 
 	  If unsure, say Y.
 
+config HW_RANDOM_VIRTIO
+	tristate "VirtIO Random Number Generator support"
+	depends on HW_RANDOM && VIRTIO
+	---help---
+	  This driver provides kernel-side support for the virtual Random Number
+	  Generator hardware.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called virtio-rng.  If unsure, say N.

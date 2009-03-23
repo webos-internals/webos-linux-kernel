@@ -24,6 +24,7 @@
 #include <linux/errno.h>
 #include <linux/dcookies.h>
 #include <linux/mutex.h>
+#include <linux/path.h>
 #include <asm/uaccess.h>
 
 /* The dcookies are allocated from a kmem_cache and
@@ -31,8 +32,7 @@
  * code here is particularly performance critical
  */
 struct dcookie_struct {
-	struct dentry * dentry;
-	struct vfsmount * vfsmnt;
+	struct path path;
 	struct list_head hash_list;
 };
 
@@ -51,7 +51,7 @@ static inline int is_live(void)
 /* The dentry is locked, its address will do for the cookie */
 static inline unsigned long dcookie_value(struct dcookie_struct * dcs)
 {
-	return (unsigned long)dcs->dentry;
+	return (unsigned long)dcs->path.dentry;
 }
 
 
@@ -89,19 +89,22 @@ static void hash_dcookie(struct dcookie_struct * dcs)
 }
 
 
-static struct dcookie_struct * alloc_dcookie(struct dentry * dentry,
-	struct vfsmount * vfsmnt)
+static struct dcookie_struct *alloc_dcookie(struct path *path)
 {
-	struct dcookie_struct * dcs = kmem_cache_alloc(dcookie_cache, GFP_KERNEL);
+	struct dcookie_struct *dcs = kmem_cache_alloc(dcookie_cache,
+							GFP_KERNEL);
+	struct dentry *d;
 	if (!dcs)
 		return NULL;
 
-	dentry->d_cookie = dcs;
+	d = path->dentry;
+	spin_lock(&d->d_lock);
+	d->d_flags |= DCACHE_COOKIE;
+	spin_unlock(&d->d_lock);
 
-	dcs->dentry = dget(dentry);
-	dcs->vfsmnt = mntget(vfsmnt);
+	dcs->path = *path;
+	path_get(path);
 	hash_dcookie(dcs);
-
 	return dcs;
 }
 
@@ -109,8 +112,7 @@ static struct dcookie_struct * alloc_dcookie(struct dentry * dentry,
 /* This is the main kernel-side routine that retrieves the cookie
  * value for a dentry/vfsmnt pair.
  */
-int get_dcookie(struct dentry * dentry, struct vfsmount * vfsmnt,
-	unsigned long * cookie)
+int get_dcookie(struct path *path, unsigned long *cookie)
 {
 	int err = 0;
 	struct dcookie_struct * dcs;
@@ -122,14 +124,14 @@ int get_dcookie(struct dentry * dentry, struct vfsmount * vfsmnt,
 		goto out;
 	}
 
-	dcs = dentry->d_cookie;
-
-	if (!dcs)
-		dcs = alloc_dcookie(dentry, vfsmnt);
-
-	if (!dcs) {
-		err = -ENOMEM;
-		goto out;
+	if (path->dentry->d_flags & DCACHE_COOKIE) {
+		dcs = find_dcookie((unsigned long)path->dentry);
+	} else {
+		dcs = alloc_dcookie(path);
+		if (!dcs) {
+			err = -ENOMEM;
+			goto out;
+		}
 	}
 
 	*cookie = dcookie_value(dcs);
@@ -143,7 +145,7 @@ out:
 /* And here is where the userspace process can look up the cookie value
  * to retrieve the path.
  */
-asmlinkage long sys_lookup_dcookie(u64 cookie64, char __user * buf, size_t len)
+SYSCALL_DEFINE(lookup_dcookie)(u64 cookie64, char __user * buf, size_t len)
 {
 	unsigned long cookie = (unsigned long)cookie64;
 	int err = -EINVAL;
@@ -174,7 +176,7 @@ asmlinkage long sys_lookup_dcookie(u64 cookie64, char __user * buf, size_t len)
 		goto out;
 
 	/* FIXME: (deleted) ? */
-	path = d_path(dcs->dentry, dcs->vfsmnt, kbuf, PAGE_SIZE);
+	path = d_path(&dcs->path, kbuf, PAGE_SIZE);
 
 	if (IS_ERR(path)) {
 		err = PTR_ERR(path);
@@ -196,7 +198,13 @@ out:
 	mutex_unlock(&dcookie_mutex);
 	return err;
 }
-
+#ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
+asmlinkage long SyS_lookup_dcookie(u64 cookie64, long buf, long len)
+{
+	return SYSC_lookup_dcookie(cookie64, (char __user *) buf, (size_t) len);
+}
+SYSCALL_ALIAS(sys_lookup_dcookie, SyS_lookup_dcookie);
+#endif
 
 static int dcookie_init(void)
 {
@@ -254,9 +262,13 @@ out_kmem:
 
 static void free_dcookie(struct dcookie_struct * dcs)
 {
-	dcs->dentry->d_cookie = NULL;
-	dput(dcs->dentry);
-	mntput(dcs->vfsmnt);
+	struct dentry *d = dcs->path.dentry;
+
+	spin_lock(&d->d_lock);
+	d->d_flags &= ~DCACHE_COOKIE;
+	spin_unlock(&d->d_lock);
+
+	path_put(&dcs->path);
 	kmem_cache_free(dcookie_cache, dcs);
 }
 

@@ -19,20 +19,10 @@
 #include <linux/ipsec.h>
 #include <linux/module.h>
 #include <linux/cache.h>
+#include <linux/audit.h>
 #include <asm/uaccess.h>
 
 #include "xfrm_hash.h"
-
-struct sock *xfrm_nl;
-EXPORT_SYMBOL(xfrm_nl);
-
-u32 sysctl_xfrm_aevent_etime __read_mostly = XFRM_AE_ETIME;
-EXPORT_SYMBOL(sysctl_xfrm_aevent_etime);
-
-u32 sysctl_xfrm_aevent_rseqth __read_mostly = XFRM_AE_SEQT_SIZE;
-EXPORT_SYMBOL(sysctl_xfrm_aevent_rseqth);
-
-u32 sysctl_xfrm_acq_expires __read_mostly = 30;
 
 /* Each xfrm_state may be linked to two tables:
 
@@ -43,42 +33,40 @@ u32 sysctl_xfrm_acq_expires __read_mostly = 30;
 
 static DEFINE_SPINLOCK(xfrm_state_lock);
 
-/* Hash table to find appropriate SA towards given target (endpoint
- * of tunnel or destination of transport mode) allowed by selector.
- *
- * Main use is finding SA after policy selected tunnel or transport mode.
- * Also, it can be used by ah/esp icmp error handler to find offending SA.
- */
-static struct hlist_head *xfrm_state_bydst __read_mostly;
-static struct hlist_head *xfrm_state_bysrc __read_mostly;
-static struct hlist_head *xfrm_state_byspi __read_mostly;
-static unsigned int xfrm_state_hmask __read_mostly;
 static unsigned int xfrm_state_hashmax __read_mostly = 1 * 1024 * 1024;
-static unsigned int xfrm_state_num;
 static unsigned int xfrm_state_genid;
 
 static struct xfrm_state_afinfo *xfrm_state_get_afinfo(unsigned int family);
 static void xfrm_state_put_afinfo(struct xfrm_state_afinfo *afinfo);
 
-static inline unsigned int xfrm_dst_hash(xfrm_address_t *daddr,
+#ifdef CONFIG_AUDITSYSCALL
+static void xfrm_audit_state_replay(struct xfrm_state *x,
+				    struct sk_buff *skb, __be32 net_seq);
+#else
+#define xfrm_audit_state_replay(x, s, sq)	do { ; } while (0)
+#endif /* CONFIG_AUDITSYSCALL */
+
+static inline unsigned int xfrm_dst_hash(struct net *net,
+					 xfrm_address_t *daddr,
 					 xfrm_address_t *saddr,
 					 u32 reqid,
 					 unsigned short family)
 {
-	return __xfrm_dst_hash(daddr, saddr, reqid, family, xfrm_state_hmask);
+	return __xfrm_dst_hash(daddr, saddr, reqid, family, net->xfrm.state_hmask);
 }
 
-static inline unsigned int xfrm_src_hash(xfrm_address_t *daddr,
+static inline unsigned int xfrm_src_hash(struct net *net,
+					 xfrm_address_t *daddr,
 					 xfrm_address_t *saddr,
 					 unsigned short family)
 {
-	return __xfrm_src_hash(daddr, saddr, family, xfrm_state_hmask);
+	return __xfrm_src_hash(daddr, saddr, family, net->xfrm.state_hmask);
 }
 
 static inline unsigned int
-xfrm_spi_hash(xfrm_address_t *daddr, __be32 spi, u8 proto, unsigned short family)
+xfrm_spi_hash(struct net *net, xfrm_address_t *daddr, __be32 spi, u8 proto, unsigned short family)
 {
-	return __xfrm_spi_hash(daddr, spi, proto, family, xfrm_state_hmask);
+	return __xfrm_spi_hash(daddr, spi, proto, family, net->xfrm.state_hmask);
 }
 
 static void xfrm_hash_transfer(struct hlist_head *list,
@@ -112,16 +100,16 @@ static void xfrm_hash_transfer(struct hlist_head *list,
 	}
 }
 
-static unsigned long xfrm_hash_new_size(void)
+static unsigned long xfrm_hash_new_size(unsigned int state_hmask)
 {
-	return ((xfrm_state_hmask + 1) << 1) *
-		sizeof(struct hlist_head);
+	return ((state_hmask + 1) << 1) * sizeof(struct hlist_head);
 }
 
 static DEFINE_MUTEX(hash_resize_mutex);
 
-static void xfrm_hash_resize(struct work_struct *__unused)
+static void xfrm_hash_resize(struct work_struct *work)
 {
+	struct net *net = container_of(work, struct net, xfrm.state_hash_work);
 	struct hlist_head *ndst, *nsrc, *nspi, *odst, *osrc, *ospi;
 	unsigned long nsize, osize;
 	unsigned int nhashmask, ohashmask;
@@ -129,7 +117,7 @@ static void xfrm_hash_resize(struct work_struct *__unused)
 
 	mutex_lock(&hash_resize_mutex);
 
-	nsize = xfrm_hash_new_size();
+	nsize = xfrm_hash_new_size(net->xfrm.state_hmask);
 	ndst = xfrm_hash_alloc(nsize);
 	if (!ndst)
 		goto out_unlock;
@@ -148,19 +136,19 @@ static void xfrm_hash_resize(struct work_struct *__unused)
 	spin_lock_bh(&xfrm_state_lock);
 
 	nhashmask = (nsize / sizeof(struct hlist_head)) - 1U;
-	for (i = xfrm_state_hmask; i >= 0; i--)
-		xfrm_hash_transfer(xfrm_state_bydst+i, ndst, nsrc, nspi,
+	for (i = net->xfrm.state_hmask; i >= 0; i--)
+		xfrm_hash_transfer(net->xfrm.state_bydst+i, ndst, nsrc, nspi,
 				   nhashmask);
 
-	odst = xfrm_state_bydst;
-	osrc = xfrm_state_bysrc;
-	ospi = xfrm_state_byspi;
-	ohashmask = xfrm_state_hmask;
+	odst = net->xfrm.state_bydst;
+	osrc = net->xfrm.state_bysrc;
+	ospi = net->xfrm.state_byspi;
+	ohashmask = net->xfrm.state_hmask;
 
-	xfrm_state_bydst = ndst;
-	xfrm_state_bysrc = nsrc;
-	xfrm_state_byspi = nspi;
-	xfrm_state_hmask = nhashmask;
+	net->xfrm.state_bydst = ndst;
+	net->xfrm.state_bysrc = nsrc;
+	net->xfrm.state_byspi = nspi;
+	net->xfrm.state_hmask = nhashmask;
 
 	spin_unlock_bh(&xfrm_state_lock);
 
@@ -173,16 +161,9 @@ out_unlock:
 	mutex_unlock(&hash_resize_mutex);
 }
 
-static DECLARE_WORK(xfrm_hash_work, xfrm_hash_resize);
-
-DECLARE_WAIT_QUEUE_HEAD(km_waitq);
-EXPORT_SYMBOL(km_waitq);
-
 static DEFINE_RWLOCK(xfrm_state_afinfo_lock);
 static struct xfrm_state_afinfo *xfrm_state_afinfo[NPROTO];
 
-static struct work_struct xfrm_state_gc_work;
-static HLIST_HEAD(xfrm_state_gc_list);
 static DEFINE_SPINLOCK(xfrm_state_gc_lock);
 
 int __xfrm_state_delete(struct xfrm_state *x);
@@ -203,14 +184,15 @@ static struct xfrm_state_afinfo *xfrm_state_lock_afinfo(unsigned int family)
 }
 
 static void xfrm_state_unlock_afinfo(struct xfrm_state_afinfo *afinfo)
+	__releases(xfrm_state_afinfo_lock)
 {
 	write_unlock_bh(&xfrm_state_afinfo_lock);
 }
 
-int xfrm_register_type(struct xfrm_type *type, unsigned short family)
+int xfrm_register_type(const struct xfrm_type *type, unsigned short family)
 {
 	struct xfrm_state_afinfo *afinfo = xfrm_state_lock_afinfo(family);
-	struct xfrm_type **typemap;
+	const struct xfrm_type **typemap;
 	int err = 0;
 
 	if (unlikely(afinfo == NULL))
@@ -226,10 +208,10 @@ int xfrm_register_type(struct xfrm_type *type, unsigned short family)
 }
 EXPORT_SYMBOL(xfrm_register_type);
 
-int xfrm_unregister_type(struct xfrm_type *type, unsigned short family)
+int xfrm_unregister_type(const struct xfrm_type *type, unsigned short family)
 {
 	struct xfrm_state_afinfo *afinfo = xfrm_state_lock_afinfo(family);
-	struct xfrm_type **typemap;
+	const struct xfrm_type **typemap;
 	int err = 0;
 
 	if (unlikely(afinfo == NULL))
@@ -245,11 +227,11 @@ int xfrm_unregister_type(struct xfrm_type *type, unsigned short family)
 }
 EXPORT_SYMBOL(xfrm_unregister_type);
 
-static struct xfrm_type *xfrm_get_type(u8 proto, unsigned short family)
+static const struct xfrm_type *xfrm_get_type(u8 proto, unsigned short family)
 {
 	struct xfrm_state_afinfo *afinfo;
-	struct xfrm_type **typemap;
-	struct xfrm_type *type;
+	const struct xfrm_type **typemap;
+	const struct xfrm_type *type;
 	int modload_attempted = 0;
 
 retry:
@@ -272,7 +254,7 @@ retry:
 	return type;
 }
 
-static void xfrm_put_type(struct xfrm_type *type)
+static void xfrm_put_type(const struct xfrm_type *type)
 {
 	module_put(type->owner);
 }
@@ -379,6 +361,8 @@ static void xfrm_state_gc_destroy(struct xfrm_state *x)
 	kfree(x->coaddr);
 	if (x->inner_mode)
 		xfrm_put_mode(x->inner_mode);
+	if (x->inner_mode_iaf)
+		xfrm_put_mode(x->inner_mode_iaf);
 	if (x->outer_mode)
 		xfrm_put_mode(x->outer_mode);
 	if (x->type) {
@@ -389,21 +373,21 @@ static void xfrm_state_gc_destroy(struct xfrm_state *x)
 	kfree(x);
 }
 
-static void xfrm_state_gc_task(struct work_struct *data)
+static void xfrm_state_gc_task(struct work_struct *work)
 {
+	struct net *net = container_of(work, struct net, xfrm.state_gc_work);
 	struct xfrm_state *x;
 	struct hlist_node *entry, *tmp;
 	struct hlist_head gc_list;
 
 	spin_lock_bh(&xfrm_state_gc_lock);
-	gc_list.first = xfrm_state_gc_list.first;
-	INIT_HLIST_HEAD(&xfrm_state_gc_list);
+	hlist_move_list(&net->xfrm.state_gc_list, &gc_list);
 	spin_unlock_bh(&xfrm_state_gc_lock);
 
-	hlist_for_each_entry_safe(x, entry, tmp, &gc_list, bydst)
+	hlist_for_each_entry_safe(x, entry, tmp, &gc_list, gclist)
 		xfrm_state_gc_destroy(x);
 
-	wake_up(&km_waitq);
+	wake_up(&net->xfrm.km_waitq);
 }
 
 static inline unsigned long make_jiffies(long secs)
@@ -417,6 +401,7 @@ static inline unsigned long make_jiffies(long secs)
 static void xfrm_timer_handler(unsigned long data)
 {
 	struct xfrm_state *x = (struct xfrm_state*)data;
+	struct net *net = xs_net(x);
 	unsigned long now = get_seconds();
 	long next = LONG_MAX;
 	int warn = 0;
@@ -474,7 +459,7 @@ resched:
 expired:
 	if (x->km.state == XFRM_STATE_ACQ && x->id.spi == 0) {
 		x->km.state = XFRM_STATE_EXPIRED;
-		wake_up(&km_waitq);
+		wake_up(&net->xfrm.km_waitq);
 		next = 2;
 		goto resched;
 	}
@@ -484,7 +469,8 @@ expired:
 		km_state_expired(x, 1, 0);
 
 	xfrm_audit_state_delete(x, err ? 0 : 1,
-				audit_get_loginuid(current->audit_context), 0);
+				audit_get_loginuid(current),
+				audit_get_sessionid(current), 0);
 
 out:
 	spin_unlock(&x->lock);
@@ -492,24 +478,23 @@ out:
 
 static void xfrm_replay_timer_handler(unsigned long data);
 
-struct xfrm_state *xfrm_state_alloc(void)
+struct xfrm_state *xfrm_state_alloc(struct net *net)
 {
 	struct xfrm_state *x;
 
 	x = kzalloc(sizeof(struct xfrm_state), GFP_ATOMIC);
 
 	if (x) {
+		write_pnet(&x->xs_net, net);
 		atomic_set(&x->refcnt, 1);
 		atomic_set(&x->tunnel_users, 0);
+		INIT_LIST_HEAD(&x->km.all);
 		INIT_HLIST_NODE(&x->bydst);
 		INIT_HLIST_NODE(&x->bysrc);
 		INIT_HLIST_NODE(&x->byspi);
-		init_timer(&x->timer);
-		x->timer.function = xfrm_timer_handler;
-		x->timer.data	  = (unsigned long)x;
-		init_timer(&x->rtimer);
-		x->rtimer.function = xfrm_replay_timer_handler;
-		x->rtimer.data     = (unsigned long)x;
+		setup_timer(&x->timer, xfrm_timer_handler, (unsigned long)x);
+		setup_timer(&x->rtimer, xfrm_replay_timer_handler,
+				(unsigned long)x);
 		x->curlft.add_time = get_seconds();
 		x->lft.soft_byte_limit = XFRM_INF;
 		x->lft.soft_packet_limit = XFRM_INF;
@@ -517,6 +502,8 @@ struct xfrm_state *xfrm_state_alloc(void)
 		x->lft.hard_packet_limit = XFRM_INF;
 		x->replay_maxage = 0;
 		x->replay_maxdiff = 0;
+		x->inner_mode = NULL;
+		x->inner_mode_iaf = NULL;
 		spin_lock_init(&x->lock);
 	}
 	return x;
@@ -525,27 +512,31 @@ EXPORT_SYMBOL(xfrm_state_alloc);
 
 void __xfrm_state_destroy(struct xfrm_state *x)
 {
-	BUG_TRAP(x->km.state == XFRM_STATE_DEAD);
+	struct net *net = xs_net(x);
+
+	WARN_ON(x->km.state != XFRM_STATE_DEAD);
 
 	spin_lock_bh(&xfrm_state_gc_lock);
-	hlist_add_head(&x->bydst, &xfrm_state_gc_list);
+	hlist_add_head(&x->gclist, &net->xfrm.state_gc_list);
 	spin_unlock_bh(&xfrm_state_gc_lock);
-	schedule_work(&xfrm_state_gc_work);
+	schedule_work(&net->xfrm.state_gc_work);
 }
 EXPORT_SYMBOL(__xfrm_state_destroy);
 
 int __xfrm_state_delete(struct xfrm_state *x)
 {
+	struct net *net = xs_net(x);
 	int err = -ESRCH;
 
 	if (x->km.state != XFRM_STATE_DEAD) {
 		x->km.state = XFRM_STATE_DEAD;
 		spin_lock(&xfrm_state_lock);
+		list_del(&x->km.all);
 		hlist_del(&x->bydst);
 		hlist_del(&x->bysrc);
 		if (x->id.spi)
 			hlist_del(&x->byspi);
-		xfrm_state_num--;
+		net->xfrm.state_num--;
 		spin_unlock(&xfrm_state_lock);
 
 		/* All xfrm_state objects are created by xfrm_state_alloc.
@@ -574,19 +565,20 @@ EXPORT_SYMBOL(xfrm_state_delete);
 
 #ifdef CONFIG_SECURITY_NETWORK_XFRM
 static inline int
-xfrm_state_flush_secctx_check(u8 proto, struct xfrm_audit *audit_info)
+xfrm_state_flush_secctx_check(struct net *net, u8 proto, struct xfrm_audit *audit_info)
 {
 	int i, err = 0;
 
-	for (i = 0; i <= xfrm_state_hmask; i++) {
+	for (i = 0; i <= net->xfrm.state_hmask; i++) {
 		struct hlist_node *entry;
 		struct xfrm_state *x;
 
-		hlist_for_each_entry(x, entry, xfrm_state_bydst+i, bydst) {
+		hlist_for_each_entry(x, entry, net->xfrm.state_bydst+i, bydst) {
 			if (xfrm_id_proto_match(x->id.proto, proto) &&
 			   (err = security_xfrm_state_delete(x)) != 0) {
 				xfrm_audit_state_delete(x, 0,
 							audit_info->loginuid,
+							audit_info->sessionid,
 							audit_info->secid);
 				return err;
 			}
@@ -597,26 +589,26 @@ xfrm_state_flush_secctx_check(u8 proto, struct xfrm_audit *audit_info)
 }
 #else
 static inline int
-xfrm_state_flush_secctx_check(u8 proto, struct xfrm_audit *audit_info)
+xfrm_state_flush_secctx_check(struct net *net, u8 proto, struct xfrm_audit *audit_info)
 {
 	return 0;
 }
 #endif
 
-int xfrm_state_flush(u8 proto, struct xfrm_audit *audit_info)
+int xfrm_state_flush(struct net *net, u8 proto, struct xfrm_audit *audit_info)
 {
 	int i, err = 0;
 
 	spin_lock_bh(&xfrm_state_lock);
-	err = xfrm_state_flush_secctx_check(proto, audit_info);
+	err = xfrm_state_flush_secctx_check(net, proto, audit_info);
 	if (err)
 		goto out;
 
-	for (i = 0; i <= xfrm_state_hmask; i++) {
+	for (i = 0; i <= net->xfrm.state_hmask; i++) {
 		struct hlist_node *entry;
 		struct xfrm_state *x;
 restart:
-		hlist_for_each_entry(x, entry, xfrm_state_bydst+i, bydst) {
+		hlist_for_each_entry(x, entry, net->xfrm.state_bydst+i, bydst) {
 			if (!xfrm_state_kern(x) &&
 			    xfrm_id_proto_match(x->id.proto, proto)) {
 				xfrm_state_hold(x);
@@ -625,6 +617,7 @@ restart:
 				err = xfrm_state_delete(x);
 				xfrm_audit_state_delete(x, err ? 0 : 1,
 							audit_info->loginuid,
+							audit_info->sessionid,
 							audit_info->secid);
 				xfrm_state_put(x);
 
@@ -637,7 +630,7 @@ restart:
 
 out:
 	spin_unlock_bh(&xfrm_state_lock);
-	wake_up(&km_waitq);
+	wake_up(&net->xfrm.km_waitq);
 	return err;
 }
 EXPORT_SYMBOL(xfrm_state_flush);
@@ -645,8 +638,8 @@ EXPORT_SYMBOL(xfrm_state_flush);
 void xfrm_sad_getinfo(struct xfrmk_sadinfo *si)
 {
 	spin_lock_bh(&xfrm_state_lock);
-	si->sadcnt = xfrm_state_num;
-	si->sadhcnt = xfrm_state_hmask;
+	si->sadcnt = init_net.xfrm.state_num;
+	si->sadhcnt = init_net.xfrm.state_hmask;
 	si->sadhmcnt = xfrm_state_hashmax;
 	spin_unlock_bh(&xfrm_state_lock);
 }
@@ -666,13 +659,13 @@ xfrm_init_tempsel(struct xfrm_state *x, struct flowi *fl,
 	return 0;
 }
 
-static struct xfrm_state *__xfrm_state_lookup(xfrm_address_t *daddr, __be32 spi, u8 proto, unsigned short family)
+static struct xfrm_state *__xfrm_state_lookup(struct net *net, xfrm_address_t *daddr, __be32 spi, u8 proto, unsigned short family)
 {
-	unsigned int h = xfrm_spi_hash(daddr, spi, proto, family);
+	unsigned int h = xfrm_spi_hash(net, daddr, spi, proto, family);
 	struct xfrm_state *x;
 	struct hlist_node *entry;
 
-	hlist_for_each_entry(x, entry, xfrm_state_byspi+h, byspi) {
+	hlist_for_each_entry(x, entry, net->xfrm.state_byspi+h, byspi) {
 		if (x->props.family != family ||
 		    x->id.spi       != spi ||
 		    x->id.proto     != proto)
@@ -698,13 +691,13 @@ static struct xfrm_state *__xfrm_state_lookup(xfrm_address_t *daddr, __be32 spi,
 	return NULL;
 }
 
-static struct xfrm_state *__xfrm_state_lookup_byaddr(xfrm_address_t *daddr, xfrm_address_t *saddr, u8 proto, unsigned short family)
+static struct xfrm_state *__xfrm_state_lookup_byaddr(struct net *net, xfrm_address_t *daddr, xfrm_address_t *saddr, u8 proto, unsigned short family)
 {
-	unsigned int h = xfrm_src_hash(daddr, saddr, family);
+	unsigned int h = xfrm_src_hash(net, daddr, saddr, family);
 	struct xfrm_state *x;
 	struct hlist_node *entry;
 
-	hlist_for_each_entry(x, entry, xfrm_state_bysrc+h, bysrc) {
+	hlist_for_each_entry(x, entry, net->xfrm.state_bysrc+h, bysrc) {
 		if (x->props.family != family ||
 		    x->id.proto     != proto)
 			continue;
@@ -736,21 +729,61 @@ static struct xfrm_state *__xfrm_state_lookup_byaddr(xfrm_address_t *daddr, xfrm
 static inline struct xfrm_state *
 __xfrm_state_locate(struct xfrm_state *x, int use_spi, int family)
 {
+	struct net *net = xs_net(x);
+
 	if (use_spi)
-		return __xfrm_state_lookup(&x->id.daddr, x->id.spi,
+		return __xfrm_state_lookup(net, &x->id.daddr, x->id.spi,
 					   x->id.proto, family);
 	else
-		return __xfrm_state_lookup_byaddr(&x->id.daddr,
+		return __xfrm_state_lookup_byaddr(net, &x->id.daddr,
 						  &x->props.saddr,
 						  x->id.proto, family);
 }
 
-static void xfrm_hash_grow_check(int have_hash_collision)
+static void xfrm_hash_grow_check(struct net *net, int have_hash_collision)
 {
 	if (have_hash_collision &&
-	    (xfrm_state_hmask + 1) < xfrm_state_hashmax &&
-	    xfrm_state_num > xfrm_state_hmask)
-		schedule_work(&xfrm_hash_work);
+	    (net->xfrm.state_hmask + 1) < xfrm_state_hashmax &&
+	    net->xfrm.state_num > net->xfrm.state_hmask)
+		schedule_work(&net->xfrm.state_hash_work);
+}
+
+static void xfrm_state_look_at(struct xfrm_policy *pol, struct xfrm_state *x,
+			       struct flowi *fl, unsigned short family,
+			       xfrm_address_t *daddr, xfrm_address_t *saddr,
+			       struct xfrm_state **best, int *acq_in_progress,
+			       int *error)
+{
+	/* Resolution logic:
+	 * 1. There is a valid state with matching selector. Done.
+	 * 2. Valid state with inappropriate selector. Skip.
+	 *
+	 * Entering area of "sysdeps".
+	 *
+	 * 3. If state is not valid, selector is temporary, it selects
+	 *    only session which triggered previous resolution. Key
+	 *    manager will do something to install a state with proper
+	 *    selector.
+	 */
+	if (x->km.state == XFRM_STATE_VALID) {
+		if ((x->sel.family &&
+		     !xfrm_selector_match(&x->sel, fl, x->sel.family)) ||
+		    !security_xfrm_state_pol_flow_match(x, pol, fl))
+			return;
+
+		if (!*best ||
+		    (*best)->km.dying > x->km.dying ||
+		    ((*best)->km.dying == x->km.dying &&
+		     (*best)->curlft.add_time < x->curlft.add_time))
+			*best = x;
+	} else if (x->km.state == XFRM_STATE_ACQ) {
+		*acq_in_progress = 1;
+	} else if (x->km.state == XFRM_STATE_ERROR ||
+		   x->km.state == XFRM_STATE_EXPIRED) {
+		if (xfrm_selector_match(&x->sel, fl, x->sel.family) &&
+		    security_xfrm_state_pol_flow_match(x, pol, fl))
+			*error = -ESRCH;
+	}
 }
 
 struct xfrm_state *
@@ -759,65 +792,57 @@ xfrm_state_find(xfrm_address_t *daddr, xfrm_address_t *saddr,
 		struct xfrm_policy *pol, int *err,
 		unsigned short family)
 {
-	unsigned int h = xfrm_dst_hash(daddr, saddr, tmpl->reqid, family);
+	static xfrm_address_t saddr_wildcard = { };
+	struct net *net = xp_net(pol);
+	unsigned int h;
 	struct hlist_node *entry;
-	struct xfrm_state *x, *x0;
+	struct xfrm_state *x, *x0, *to_put;
 	int acquire_in_progress = 0;
 	int error = 0;
 	struct xfrm_state *best = NULL;
 
+	to_put = NULL;
+
 	spin_lock_bh(&xfrm_state_lock);
-	hlist_for_each_entry(x, entry, xfrm_state_bydst+h, bydst) {
+	h = xfrm_dst_hash(net, daddr, saddr, tmpl->reqid, family);
+	hlist_for_each_entry(x, entry, net->xfrm.state_bydst+h, bydst) {
 		if (x->props.family == family &&
 		    x->props.reqid == tmpl->reqid &&
 		    !(x->props.flags & XFRM_STATE_WILDRECV) &&
 		    xfrm_state_addr_check(x, daddr, saddr, family) &&
 		    tmpl->mode == x->props.mode &&
 		    tmpl->id.proto == x->id.proto &&
-		    (tmpl->id.spi == x->id.spi || !tmpl->id.spi)) {
-			/* Resolution logic:
-			   1. There is a valid state with matching selector.
-			      Done.
-			   2. Valid state with inappropriate selector. Skip.
+		    (tmpl->id.spi == x->id.spi || !tmpl->id.spi))
+			xfrm_state_look_at(pol, x, fl, family, daddr, saddr,
+					   &best, &acquire_in_progress, &error);
+	}
+	if (best)
+		goto found;
 
-			   Entering area of "sysdeps".
-
-			   3. If state is not valid, selector is temporary,
-			      it selects only session which triggered
-			      previous resolution. Key manager will do
-			      something to install a state with proper
-			      selector.
-			 */
-			if (x->km.state == XFRM_STATE_VALID) {
-				if (!xfrm_selector_match(&x->sel, fl, x->sel.family) ||
-				    !security_xfrm_state_pol_flow_match(x, pol, fl))
-					continue;
-				if (!best ||
-				    best->km.dying > x->km.dying ||
-				    (best->km.dying == x->km.dying &&
-				     best->curlft.add_time < x->curlft.add_time))
-					best = x;
-			} else if (x->km.state == XFRM_STATE_ACQ) {
-				acquire_in_progress = 1;
-			} else if (x->km.state == XFRM_STATE_ERROR ||
-				   x->km.state == XFRM_STATE_EXPIRED) {
-				if (xfrm_selector_match(&x->sel, fl, x->sel.family) &&
-				    security_xfrm_state_pol_flow_match(x, pol, fl))
-					error = -ESRCH;
-			}
-		}
+	h = xfrm_dst_hash(net, daddr, &saddr_wildcard, tmpl->reqid, family);
+	hlist_for_each_entry(x, entry, net->xfrm.state_bydst+h, bydst) {
+		if (x->props.family == family &&
+		    x->props.reqid == tmpl->reqid &&
+		    !(x->props.flags & XFRM_STATE_WILDRECV) &&
+		    xfrm_state_addr_check(x, daddr, saddr, family) &&
+		    tmpl->mode == x->props.mode &&
+		    tmpl->id.proto == x->id.proto &&
+		    (tmpl->id.spi == x->id.spi || !tmpl->id.spi))
+			xfrm_state_look_at(pol, x, fl, family, daddr, saddr,
+					   &best, &acquire_in_progress, &error);
 	}
 
+found:
 	x = best;
 	if (!x && !error && !acquire_in_progress) {
 		if (tmpl->id.spi &&
-		    (x0 = __xfrm_state_lookup(daddr, tmpl->id.spi,
+		    (x0 = __xfrm_state_lookup(net, daddr, tmpl->id.spi,
 					      tmpl->id.proto, family)) != NULL) {
-			xfrm_state_put(x0);
+			to_put = x0;
 			error = -EEXIST;
 			goto out;
 		}
-		x = xfrm_state_alloc();
+		x = xfrm_state_alloc(net);
 		if (x == NULL) {
 			error = -ENOMEM;
 			goto out;
@@ -829,28 +854,29 @@ xfrm_state_find(xfrm_address_t *daddr, xfrm_address_t *saddr,
 		error = security_xfrm_state_alloc_acquire(x, pol->security, fl->secid);
 		if (error) {
 			x->km.state = XFRM_STATE_DEAD;
-			xfrm_state_put(x);
+			to_put = x;
 			x = NULL;
 			goto out;
 		}
 
 		if (km_query(x, tmpl, pol) == 0) {
 			x->km.state = XFRM_STATE_ACQ;
-			hlist_add_head(&x->bydst, xfrm_state_bydst+h);
-			h = xfrm_src_hash(daddr, saddr, family);
-			hlist_add_head(&x->bysrc, xfrm_state_bysrc+h);
+			list_add(&x->km.all, &net->xfrm.state_all);
+			hlist_add_head(&x->bydst, net->xfrm.state_bydst+h);
+			h = xfrm_src_hash(net, daddr, saddr, family);
+			hlist_add_head(&x->bysrc, net->xfrm.state_bysrc+h);
 			if (x->id.spi) {
-				h = xfrm_spi_hash(&x->id.daddr, x->id.spi, x->id.proto, family);
-				hlist_add_head(&x->byspi, xfrm_state_byspi+h);
+				h = xfrm_spi_hash(net, &x->id.daddr, x->id.spi, x->id.proto, family);
+				hlist_add_head(&x->byspi, net->xfrm.state_byspi+h);
 			}
-			x->lft.hard_add_expires_seconds = sysctl_xfrm_acq_expires;
-			x->timer.expires = jiffies + sysctl_xfrm_acq_expires*HZ;
+			x->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
+			x->timer.expires = jiffies + net->xfrm.sysctl_acq_expires*HZ;
 			add_timer(&x->timer);
-			xfrm_state_num++;
-			xfrm_hash_grow_check(x->bydst.next != NULL);
+			net->xfrm.state_num++;
+			xfrm_hash_grow_check(net, x->bydst.next != NULL);
 		} else {
 			x->km.state = XFRM_STATE_DEAD;
-			xfrm_state_put(x);
+			to_put = x;
 			x = NULL;
 			error = -ESRCH;
 		}
@@ -861,19 +887,23 @@ out:
 	else
 		*err = acquire_in_progress ? -EAGAIN : error;
 	spin_unlock_bh(&xfrm_state_lock);
+	if (to_put)
+		xfrm_state_put(to_put);
 	return x;
 }
 
 struct xfrm_state *
-xfrm_stateonly_find(xfrm_address_t *daddr, xfrm_address_t *saddr,
+xfrm_stateonly_find(struct net *net,
+		    xfrm_address_t *daddr, xfrm_address_t *saddr,
 		    unsigned short family, u8 mode, u8 proto, u32 reqid)
 {
-	unsigned int h = xfrm_dst_hash(daddr, saddr, reqid, family);
+	unsigned int h;
 	struct xfrm_state *rx = NULL, *x = NULL;
 	struct hlist_node *entry;
 
 	spin_lock(&xfrm_state_lock);
-	hlist_for_each_entry(x, entry, xfrm_state_bydst+h, bydst) {
+	h = xfrm_dst_hash(net, daddr, saddr, reqid, family);
+	hlist_for_each_entry(x, entry, net->xfrm.state_bydst+h, bydst) {
 		if (x->props.family == family &&
 		    x->props.reqid == reqid &&
 		    !(x->props.flags & XFRM_STATE_WILDRECV) &&
@@ -897,46 +927,50 @@ EXPORT_SYMBOL(xfrm_stateonly_find);
 
 static void __xfrm_state_insert(struct xfrm_state *x)
 {
+	struct net *net = xs_net(x);
 	unsigned int h;
 
 	x->genid = ++xfrm_state_genid;
 
-	h = xfrm_dst_hash(&x->id.daddr, &x->props.saddr,
-			  x->props.reqid, x->props.family);
-	hlist_add_head(&x->bydst, xfrm_state_bydst+h);
+	list_add(&x->km.all, &net->xfrm.state_all);
 
-	h = xfrm_src_hash(&x->id.daddr, &x->props.saddr, x->props.family);
-	hlist_add_head(&x->bysrc, xfrm_state_bysrc+h);
+	h = xfrm_dst_hash(net, &x->id.daddr, &x->props.saddr,
+			  x->props.reqid, x->props.family);
+	hlist_add_head(&x->bydst, net->xfrm.state_bydst+h);
+
+	h = xfrm_src_hash(net, &x->id.daddr, &x->props.saddr, x->props.family);
+	hlist_add_head(&x->bysrc, net->xfrm.state_bysrc+h);
 
 	if (x->id.spi) {
-		h = xfrm_spi_hash(&x->id.daddr, x->id.spi, x->id.proto,
+		h = xfrm_spi_hash(net, &x->id.daddr, x->id.spi, x->id.proto,
 				  x->props.family);
 
-		hlist_add_head(&x->byspi, xfrm_state_byspi+h);
+		hlist_add_head(&x->byspi, net->xfrm.state_byspi+h);
 	}
 
 	mod_timer(&x->timer, jiffies + HZ);
 	if (x->replay_maxage)
 		mod_timer(&x->rtimer, jiffies + x->replay_maxage);
 
-	wake_up(&km_waitq);
+	wake_up(&net->xfrm.km_waitq);
 
-	xfrm_state_num++;
+	net->xfrm.state_num++;
 
-	xfrm_hash_grow_check(x->bydst.next != NULL);
+	xfrm_hash_grow_check(net, x->bydst.next != NULL);
 }
 
 /* xfrm_state_lock is held */
 static void __xfrm_state_bump_genids(struct xfrm_state *xnew)
 {
+	struct net *net = xs_net(xnew);
 	unsigned short family = xnew->props.family;
 	u32 reqid = xnew->props.reqid;
 	struct xfrm_state *x;
 	struct hlist_node *entry;
 	unsigned int h;
 
-	h = xfrm_dst_hash(&xnew->id.daddr, &xnew->props.saddr, reqid, family);
-	hlist_for_each_entry(x, entry, xfrm_state_bydst+h, bydst) {
+	h = xfrm_dst_hash(net, &xnew->id.daddr, &xnew->props.saddr, reqid, family);
+	hlist_for_each_entry(x, entry, net->xfrm.state_bydst+h, bydst) {
 		if (x->props.family	== family &&
 		    x->props.reqid	== reqid &&
 		    !xfrm_addr_cmp(&x->id.daddr, &xnew->id.daddr, family) &&
@@ -955,13 +989,13 @@ void xfrm_state_insert(struct xfrm_state *x)
 EXPORT_SYMBOL(xfrm_state_insert);
 
 /* xfrm_state_lock is held */
-static struct xfrm_state *__find_acq_core(unsigned short family, u8 mode, u32 reqid, u8 proto, xfrm_address_t *daddr, xfrm_address_t *saddr, int create)
+static struct xfrm_state *__find_acq_core(struct net *net, unsigned short family, u8 mode, u32 reqid, u8 proto, xfrm_address_t *daddr, xfrm_address_t *saddr, int create)
 {
-	unsigned int h = xfrm_dst_hash(daddr, saddr, reqid, family);
+	unsigned int h = xfrm_dst_hash(net, daddr, saddr, reqid, family);
 	struct hlist_node *entry;
 	struct xfrm_state *x;
 
-	hlist_for_each_entry(x, entry, xfrm_state_bydst+h, bydst) {
+	hlist_for_each_entry(x, entry, net->xfrm.state_bydst+h, bydst) {
 		if (x->props.reqid  != reqid ||
 		    x->props.mode   != mode ||
 		    x->props.family != family ||
@@ -993,7 +1027,7 @@ static struct xfrm_state *__find_acq_core(unsigned short family, u8 mode, u32 re
 	if (!create)
 		return NULL;
 
-	x = xfrm_state_alloc();
+	x = xfrm_state_alloc(net);
 	if (likely(x)) {
 		switch (family) {
 		case AF_INET:
@@ -1024,54 +1058,58 @@ static struct xfrm_state *__find_acq_core(unsigned short family, u8 mode, u32 re
 		x->props.family = family;
 		x->props.mode = mode;
 		x->props.reqid = reqid;
-		x->lft.hard_add_expires_seconds = sysctl_xfrm_acq_expires;
+		x->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
 		xfrm_state_hold(x);
-		x->timer.expires = jiffies + sysctl_xfrm_acq_expires*HZ;
+		x->timer.expires = jiffies + net->xfrm.sysctl_acq_expires*HZ;
 		add_timer(&x->timer);
-		hlist_add_head(&x->bydst, xfrm_state_bydst+h);
-		h = xfrm_src_hash(daddr, saddr, family);
-		hlist_add_head(&x->bysrc, xfrm_state_bysrc+h);
+		list_add(&x->km.all, &net->xfrm.state_all);
+		hlist_add_head(&x->bydst, net->xfrm.state_bydst+h);
+		h = xfrm_src_hash(net, daddr, saddr, family);
+		hlist_add_head(&x->bysrc, net->xfrm.state_bysrc+h);
 
-		xfrm_state_num++;
+		net->xfrm.state_num++;
 
-		xfrm_hash_grow_check(x->bydst.next != NULL);
+		xfrm_hash_grow_check(net, x->bydst.next != NULL);
 	}
 
 	return x;
 }
 
-static struct xfrm_state *__xfrm_find_acq_byseq(u32 seq);
+static struct xfrm_state *__xfrm_find_acq_byseq(struct net *net, u32 seq);
 
 int xfrm_state_add(struct xfrm_state *x)
 {
-	struct xfrm_state *x1;
+	struct net *net = xs_net(x);
+	struct xfrm_state *x1, *to_put;
 	int family;
 	int err;
 	int use_spi = xfrm_id_proto_match(x->id.proto, IPSEC_PROTO_ANY);
 
 	family = x->props.family;
 
+	to_put = NULL;
+
 	spin_lock_bh(&xfrm_state_lock);
 
 	x1 = __xfrm_state_locate(x, use_spi, family);
 	if (x1) {
-		xfrm_state_put(x1);
+		to_put = x1;
 		x1 = NULL;
 		err = -EEXIST;
 		goto out;
 	}
 
 	if (use_spi && x->km.seq) {
-		x1 = __xfrm_find_acq_byseq(x->km.seq);
+		x1 = __xfrm_find_acq_byseq(net, x->km.seq);
 		if (x1 && ((x1->id.proto != x->id.proto) ||
 		    xfrm_addr_cmp(&x1->id.daddr, &x->id.daddr, family))) {
-			xfrm_state_put(x1);
+			to_put = x1;
 			x1 = NULL;
 		}
 	}
 
 	if (use_spi && !x1)
-		x1 = __find_acq_core(family, x->props.mode, x->props.reqid,
+		x1 = __find_acq_core(net, family, x->props.mode, x->props.reqid,
 				     x->id.proto,
 				     &x->id.daddr, &x->props.saddr, 0);
 
@@ -1087,15 +1125,19 @@ out:
 		xfrm_state_put(x1);
 	}
 
+	if (to_put)
+		xfrm_state_put(to_put);
+
 	return err;
 }
 EXPORT_SYMBOL(xfrm_state_add);
 
 #ifdef CONFIG_XFRM_MIGRATE
-struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig, int *errp)
+static struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig, int *errp)
 {
+	struct net *net = xs_net(orig);
 	int err = -ENOMEM;
-	struct xfrm_state *x = xfrm_state_alloc();
+	struct xfrm_state *x = xfrm_state_alloc(net);
 	if (!x)
 		goto error;
 
@@ -1167,7 +1209,6 @@ struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig, int *errp)
 	kfree(x);
 	return NULL;
 }
-EXPORT_SYMBOL(xfrm_state_clone);
 
 /* xfrm_state_lock is held */
 struct xfrm_state * xfrm_migrate_state_find(struct xfrm_migrate *m)
@@ -1177,9 +1218,9 @@ struct xfrm_state * xfrm_migrate_state_find(struct xfrm_migrate *m)
 	struct hlist_node *entry;
 
 	if (m->reqid) {
-		h = xfrm_dst_hash(&m->old_daddr, &m->old_saddr,
+		h = xfrm_dst_hash(&init_net, &m->old_daddr, &m->old_saddr,
 				  m->reqid, m->old_family);
-		hlist_for_each_entry(x, entry, xfrm_state_bydst+h, bydst) {
+		hlist_for_each_entry(x, entry, init_net.xfrm.state_bydst+h, bydst) {
 			if (x->props.mode != m->mode ||
 			    x->id.proto != m->proto)
 				continue;
@@ -1194,9 +1235,9 @@ struct xfrm_state * xfrm_migrate_state_find(struct xfrm_migrate *m)
 			return x;
 		}
 	} else {
-		h = xfrm_src_hash(&m->old_daddr, &m->old_saddr,
+		h = xfrm_src_hash(&init_net, &m->old_daddr, &m->old_saddr,
 				  m->old_family);
-		hlist_for_each_entry(x, entry, xfrm_state_bysrc+h, bysrc) {
+		hlist_for_each_entry(x, entry, init_net.xfrm.state_bysrc+h, bysrc) {
 			if (x->props.mode != m->mode ||
 			    x->id.proto != m->proto)
 				continue;
@@ -1247,9 +1288,11 @@ EXPORT_SYMBOL(xfrm_state_migrate);
 
 int xfrm_state_update(struct xfrm_state *x)
 {
-	struct xfrm_state *x1;
+	struct xfrm_state *x1, *to_put;
 	int err;
 	int use_spi = xfrm_id_proto_match(x->id.proto, IPSEC_PROTO_ANY);
+
+	to_put = NULL;
 
 	spin_lock_bh(&xfrm_state_lock);
 	x1 = __xfrm_state_locate(x, use_spi, x->props.family);
@@ -1259,7 +1302,7 @@ int xfrm_state_update(struct xfrm_state *x)
 		goto out;
 
 	if (xfrm_state_kern(x1)) {
-		xfrm_state_put(x1);
+		to_put = x1;
 		err = -EEXIST;
 		goto out;
 	}
@@ -1272,6 +1315,9 @@ int xfrm_state_update(struct xfrm_state *x)
 
 out:
 	spin_unlock_bh(&xfrm_state_lock);
+
+	if (to_put)
+		xfrm_state_put(to_put);
 
 	if (err)
 		return err;
@@ -1335,40 +1381,41 @@ int xfrm_state_check_expire(struct xfrm_state *x)
 EXPORT_SYMBOL(xfrm_state_check_expire);
 
 struct xfrm_state *
-xfrm_state_lookup(xfrm_address_t *daddr, __be32 spi, u8 proto,
+xfrm_state_lookup(struct net *net, xfrm_address_t *daddr, __be32 spi, u8 proto,
 		  unsigned short family)
 {
 	struct xfrm_state *x;
 
 	spin_lock_bh(&xfrm_state_lock);
-	x = __xfrm_state_lookup(daddr, spi, proto, family);
+	x = __xfrm_state_lookup(net, daddr, spi, proto, family);
 	spin_unlock_bh(&xfrm_state_lock);
 	return x;
 }
 EXPORT_SYMBOL(xfrm_state_lookup);
 
 struct xfrm_state *
-xfrm_state_lookup_byaddr(xfrm_address_t *daddr, xfrm_address_t *saddr,
+xfrm_state_lookup_byaddr(struct net *net,
+			 xfrm_address_t *daddr, xfrm_address_t *saddr,
 			 u8 proto, unsigned short family)
 {
 	struct xfrm_state *x;
 
 	spin_lock_bh(&xfrm_state_lock);
-	x = __xfrm_state_lookup_byaddr(daddr, saddr, proto, family);
+	x = __xfrm_state_lookup_byaddr(net, daddr, saddr, proto, family);
 	spin_unlock_bh(&xfrm_state_lock);
 	return x;
 }
 EXPORT_SYMBOL(xfrm_state_lookup_byaddr);
 
 struct xfrm_state *
-xfrm_find_acq(u8 mode, u32 reqid, u8 proto,
+xfrm_find_acq(struct net *net, u8 mode, u32 reqid, u8 proto,
 	      xfrm_address_t *daddr, xfrm_address_t *saddr,
 	      int create, unsigned short family)
 {
 	struct xfrm_state *x;
 
 	spin_lock_bh(&xfrm_state_lock);
-	x = __find_acq_core(family, mode, reqid, proto, daddr, saddr, create);
+	x = __find_acq_core(net, family, mode, reqid, proto, daddr, saddr, create);
 	spin_unlock_bh(&xfrm_state_lock);
 
 	return x;
@@ -1415,15 +1462,15 @@ EXPORT_SYMBOL(xfrm_state_sort);
 
 /* Silly enough, but I'm lazy to build resolution list */
 
-static struct xfrm_state *__xfrm_find_acq_byseq(u32 seq)
+static struct xfrm_state *__xfrm_find_acq_byseq(struct net *net, u32 seq)
 {
 	int i;
 
-	for (i = 0; i <= xfrm_state_hmask; i++) {
+	for (i = 0; i <= net->xfrm.state_hmask; i++) {
 		struct hlist_node *entry;
 		struct xfrm_state *x;
 
-		hlist_for_each_entry(x, entry, xfrm_state_bydst+i, bydst) {
+		hlist_for_each_entry(x, entry, net->xfrm.state_bydst+i, bydst) {
 			if (x->km.seq == seq &&
 			    x->km.state == XFRM_STATE_ACQ) {
 				xfrm_state_hold(x);
@@ -1434,12 +1481,12 @@ static struct xfrm_state *__xfrm_find_acq_byseq(u32 seq)
 	return NULL;
 }
 
-struct xfrm_state *xfrm_find_acq_byseq(u32 seq)
+struct xfrm_state *xfrm_find_acq_byseq(struct net *net, u32 seq)
 {
 	struct xfrm_state *x;
 
 	spin_lock_bh(&xfrm_state_lock);
-	x = __xfrm_find_acq_byseq(seq);
+	x = __xfrm_find_acq_byseq(net, seq);
 	spin_unlock_bh(&xfrm_state_lock);
 	return x;
 }
@@ -1460,6 +1507,7 @@ EXPORT_SYMBOL(xfrm_get_acqseq);
 
 int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high)
 {
+	struct net *net = xs_net(x);
 	unsigned int h;
 	struct xfrm_state *x0;
 	int err = -ENOENT;
@@ -1477,7 +1525,7 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high)
 	err = -ENOENT;
 
 	if (minspi == maxspi) {
-		x0 = xfrm_state_lookup(&x->id.daddr, minspi, x->id.proto, x->props.family);
+		x0 = xfrm_state_lookup(net, &x->id.daddr, minspi, x->id.proto, x->props.family);
 		if (x0) {
 			xfrm_state_put(x0);
 			goto unlock;
@@ -1487,7 +1535,7 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high)
 		u32 spi = 0;
 		for (h=0; h<high-low+1; h++) {
 			spi = low + net_random()%(high-low+1);
-			x0 = xfrm_state_lookup(&x->id.daddr, htonl(spi), x->id.proto, x->props.family);
+			x0 = xfrm_state_lookup(net, &x->id.daddr, htonl(spi), x->id.proto, x->props.family);
 			if (x0 == NULL) {
 				x->id.spi = htonl(spi);
 				break;
@@ -1497,8 +1545,8 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high)
 	}
 	if (x->id.spi) {
 		spin_lock_bh(&xfrm_state_lock);
-		h = xfrm_spi_hash(&x->id.daddr, x->id.spi, x->id.proto, x->props.family);
-		hlist_add_head(&x->byspi, xfrm_state_byspi+h);
+		h = xfrm_spi_hash(net, &x->id.daddr, x->id.spi, x->id.proto, x->props.family);
+		hlist_add_head(&x->byspi, net->xfrm.state_byspi+h);
 		spin_unlock_bh(&xfrm_state_lock);
 
 		err = 0;
@@ -1511,39 +1559,65 @@ unlock:
 }
 EXPORT_SYMBOL(xfrm_alloc_spi);
 
-int xfrm_state_walk(u8 proto, int (*func)(struct xfrm_state *, int, void*),
+int xfrm_state_walk(struct net *net, struct xfrm_state_walk *walk,
+		    int (*func)(struct xfrm_state *, int, void*),
 		    void *data)
 {
-	int i;
-	struct xfrm_state *x, *last = NULL;
-	struct hlist_node *entry;
-	int count = 0;
+	struct xfrm_state *state;
+	struct xfrm_state_walk *x;
 	int err = 0;
 
+	if (walk->seq != 0 && list_empty(&walk->all))
+		return 0;
+
 	spin_lock_bh(&xfrm_state_lock);
-	for (i = 0; i <= xfrm_state_hmask; i++) {
-		hlist_for_each_entry(x, entry, xfrm_state_bydst+i, bydst) {
-			if (!xfrm_id_proto_match(x->id.proto, proto))
-				continue;
-			if (last) {
-				err = func(last, count, data);
-				if (err)
-					goto out;
-			}
-			last = x;
-			count++;
+	if (list_empty(&walk->all))
+		x = list_first_entry(&net->xfrm.state_all, struct xfrm_state_walk, all);
+	else
+		x = list_entry(&walk->all, struct xfrm_state_walk, all);
+	list_for_each_entry_from(x, &net->xfrm.state_all, all) {
+		if (x->state == XFRM_STATE_DEAD)
+			continue;
+		state = container_of(x, struct xfrm_state, km);
+		if (!xfrm_id_proto_match(state->id.proto, walk->proto))
+			continue;
+		err = func(state, walk->seq, data);
+		if (err) {
+			list_move_tail(&walk->all, &x->all);
+			goto out;
 		}
+		walk->seq++;
 	}
-	if (count == 0) {
+	if (walk->seq == 0) {
 		err = -ENOENT;
 		goto out;
 	}
-	err = func(last, 0, data);
+	list_del_init(&walk->all);
 out:
 	spin_unlock_bh(&xfrm_state_lock);
 	return err;
 }
 EXPORT_SYMBOL(xfrm_state_walk);
+
+void xfrm_state_walk_init(struct xfrm_state_walk *walk, u8 proto)
+{
+	INIT_LIST_HEAD(&walk->all);
+	walk->proto = proto;
+	walk->state = XFRM_STATE_DEAD;
+	walk->seq = 0;
+}
+EXPORT_SYMBOL(xfrm_state_walk_init);
+
+void xfrm_state_walk_done(struct xfrm_state_walk *walk)
+{
+	if (list_empty(&walk->all))
+		return;
+
+	spin_lock_bh(&xfrm_state_lock);
+	list_del(&walk->all);
+	spin_lock_bh(&xfrm_state_lock);
+}
+EXPORT_SYMBOL(xfrm_state_walk_done);
 
 
 void xfrm_replay_notify(struct xfrm_state *x, int event)
@@ -1600,7 +1674,7 @@ static void xfrm_replay_timer_handler(unsigned long data)
 	spin_lock(&x->lock);
 
 	if (x->km.state == XFRM_STATE_VALID) {
-		if (xfrm_aevent_is_on())
+		if (xfrm_aevent_is_on(xs_net(x)))
 			xfrm_replay_notify(x, XFRM_REPLAY_TIMEOUT);
 		else
 			x->xflags |= XFRM_TIME_DEFER;
@@ -1609,13 +1683,14 @@ static void xfrm_replay_timer_handler(unsigned long data)
 	spin_unlock(&x->lock);
 }
 
-int xfrm_replay_check(struct xfrm_state *x, __be32 net_seq)
+int xfrm_replay_check(struct xfrm_state *x,
+		      struct sk_buff *skb, __be32 net_seq)
 {
 	u32 diff;
 	u32 seq = ntohl(net_seq);
 
 	if (unlikely(seq == 0))
-		return -EINVAL;
+		goto err;
 
 	if (likely(seq > x->replay.seq))
 		return 0;
@@ -1624,16 +1699,19 @@ int xfrm_replay_check(struct xfrm_state *x, __be32 net_seq)
 	if (diff >= min_t(unsigned int, x->props.replay_window,
 			  sizeof(x->replay.bitmap) * 8)) {
 		x->stats.replay_window++;
-		return -EINVAL;
+		goto err;
 	}
 
 	if (x->replay.bitmap & (1U << diff)) {
 		x->stats.replay++;
-		return -EINVAL;
+		goto err;
 	}
 	return 0;
+
+err:
+	xfrm_audit_state_replay(x, skb, net_seq);
+	return -EINVAL;
 }
-EXPORT_SYMBOL(xfrm_replay_check);
 
 void xfrm_replay_advance(struct xfrm_state *x, __be32 net_seq)
 {
@@ -1652,12 +1730,11 @@ void xfrm_replay_advance(struct xfrm_state *x, __be32 net_seq)
 		x->replay.bitmap |= (1U << diff);
 	}
 
-	if (xfrm_aevent_is_on())
+	if (xfrm_aevent_is_on(xs_net(x)))
 		xfrm_replay_notify(x, XFRM_REPLAY_UPDATE);
 }
-EXPORT_SYMBOL(xfrm_replay_advance);
 
-static struct list_head xfrm_km_list = LIST_HEAD_INIT(xfrm_km_list);
+static LIST_HEAD(xfrm_km_list);
 static DEFINE_RWLOCK(xfrm_km_lock);
 
 void km_policy_notify(struct xfrm_policy *xp, int dir, struct km_event *c)
@@ -1686,6 +1763,7 @@ EXPORT_SYMBOL(km_state_notify);
 
 void km_state_expired(struct xfrm_state *x, int hard, u32 pid)
 {
+	struct net *net = xs_net(x);
 	struct km_event c;
 
 	c.data.hard = hard;
@@ -1694,7 +1772,7 @@ void km_state_expired(struct xfrm_state *x, int hard, u32 pid)
 	km_state_notify(x, &c);
 
 	if (hard)
-		wake_up(&km_waitq);
+		wake_up(&net->xfrm.km_waitq);
 }
 
 EXPORT_SYMBOL(km_state_expired);
@@ -1737,6 +1815,7 @@ EXPORT_SYMBOL(km_new_mapping);
 
 void km_policy_expired(struct xfrm_policy *pol, int dir, int hard, u32 pid)
 {
+	struct net *net = xp_net(pol);
 	struct km_event c;
 
 	c.data.hard = hard;
@@ -1745,13 +1824,14 @@ void km_policy_expired(struct xfrm_policy *pol, int dir, int hard, u32 pid)
 	km_policy_notify(pol, dir, &c);
 
 	if (hard)
-		wake_up(&km_waitq);
+		wake_up(&net->xfrm.km_waitq);
 }
 EXPORT_SYMBOL(km_policy_expired);
 
 #ifdef CONFIG_XFRM_MIGRATE
 int km_migrate(struct xfrm_selector *sel, u8 dir, u8 type,
-	       struct xfrm_migrate *m, int num_migrate)
+	       struct xfrm_migrate *m, int num_migrate,
+	       struct xfrm_kmaddress *k)
 {
 	int err = -EINVAL;
 	int ret;
@@ -1760,7 +1840,7 @@ int km_migrate(struct xfrm_selector *sel, u8 dir, u8 type,
 	read_lock(&xfrm_km_lock);
 	list_for_each_entry(km, &xfrm_km_list, list) {
 		if (km->migrate) {
-			ret = km->migrate(sel, dir, type, m, num_migrate);
+			ret = km->migrate(sel, dir, type, m, num_migrate, k);
 			if (!ret)
 				err = ret;
 		}
@@ -1771,7 +1851,7 @@ int km_migrate(struct xfrm_selector *sel, u8 dir, u8 type,
 EXPORT_SYMBOL(km_migrate);
 #endif
 
-int km_report(u8 proto, struct xfrm_selector *sel, xfrm_address_t *addr)
+int km_report(struct net *net, u8 proto, struct xfrm_selector *sel, xfrm_address_t *addr)
 {
 	int err = -EINVAL;
 	int ret;
@@ -1780,7 +1860,7 @@ int km_report(u8 proto, struct xfrm_selector *sel, xfrm_address_t *addr)
 	read_lock(&xfrm_km_lock);
 	list_for_each_entry(km, &xfrm_km_list, list) {
 		if (km->report) {
-			ret = km->report(proto, sel, addr);
+			ret = km->report(net, proto, sel, addr);
 			if (!ret)
 				err = ret;
 		}
@@ -1897,6 +1977,7 @@ static struct xfrm_state_afinfo *xfrm_state_get_afinfo(unsigned int family)
 }
 
 static void xfrm_state_put_afinfo(struct xfrm_state_afinfo *afinfo)
+	__releases(xfrm_state_afinfo_lock)
 {
 	read_unlock(&xfrm_state_afinfo_lock);
 }
@@ -1933,6 +2014,7 @@ int xfrm_state_mtu(struct xfrm_state *x, int mtu)
 int xfrm_init_state(struct xfrm_state *x)
 {
 	struct xfrm_state_afinfo *afinfo;
+	struct xfrm_mode *inner_mode;
 	int family = x->props.family;
 	int err;
 
@@ -1951,13 +2033,44 @@ int xfrm_init_state(struct xfrm_state *x)
 		goto error;
 
 	err = -EPROTONOSUPPORT;
-	x->inner_mode = xfrm_get_mode(x->props.mode, x->sel.family);
-	if (x->inner_mode == NULL)
-		goto error;
 
-	if (!(x->inner_mode->flags & XFRM_MODE_FLAG_TUNNEL) &&
-	    family != x->sel.family)
-		goto error;
+	if (x->sel.family != AF_UNSPEC) {
+		inner_mode = xfrm_get_mode(x->props.mode, x->sel.family);
+		if (inner_mode == NULL)
+			goto error;
+
+		if (!(inner_mode->flags & XFRM_MODE_FLAG_TUNNEL) &&
+		    family != x->sel.family) {
+			xfrm_put_mode(inner_mode);
+			goto error;
+		}
+
+		x->inner_mode = inner_mode;
+	} else {
+		struct xfrm_mode *inner_mode_iaf;
+		int iafamily = AF_INET;
+
+		inner_mode = xfrm_get_mode(x->props.mode, x->props.family);
+		if (inner_mode == NULL)
+			goto error;
+
+		if (!(inner_mode->flags & XFRM_MODE_FLAG_TUNNEL)) {
+			xfrm_put_mode(inner_mode);
+			goto error;
+		}
+		x->inner_mode = inner_mode;
+
+		if (x->props.family == AF_INET)
+			iafamily = AF_INET6;
+
+		inner_mode_iaf = xfrm_get_mode(x->props.mode, iafamily);
+		if (inner_mode_iaf) {
+			if (inner_mode_iaf->flags & XFRM_MODE_FLAG_TUNNEL)
+				x->inner_mode_iaf = inner_mode_iaf;
+			else
+				xfrm_put_mode(inner_mode_iaf);
+		}
+	}
 
 	x->type = xfrm_get_type(x->id.proto, family);
 	if (x->type == NULL)
@@ -1979,90 +2092,222 @@ error:
 
 EXPORT_SYMBOL(xfrm_init_state);
 
-void __init xfrm_state_init(void)
+int __net_init xfrm_state_init(struct net *net)
 {
 	unsigned int sz;
 
+	INIT_LIST_HEAD(&net->xfrm.state_all);
+
 	sz = sizeof(struct hlist_head) * 8;
 
-	xfrm_state_bydst = xfrm_hash_alloc(sz);
-	xfrm_state_bysrc = xfrm_hash_alloc(sz);
-	xfrm_state_byspi = xfrm_hash_alloc(sz);
-	if (!xfrm_state_bydst || !xfrm_state_bysrc || !xfrm_state_byspi)
-		panic("XFRM: Cannot allocate bydst/bysrc/byspi hashes.");
-	xfrm_state_hmask = ((sz / sizeof(struct hlist_head)) - 1);
+	net->xfrm.state_bydst = xfrm_hash_alloc(sz);
+	if (!net->xfrm.state_bydst)
+		goto out_bydst;
+	net->xfrm.state_bysrc = xfrm_hash_alloc(sz);
+	if (!net->xfrm.state_bysrc)
+		goto out_bysrc;
+	net->xfrm.state_byspi = xfrm_hash_alloc(sz);
+	if (!net->xfrm.state_byspi)
+		goto out_byspi;
+	net->xfrm.state_hmask = ((sz / sizeof(struct hlist_head)) - 1);
 
-	INIT_WORK(&xfrm_state_gc_work, xfrm_state_gc_task);
+	net->xfrm.state_num = 0;
+	INIT_WORK(&net->xfrm.state_hash_work, xfrm_hash_resize);
+	INIT_HLIST_HEAD(&net->xfrm.state_gc_list);
+	INIT_WORK(&net->xfrm.state_gc_work, xfrm_state_gc_task);
+	init_waitqueue_head(&net->xfrm.km_waitq);
+	return 0;
+
+out_byspi:
+	xfrm_hash_free(net->xfrm.state_bysrc, sz);
+out_bysrc:
+	xfrm_hash_free(net->xfrm.state_bydst, sz);
+out_bydst:
+	return -ENOMEM;
+}
+
+void xfrm_state_fini(struct net *net)
+{
+	struct xfrm_audit audit_info;
+	unsigned int sz;
+
+	flush_work(&net->xfrm.state_hash_work);
+	audit_info.loginuid = -1;
+	audit_info.sessionid = -1;
+	audit_info.secid = 0;
+	xfrm_state_flush(net, IPSEC_PROTO_ANY, &audit_info);
+	flush_work(&net->xfrm.state_gc_work);
+
+	WARN_ON(!list_empty(&net->xfrm.state_all));
+
+	sz = (net->xfrm.state_hmask + 1) * sizeof(struct hlist_head);
+	WARN_ON(!hlist_empty(net->xfrm.state_byspi));
+	xfrm_hash_free(net->xfrm.state_byspi, sz);
+	WARN_ON(!hlist_empty(net->xfrm.state_bysrc));
+	xfrm_hash_free(net->xfrm.state_bysrc, sz);
+	WARN_ON(!hlist_empty(net->xfrm.state_bydst));
+	xfrm_hash_free(net->xfrm.state_bydst, sz);
 }
 
 #ifdef CONFIG_AUDITSYSCALL
-static inline void xfrm_audit_common_stateinfo(struct xfrm_state *x,
-					       struct audit_buffer *audit_buf)
+static void xfrm_audit_helper_sainfo(struct xfrm_state *x,
+				     struct audit_buffer *audit_buf)
 {
-	if (x->security)
+	struct xfrm_sec_ctx *ctx = x->security;
+	u32 spi = ntohl(x->id.spi);
+
+	if (ctx)
 		audit_log_format(audit_buf, " sec_alg=%u sec_doi=%u sec_obj=%s",
-				 x->security->ctx_alg, x->security->ctx_doi,
-				 x->security->ctx_str);
+				 ctx->ctx_alg, ctx->ctx_doi, ctx->ctx_str);
 
 	switch(x->props.family) {
 	case AF_INET:
-		audit_log_format(audit_buf, " src=%u.%u.%u.%u dst=%u.%u.%u.%u",
-				 NIPQUAD(x->props.saddr.a4),
-				 NIPQUAD(x->id.daddr.a4));
+		audit_log_format(audit_buf, " src=%pI4 dst=%pI4",
+				 &x->props.saddr.a4, &x->id.daddr.a4);
 		break;
 	case AF_INET6:
-		{
-			struct in6_addr saddr6, daddr6;
+		audit_log_format(audit_buf, " src=%pI6 dst=%pI6",
+				 x->props.saddr.a6, x->id.daddr.a6);
+		break;
+	}
 
-			memcpy(&saddr6, x->props.saddr.a6,
-				sizeof(struct in6_addr));
-			memcpy(&daddr6, x->id.daddr.a6,
-				sizeof(struct in6_addr));
-			audit_log_format(audit_buf,
-					 " src=" NIP6_FMT " dst=" NIP6_FMT,
-					 NIP6(saddr6), NIP6(daddr6));
-		}
+	audit_log_format(audit_buf, " spi=%u(0x%x)", spi, spi);
+}
+
+static void xfrm_audit_helper_pktinfo(struct sk_buff *skb, u16 family,
+				      struct audit_buffer *audit_buf)
+{
+	struct iphdr *iph4;
+	struct ipv6hdr *iph6;
+
+	switch (family) {
+	case AF_INET:
+		iph4 = ip_hdr(skb);
+		audit_log_format(audit_buf, " src=%pI4 dst=%pI4",
+				 &iph4->saddr, &iph4->daddr);
+		break;
+	case AF_INET6:
+		iph6 = ipv6_hdr(skb);
+		audit_log_format(audit_buf,
+				 " src=%pI6 dst=%pI6 flowlbl=0x%x%02x%02x",
+				 &iph6->saddr,&iph6->daddr,
+				 iph6->flow_lbl[0] & 0x0f,
+				 iph6->flow_lbl[1],
+				 iph6->flow_lbl[2]);
 		break;
 	}
 }
 
-void
-xfrm_audit_state_add(struct xfrm_state *x, int result, u32 auid, u32 sid)
+void xfrm_audit_state_add(struct xfrm_state *x, int result,
+			  uid_t auid, u32 sessionid, u32 secid)
 {
 	struct audit_buffer *audit_buf;
-	u32 spi;
-	extern int audit_enabled;
 
-	if (audit_enabled == 0)
-		return;
-	audit_buf = xfrm_audit_start(auid, sid);
+	audit_buf = xfrm_audit_start("SAD-add");
 	if (audit_buf == NULL)
 		return;
-	audit_log_format(audit_buf, " op=SAD-add res=%u",result);
-	xfrm_audit_common_stateinfo(x, audit_buf);
-	spi = ntohl(x->id.spi);
-	audit_log_format(audit_buf, " spi=%u(0x%x)", spi, spi);
+	xfrm_audit_helper_usrinfo(auid, sessionid, secid, audit_buf);
+	xfrm_audit_helper_sainfo(x, audit_buf);
+	audit_log_format(audit_buf, " res=%u", result);
 	audit_log_end(audit_buf);
 }
 EXPORT_SYMBOL_GPL(xfrm_audit_state_add);
 
-void
-xfrm_audit_state_delete(struct xfrm_state *x, int result, u32 auid, u32 sid)
+void xfrm_audit_state_delete(struct xfrm_state *x, int result,
+			     uid_t auid, u32 sessionid, u32 secid)
+{
+	struct audit_buffer *audit_buf;
+
+	audit_buf = xfrm_audit_start("SAD-delete");
+	if (audit_buf == NULL)
+		return;
+	xfrm_audit_helper_usrinfo(auid, sessionid, secid, audit_buf);
+	xfrm_audit_helper_sainfo(x, audit_buf);
+	audit_log_format(audit_buf, " res=%u", result);
+	audit_log_end(audit_buf);
+}
+EXPORT_SYMBOL_GPL(xfrm_audit_state_delete);
+
+void xfrm_audit_state_replay_overflow(struct xfrm_state *x,
+				      struct sk_buff *skb)
 {
 	struct audit_buffer *audit_buf;
 	u32 spi;
-	extern int audit_enabled;
 
-	if (audit_enabled == 0)
-		return;
-	audit_buf = xfrm_audit_start(auid, sid);
+	audit_buf = xfrm_audit_start("SA-replay-overflow");
 	if (audit_buf == NULL)
 		return;
-	audit_log_format(audit_buf, " op=SAD-delete res=%u",result);
-	xfrm_audit_common_stateinfo(x, audit_buf);
+	xfrm_audit_helper_pktinfo(skb, x->props.family, audit_buf);
+	/* don't record the sequence number because it's inherent in this kind
+	 * of audit message */
 	spi = ntohl(x->id.spi);
 	audit_log_format(audit_buf, " spi=%u(0x%x)", spi, spi);
 	audit_log_end(audit_buf);
 }
-EXPORT_SYMBOL_GPL(xfrm_audit_state_delete);
+EXPORT_SYMBOL_GPL(xfrm_audit_state_replay_overflow);
+
+static void xfrm_audit_state_replay(struct xfrm_state *x,
+			     struct sk_buff *skb, __be32 net_seq)
+{
+	struct audit_buffer *audit_buf;
+	u32 spi;
+
+	audit_buf = xfrm_audit_start("SA-replayed-pkt");
+	if (audit_buf == NULL)
+		return;
+	xfrm_audit_helper_pktinfo(skb, x->props.family, audit_buf);
+	spi = ntohl(x->id.spi);
+	audit_log_format(audit_buf, " spi=%u(0x%x) seqno=%u",
+			 spi, spi, ntohl(net_seq));
+	audit_log_end(audit_buf);
+}
+
+void xfrm_audit_state_notfound_simple(struct sk_buff *skb, u16 family)
+{
+	struct audit_buffer *audit_buf;
+
+	audit_buf = xfrm_audit_start("SA-notfound");
+	if (audit_buf == NULL)
+		return;
+	xfrm_audit_helper_pktinfo(skb, family, audit_buf);
+	audit_log_end(audit_buf);
+}
+EXPORT_SYMBOL_GPL(xfrm_audit_state_notfound_simple);
+
+void xfrm_audit_state_notfound(struct sk_buff *skb, u16 family,
+			       __be32 net_spi, __be32 net_seq)
+{
+	struct audit_buffer *audit_buf;
+	u32 spi;
+
+	audit_buf = xfrm_audit_start("SA-notfound");
+	if (audit_buf == NULL)
+		return;
+	xfrm_audit_helper_pktinfo(skb, family, audit_buf);
+	spi = ntohl(net_spi);
+	audit_log_format(audit_buf, " spi=%u(0x%x) seqno=%u",
+			 spi, spi, ntohl(net_seq));
+	audit_log_end(audit_buf);
+}
+EXPORT_SYMBOL_GPL(xfrm_audit_state_notfound);
+
+void xfrm_audit_state_icvfail(struct xfrm_state *x,
+			      struct sk_buff *skb, u8 proto)
+{
+	struct audit_buffer *audit_buf;
+	__be32 net_spi;
+	__be32 net_seq;
+
+	audit_buf = xfrm_audit_start("SA-icv-failure");
+	if (audit_buf == NULL)
+		return;
+	xfrm_audit_helper_pktinfo(skb, x->props.family, audit_buf);
+	if (xfrm_parse_spi(skb, proto, &net_spi, &net_seq) == 0) {
+		u32 spi = ntohl(net_spi);
+		audit_log_format(audit_buf, " spi=%u(0x%x) seqno=%u",
+				 spi, spi, ntohl(net_seq));
+	}
+	audit_log_end(audit_buf);
+}
+EXPORT_SYMBOL_GPL(xfrm_audit_state_icvfail);
 #endif /* CONFIG_AUDITSYSCALL */

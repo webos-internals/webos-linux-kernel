@@ -21,7 +21,6 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-#include <sound/driver.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
@@ -228,7 +227,6 @@ static inline void snd_bt87x_writel(struct snd_bt87x *chip, u32 reg, u32 value)
 static int snd_bt87x_create_risc(struct snd_bt87x *chip, struct snd_pcm_substream *substream,
 			       	 unsigned int periods, unsigned int period_bytes)
 {
-	struct snd_sg_buf *sgbuf = snd_pcm_substream_sgbuf(substream);
 	unsigned int i, offset;
 	u32 *risc;
 
@@ -247,6 +245,7 @@ static int snd_bt87x_create_risc(struct snd_bt87x *chip, struct snd_pcm_substrea
 		rest = period_bytes;
 		do {
 			u32 cmd, len;
+			unsigned int addr;
 
 			len = PAGE_SIZE - (offset % PAGE_SIZE);
 			if (len > rest)
@@ -261,7 +260,8 @@ static int snd_bt87x_create_risc(struct snd_bt87x *chip, struct snd_pcm_substrea
 			if (len == rest)
 				cmd |= RISC_EOL | RISC_IRQ;
 			*risc++ = cpu_to_le32(cmd);
-			*risc++ = cpu_to_le32((u32)snd_pcm_sgbuf_get_addr(sgbuf, offset));
+			addr = snd_pcm_sgbuf_get_addr(substream, offset);
+			*risc++ = cpu_to_le32(addr);
 			offset += len;
 			rest -= len;
 		} while (rest > 0);
@@ -682,15 +682,12 @@ static struct snd_kcontrol_new snd_bt87x_capture_source = {
 
 static int snd_bt87x_free(struct snd_bt87x *chip)
 {
-	if (chip->mmio) {
+	if (chip->mmio)
 		snd_bt87x_stop(chip);
-		if (chip->irq >= 0)
-			synchronize_irq(chip->irq);
-
-		iounmap(chip->mmio);
-	}
 	if (chip->irq >= 0)
 		free_irq(chip->irq, chip);
+	if (chip->mmio)
+		iounmap(chip->mmio);
 	pci_release_regions(chip->pci);
 	pci_disable_device(chip->pci);
 	kfree(chip);
@@ -752,8 +749,7 @@ static int __devinit snd_bt87x_create(struct snd_card *card,
 		pci_disable_device(pci);
 		return err;
 	}
-	chip->mmio = ioremap_nocache(pci_resource_start(pci, 0),
-				     pci_resource_len(pci, 0));
+	chip->mmio = pci_ioremap_bar(pci, 0);
 	if (!chip->mmio) {
 		snd_printk(KERN_ERR "cannot remap io memory\n");
 		err = -ENOMEM;

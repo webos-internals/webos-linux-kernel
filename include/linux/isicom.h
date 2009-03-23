@@ -1,11 +1,6 @@
 #ifndef _LINUX_ISICOM_H
 #define _LINUX_ISICOM_H
 
-/*#define		ISICOM_DEBUG*/
-/*#define		ISICOM_DEBUG_DTR_RTS*/
-
-#ifdef __KERNEL__
-
 #define		YES	1
 #define		NO	0
 
@@ -36,8 +31,6 @@
 
 #define		BOARD_COUNT	4
 #define		PORT_COUNT	(BOARD_COUNT*16)
-
-#define		SERIAL_TYPE_NORMAL	1
 
 /*   character sizes  */
 
@@ -86,7 +79,5 @@
 
 
 #define		ISI_TXOK		0x0001
-
-#endif	/*	__KERNEL__	*/
 
 #endif	/*	ISICOM_H	*/

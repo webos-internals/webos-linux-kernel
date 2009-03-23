@@ -10,7 +10,7 @@
 #include <linux/platform_device.h>
 #include <linux/init.h>
 #include <linux/serial.h>
-#include <asm/sci.h>
+#include <linux/serial_sci.h>
 
 enum {
 	UNUSED = 0,
@@ -65,7 +65,7 @@ static struct intc_prio_reg prio_registers[] __initdata = {
 };
 
 static DECLARE_INTC_DESC(intc_desc, "sh7619", vectors, groups,
-			 NULL, NULL, prio_registers, NULL);
+			 NULL, prio_registers, NULL);
 
 static struct plat_sci_port sci_platform_data[] = {
 	{
@@ -96,8 +96,32 @@ static struct platform_device sci_device = {
 	},
 };
 
+static struct resource eth_resources[] = {
+	[0] = {
+		.start = 0xfb000000,
+		.end =   0xfb0001c8,
+		.flags = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start = 85,
+		.end = 85,
+		.flags = IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device eth_device = {
+	.name = "sh-eth",
+	.id	= -1,
+	.dev = {
+		.platform_data = (void *)1,
+	},
+	.num_resources = ARRAY_SIZE(eth_resources),
+	.resource = eth_resources,
+};
+
 static struct platform_device *sh7619_devices[] __initdata = {
 	&sci_device,
+	&eth_device,
 };
 
 static int __init sh7619_devices_setup(void)

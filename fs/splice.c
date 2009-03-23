@@ -21,6 +21,7 @@
 #include <linux/file.h>
 #include <linux/pagemap.h>
 #include <linux/splice.h>
+#include <linux/memcontrol.h>
 #include <linux/mm_inline.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
@@ -58,8 +59,8 @@ static int page_cache_pipe_buf_steal(struct pipe_inode_info *pipe,
 		 */
 		wait_on_page_writeback(page);
 
-		if (PagePrivate(page))
-			try_to_release_page(page, GFP_KERNEL);
+		if (PagePrivate(page) && !try_to_release_page(page, GFP_KERNEL))
+			goto out_unlock;
 
 		/*
 		 * If we succeeded in removing the mapping, set LRU flag
@@ -75,6 +76,7 @@ static int page_cache_pipe_buf_steal(struct pipe_inode_info *pipe,
 	 * Raced with truncate or failed to remove page from current
 	 * address space, unlock and return failure.
 	 */
+out_unlock:
 	unlock_page(page);
 	return 1;
 }
@@ -254,9 +256,14 @@ ssize_t splice_to_pipe(struct pipe_inode_info *pipe,
 	}
 
 	while (page_nr < spd_pages)
-		page_cache_release(spd->pages[page_nr++]);
+		spd->spd_release(spd, page_nr++);
 
 	return ret;
+}
+
+static void spd_release_page(struct splice_pipe_desc *spd, unsigned int i)
+{
+	page_cache_release(spd->pages[i]);
 }
 
 static int
@@ -277,6 +284,7 @@ __generic_file_splice_read(struct file *in, loff_t *ppos,
 		.partial = partial,
 		.flags = flags,
 		.ops = &page_cache_pipe_buf_ops,
+		.spd_release = spd_release_page,
 	};
 
 	index = *ppos >> PAGE_CACHE_SHIFT;
@@ -314,7 +322,7 @@ __generic_file_splice_read(struct file *in, loff_t *ppos,
 				break;
 
 			error = add_to_page_cache_lru(page, mapping, index,
-					      GFP_KERNEL);
+						mapping_gfp_mask(mapping));
 			if (unlikely(error)) {
 				page_cache_release(page);
 				if (error == -EEXIST)
@@ -364,19 +372,30 @@ __generic_file_splice_read(struct file *in, loff_t *ppos,
 			 * for an in-flight io page
 			 */
 			if (flags & SPLICE_F_NONBLOCK) {
-				if (TestSetPageLocked(page))
+				if (!trylock_page(page)) {
+					error = -EAGAIN;
 					break;
+				}
 			} else
 				lock_page(page);
 
 			/*
-			 * page was truncated, stop here. if this isn't the
-			 * first page, we'll just complete what we already
-			 * added
+			 * Page was truncated, or invalidated by the
+			 * filesystem.  Redo the find/create, but this time the
+			 * page is kept locked, so there's no chance of another
+			 * race with truncate/invalidate.
 			 */
 			if (!page->mapping) {
 				unlock_page(page);
-				break;
+				page = find_or_create_page(mapping, index,
+						mapping_gfp_mask(mapping));
+
+				if (!page) {
+					error = -ENOMEM;
+					break;
+				}
+				page_cache_release(pages[page_nr]);
+				pages[page_nr] = page;
 			}
 			/*
 			 * page was already under io and is now done, great
@@ -473,9 +492,8 @@ ssize_t generic_file_splice_read(struct file *in, loff_t *ppos,
 				 struct pipe_inode_info *pipe, size_t len,
 				 unsigned int flags)
 {
-	ssize_t spliced;
-	int ret;
 	loff_t isize, left;
+	int ret;
 
 	isize = i_size_read(in->f_mapping->host);
 	if (unlikely(*ppos >= isize))
@@ -485,29 +503,9 @@ ssize_t generic_file_splice_read(struct file *in, loff_t *ppos,
 	if (unlikely(left < len))
 		len = left;
 
-	ret = 0;
-	spliced = 0;
-	while (len && !spliced) {
-		ret = __generic_file_splice_read(in, ppos, pipe, len, flags);
-
-		if (ret < 0)
-			break;
-		else if (!ret) {
-			if (spliced)
-				break;
-			if (flags & SPLICE_F_NONBLOCK) {
-				ret = -EAGAIN;
-				break;
-			}
-		}
-
+	ret = __generic_file_splice_read(in, ppos, pipe, len, flags);
+	if (ret > 0)
 		*ppos += ret;
-		len -= ret;
-		spliced += ret;
-	}
-
-	if (spliced)
-		return spliced;
 
 	return ret;
 }
@@ -734,8 +732,8 @@ ssize_t splice_from_pipe(struct pipe_inode_info *pipe, struct file *out,
 	};
 
 	/*
-	 * The actor worker might be calling ->prepare_write and
-	 * ->commit_write. Most of the time, these expect i_mutex to
+	 * The actor worker might be calling ->write_begin and
+	 * ->write_end. Most of the time, these expect i_mutex to
 	 * be held. Since this may result in an ABBA deadlock with
 	 * pipe->inode, we have to order lock acquiry here.
 	 */
@@ -775,7 +773,7 @@ generic_file_splice_write_nolock(struct pipe_inode_info *pipe, struct file *out,
 	ssize_t ret;
 	int err;
 
-	err = remove_suid(out->f_path.dentry);
+	err = file_remove_suid(out);
 	if (unlikely(err))
 		return err;
 
@@ -824,24 +822,19 @@ generic_file_splice_write(struct pipe_inode_info *pipe, struct file *out,
 {
 	struct address_space *mapping = out->f_mapping;
 	struct inode *inode = mapping->host;
-	int killsuid, killpriv;
+	struct splice_desc sd = {
+		.total_len = len,
+		.flags = flags,
+		.pos = *ppos,
+		.u.file = out,
+	};
 	ssize_t ret;
-	int err = 0;
 
-	killpriv = security_inode_need_killpriv(out->f_path.dentry);
-	killsuid = should_remove_suid(out->f_path.dentry);
-	if (unlikely(killsuid || killpriv)) {
-		mutex_lock(&inode->i_mutex);
-		if (killpriv)
-			err = security_inode_killpriv(out->f_path.dentry);
-		if (!err && killsuid)
-			err = __remove_suid(out->f_path.dentry, killsuid);
-		mutex_unlock(&inode->i_mutex);
-		if (err)
-			return err;
-	}
-
-	ret = splice_from_pipe(pipe, out, ppos, len, flags, pipe_to_file);
+	inode_double_lock(inode, pipe->inode);
+	ret = file_remove_suid(out);
+	if (likely(!ret))
+		ret = __splice_from_pipe(pipe, &sd, pipe_to_file);
+	inode_double_unlock(inode, pipe->inode);
 	if (ret > 0) {
 		unsigned long nr_pages;
 
@@ -853,6 +846,8 @@ generic_file_splice_write(struct pipe_inode_info *pipe, struct file *out,
 		 * sync it.
 		 */
 		if (unlikely((out->f_flags & O_SYNC) || IS_SYNC(inode))) {
+			int err;
+
 			mutex_lock(&inode->i_mutex);
 			err = generic_osync_inode(inode, mapping,
 						  OSYNC_METADATA|OSYNC_DATA);
@@ -904,11 +899,10 @@ static long do_splice_from(struct pipe_inode_info *pipe, struct file *out,
 	if (unlikely(!(out->f_mode & FMODE_WRITE)))
 		return -EBADF;
 
-	ret = rw_verify_area(WRITE, out, ppos, len);
-	if (unlikely(ret < 0))
-		return ret;
+	if (unlikely(out->f_flags & O_APPEND))
+		return -EINVAL;
 
-	ret = security_file_permission(out, MAY_WRITE);
+	ret = rw_verify_area(WRITE, out, ppos, len);
 	if (unlikely(ret < 0))
 		return ret;
 
@@ -931,10 +925,6 @@ static long do_splice_to(struct file *in, loff_t *ppos,
 		return -EBADF;
 
 	ret = rw_verify_area(READ, in, ppos, len);
-	if (unlikely(ret < 0))
-		return ret;
-
-	ret = security_file_permission(in, MAY_READ);
 	if (unlikely(ret < 0))
 		return ret;
 
@@ -1007,7 +997,7 @@ ssize_t splice_direct_to_actor(struct file *in, struct splice_desc *sd,
 
 	while (len) {
 		size_t read_len;
-		loff_t pos = sd->pos;
+		loff_t pos = sd->pos, prev_pos = pos;
 
 		ret = do_splice_to(in, &pos, pipe, len, flags);
 		if (unlikely(ret <= 0))
@@ -1022,18 +1012,24 @@ ssize_t splice_direct_to_actor(struct file *in, struct splice_desc *sd,
 		 * could get stuck data in the internal pipe:
 		 */
 		ret = actor(pipe, sd);
-		if (unlikely(ret <= 0))
+		if (unlikely(ret <= 0)) {
+			sd->pos = prev_pos;
 			goto out_release;
+		}
 
 		bytes += ret;
 		len -= ret;
 		sd->pos = pos;
 
-		if (ret < read_len)
+		if (ret < read_len) {
+			sd->pos = prev_pos + ret;
 			goto out_release;
+		}
 	}
 
+done:
 	pipe->nrbufs = pipe->curbuf = 0;
+	file_accessed(in);
 	return bytes;
 
 out_release:
@@ -1049,16 +1045,11 @@ out_release:
 			buf->ops = NULL;
 		}
 	}
-	pipe->nrbufs = pipe->curbuf = 0;
 
-	/*
-	 * If we transferred some data, return the number of bytes:
-	 */
-	if (bytes > 0)
-		return bytes;
+	if (!bytes)
+		bytes = ret;
 
-	return ret;
-
+	goto done;
 }
 EXPORT_SYMBOL(splice_direct_to_actor);
 
@@ -1099,7 +1090,7 @@ long do_splice_direct(struct file *in, loff_t *ppos, struct file *out,
 
 	ret = splice_direct_to_actor(in, &sd, direct_splice_actor);
 	if (ret > 0)
-		*ppos += ret;
+		*ppos = sd.pos;
 
 	return ret;
 }
@@ -1174,33 +1165,6 @@ static long do_splice(struct file *in, loff_t __user *off_in,
 }
 
 /*
- * Do a copy-from-user while holding the mmap_semaphore for reading, in a
- * manner safe from deadlocking with simultaneous mmap() (grabbing mmap_sem
- * for writing) and page faulting on the user memory pointed to by src.
- * This assumes that we will very rarely hit the partial != 0 path, or this
- * will not be a win.
- */
-static int copy_from_user_mmap_sem(void *dst, const void __user *src, size_t n)
-{
-	int partial;
-
-	pagefault_disable();
-	partial = __copy_from_user_inatomic(dst, src, n);
-	pagefault_enable();
-
-	/*
-	 * Didn't copy everything, drop the mmap_sem and do a faulting copy
-	 */
-	if (unlikely(partial)) {
-		up_read(&current->mm->mmap_sem);
-		partial = copy_from_user(dst, src, n);
-		down_read(&current->mm->mmap_sem);
-	}
-
-	return partial;
-}
-
-/*
  * Map an iov into an array of pages and offset/length tupples. With the
  * partial_page structure, we can map several non-contiguous ranges into
  * our ones pages[] map instead of splitting that operation into pieces.
@@ -1213,8 +1177,6 @@ static int get_iovec_page_array(const struct iovec __user *iov,
 {
 	int buffers = 0, error = 0;
 
-	down_read(&current->mm->mmap_sem);
-
 	while (nr_vecs) {
 		unsigned long off, npages;
 		struct iovec entry;
@@ -1223,7 +1185,7 @@ static int get_iovec_page_array(const struct iovec __user *iov,
 		int i;
 
 		error = -EFAULT;
-		if (copy_from_user_mmap_sem(&entry, iov, sizeof(entry)))
+		if (copy_from_user(&entry, iov, sizeof(entry)))
 			break;
 
 		base = entry.iov_base;
@@ -1236,7 +1198,7 @@ static int get_iovec_page_array(const struct iovec __user *iov,
 		if (unlikely(!len))
 			break;
 		error = -EFAULT;
-		if (unlikely(!base))
+		if (!access_ok(VERIFY_READ, base, len))
 			break;
 
 		/*
@@ -1257,9 +1219,8 @@ static int get_iovec_page_array(const struct iovec __user *iov,
 		if (npages > PIPE_BUFFERS - buffers)
 			npages = PIPE_BUFFERS - buffers;
 
-		error = get_user_pages(current, current->mm,
-				       (unsigned long) base, npages, 0, 0,
-				       &pages[buffers], NULL);
+		error = get_user_pages_fast((unsigned long)base, npages,
+					0, &pages[buffers]);
 
 		if (unlikely(error <= 0))
 			break;
@@ -1297,8 +1258,6 @@ static int get_iovec_page_array(const struct iovec __user *iov,
 		nr_vecs--;
 		iov++;
 	}
-
-	up_read(&current->mm->mmap_sem);
 
 	if (buffers)
 		return buffers;
@@ -1392,6 +1351,11 @@ static long vmsplice_to_user(struct file *file, const struct iovec __user *iov,
 			break;
 		}
 
+		if (unlikely(!access_ok(VERIFY_WRITE, base, len))) {
+			error = -EFAULT;
+			break;
+		}
+
 		sd.len = 0;
 		sd.total_len = len;
 		sd.flags = flags;
@@ -1440,6 +1404,7 @@ static long vmsplice_to_pipe(struct file *file, const struct iovec __user *iov,
 		.partial = partial,
 		.flags = flags,
 		.ops = &user_page_pipe_buf_ops,
+		.spd_release = spd_release_page,
 	};
 
 	pipe = pipe_info(file->f_path.dentry->d_inode);
@@ -1470,8 +1435,8 @@ static long vmsplice_to_pipe(struct file *file, const struct iovec __user *iov,
  * Currently we punt and implement it as a normal copy, see pipe_to_user().
  *
  */
-asmlinkage long sys_vmsplice(int fd, const struct iovec __user *iov,
-			     unsigned long nr_segs, unsigned int flags)
+SYSCALL_DEFINE4(vmsplice, int, fd, const struct iovec __user *, iov,
+		unsigned long, nr_segs, unsigned int, flags)
 {
 	struct file *file;
 	long error;
@@ -1496,9 +1461,9 @@ asmlinkage long sys_vmsplice(int fd, const struct iovec __user *iov,
 	return error;
 }
 
-asmlinkage long sys_splice(int fd_in, loff_t __user *off_in,
-			   int fd_out, loff_t __user *off_out,
-			   size_t len, unsigned int flags)
+SYSCALL_DEFINE6(splice, int, fd_in, loff_t __user *, off_in,
+		int, fd_out, loff_t __user *, off_out,
+		size_t, len, unsigned int, flags)
 {
 	long error;
 	struct file *in, *out;
@@ -1665,6 +1630,13 @@ static int link_pipe(struct pipe_inode_info *ipipe,
 		i++;
 	} while (len);
 
+	/*
+	 * return EAGAIN if we have the potential of some data in the
+	 * future, otherwise just return 0
+	 */
+	if (!ret && ipipe->waiting_writers && (flags & SPLICE_F_NONBLOCK))
+		ret = -EAGAIN;
+
 	inode_double_unlock(ipipe->inode, opipe->inode);
 
 	/*
@@ -1705,18 +1677,15 @@ static long do_tee(struct file *in, struct file *out, size_t len,
 		ret = link_ipipe_prep(ipipe, flags);
 		if (!ret) {
 			ret = link_opipe_prep(opipe, flags);
-			if (!ret) {
+			if (!ret)
 				ret = link_pipe(ipipe, opipe, len, flags);
-				if (!ret && (flags & SPLICE_F_NONBLOCK))
-					ret = -EAGAIN;
-			}
 		}
 	}
 
 	return ret;
 }
 
-asmlinkage long sys_tee(int fdin, int fdout, size_t len, unsigned int flags)
+SYSCALL_DEFINE4(tee, int, fdin, int, fdout, size_t, len, unsigned int, flags)
 {
 	struct file *in;
 	int error, fput_in;

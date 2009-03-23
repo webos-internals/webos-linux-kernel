@@ -39,11 +39,11 @@
 #define IbmVethMcastRemoveFilter     0x2UL
 #define IbmVethMcastClearFilterTable 0x3UL
 
-#define IBMVETH_ILLAN_PADDED_PKT_CSUM	0x0000000000002000ULL
-#define IBMVETH_ILLAN_TRUNK_PRI_MASK	0x0000000000000F00ULL
-#define IBMVETH_ILLAN_IPV6_TCP_CSUM		0x0000000000000004ULL
-#define IBMVETH_ILLAN_IPV4_TCP_CSUM		0x0000000000000002ULL
-#define IBMVETH_ILLAN_ACTIVE_TRUNK		0x0000000000000001ULL
+#define IBMVETH_ILLAN_PADDED_PKT_CSUM	0x0000000000002000UL
+#define IBMVETH_ILLAN_TRUNK_PRI_MASK	0x0000000000000F00UL
+#define IBMVETH_ILLAN_IPV6_TCP_CSUM		0x0000000000000004UL
+#define IBMVETH_ILLAN_IPV4_TCP_CSUM		0x0000000000000002UL
+#define IBMVETH_ILLAN_ACTIVE_TRUNK		0x0000000000000001UL
 
 /* hcall macros */
 #define h_register_logical_lan(ua, buflst, rxq, fltlst, mac) \
@@ -93,9 +93,12 @@ static inline long h_illan_attributes(unsigned long unit_address,
   plpar_hcall_norets(H_CHANGE_LOGICAL_LAN_MAC, ua, mac)
 
 #define IbmVethNumBufferPools 5
+#define IBMVETH_IO_ENTITLEMENT_DEFAULT 4243456 /* MTU of 1500 needs 4.2Mb */
 #define IBMVETH_BUFF_OH 22 /* Overhead: 14 ethernet header + 8 opaque handle */
 #define IBMVETH_MAX_MTU 68
 #define IBMVETH_MAX_POOL_COUNT 4096
+#define IBMVETH_BUFF_LIST_SIZE 4096
+#define IBMVETH_FILT_LIST_SIZE 4096
 #define IBMVETH_MAX_BUF_SIZE (1024 * 128)
 
 static int pool_size[] = { 512, 1024 * 2, 1024 * 16, 1024 * 32, 1024 * 64 };
@@ -143,6 +146,8 @@ struct ibmveth_adapter {
     struct ibmveth_rx_q rx_queue;
     int pool_config;
     int rx_csum;
+    void *bounce_buffer;
+    dma_addr_t bounce_buffer_dma;
 
     /* adapter specific stats */
     u64 replenish_task_cycles;

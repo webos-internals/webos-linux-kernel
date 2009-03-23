@@ -34,6 +34,7 @@ cflags-$(CONFIG_MARCH_G5)   += $(call cc-option,-march=g5)
 cflags-$(CONFIG_MARCH_Z900) += $(call cc-option,-march=z900)
 cflags-$(CONFIG_MARCH_Z990) += $(call cc-option,-march=z990)
 cflags-$(CONFIG_MARCH_Z9_109) += $(call cc-option,-march=z9-109)
+cflags-$(CONFIG_MARCH_Z10) += $(call cc-option,-march=z10)
 
 #KBUILD_IMAGE is necessary for make rpm
 KBUILD_IMAGE	:=arch/s390/boot/image
@@ -87,7 +88,7 @@ LDFLAGS_vmlinux := -e start
 head-y		:= arch/s390/kernel/head.o arch/s390/kernel/init_task.o
 
 core-y		+= arch/s390/mm/ arch/s390/kernel/ arch/s390/crypto/ \
-		   arch/s390/appldata/ arch/s390/hypfs/
+		   arch/s390/appldata/ arch/s390/hypfs/ arch/s390/kvm/
 libs-y		+= arch/s390/lib/
 drivers-y	+= drivers/s390/
 drivers-$(CONFIG_MATHEMU) += arch/s390/math-emu/

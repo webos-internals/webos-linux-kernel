@@ -6,6 +6,7 @@
 #ifdef __KERNEL__
 # include <linux/cache.h>
 # include <linux/seqlock.h>
+# include <linux/math64.h>
 #endif
 
 #ifndef _STRUCT_TIMESPEC
@@ -28,6 +29,8 @@ struct timezone {
 
 #ifdef __KERNEL__
 
+extern struct timezone sys_tz;
+
 /* Parameters used to convert the timespec values: */
 #define MSEC_PER_SEC	1000L
 #define USEC_PER_MSEC	1000L
@@ -36,6 +39,8 @@ struct timezone {
 #define USEC_PER_SEC	1000000L
 #define NSEC_PER_SEC	1000000000L
 #define FSEC_PER_SEC	1000000000000000L
+
+#define TIME_T_MAX	(time_t)((1UL << ((sizeof(time_t) << 3) - 1)) - 1)
 
 static inline int timespec_equal(const struct timespec *a,
                                  const struct timespec *b)
@@ -71,6 +76,8 @@ extern unsigned long mktime(const unsigned int year, const unsigned int mon,
 			    const unsigned int min, const unsigned int sec);
 
 extern void set_normalized_timespec(struct timespec *ts, time_t sec, long nsec);
+extern struct timespec timespec_add_safe(const struct timespec lhs,
+					 const struct timespec rhs);
 
 /*
  * sub = lhs - rhs, in normalized form
@@ -98,6 +105,7 @@ extern unsigned long read_persistent_clock(void);
 extern int update_persistent_clock(struct timespec now);
 extern int no_sync_cmos_clock __read_mostly;
 void timekeeping_init(void);
+extern int timekeeping_suspended;
 
 unsigned long get_seconds(void);
 struct timespec current_kernel_time(void);
@@ -116,12 +124,17 @@ extern int do_setitimer(int which, struct itimerval *value,
 extern unsigned int alarm_setitimer(unsigned int seconds);
 extern int do_getitimer(int which, struct itimerval *value);
 extern void getnstimeofday(struct timespec *tv);
+extern void getrawmonotonic(struct timespec *ts);
 extern void getboottime(struct timespec *ts);
 extern void monotonic_to_bootbased(struct timespec *ts);
 
 extern struct timespec timespec_trunc(struct timespec t, unsigned gran);
-extern int timekeeping_is_continuous(void);
+extern int timekeeping_valid_for_hres(void);
 extern void update_wall_time(void);
+extern void update_xtime_cache(u64 nsec);
+
+struct tms;
+extern void do_sys_times(struct tms *);
 
 /**
  * timespec_to_ns - Convert timespec to nanoseconds
@@ -168,14 +181,13 @@ extern struct timeval ns_to_timeval(const s64 nsec);
  * timespec_add_ns - Adds nanoseconds to a timespec
  * @a:		pointer to timespec to be incremented
  * @ns:		unsigned nanoseconds value to be added
+ *
+ * This must always be inlined because its used from the x86-64 vdso,
+ * which cannot call other kernel functions.
  */
-static inline void timespec_add_ns(struct timespec *a, u64 ns)
+static __always_inline void timespec_add_ns(struct timespec *a, u64 ns)
 {
-	ns += a->tv_nsec;
-	while(unlikely(ns >= NSEC_PER_SEC)) {
-		ns -= NSEC_PER_SEC;
-		a->tv_sec++;
-	}
+	a->tv_sec += __iter_div_u64_rem(a->tv_nsec + ns, NSEC_PER_SEC, &ns);
 	a->tv_nsec = ns;
 }
 #endif /* __KERNEL__ */
@@ -213,6 +225,7 @@ struct itimerval {
 #define CLOCK_MONOTONIC			1
 #define CLOCK_PROCESS_CPUTIME_ID	2
 #define CLOCK_THREAD_CPUTIME_ID		3
+#define CLOCK_MONOTONIC_RAW		4
 
 /*
  * The IDs of various hardware clocks:

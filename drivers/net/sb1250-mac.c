@@ -179,8 +179,7 @@ enum sbmac_state {
 #define SBMAC_MAX_TXDESCR	256
 #define SBMAC_MAX_RXDESCR	256
 
-#define ETHER_ALIGN	2
-#define ETHER_ADDR_LEN	6
+#define ETHER_ADDR_LEN		6
 #define ENET_PACKET_SIZE	1518
 /*#define ENET_PACKET_SIZE	9216 */
 
@@ -257,12 +256,10 @@ struct sbmac_softc {
 	struct net_device	*sbm_dev;	/* pointer to linux device */
 	struct napi_struct	napi;
 	struct phy_device	*phy_dev;	/* the associated PHY device */
-	struct mii_bus		mii_bus;	/* the MII bus */
+	struct mii_bus		*mii_bus;	/* the MII bus */
 	int			phy_irq[PHY_MAX_ADDR];
 	spinlock_t		sbm_lock;	/* spin lock */
 	int			sbm_devflags;	/* current device flags */
-
-	int			sbm_buffersize;
 
 	/*
 	 * Controller-specific things
@@ -305,10 +302,11 @@ struct sbmac_softc {
 static void sbdma_initctx(struct sbmacdma *d, struct sbmac_softc *s, int chan,
 			  int txrx, int maxdescr);
 static void sbdma_channel_start(struct sbmacdma *d, int rxtx);
-static int sbdma_add_rcvbuffer(struct sbmacdma *d, struct sk_buff *m);
+static int sbdma_add_rcvbuffer(struct sbmac_softc *sc, struct sbmacdma *d,
+			       struct sk_buff *m);
 static int sbdma_add_txbuffer(struct sbmacdma *d, struct sk_buff *m);
 static void sbdma_emptyring(struct sbmacdma *d);
-static void sbdma_fillring(struct sbmacdma *d);
+static void sbdma_fillring(struct sbmac_softc *sc, struct sbmacdma *d);
 static int sbdma_rx_process(struct sbmac_softc *sc, struct sbmacdma *d,
 			    int work_to_do, int poll);
 static void sbdma_tx_process(struct sbmac_softc *sc, struct sbmacdma *d,
@@ -777,16 +775,13 @@ static void sbdma_channel_stop(struct sbmacdma *d)
 	d->sbdma_remptr = NULL;
 }
 
-static void sbdma_align_skb(struct sk_buff *skb,int power2,int offset)
+static inline void sbdma_align_skb(struct sk_buff *skb,
+				   unsigned int power2, unsigned int offset)
 {
-	unsigned long addr;
-	unsigned long newaddr;
+	unsigned char *addr = skb->data;
+	unsigned char *newaddr = PTR_ALIGN(addr, power2);
 
-	addr = (unsigned long) skb->data;
-
-	newaddr = (addr + power2 - 1) & ~(power2 - 1);
-
-	skb_reserve(skb,newaddr-addr+offset);
+	skb_reserve(skb, newaddr - addr + offset);
 }
 
 
@@ -797,7 +792,8 @@ static void sbdma_align_skb(struct sk_buff *skb,int power2,int offset)
  *  this queues a buffer for inbound packets.
  *
  *  Input parameters:
- *  	   d - DMA channel descriptor
+ *	   sc - softc structure
+ *  	    d - DMA channel descriptor
  * 	   sb - sk_buff to add, or NULL if we should allocate one
  *
  *  Return value:
@@ -806,8 +802,10 @@ static void sbdma_align_skb(struct sk_buff *skb,int power2,int offset)
  ********************************************************************* */
 
 
-static int sbdma_add_rcvbuffer(struct sbmacdma *d, struct sk_buff *sb)
+static int sbdma_add_rcvbuffer(struct sbmac_softc *sc, struct sbmacdma *d,
+			       struct sk_buff *sb)
 {
+	struct net_device *dev = sc->sbm_dev;
 	struct sbdmadscr *dsc;
 	struct sbdmadscr *nextdsc;
 	struct sk_buff *sb_new = NULL;
@@ -848,14 +846,16 @@ static int sbdma_add_rcvbuffer(struct sbmacdma *d, struct sk_buff *sb)
 	 */
 
 	if (sb == NULL) {
-		sb_new = dev_alloc_skb(ENET_PACKET_SIZE + SMP_CACHE_BYTES * 2 + ETHER_ALIGN);
+		sb_new = netdev_alloc_skb(dev, ENET_PACKET_SIZE +
+					       SMP_CACHE_BYTES * 2 +
+					       NET_IP_ALIGN);
 		if (sb_new == NULL) {
 			pr_info("%s: sk_buff allocation failed\n",
 			       d->sbdma_eth->sbm_dev->name);
 			return -ENOBUFS;
 		}
 
-		sbdma_align_skb(sb_new, SMP_CACHE_BYTES, ETHER_ALIGN);
+		sbdma_align_skb(sb_new, SMP_CACHE_BYTES, NET_IP_ALIGN);
 	}
 	else {
 		sb_new = sb;
@@ -874,10 +874,10 @@ static int sbdma_add_rcvbuffer(struct sbmacdma *d, struct sk_buff *sb)
 	 * Do not interrupt per DMA transfer.
 	 */
 	dsc->dscr_a = virt_to_phys(sb_new->data) |
-		V_DMA_DSCRA_A_SIZE(NUMCACHEBLKS(pktsize+ETHER_ALIGN)) | 0;
+		V_DMA_DSCRA_A_SIZE(NUMCACHEBLKS(pktsize + NET_IP_ALIGN)) | 0;
 #else
 	dsc->dscr_a = virt_to_phys(sb_new->data) |
-		V_DMA_DSCRA_A_SIZE(NUMCACHEBLKS(pktsize+ETHER_ALIGN)) |
+		V_DMA_DSCRA_A_SIZE(NUMCACHEBLKS(pktsize + NET_IP_ALIGN)) |
 		M_DMA_DSCRA_INTERRUPT;
 #endif
 
@@ -1032,18 +1032,19 @@ static void sbdma_emptyring(struct sbmacdma *d)
  *  with sk_buffs
  *
  *  Input parameters:
- *  	   d - DMA channel
+ *	   sc - softc structure
+ *  	    d - DMA channel
  *
  *  Return value:
  *  	   nothing
  ********************************************************************* */
 
-static void sbdma_fillring(struct sbmacdma *d)
+static void sbdma_fillring(struct sbmac_softc *sc, struct sbmacdma *d)
 {
 	int idx;
 
-	for (idx = 0; idx < SBMAC_MAX_RXDESCR-1; idx++) {
-		if (sbdma_add_rcvbuffer(d,NULL) != 0)
+	for (idx = 0; idx < SBMAC_MAX_RXDESCR - 1; idx++) {
+		if (sbdma_add_rcvbuffer(sc, d, NULL) != 0)
 			break;
 	}
 }
@@ -1063,7 +1064,7 @@ static void sbmac_netpoll(struct net_device *netdev)
 	((M_MAC_INT_EOP_COUNT | M_MAC_INT_EOP_TIMER) << S_MAC_RX_CH0),
 	sc->sbm_imr);
 #else
-	__raw_writeq((M_MAC_INT_CHANNEL << S_MAC_TX_CH0) | 
+	__raw_writeq((M_MAC_INT_CHANNEL << S_MAC_TX_CH0) |
 	(M_MAC_INT_CHANNEL << S_MAC_RX_CH0), sc->sbm_imr);
 #endif
 }
@@ -1159,10 +1160,11 @@ again:
 			 * packet and put it right back on the receive ring.
 			 */
 
-			if (unlikely (sbdma_add_rcvbuffer(d,NULL) ==
-				      -ENOBUFS)) {
+			if (unlikely(sbdma_add_rcvbuffer(sc, d, NULL) ==
+				     -ENOBUFS)) {
 				dev->stats.rx_dropped++;
-				sbdma_add_rcvbuffer(d,sb); /* re-add old buffer */
+				/* Re-add old buffer */
+				sbdma_add_rcvbuffer(sc, d, sb);
 				/* No point in continuing at the moment */
 				printk(KERN_ERR "dropped packet (1)\n");
 				d->sbdma_remptr = SBDMA_NEXTBUF(d,sbdma_remptr);
@@ -1212,7 +1214,7 @@ again:
 			 * put it back on the receive ring.
 			 */
 			dev->stats.rx_errors++;
-			sbdma_add_rcvbuffer(d,sb);
+			sbdma_add_rcvbuffer(sc, d, sb);
 		}
 
 
@@ -1570,7 +1572,7 @@ static void sbmac_channel_start(struct sbmac_softc *s)
 	 * Fill the receive ring
 	 */
 
-	sbdma_fillring(&(s->sbm_rxdma));
+	sbdma_fillring(s, &(s->sbm_rxdma));
 
 	/*
 	 * Turn on the rest of the bits in the enable register
@@ -2037,9 +2039,9 @@ static irqreturn_t sbmac_intr(int irq,void *dev_instance)
 		sbdma_tx_process(sc,&(sc->sbm_txdma), 0);
 
 	if (isr & (M_MAC_INT_CHANNEL << S_MAC_RX_CH0)) {
-		if (netif_rx_schedule_prep(dev, &sc->napi)) {
+		if (netif_rx_schedule_prep(&sc->napi)) {
 			__raw_writeq(0, sc->sbm_imr);
-			__netif_rx_schedule(dev, &sc->napi);
+			__netif_rx_schedule(&sc->napi);
 			/* Depend on the exit from poll to reenable intr */
 		}
 		else {
@@ -2067,9 +2069,10 @@ static irqreturn_t sbmac_intr(int irq,void *dev_instance)
 static int sbmac_start_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct sbmac_softc *sc = netdev_priv(dev);
+	unsigned long flags;
 
 	/* lock eth irq */
-	spin_lock_irq (&sc->sbm_lock);
+	spin_lock_irqsave(&sc->sbm_lock, flags);
 
 	/*
 	 * Put the buffer on the transmit ring.  If we
@@ -2079,14 +2082,14 @@ static int sbmac_start_tx(struct sk_buff *skb, struct net_device *dev)
 	if (sbdma_add_txbuffer(&(sc->sbm_txdma),skb)) {
 		/* XXX save skb that we could not send */
 		netif_stop_queue(dev);
-		spin_unlock_irq(&sc->sbm_lock);
+		spin_unlock_irqrestore(&sc->sbm_lock, flags);
 
 		return 1;
 	}
 
 	dev->trans_start = jiffies;
 
-	spin_unlock_irq (&sc->sbm_lock);
+	spin_unlock_irqrestore(&sc->sbm_lock, flags);
 
 	return 0;
 }
@@ -2289,7 +2292,6 @@ static int sbmac_init(struct platform_device *pldev, long long base)
 	uint64_t ea_reg;
 	int i;
 	int err;
-	DECLARE_MAC_BUF(mac);
 
 	sc->sbm_dev = dev;
 	sc->sbe_idx = idx;
@@ -2311,13 +2313,6 @@ static int sbmac_init(struct platform_device *pldev, long long base)
 	for (i = 0; i < 6; i++) {
 		dev->dev_addr[i] = eaddr[i];
 	}
-
-
-	/*
-	 * Init packet size
-	 */
-
-	sc->sbm_buffersize = ENET_PACKET_SIZE + SMP_CACHE_BYTES * 2 + ETHER_ALIGN;
 
 	/*
 	 * Initialize context (get pointers to registers and stuff), then
@@ -2352,10 +2347,17 @@ static int sbmac_init(struct platform_device *pldev, long long base)
 	/* This is needed for PASS2 for Rx H/W checksum feature */
 	sbmac_set_iphdr_offset(sc);
 
+	sc->mii_bus = mdiobus_alloc();
+	if (sc->mii_bus == NULL) {
+		sbmac_uninitctx(sc);
+		return -ENOMEM;
+	}
+
 	err = register_netdev(dev);
 	if (err) {
 		printk(KERN_ERR "%s.%d: unable to register netdev\n",
 		       sbmac_string, idx);
+		mdiobus_free(sc->mii_bus);
 		sbmac_uninitctx(sc);
 		return err;
 	}
@@ -2370,20 +2372,20 @@ static int sbmac_init(struct platform_device *pldev, long long base)
 	 * process so we need to finish off the config message that
 	 * was being displayed)
 	 */
-	pr_info("%s: SiByte Ethernet at 0x%08Lx, address: %s\n",
-	       dev->name, base, print_mac(mac, eaddr));
+	pr_info("%s: SiByte Ethernet at 0x%08Lx, address: %pM\n",
+	       dev->name, base, eaddr);
 
-	sc->mii_bus.name = sbmac_mdio_string;
-	sc->mii_bus.id = idx;
-	sc->mii_bus.priv = sc;
-	sc->mii_bus.read = sbmac_mii_read;
-	sc->mii_bus.write = sbmac_mii_write;
-	sc->mii_bus.irq = sc->phy_irq;
+	sc->mii_bus->name = sbmac_mdio_string;
+	snprintf(sc->mii_bus->id, MII_BUS_ID_SIZE, "%x", idx);
+	sc->mii_bus->priv = sc;
+	sc->mii_bus->read = sbmac_mii_read;
+	sc->mii_bus->write = sbmac_mii_write;
+	sc->mii_bus->irq = sc->phy_irq;
 	for (i = 0; i < PHY_MAX_ADDR; ++i)
-		sc->mii_bus.irq[i] = SBMAC_PHY_INT;
+		sc->mii_bus->irq[i] = SBMAC_PHY_INT;
 
-	sc->mii_bus.dev = &pldev->dev;
-	dev_set_drvdata(&pldev->dev, &sc->mii_bus);
+	sc->mii_bus->parent = &pldev->dev;
+	dev_set_drvdata(&pldev->dev, sc->mii_bus);
 
 	return 0;
 }
@@ -2414,7 +2416,7 @@ static int sbmac_open(struct net_device *dev)
 	/*
 	 * Probe PHY address
 	 */
-	err = mdiobus_register(&sc->mii_bus);
+	err = mdiobus_register(sc->mii_bus);
 	if (err) {
 		printk(KERN_ERR "%s: unable to register MDIO bus\n",
 		       dev->name);
@@ -2451,7 +2453,7 @@ static int sbmac_open(struct net_device *dev)
 	return 0;
 
 out_unregister:
-	mdiobus_unregister(&sc->mii_bus);
+	mdiobus_unregister(sc->mii_bus);
 
 out_unirq:
 	free_irq(dev->irq, dev);
@@ -2467,7 +2469,7 @@ static int sbmac_mii_probe(struct net_device *dev)
 	int i;
 
 	for (i = 0; i < PHY_MAX_ADDR; i++) {
-		phy_dev = sc->mii_bus.phy_map[i];
+		phy_dev = sc->mii_bus->phy_map[i];
 		if (phy_dev)
 			break;
 	}
@@ -2573,14 +2575,15 @@ static void sbmac_mii_poll(struct net_device *dev)
 static void sbmac_tx_timeout (struct net_device *dev)
 {
 	struct sbmac_softc *sc = netdev_priv(dev);
+	unsigned long flags;
 
-	spin_lock_irq (&sc->sbm_lock);
+	spin_lock_irqsave(&sc->sbm_lock, flags);
 
 
 	dev->trans_start = jiffies;
 	dev->stats.tx_errors++;
 
-	spin_unlock_irq (&sc->sbm_lock);
+	spin_unlock_irqrestore(&sc->sbm_lock, flags);
 
 	printk (KERN_WARNING "%s: Transmit timed out\n",dev->name);
 }
@@ -2644,7 +2647,7 @@ static int sbmac_close(struct net_device *dev)
 	phy_disconnect(sc->phy_dev);
 	sc->phy_dev = NULL;
 
-	mdiobus_unregister(&sc->mii_bus);
+	mdiobus_unregister(sc->mii_bus);
 
 	free_irq(dev->irq, dev);
 
@@ -2664,7 +2667,7 @@ static int sbmac_poll(struct napi_struct *napi, int budget)
 	sbdma_tx_process(sc, &(sc->sbm_txdma), 1);
 
 	if (work_done < budget) {
-		netif_rx_complete(dev, napi);
+		netif_rx_complete(napi);
 
 #ifdef CONFIG_SBMAC_COALESCE
 		__raw_writeq(((M_MAC_INT_EOP_COUNT | M_MAC_INT_EOP_TIMER) << S_MAC_TX_CH0) |
@@ -2753,6 +2756,7 @@ static int __exit sbmac_remove(struct platform_device *pldev)
 
 	unregister_netdev(dev);
 	sbmac_uninitctx(sc);
+	mdiobus_free(sc->mii_bus);
 	iounmap(sc->sbm_base);
 	free_netdev(dev);
 

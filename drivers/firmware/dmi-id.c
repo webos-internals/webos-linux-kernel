@@ -11,7 +11,6 @@
 #include <linux/init.h>
 #include <linux/dmi.h>
 #include <linux/device.h>
-#include <linux/autoconf.h>
 
 struct dmi_device_attribute{
 	struct device_attribute dev_attr;
@@ -224,7 +223,7 @@ static int __init dmi_id_init(void)
 	}
 
 	dmi_dev->class = &dmi_class;
-	strcpy(dmi_dev->bus_id, "id");
+	dev_set_name(dmi_dev, "id");
 	dmi_dev->groups = sys_dmi_attribute_groups;
 
 	ret = device_register(dmi_dev);

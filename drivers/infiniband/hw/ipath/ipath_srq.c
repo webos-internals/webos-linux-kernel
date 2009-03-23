@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -94,8 +94,8 @@ bail:
 /**
  * ipath_create_srq - create a shared receive queue
  * @ibpd: the protection domain of the SRQ to create
- * @attr: the attributes of the SRQ
- * @udata: not used by the InfiniPath verbs driver
+ * @srq_init_attr: the attributes of the SRQ
+ * @udata: data from libipathverbs when creating a user SRQ
  */
 struct ib_srq *ipath_create_srq(struct ib_pd *ibpd,
 				struct ib_srq_init_attr *srq_init_attr,
@@ -245,7 +245,8 @@ int ipath_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 						 sizeof(offset_addr));
 			if (ret)
 				goto bail_free;
-			udata->outbuf = (void __user *) offset_addr;
+			udata->outbuf =
+				(void __user *) (unsigned long) offset_addr;
 			ret = ib_copy_to_udata(udata, &offset,
 					       sizeof(offset));
 			if (ret)

@@ -31,57 +31,71 @@ const struct file_operations generic_ro_fops = {
 
 EXPORT_SYMBOL(generic_ro_fops);
 
-loff_t generic_file_llseek(struct file *file, loff_t offset, int origin)
+/**
+ * generic_file_llseek_unlocked - lockless generic llseek implementation
+ * @file:	file structure to seek on
+ * @offset:	file offset to seek to
+ * @origin:	type of seek
+ *
+ * Updates the file offset to the value specified by @offset and @origin.
+ * Locking must be provided by the caller.
+ */
+loff_t
+generic_file_llseek_unlocked(struct file *file, loff_t offset, int origin)
 {
-	long long retval;
 	struct inode *inode = file->f_mapping->host;
 
-	mutex_lock(&inode->i_mutex);
 	switch (origin) {
-		case SEEK_END:
-			offset += inode->i_size;
-			break;
-		case SEEK_CUR:
-			offset += file->f_pos;
+	case SEEK_END:
+		offset += inode->i_size;
+		break;
+	case SEEK_CUR:
+		/*
+		 * Here we special-case the lseek(fd, 0, SEEK_CUR)
+		 * position-querying operation.  Avoid rewriting the "same"
+		 * f_pos value back to the file because a concurrent read(),
+		 * write() or lseek() might have altered it
+		 */
+		if (offset == 0)
+			return file->f_pos;
+		offset += file->f_pos;
+		break;
 	}
-	retval = -EINVAL;
-	if (offset>=0 && offset<=inode->i_sb->s_maxbytes) {
-		if (offset != file->f_pos) {
-			file->f_pos = offset;
-			file->f_version = 0;
-		}
-		retval = offset;
+
+	if (offset < 0 || offset > inode->i_sb->s_maxbytes)
+		return -EINVAL;
+
+	/* Special lock needed here? */
+	if (offset != file->f_pos) {
+		file->f_pos = offset;
+		file->f_version = 0;
 	}
-	mutex_unlock(&inode->i_mutex);
-	return retval;
+
+	return offset;
 }
+EXPORT_SYMBOL(generic_file_llseek_unlocked);
 
-EXPORT_SYMBOL(generic_file_llseek);
-
-loff_t remote_llseek(struct file *file, loff_t offset, int origin)
+/**
+ * generic_file_llseek - generic llseek implementation for regular files
+ * @file:	file structure to seek on
+ * @offset:	file offset to seek to
+ * @origin:	type of seek
+ *
+ * This is a generic implemenation of ->llseek useable for all normal local
+ * filesystems.  It just updates the file offset to the value specified by
+ * @offset and @origin under i_mutex.
+ */
+loff_t generic_file_llseek(struct file *file, loff_t offset, int origin)
 {
-	long long retval;
+	loff_t rval;
 
-	lock_kernel();
-	switch (origin) {
-		case SEEK_END:
-			offset += i_size_read(file->f_path.dentry->d_inode);
-			break;
-		case SEEK_CUR:
-			offset += file->f_pos;
-	}
-	retval = -EINVAL;
-	if (offset>=0 && offset<=file->f_path.dentry->d_inode->i_sb->s_maxbytes) {
-		if (offset != file->f_pos) {
-			file->f_pos = offset;
-			file->f_version = 0;
-		}
-		retval = offset;
-	}
-	unlock_kernel();
-	return retval;
+	mutex_lock(&file->f_dentry->d_inode->i_mutex);
+	rval = generic_file_llseek_unlocked(file, offset, origin);
+	mutex_unlock(&file->f_dentry->d_inode->i_mutex);
+
+	return rval;
 }
-EXPORT_SYMBOL(remote_llseek);
+EXPORT_SYMBOL(generic_file_llseek);
 
 loff_t no_llseek(struct file *file, loff_t offset, int origin)
 {
@@ -91,7 +105,7 @@ EXPORT_SYMBOL(no_llseek);
 
 loff_t default_llseek(struct file *file, loff_t offset, int origin)
 {
-	long long retval;
+	loff_t retval;
 
 	lock_kernel();
 	switch (origin) {
@@ -99,6 +113,10 @@ loff_t default_llseek(struct file *file, loff_t offset, int origin)
 			offset += i_size_read(file->f_path.dentry->d_inode);
 			break;
 		case SEEK_CUR:
+			if (offset == 0) {
+				retval = file->f_pos;
+				goto out;
+			}
 			offset += file->f_pos;
 	}
 	retval = -EINVAL;
@@ -109,6 +127,7 @@ loff_t default_llseek(struct file *file, loff_t offset, int origin)
 		}
 		retval = offset;
 	}
+out:
 	unlock_kernel();
 	return retval;
 }
@@ -128,7 +147,7 @@ loff_t vfs_llseek(struct file *file, loff_t offset, int origin)
 }
 EXPORT_SYMBOL(vfs_llseek);
 
-asmlinkage off_t sys_lseek(unsigned int fd, off_t offset, unsigned int origin)
+SYSCALL_DEFINE3(lseek, unsigned int, fd, off_t, offset, unsigned int, origin)
 {
 	off_t retval;
 	struct file * file;
@@ -152,9 +171,9 @@ bad:
 }
 
 #ifdef __ARCH_WANT_SYS_LLSEEK
-asmlinkage long sys_llseek(unsigned int fd, unsigned long offset_high,
-			   unsigned long offset_low, loff_t __user * result,
-			   unsigned int origin)
+SYSCALL_DEFINE5(llseek, unsigned int, fd, unsigned long, offset_high,
+		unsigned long, offset_low, loff_t __user *, result,
+		unsigned int, origin)
 {
 	int retval;
 	struct file * file;
@@ -197,25 +216,27 @@ int rw_verify_area(int read_write, struct file *file, loff_t *ppos, size_t count
 {
 	struct inode *inode;
 	loff_t pos;
+	int retval = -EINVAL;
 
 	inode = file->f_path.dentry->d_inode;
 	if (unlikely((ssize_t) count < 0))
-		goto Einval;
+		return retval;
 	pos = *ppos;
 	if (unlikely((pos < 0) || (loff_t) (pos + count) < 0))
-		goto Einval;
+		return retval;
 
 	if (unlikely(inode->i_flock && mandatory_lock(inode))) {
-		int retval = locks_mandatory_area(
+		retval = locks_mandatory_area(
 			read_write == READ ? FLOCK_VERIFY_READ : FLOCK_VERIFY_WRITE,
 			inode, file, pos, count);
 		if (retval < 0)
 			return retval;
 	}
+	retval = security_file_permission(file,
+				read_write == READ ? MAY_READ : MAY_WRITE);
+	if (retval)
+		return retval;
 	return count > MAX_RW_COUNT ? MAX_RW_COUNT : count;
-
-Einval:
-	return -EINVAL;
 }
 
 static void wait_on_retry_sync_kiocb(struct kiocb *iocb)
@@ -267,18 +288,15 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 	ret = rw_verify_area(READ, file, pos, count);
 	if (ret >= 0) {
 		count = ret;
-		ret = security_file_permission (file, MAY_READ);
-		if (!ret) {
-			if (file->f_op->read)
-				ret = file->f_op->read(file, buf, count, pos);
-			else
-				ret = do_sync_read(file, buf, count, pos);
-			if (ret > 0) {
-				fsnotify_access(file->f_path.dentry);
-				add_rchar(current, ret);
-			}
-			inc_syscr(current);
+		if (file->f_op->read)
+			ret = file->f_op->read(file, buf, count, pos);
+		else
+			ret = do_sync_read(file, buf, count, pos);
+		if (ret > 0) {
+			fsnotify_access(file->f_path.dentry);
+			add_rchar(current, ret);
 		}
+		inc_syscr(current);
 	}
 
 	return ret;
@@ -325,18 +343,15 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 	ret = rw_verify_area(WRITE, file, pos, count);
 	if (ret >= 0) {
 		count = ret;
-		ret = security_file_permission (file, MAY_WRITE);
-		if (!ret) {
-			if (file->f_op->write)
-				ret = file->f_op->write(file, buf, count, pos);
-			else
-				ret = do_sync_write(file, buf, count, pos);
-			if (ret > 0) {
-				fsnotify_modify(file->f_path.dentry);
-				add_wchar(current, ret);
-			}
-			inc_syscw(current);
+		if (file->f_op->write)
+			ret = file->f_op->write(file, buf, count, pos);
+		else
+			ret = do_sync_write(file, buf, count, pos);
+		if (ret > 0) {
+			fsnotify_modify(file->f_path.dentry);
+			add_wchar(current, ret);
 		}
+		inc_syscw(current);
 	}
 
 	return ret;
@@ -354,7 +369,7 @@ static inline void file_pos_write(struct file *file, loff_t pos)
 	file->f_pos = pos;
 }
 
-asmlinkage ssize_t sys_read(unsigned int fd, char __user * buf, size_t count)
+SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
 	struct file *file;
 	ssize_t ret = -EBADF;
@@ -370,9 +385,9 @@ asmlinkage ssize_t sys_read(unsigned int fd, char __user * buf, size_t count)
 
 	return ret;
 }
-EXPORT_UNUSED_SYMBOL_GPL(sys_read); /* to be deleted for 2.6.25 */
 
-asmlinkage ssize_t sys_write(unsigned int fd, const char __user * buf, size_t count)
+SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
+		size_t, count)
 {
 	struct file *file;
 	ssize_t ret = -EBADF;
@@ -389,8 +404,8 @@ asmlinkage ssize_t sys_write(unsigned int fd, const char __user * buf, size_t co
 	return ret;
 }
 
-asmlinkage ssize_t sys_pread64(unsigned int fd, char __user *buf,
-			     size_t count, loff_t pos)
+SYSCALL_DEFINE(pread64)(unsigned int fd, char __user *buf,
+			size_t count, loff_t pos)
 {
 	struct file *file;
 	ssize_t ret = -EBADF;
@@ -409,9 +424,17 @@ asmlinkage ssize_t sys_pread64(unsigned int fd, char __user *buf,
 
 	return ret;
 }
+#ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
+asmlinkage long SyS_pread64(long fd, long buf, long count, loff_t pos)
+{
+	return SYSC_pread64((unsigned int) fd, (char __user *) buf,
+			    (size_t) count, pos);
+}
+SYSCALL_ALIAS(sys_pread64, SyS_pread64);
+#endif
 
-asmlinkage ssize_t sys_pwrite64(unsigned int fd, const char __user *buf,
-			      size_t count, loff_t pos)
+SYSCALL_DEFINE(pwrite64)(unsigned int fd, const char __user *buf,
+			 size_t count, loff_t pos)
 {
 	struct file *file;
 	ssize_t ret = -EBADF;
@@ -430,6 +453,14 @@ asmlinkage ssize_t sys_pwrite64(unsigned int fd, const char __user *buf,
 
 	return ret;
 }
+#ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
+asmlinkage long SyS_pwrite64(long fd, long buf, long count, loff_t pos)
+{
+	return SYSC_pwrite64((unsigned int) fd, (const char __user *) buf,
+			     (size_t) count, pos);
+}
+SYSCALL_ALIAS(sys_pwrite64, SyS_pwrite64);
+#endif
 
 /*
  * Reduce an iovec's length in-place.  Return the resulting number of segments
@@ -450,6 +481,7 @@ unsigned long iov_shorten(struct iovec *iov, unsigned long nr_segs, size_t to)
 	}
 	return seg;
 }
+EXPORT_SYMBOL(iov_shorten);
 
 ssize_t do_sync_readv_writev(struct file *filp, const struct iovec *iov,
 		unsigned long nr_segs, size_t len, loff_t *ppos, iov_fn_t fn)
@@ -603,9 +635,6 @@ static ssize_t do_readv_writev(int type, struct file *file,
 	ret = rw_verify_area(type, file, pos, tot_len);
 	if (ret < 0)
 		goto out;
-	ret = security_file_permission(file, type == READ ? MAY_READ : MAY_WRITE);
-	if (ret)
-		goto out;
 
 	fnv = NULL;
 	if (type == READ) {
@@ -660,8 +689,8 @@ ssize_t vfs_writev(struct file *file, const struct iovec __user *vec,
 
 EXPORT_SYMBOL(vfs_writev);
 
-asmlinkage ssize_t
-sys_readv(unsigned long fd, const struct iovec __user *vec, unsigned long vlen)
+SYSCALL_DEFINE3(readv, unsigned long, fd, const struct iovec __user *, vec,
+		unsigned long, vlen)
 {
 	struct file *file;
 	ssize_t ret = -EBADF;
@@ -681,8 +710,8 @@ sys_readv(unsigned long fd, const struct iovec __user *vec, unsigned long vlen)
 	return ret;
 }
 
-asmlinkage ssize_t
-sys_writev(unsigned long fd, const struct iovec __user *vec, unsigned long vlen)
+SYSCALL_DEFINE3(writev, unsigned long, fd, const struct iovec __user *, vec,
+		unsigned long, vlen)
 {
 	struct file *file;
 	ssize_t ret = -EBADF;
@@ -737,10 +766,6 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 		goto fput_in;
 	count = retval;
 
-	retval = security_file_permission (in_file, MAY_READ);
-	if (retval)
-		goto fput_in;
-
 	/*
 	 * Get output file, and verify that it is ok..
 	 */
@@ -758,10 +783,6 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 	if (retval < 0)
 		goto fput_out;
 	count = retval;
-
-	retval = security_file_permission (out_file, MAY_WRITE);
-	if (retval)
-		goto fput_out;
 
 	if (!max)
 		max = min(in_inode->i_sb->s_maxbytes, out_inode->i_sb->s_maxbytes);
@@ -808,7 +829,7 @@ out:
 	return retval;
 }
 
-asmlinkage ssize_t sys_sendfile(int out_fd, int in_fd, off_t __user *offset, size_t count)
+SYSCALL_DEFINE4(sendfile, int, out_fd, int, in_fd, off_t __user *, offset, size_t, count)
 {
 	loff_t pos;
 	off_t off;
@@ -827,7 +848,7 @@ asmlinkage ssize_t sys_sendfile(int out_fd, int in_fd, off_t __user *offset, siz
 	return do_sendfile(out_fd, in_fd, NULL, count, 0);
 }
 
-asmlinkage ssize_t sys_sendfile64(int out_fd, int in_fd, loff_t __user *offset, size_t count)
+SYSCALL_DEFINE4(sendfile64, int, out_fd, int, in_fd, loff_t __user *, offset, size_t, count)
 {
 	loff_t pos;
 	ssize_t ret;

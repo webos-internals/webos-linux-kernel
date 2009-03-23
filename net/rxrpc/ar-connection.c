@@ -651,7 +651,7 @@ rxrpc_incoming_connection(struct rxrpc_transport *trans,
 
 	candidate->trans = trans;
 	candidate->epoch = hdr->epoch;
-	candidate->cid = hdr->cid & __constant_cpu_to_be32(RXRPC_CIDMASK);
+	candidate->cid = hdr->cid & cpu_to_be32(RXRPC_CIDMASK);
 	candidate->service_id = hdr->serviceId;
 	candidate->security_ix = hdr->securityIndex;
 	candidate->in_clientflag = RXRPC_CLIENT_INITIATED;
@@ -826,7 +826,7 @@ static void rxrpc_destroy_connection(struct rxrpc_connection *conn)
 /*
  * reap dead connections
  */
-void rxrpc_connection_reaper(struct work_struct *work)
+static void rxrpc_connection_reaper(struct work_struct *work)
 {
 	struct rxrpc_connection *conn, *_p;
 	unsigned long now, earliest, reap_time;

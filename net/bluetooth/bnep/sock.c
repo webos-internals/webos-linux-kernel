@@ -24,10 +24,6 @@
    SOFTWARE IS DISCLAIMED.
 */
 
-/*
- * $Id: sock.c,v 1.4 2002/08/04 21:23:58 maxk Exp $
- */
-
 #include <linux/module.h>
 
 #include <linux/types.h>
@@ -49,11 +45,6 @@
 #include <asm/uaccess.h>
 
 #include "bnep.h"
-
-#ifndef CONFIG_BT_BNEP_DEBUG
-#undef  BT_DBG
-#define BT_DBG( A... )
-#endif
 
 static int bnep_sock_release(struct socket *sock)
 {
@@ -94,7 +85,7 @@ static int bnep_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long 
 			return err;
 
 		if (nsock->sk->sk_state != BT_CONNECTED) {
-			fput(nsock->file);
+			sockfd_put(nsock);
 			return -EBADFD;
 		}
 
@@ -103,7 +94,7 @@ static int bnep_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long 
 			if (copy_to_user(argp, &ca, sizeof(ca)))
 				err = -EFAULT;
 		} else
-			fput(nsock->file);
+			sockfd_put(nsock);
 
 		return err;
 
@@ -257,12 +248,10 @@ error:
 	return err;
 }
 
-int __exit bnep_sock_cleanup(void)
+void __exit bnep_sock_cleanup(void)
 {
 	if (bt_sock_unregister(BTPROTO_BNEP) < 0)
 		BT_ERR("Can't unregister BNEP socket");
 
 	proto_unregister(&bnep_proto);
-
-	return 0;
 }

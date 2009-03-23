@@ -186,7 +186,7 @@
  *
  * Thanks go also to:
  *	James Ashton <jaa101@syseng.anu.edu.au>,
- *	Alan Cox <alan@redhat.com>,
+ *	Alan Cox <alan@lxorguk.ukuu.org.uk>,
  *	Allan Creighton <allanc@cs.usyd.edu.au>,
  *	Matthew Geier <matthew@cs.usyd.edu.au>,
  *	Remo di Giovanni <remo@cs.usyd.edu.au>,
@@ -400,7 +400,6 @@
  */
 #undef SET_PSA_CRC		/* Calculate and set the CRC on PSA (slower) */
 #define USE_PSA_CONFIG		/* Use info from the PSA. */
-#undef STRUCT_CHECK		/* Verify padding of structures. */
 #undef EEPROM_IS_PROTECTED	/* doesn't seem to be necessary */
 #define MULTICAST_AVOID		/* Avoid extra multicast (I'm sceptical). */
 #undef SET_MAC_ADDRESS		/* Experimental */

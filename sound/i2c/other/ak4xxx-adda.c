@@ -21,7 +21,6 @@
  *
  */      
 
-#include <sound/driver.h>
 #include <asm/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -71,7 +70,8 @@ static void ak4524_reset(struct snd_akm4xxx *ak, int state)
 }
 
 /* reset procedure for AK4355 and AK4358 */
-static void ak4355_reset(struct snd_akm4xxx *ak, int state)
+static void ak435X_reset(struct snd_akm4xxx *ak, int state,
+		unsigned char total_regs)
 {
 	unsigned char reg;
 
@@ -79,7 +79,7 @@ static void ak4355_reset(struct snd_akm4xxx *ak, int state)
 		snd_akm4xxx_write(ak, 0, 0x01, 0x02); /* reset and soft-mute */
 		return;
 	}
-	for (reg = 0x00; reg < 0x0b; reg++)
+	for (reg = 0x00; reg < total_regs; reg++)
 		if (reg != 0x01)
 			snd_akm4xxx_write(ak, 0, reg,
 					  snd_akm4xxx_get(ak, 0, reg));
@@ -119,8 +119,10 @@ void snd_akm4xxx_reset(struct snd_akm4xxx *ak, int state)
 		/* FIXME: needed for ak4529? */
 		break;
 	case SND_AK4355:
+		ak435X_reset(ak, state, 0x0b);
+		break;
 	case SND_AK4358:
-		ak4355_reset(ak, state);
+		ak435X_reset(ak, state, 0x10);
 		break;
 	case SND_AK4381:
 		ak4381_reset(ak, state);
@@ -231,8 +233,8 @@ void snd_akm4xxx_init(struct snd_akm4xxx *ak)
 		0x01, 0x02, /* 1: reset and soft-mute */
 		0x00, 0x06, /* 0: mode3(i2s), disable auto-clock detect,
 			     * disable DZF, sharp roll-off, RSTN#=0 */
-		0x02, 0x0e, /* 2: DA's power up, normal speed, RSTN#=0 */
-		// 0x02, 0x2e, /* quad speed */
+		0x02, 0x4e, /* 2: DA's power up, normal speed, RSTN#=0 */
+		/* 0x02, 0x6e,*/ /* quad speed */
 		0x03, 0x01, /* 3: de-emphasis off */
 		0x04, 0x00, /* 4: LOUT1 volume muted */
 		0x05, 0x00, /* 5: ROUT1 volume muted */
@@ -370,6 +372,8 @@ static int put_ak_reg(struct snd_kcontrol *kcontrol, int addr,
 		nval = mask - nval;
 	if (AK_GET_NEEDSMSB(kcontrol->private_value))
 		nval |= 0x80;
+	/* printk(KERN_DEBUG "DEBUG - AK writing reg: chip %x addr %x,
+	   nval %x\n", chip, addr, nval); */
 	snd_akm4xxx_write(ak, chip, addr, nval);
 	return 1;
 }
@@ -377,8 +381,11 @@ static int put_ak_reg(struct snd_kcontrol *kcontrol, int addr,
 static int snd_akm4xxx_volume_put(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_value *ucontrol)
 {
-	return put_ak_reg(kcontrol, AK_GET_ADDR(kcontrol->private_value),
-			  ucontrol->value.integer.value[0]);
+	unsigned int mask = AK_GET_MASK(kcontrol->private_value);
+	unsigned int val = ucontrol->value.integer.value[0];
+	if (val > mask)
+		return -EINVAL;
+	return put_ak_reg(kcontrol, AK_GET_ADDR(kcontrol->private_value), val);
 }
 
 static int snd_akm4xxx_stereo_volume_info(struct snd_kcontrol *kcontrol,
@@ -409,11 +416,16 @@ static int snd_akm4xxx_stereo_volume_put(struct snd_kcontrol *kcontrol,
 					 struct snd_ctl_elem_value *ucontrol)
 {
 	int addr = AK_GET_ADDR(kcontrol->private_value);
+	unsigned int mask = AK_GET_MASK(kcontrol->private_value);
+	unsigned int val[2];
 	int change;
 
-	change = put_ak_reg(kcontrol, addr, ucontrol->value.integer.value[0]);
-	change |= put_ak_reg(kcontrol, addr + 1,
-			     ucontrol->value.integer.value[1]);
+	val[0] = ucontrol->value.integer.value[0];
+	val[1] = ucontrol->value.integer.value[1];
+	if (val[0] > mask || val[1] > mask)
+		return -EINVAL;
+	change = put_ak_reg(kcontrol, addr, val[0]);
+	change |= put_ak_reg(kcontrol, addr + 1, val[1]);
 	return change;
 }
 
@@ -508,6 +520,18 @@ static int ak4xxx_switch_put(struct snd_kcontrol *kcontrol,
 
 #define AK5365_NUM_INPUTS 5
 
+static int ak4xxx_capture_num_inputs(struct snd_akm4xxx *ak, int mixer_ch)
+{
+	int num_names;
+	const char **input_names;
+
+	input_names = ak->adc_info[mixer_ch].input_names;
+	num_names = 0;
+	while (num_names < AK5365_NUM_INPUTS && input_names[num_names])
+		++num_names;
+	return num_names;
+}
+
 static int ak4xxx_capture_source_info(struct snd_kcontrol *kcontrol,
 				      struct snd_ctl_elem_info *uinfo)
 {
@@ -516,18 +540,16 @@ static int ak4xxx_capture_source_info(struct snd_kcontrol *kcontrol,
 	const char **input_names;
 	int  num_names, idx;
 
-	input_names = ak->adc_info[mixer_ch].input_names;
-
-	num_names = 0;
-	while (num_names < AK5365_NUM_INPUTS && input_names[num_names])
-		++num_names;
-	
+	num_names = ak4xxx_capture_num_inputs(ak, mixer_ch);
+	if (!num_names)
+		return -EINVAL;
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
 	uinfo->count = 1;
 	uinfo->value.enumerated.items = num_names;
 	idx = uinfo->value.enumerated.item;
 	if (idx >= num_names)
 		return -EINVAL;
+	input_names = ak->adc_info[mixer_ch].input_names;
 	strncpy(uinfo->value.enumerated.name, input_names[idx],
 		sizeof(uinfo->value.enumerated.name));
 	return 0;
@@ -551,10 +573,15 @@ static int ak4xxx_capture_source_put(struct snd_kcontrol *kcontrol,
 				     struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_akm4xxx *ak = snd_kcontrol_chip(kcontrol);
+	int mixer_ch = AK_GET_SHIFT(kcontrol->private_value);
 	int chip = AK_GET_CHIP(kcontrol->private_value);
 	int addr = AK_GET_ADDR(kcontrol->private_value);
 	int mask = AK_GET_MASK(kcontrol->private_value);
 	unsigned char oval, val;
+	int num_names = ak4xxx_capture_num_inputs(ak, mixer_ch);
+
+	if (ucontrol->value.enumerated.item[0] >= num_names)
+		return -EINVAL;
 
 	oval = snd_akm4xxx_get(ak, chip, addr);
 	val = oval & ~mask;

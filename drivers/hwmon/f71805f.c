@@ -39,7 +39,12 @@
 #include <linux/mutex.h>
 #include <linux/sysfs.h>
 #include <linux/ioport.h>
+#include <linux/acpi.h>
 #include <asm/io.h>
+
+static unsigned short force_id;
+module_param(force_id, ushort, 0);
+MODULE_PARM_DESC(force_id, "Override the detected device ID");
 
 static struct platform_device *pdev;
 
@@ -1451,6 +1456,10 @@ static int __init f71805f_device_add(unsigned short address,
 	}
 
 	res.name = pdev->name;
+	err = acpi_check_resource_conflict(&res);
+	if (err)
+		goto exit_device_put;
+
 	err = platform_device_add_resources(pdev, &res, 1);
 	if (err) {
 		printk(KERN_ERR DRVNAME ": Device resource addition failed "
@@ -1497,7 +1506,7 @@ static int __init f71805f_find(int sioaddr, unsigned short *address,
 	if (devid != SIO_FINTEK_ID)
 		goto exit;
 
-	devid = superio_inw(sioaddr, SIO_REG_DEVID);
+	devid = force_id ? force_id : superio_inw(sioaddr, SIO_REG_DEVID);
 	switch (devid) {
 	case SIO_F71805F_ID:
 		sio_data->kind = f71805f;

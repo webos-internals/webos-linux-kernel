@@ -24,13 +24,10 @@
 #include <linux/reboot.h>
 
 #include <asm/firmware.h>
+#include <asm/lv1call.h>
 #include <asm/ps3.h>
 
 #include "vuart.h"
-
-MODULE_AUTHOR("Sony Corporation");
-MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("PS3 System Manager");
 
 /**
  * ps3_sys_manager - PS3 system manager driver.
@@ -142,9 +139,11 @@ enum ps3_sys_manager_attr {
 
 /**
  * enum ps3_sys_manager_event - External event type, reported by system manager.
- * @PS3_SM_EVENT_POWER_PRESSED: payload.value not used.
+ * @PS3_SM_EVENT_POWER_PRESSED: payload.value =
+ *  enum ps3_sys_manager_button_event.
  * @PS3_SM_EVENT_POWER_RELEASED: payload.value = time pressed in millisec.
- * @PS3_SM_EVENT_RESET_PRESSED: payload.value not used.
+ * @PS3_SM_EVENT_RESET_PRESSED: payload.value =
+ *  enum ps3_sys_manager_button_event.
  * @PS3_SM_EVENT_RESET_RELEASED: payload.value = time pressed in millisec.
  * @PS3_SM_EVENT_THERMAL_ALERT: payload.value = thermal zone id.
  * @PS3_SM_EVENT_THERMAL_CLEARED: payload.value = thermal zone id.
@@ -162,6 +161,17 @@ enum ps3_sys_manager_event {
 };
 
 /**
+ * enum ps3_sys_manager_button_event - Button event payload values.
+ * @PS3_SM_BUTTON_EVENT_HARD: Hardware generated event.
+ * @PS3_SM_BUTTON_EVENT_SOFT: Software generated event.
+ */
+
+enum ps3_sys_manager_button_event {
+	PS3_SM_BUTTON_EVENT_HARD = 0,
+	PS3_SM_BUTTON_EVENT_SOFT = 1,
+};
+
+/**
  * enum ps3_sys_manager_next_op - Operation to perform after lpar is destroyed.
  */
 
@@ -174,23 +184,30 @@ enum ps3_sys_manager_next_op {
 
 /**
  * enum ps3_sys_manager_wake_source - Next-op wakeup source (bit position mask).
- * @PS3_SM_WAKE_DEFAULT: Disk insert, power button, eject button, IR
- * controller, and bluetooth controller.
- * @PS3_SM_WAKE_RTC:
- * @PS3_SM_WAKE_RTC_ERROR:
+ * @PS3_SM_WAKE_DEFAULT: Disk insert, power button, eject button.
+ * @PS3_SM_WAKE_W_O_L: Ether or wireless LAN.
  * @PS3_SM_WAKE_P_O_R: Power on reset.
  *
  * Additional wakeup sources when specifying PS3_SM_NEXT_OP_SYS_SHUTDOWN.
- * System will always wake from the PS3_SM_WAKE_DEFAULT sources.
+ * The system will always wake from the PS3_SM_WAKE_DEFAULT sources.
+ * Sources listed here are the only ones available to guests in the
+ * other-os lpar.
  */
 
 enum ps3_sys_manager_wake_source {
 	/* version 3 */
 	PS3_SM_WAKE_DEFAULT   = 0,
-	PS3_SM_WAKE_RTC       = 0x00000040,
-	PS3_SM_WAKE_RTC_ERROR = 0x00000080,
-	PS3_SM_WAKE_P_O_R     = 0x10000000,
+	PS3_SM_WAKE_W_O_L     = 0x00000400,
+	PS3_SM_WAKE_P_O_R     = 0x80000000,
 };
+
+/**
+ * user_wake_sources - User specified wakeup sources.
+ *
+ * Logical OR of enum ps3_sys_manager_wake_source types.
+ */
+
+static u32 user_wake_sources = PS3_SM_WAKE_DEFAULT;
 
 /**
  * enum ps3_sys_manager_cmd - Command from system manager to guest.
@@ -418,8 +435,10 @@ static int ps3_sys_manager_handle_event(struct ps3_system_bus_device *dev)
 
 	switch (event.type) {
 	case PS3_SM_EVENT_POWER_PRESSED:
-		dev_dbg(&dev->core, "%s:%d: POWER_PRESSED\n",
-			__func__, __LINE__);
+		dev_dbg(&dev->core, "%s:%d: POWER_PRESSED (%s)\n",
+			__func__, __LINE__,
+			(event.value == PS3_SM_BUTTON_EVENT_SOFT ? "soft"
+			: "hard"));
 		ps3_sm_force_power_off = 1;
 		/*
 		 * A memory barrier is use here to sync memory since
@@ -434,8 +453,10 @@ static int ps3_sys_manager_handle_event(struct ps3_system_bus_device *dev)
 			__func__, __LINE__, event.value);
 		break;
 	case PS3_SM_EVENT_RESET_PRESSED:
-		dev_dbg(&dev->core, "%s:%d: RESET_PRESSED\n",
-			__func__, __LINE__);
+		dev_dbg(&dev->core, "%s:%d: RESET_PRESSED (%s)\n",
+			__func__, __LINE__,
+			(event.value == PS3_SM_BUTTON_EVENT_SOFT ? "soft"
+			: "hard"));
 		ps3_sm_force_power_off = 0;
 		/*
 		 * A memory barrier is use here to sync memory since
@@ -452,7 +473,7 @@ static int ps3_sys_manager_handle_event(struct ps3_system_bus_device *dev)
 	case PS3_SM_EVENT_THERMAL_ALERT:
 		dev_dbg(&dev->core, "%s:%d: THERMAL_ALERT (zone %u)\n",
 			__func__, __LINE__, event.value);
-		printk(KERN_INFO "PS3 Thermal Alert Zone %u\n", event.value);
+		pr_info("PS3 Thermal Alert Zone %u\n", event.value);
 		break;
 	case PS3_SM_EVENT_THERMAL_CLEARED:
 		dev_dbg(&dev->core, "%s:%d: THERMAL_CLEARED (zone %u)\n",
@@ -488,7 +509,7 @@ static int ps3_sys_manager_handle_cmd(struct ps3_system_bus_device *dev)
 	result = ps3_vuart_read(dev, &cmd, sizeof(cmd));
 	BUG_ON(result && "need to retry here");
 
-	if(result)
+	if (result)
 		return result;
 
 	if (cmd.version != 1) {
@@ -521,7 +542,7 @@ static int ps3_sys_manager_handle_msg(struct ps3_system_bus_device *dev)
 	result = ps3_vuart_read(dev, &header,
 		sizeof(struct ps3_sys_manager_header));
 
-	if(result)
+	if (result)
 		return result;
 
 	if (header.version != 1) {
@@ -566,6 +587,23 @@ fail_id:
 	return -EIO;
 }
 
+static void ps3_sys_manager_fin(struct ps3_system_bus_device *dev)
+{
+	ps3_sys_manager_send_request_shutdown(dev);
+
+	pr_emerg("System Halted, OK to turn off power\n");
+
+	while (ps3_sys_manager_handle_msg(dev)) {
+		/* pause until next DEC interrupt */
+		lv1_pause(0);
+	}
+
+	while (1) {
+		/* pause, ignoring DEC interrupt */
+		lv1_pause(1);
+	}
+}
+
 /**
  * ps3_sys_manager_final_power_off - The final platform machine_power_off routine.
  *
@@ -586,13 +624,9 @@ static void ps3_sys_manager_final_power_off(struct ps3_system_bus_device *dev)
 	ps3_vuart_cancel_async(dev);
 
 	ps3_sys_manager_send_next_op(dev, PS3_SM_NEXT_OP_SYS_SHUTDOWN,
-		PS3_SM_WAKE_DEFAULT);
-	ps3_sys_manager_send_request_shutdown(dev);
+		user_wake_sources);
 
-	printk(KERN_EMERG "System Halted, OK to turn off power\n");
-
-	while(1)
-		ps3_sys_manager_handle_msg(dev);
+	ps3_sys_manager_fin(dev);
 }
 
 /**
@@ -622,15 +656,43 @@ static void ps3_sys_manager_final_restart(struct ps3_system_bus_device *dev)
 	ps3_vuart_cancel_async(dev);
 
 	ps3_sys_manager_send_attr(dev, 0);
-	ps3_sys_manager_send_next_op(dev, PS3_SM_NEXT_OP_LPAR_REBOOT,
-		PS3_SM_WAKE_DEFAULT);
-	ps3_sys_manager_send_request_shutdown(dev);
+	ps3_sys_manager_send_next_op(dev, PS3_SM_NEXT_OP_SYS_REBOOT,
+		user_wake_sources);
 
-	printk(KERN_EMERG "System Halted, OK to turn off power\n");
-
-	while(1)
-		ps3_sys_manager_handle_msg(dev);
+	ps3_sys_manager_fin(dev);
 }
+
+/**
+ * ps3_sys_manager_get_wol - Get wake-on-lan setting.
+ */
+
+int ps3_sys_manager_get_wol(void)
+{
+	pr_debug("%s:%d\n", __func__, __LINE__);
+
+	return (user_wake_sources & PS3_SM_WAKE_W_O_L) != 0;
+}
+EXPORT_SYMBOL_GPL(ps3_sys_manager_get_wol);
+
+/**
+ * ps3_sys_manager_set_wol - Set wake-on-lan setting.
+ */
+
+void ps3_sys_manager_set_wol(int state)
+{
+	static DEFINE_MUTEX(mutex);
+
+	mutex_lock(&mutex);
+
+	pr_debug("%s:%d: %d\n", __func__, __LINE__, state);
+
+	if (state)
+		user_wake_sources |= PS3_SM_WAKE_W_O_L;
+	else
+		user_wake_sources &= ~PS3_SM_WAKE_W_O_L;
+	mutex_unlock(&mutex);
+}
+EXPORT_SYMBOL_GPL(ps3_sys_manager_set_wol);
 
 /**
  * ps3_sys_manager_work - Asynchronous read handler.
@@ -699,4 +761,7 @@ static int __init ps3_sys_manager_init(void)
 module_init(ps3_sys_manager_init);
 /* Module remove not supported. */
 
+MODULE_AUTHOR("Sony Corporation");
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("PS3 System Manager");
 MODULE_ALIAS(PS3_MODULE_ALIAS_SYSTEM_MANAGER);

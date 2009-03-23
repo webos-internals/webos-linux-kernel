@@ -281,7 +281,7 @@
 #define XMAC_ADDR1			0x000a8UL
 #define  XMAC_ADDR1_ADDR1		0x000000000000ffffULL
 
-#define XMAC_ADDR2			0x000b0UL 
+#define XMAC_ADDR2			0x000b0UL
 #define  XMAC_ADDR2_ADDR2		0x000000000000ffffULL
 
 #define XMAC_ADDR_CMPEN			0x00208UL
@@ -499,7 +499,7 @@
 #define BMAC_ADDR2			0x00110UL
 #define  BMAC_ADDR2_ADDR2		0x000000000000ffffULL
 
-#define BMAC_NUM_ALT_ADDR		7
+#define BMAC_NUM_ALT_ADDR		6
 
 #define BMAC_ALT_ADDR0(NUM)		(0x00118UL + (NUM)*0x18UL)
 #define  BMAC_ALT_ADDR0_ADDR0		0x000000000000ffffULL
@@ -1048,6 +1048,13 @@
 #define  PLL_CFG_LD_SHIFT		8
 #define  PLL_CFG_MPY			0x0000001e
 #define  PLL_CFG_MPY_SHIFT		1
+#define  PLL_CFG_MPY_4X		0x0
+#define  PLL_CFG_MPY_5X		0x00000002
+#define  PLL_CFG_MPY_6X		0x00000004
+#define  PLL_CFG_MPY_8X		0x00000008
+#define  PLL_CFG_MPY_10X		0x0000000a
+#define  PLL_CFG_MPY_12X		0x0000000c
+#define  PLL_CFG_MPY_12P5X		0x0000000e
 #define  PLL_CFG_ENPLL			0x00000001
 
 #define ESR2_TI_PLL_STS_L		(ESR2_BASE + 0x002)
@@ -1093,6 +1100,9 @@
 #define  PLL_TX_CFG_INVPAIR		0x00000080
 #define  PLL_TX_CFG_RATE		0x00000060
 #define  PLL_TX_CFG_RATE_SHIFT		5
+#define  PLL_TX_CFG_RATE_FULL		0x0
+#define  PLL_TX_CFG_RATE_HALF		0x20
+#define  PLL_TX_CFG_RATE_QUAD		0x40
 #define  PLL_TX_CFG_BUSWIDTH		0x0000001c
 #define  PLL_TX_CFG_BUSWIDTH_SHIFT	2
 #define  PLL_TX_CFG_ENTEST		0x00000002
@@ -1132,6 +1142,9 @@
 #define  PLL_RX_CFG_INVPAIR		0x00000080
 #define  PLL_RX_CFG_RATE		0x00000060
 #define  PLL_RX_CFG_RATE_SHIFT		5
+#define  PLL_RX_CFG_RATE_FULL		0x0
+#define  PLL_RX_CFG_RATE_HALF		0x20
+#define  PLL_RX_CFG_RATE_QUAD		0x40
 #define  PLL_RX_CFG_BUSWIDTH		0x0000001c
 #define  PLL_RX_CFG_BUSWIDTH_SHIFT	2
 #define  PLL_RX_CFG_ENTEST		0x00000002
@@ -2537,6 +2550,7 @@ struct fcram_hash_ipv6 {
 
 #define NIU_PHY_ID_MASK			0xfffff0f0
 #define NIU_PHY_ID_BCM8704		0x00206030
+#define NIU_PHY_ID_BCM8706		0x00206035
 #define NIU_PHY_ID_BCM5464R		0x002060b0
 #define NIU_PHY_ID_MRVL88X2011		0x01410020
 
@@ -2937,6 +2951,24 @@ struct rx_ring_info {
 
 #define NIU_MAX_MTU		9216
 
+/* VPD strings */
+#define	NIU_QGC_LP_BM_STR	"501-7606"
+#define	NIU_2XGF_LP_BM_STR	"501-7283"
+#define	NIU_QGC_PEM_BM_STR	"501-7765"
+#define	NIU_2XGF_PEM_BM_STR	"501-7626"
+#define	NIU_ALONSO_BM_STR	"373-0202"
+#define	NIU_FOXXY_BM_STR	"501-7961"
+#define	NIU_2XGF_MRVL_BM_STR	"SK-6E82"
+#define	NIU_QGC_LP_MDL_STR	"SUNW,pcie-qgc"
+#define	NIU_2XGF_LP_MDL_STR	"SUNW,pcie-2xgf"
+#define	NIU_QGC_PEM_MDL_STR	"SUNW,pcie-qgc-pem"
+#define	NIU_2XGF_PEM_MDL_STR	"SUNW,pcie-2xgf-pem"
+#define	NIU_ALONSO_MDL_STR	"SUNW,CP3220"
+#define	NIU_KIMI_MDL_STR	"SUNW,CP3260"
+#define	NIU_MARAMBA_MDL_STR	"SUNW,pcie-neptune"
+#define	NIU_FOXXY_MDL_STR	"SUNW,pcie-rfem"
+#define	NIU_2XGF_MRVL_MDL_STR	"SysKonnect,pcie-2xgf"
+
 #define NIU_VPD_MIN_MAJOR	3
 #define NIU_VPD_MIN_MINOR	4
 
@@ -3061,6 +3093,7 @@ struct niu_parent {
 #define PLAT_TYPE_NIU		0x02
 #define PLAT_TYPE_VF_P0		0x03
 #define PLAT_TYPE_VF_P1		0x04
+#define PLAT_TYPE_ATCA_CP3220	0x08
 
 	u8			num_ports;
 
@@ -3198,21 +3231,24 @@ struct niu {
 	struct niu_parent		*parent;
 
 	u32				flags;
+#define NIU_FLAGS_HOTPLUG_PHY_PRESENT	0x02000000 /* Removebale PHY detected*/
+#define NIU_FLAGS_HOTPLUG_PHY		0x01000000 /* Removebale PHY */
+#define NIU_FLAGS_VPD_VALID		0x00800000 /* VPD has valid version */
 #define NIU_FLAGS_MSIX			0x00400000 /* MSI-X in use */
 #define NIU_FLAGS_MCAST			0x00200000 /* multicast filter enabled */
 #define NIU_FLAGS_PROMISC		0x00100000 /* PROMISC enabled */
-#define NIU_FLAGS_VPD_VALID		0x00080000 /* VPD has valid version */
+#define NIU_FLAGS_XCVR_SERDES		0x00080000 /* 0=PHY 1=SERDES */
 #define NIU_FLAGS_10G			0x00040000 /* 0=1G 1=10G */
 #define NIU_FLAGS_FIBER			0x00020000 /* 0=COPPER 1=FIBER */
 #define NIU_FLAGS_XMAC			0x00010000 /* 0=BMAC 1=XMAC */
 
 	u32				msg_enable;
+	char                            irq_name[NIU_NUM_RXCHAN+NIU_NUM_TXCHAN+3][IFNAMSIZ + 6];
 
 	/* Protects hw programming, and ring state.  */
 	spinlock_t			lock;
 
 	const struct niu_ops		*ops;
-	struct net_device_stats		net_stats;
 	union niu_mac_stats		mac_stats;
 
 	struct rx_ring_info		*rx_rings;

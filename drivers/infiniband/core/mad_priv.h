@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mad_priv.h 5596 2006-03-03 01:00:07Z sean.hefty $
  */
 
 #ifndef __IB_MAD_PRIV_H__
@@ -131,7 +129,8 @@ struct ib_mad_send_wr_private {
 	struct ib_sge sg_list[IB_MAD_SEND_REQ_MAX_SG];
 	__be64 tid;
 	unsigned long timeout;
-	int retries;
+	int max_retries;
+	int retries_left;
 	int retry;
 	int refcount;
 	enum ib_wc_status status;

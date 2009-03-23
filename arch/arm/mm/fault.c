@@ -11,14 +11,40 @@
 #include <linux/module.h>
 #include <linux/signal.h>
 #include <linux/mm.h>
+#include <linux/hardirq.h>
 #include <linux/init.h>
+#include <linux/kprobes.h>
+#include <linux/uaccess.h>
+#include <linux/page-flags.h>
 
 #include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
-#include <asm/uaccess.h>
 
 #include "fault.h"
+
+
+#ifdef CONFIG_KPROBES
+static inline int notify_page_fault(struct pt_regs *regs, unsigned int fsr)
+{
+	int ret = 0;
+
+	if (!user_mode(regs)) {
+		/* kprobe_running() needs smp_processor_id() */
+		preempt_disable();
+		if (kprobe_running() && kprobe_fault_handler(regs, fsr))
+			ret = 1;
+		preempt_enable();
+	}
+
+	return ret;
+}
+#else
+static inline int notify_page_fault(struct pt_regs *regs, unsigned int fsr)
+{
+	return 0;
+}
+#endif
 
 /*
  * This is useful to dump out the page tables associated with
@@ -48,9 +74,8 @@ void show_pte(struct mm_struct *mm, unsigned long addr)
 		}
 
 		pmd = pmd_offset(pgd, addr);
-#if PTRS_PER_PMD != 1
-		printk(", *pmd=%08lx", pmd_val(*pmd));
-#endif
+		if (PTRS_PER_PMD != 1)
+			printk(", *pmd=%08lx", pmd_val(*pmd));
 
 		if (pmd_none(*pmd))
 			break;
@@ -60,13 +85,14 @@ void show_pte(struct mm_struct *mm, unsigned long addr)
 			break;
 		}
 
-#ifndef CONFIG_HIGHMEM
 		/* We must not map this if we have highmem enabled */
+		if (PageHighMem(pfn_to_page(pmd_val(*pmd) >> PAGE_SHIFT)))
+			break;
+
 		pte = pte_offset_map(pmd, addr);
 		printk(", *pte=%08lx", pte_val(*pte));
 		printk(", *ppte=%08lx", pte_val(pte[-PTRS_PER_PTE]));
 		pte_unmap(pte);
-#endif
 	} while(0);
 
 	printk("\n");
@@ -215,12 +241,15 @@ out:
 	return fault;
 }
 
-static int
+static int __kprobes
 do_page_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 {
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	int fault, sig, code;
+
+	if (notify_page_fault(regs, fsr))
+		return 0;
 
 	tsk = current;
 	mm  = tsk->mm;
@@ -311,7 +340,7 @@ no_context:
  * interrupt or a critical region, and should only copy the information
  * from the master page table, nothing more.
  */
-static int
+static int __kprobes
 do_translation_fault(unsigned long addr, unsigned int fsr,
 		     struct pt_regs *regs)
 {

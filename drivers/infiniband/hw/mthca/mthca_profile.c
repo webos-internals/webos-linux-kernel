@@ -29,8 +29,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_profile.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/module.h>
@@ -63,7 +61,7 @@ enum {
 	MTHCA_NUM_PDS = 1 << 15
 };
 
-u64 mthca_make_profile(struct mthca_dev *dev,
+s64 mthca_make_profile(struct mthca_dev *dev,
 		       struct mthca_profile *request,
 		       struct mthca_dev_lim *dev_lim,
 		       struct mthca_init_hca_param *init_hca)
@@ -77,7 +75,7 @@ u64 mthca_make_profile(struct mthca_dev *dev,
 	};
 
 	u64 mem_base, mem_avail;
-	u64 total_size = 0;
+	s64 total_size = 0;
 	struct mthca_resource *profile;
 	struct mthca_resource tmp;
 	int i, j;

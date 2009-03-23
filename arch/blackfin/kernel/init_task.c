@@ -33,8 +33,6 @@
 #include <linux/mqueue.h>
 #include <linux/fs.h>
 
-static struct fs_struct init_fs = INIT_FS;
-static struct files_struct init_files = INIT_FILES;
 static struct signal_struct init_signals = INIT_SIGNALS(init_signals);
 static struct sighand_struct init_sighand = INIT_SIGHAND(init_sighand);
 
@@ -57,5 +55,5 @@ EXPORT_SYMBOL(init_task);
  * "init_task" linker map entry.
  */
 union thread_union init_thread_union
-    __attribute__ ((__section__(".data.init_task"))) = {
+    __attribute__ ((__section__(".init_task.data"))) = {
 INIT_THREAD_INFO(init_task)};

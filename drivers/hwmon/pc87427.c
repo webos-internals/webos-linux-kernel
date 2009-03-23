@@ -32,7 +32,12 @@
 #include <linux/mutex.h>
 #include <linux/sysfs.h>
 #include <linux/ioport.h>
+#include <linux/acpi.h>
 #include <asm/io.h>
+
+static unsigned short force_id;
+module_param(force_id, ushort, 0);
+MODULE_PARM_DESC(force_id, "Override the detected device ID");
 
 static struct platform_device *pdev;
 
@@ -520,6 +525,10 @@ static int __init pc87427_device_add(unsigned short address)
 	};
 	int err;
 
+	err = acpi_check_resource_conflict(&res);
+	if (err)
+		goto exit;
+
 	pdev = platform_device_alloc(DRVNAME, address);
 	if (!pdev) {
 		err = -ENOMEM;
@@ -555,7 +564,7 @@ static int __init pc87427_find(int sioaddr, unsigned short *address)
 	int i, err = 0;
 
 	/* Identify device */
-	val = superio_inb(sioaddr, SIOREG_DEVID);
+	val = force_id ? force_id : superio_inb(sioaddr, SIOREG_DEVID);
 	if (val != 0xf2) {	/* PC87427 */
 		err = -ENODEV;
 		goto exit;

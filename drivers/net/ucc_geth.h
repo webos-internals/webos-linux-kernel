@@ -162,92 +162,27 @@ struct ucc_geth {
 								   boundary */
 
 /* UCC GETH Event Register */
-#define UCCE_MPD                                0x80000000	/* Magic packet
-								   detection */
-#define UCCE_SCAR                               0x40000000
-#define UCCE_GRA                                0x20000000	/* Tx graceful
-								   stop
-								   complete */
-#define UCCE_CBPR                               0x10000000
-#define UCCE_BSY                                0x08000000
-#define UCCE_RXC                                0x04000000
-#define UCCE_TXC                                0x02000000
-#define UCCE_TXE                                0x01000000
-#define UCCE_TXB7                               0x00800000
-#define UCCE_TXB6                               0x00400000
-#define UCCE_TXB5                               0x00200000
-#define UCCE_TXB4                               0x00100000
-#define UCCE_TXB3                               0x00080000
-#define UCCE_TXB2                               0x00040000
-#define UCCE_TXB1                               0x00020000
-#define UCCE_TXB0                               0x00010000
-#define UCCE_RXB7                               0x00008000
-#define UCCE_RXB6                               0x00004000
-#define UCCE_RXB5                               0x00002000
-#define UCCE_RXB4                               0x00001000
-#define UCCE_RXB3                               0x00000800
-#define UCCE_RXB2                               0x00000400
-#define UCCE_RXB1                               0x00000200
-#define UCCE_RXB0                               0x00000100
-#define UCCE_RXF7                               0x00000080
-#define UCCE_RXF6                               0x00000040
-#define UCCE_RXF5                               0x00000020
-#define UCCE_RXF4                               0x00000010
-#define UCCE_RXF3                               0x00000008
-#define UCCE_RXF2                               0x00000004
-#define UCCE_RXF1                               0x00000002
-#define UCCE_RXF0                               0x00000001
+#define UCCE_TXB   (UCC_GETH_UCCE_TXB7 | UCC_GETH_UCCE_TXB6 | \
+		    UCC_GETH_UCCE_TXB5 | UCC_GETH_UCCE_TXB4 | \
+		    UCC_GETH_UCCE_TXB3 | UCC_GETH_UCCE_TXB2 | \
+		    UCC_GETH_UCCE_TXB1 | UCC_GETH_UCCE_TXB0)
 
-#define UCCE_RXBF_SINGLE_MASK                   (UCCE_RXF0)
-#define UCCE_TXBF_SINGLE_MASK                   (UCCE_TXB0)
+#define UCCE_RXB   (UCC_GETH_UCCE_RXB7 | UCC_GETH_UCCE_RXB6 | \
+		    UCC_GETH_UCCE_RXB5 | UCC_GETH_UCCE_RXB4 | \
+		    UCC_GETH_UCCE_RXB3 | UCC_GETH_UCCE_RXB2 | \
+		    UCC_GETH_UCCE_RXB1 | UCC_GETH_UCCE_RXB0)
 
-#define UCCE_TXB         (UCCE_TXB7 | UCCE_TXB6 | UCCE_TXB5 | UCCE_TXB4 |\
-			UCCE_TXB3 | UCCE_TXB2 | UCCE_TXB1 | UCCE_TXB0)
-#define UCCE_RXB         (UCCE_RXB7 | UCCE_RXB6 | UCCE_RXB5 | UCCE_RXB4 |\
-			UCCE_RXB3 | UCCE_RXB2 | UCCE_RXB1 | UCCE_RXB0)
-#define UCCE_RXF         (UCCE_RXF7 | UCCE_RXF6 | UCCE_RXF5 | UCCE_RXF4 |\
-			UCCE_RXF3 | UCCE_RXF2 | UCCE_RXF1 | UCCE_RXF0)
-#define UCCE_OTHER       (UCCE_SCAR | UCCE_GRA  | UCCE_CBPR | UCCE_BSY  |\
-			UCCE_RXC  | UCCE_TXC  | UCCE_TXE)
+#define UCCE_RXF   (UCC_GETH_UCCE_RXF7 | UCC_GETH_UCCE_RXF6 | \
+		    UCC_GETH_UCCE_RXF5 | UCC_GETH_UCCE_RXF4 | \
+		    UCC_GETH_UCCE_RXF3 | UCC_GETH_UCCE_RXF2 | \
+		    UCC_GETH_UCCE_RXF1 | UCC_GETH_UCCE_RXF0)
 
-#define UCCE_RX_EVENTS							(UCCE_RXF | UCCE_BSY)
-#define UCCE_TX_EVENTS							(UCCE_TXB | UCCE_TXE)
+#define UCCE_OTHER (UCC_GETH_UCCE_SCAR | UCC_GETH_UCCE_GRA | \
+		    UCC_GETH_UCCE_CBPR | UCC_GETH_UCCE_BSY | \
+		    UCC_GETH_UCCE_RXC  | UCC_GETH_UCCE_TXC | UCC_GETH_UCCE_TXE)
 
-/* UCC GETH UPSMR (Protocol Specific Mode Register) */
-#define UPSMR_ECM                               0x04000000	/* Enable CAM
-								   Miss or
-								   Enable
-								   Filtering
-								   Miss */
-#define UPSMR_HSE                               0x02000000	/* Hardware
-								   Statistics
-								   Enable */
-#define UPSMR_PRO                               0x00400000	/* Promiscuous*/
-#define UPSMR_CAP                               0x00200000	/* CAM polarity
-								 */
-#define UPSMR_RSH                               0x00100000	/* Receive
-								   Short Frames
-								 */
-#define UPSMR_RPM                               0x00080000	/* Reduced Pin
-								   Mode
-								   interfaces */
-#define UPSMR_R10M                              0x00040000	/* RGMII/RMII
-								   10 Mode */
-#define UPSMR_RLPB                              0x00020000	/* RMII
-								   Loopback
-								   Mode */
-#define UPSMR_TBIM                              0x00010000	/* Ten-bit
-								   Interface
-								   Mode */
-#define UPSMR_RMM                               0x00001000	/* RMII/RGMII
-								   Mode */
-#define UPSMR_CAM                               0x00000400	/* CAM Address
-								   Matching */
-#define UPSMR_BRO                               0x00000200	/* Broadcast
-								   Address */
-#define UPSMR_RES1                              0x00002000	/* Reserved
-								   feild - must
-								   be 1 */
+#define UCCE_RX_EVENTS  (UCCE_RXF | UCC_GETH_UCCE_BSY)
+#define UCCE_TX_EVENTS	(UCCE_TXB | UCC_GETH_UCCE_TXE)
 
 /* UCC GETH MACCFG1 (MAC Configuration 1 Register) */
 #define MACCFG1_FLOW_RX                         0x00000020	/* Flow Control
@@ -700,8 +635,8 @@ struct ucc_geth_82xx_address_filtering_pram {
 	u32 iaddr_l;		/* individual address filter, low */
 	u32 gaddr_h;		/* group address filter, high */
 	u32 gaddr_l;		/* group address filter, low */
-	struct ucc_geth_82xx_enet_address taddr;
-	struct ucc_geth_82xx_enet_address paddr[NUM_OF_PADDRS];
+	struct ucc_geth_82xx_enet_address __iomem taddr;
+	struct ucc_geth_82xx_enet_address __iomem paddr[NUM_OF_PADDRS];
 	u8 res0[0x40 - 0x38];
 } __attribute__ ((packed));
 
@@ -945,9 +880,10 @@ struct ucc_geth_hardware_statistics {
 #define UCC_GETH_REMODER_INIT                   0	/* bits that must be
 							   set */
 #define UCC_GETH_TEMODER_INIT                   0xC000	/* bits that must */
-#define UCC_GETH_UPSMR_INIT                     (UPSMR_RES1)	/* Start value
-								   for this
-								   register */
+
+/* Initial value for UPSMR */
+#define UCC_GETH_UPSMR_INIT                     UCC_GETH_UPSMR_RES1
+
 #define UCC_GETH_MACCFG1_INIT                   0
 #define UCC_GETH_MACCFG2_INIT                   (MACCFG2_RESERVED_1)
 
@@ -1155,8 +1091,7 @@ struct ucc_geth_info {
 	u32 eventRegMask;
 	u16 pausePeriod;
 	u16 extensionField;
-	u8 phy_address;
-	u32 mdio_bus;
+	char phy_bus_id[BUS_ID_SIZE];
 	u8 weightfactor[NUM_TX_QUEUES];
 	u8 interruptcoalescingmaxvalue[NUM_RX_QUEUES];
 	u8 l2qt[UCC_GETH_VLAN_PRIORITY_MAX];
@@ -1186,40 +1121,41 @@ struct ucc_geth_private {
 	struct ucc_fast_private *uccf;
 	struct net_device *dev;
 	struct napi_struct napi;
-	struct ucc_geth *ug_regs;
+	struct work_struct timeout_work;
+	struct ucc_geth __iomem *ug_regs;
 	struct ucc_geth_init_pram *p_init_enet_param_shadow;
-	struct ucc_geth_exf_global_pram *p_exf_glbl_param;
+	struct ucc_geth_exf_global_pram __iomem *p_exf_glbl_param;
 	u32 exf_glbl_param_offset;
-	struct ucc_geth_rx_global_pram *p_rx_glbl_pram;
+	struct ucc_geth_rx_global_pram __iomem *p_rx_glbl_pram;
 	u32 rx_glbl_pram_offset;
-	struct ucc_geth_tx_global_pram *p_tx_glbl_pram;
+	struct ucc_geth_tx_global_pram __iomem *p_tx_glbl_pram;
 	u32 tx_glbl_pram_offset;
-	struct ucc_geth_send_queue_mem_region *p_send_q_mem_reg;
+	struct ucc_geth_send_queue_mem_region __iomem *p_send_q_mem_reg;
 	u32 send_q_mem_reg_offset;
-	struct ucc_geth_thread_data_tx *p_thread_data_tx;
+	struct ucc_geth_thread_data_tx __iomem *p_thread_data_tx;
 	u32 thread_dat_tx_offset;
-	struct ucc_geth_thread_data_rx *p_thread_data_rx;
+	struct ucc_geth_thread_data_rx __iomem *p_thread_data_rx;
 	u32 thread_dat_rx_offset;
-	struct ucc_geth_scheduler *p_scheduler;
+	struct ucc_geth_scheduler __iomem *p_scheduler;
 	u32 scheduler_offset;
-	struct ucc_geth_tx_firmware_statistics_pram *p_tx_fw_statistics_pram;
+	struct ucc_geth_tx_firmware_statistics_pram __iomem *p_tx_fw_statistics_pram;
 	u32 tx_fw_statistics_pram_offset;
-	struct ucc_geth_rx_firmware_statistics_pram *p_rx_fw_statistics_pram;
+	struct ucc_geth_rx_firmware_statistics_pram __iomem *p_rx_fw_statistics_pram;
 	u32 rx_fw_statistics_pram_offset;
-	struct ucc_geth_rx_interrupt_coalescing_table *p_rx_irq_coalescing_tbl;
+	struct ucc_geth_rx_interrupt_coalescing_table __iomem *p_rx_irq_coalescing_tbl;
 	u32 rx_irq_coalescing_tbl_offset;
-	struct ucc_geth_rx_bd_queues_entry *p_rx_bd_qs_tbl;
+	struct ucc_geth_rx_bd_queues_entry __iomem *p_rx_bd_qs_tbl;
 	u32 rx_bd_qs_tbl_offset;
-	u8 *p_tx_bd_ring[NUM_TX_QUEUES];
+	u8 __iomem *p_tx_bd_ring[NUM_TX_QUEUES];
 	u32 tx_bd_ring_offset[NUM_TX_QUEUES];
-	u8 *p_rx_bd_ring[NUM_RX_QUEUES];
+	u8 __iomem *p_rx_bd_ring[NUM_RX_QUEUES];
 	u32 rx_bd_ring_offset[NUM_RX_QUEUES];
-	u8 *confBd[NUM_TX_QUEUES];
-	u8 *txBd[NUM_TX_QUEUES];
-	u8 *rxBd[NUM_RX_QUEUES];
+	u8 __iomem *confBd[NUM_TX_QUEUES];
+	u8 __iomem *txBd[NUM_TX_QUEUES];
+	u8 __iomem *rxBd[NUM_RX_QUEUES];
 	int badFrame[NUM_RX_QUEUES];
 	u16 cpucount[NUM_TX_QUEUES];
-	volatile u16 *p_cpucount[NUM_TX_QUEUES];
+	u16 __iomem *p_cpucount[NUM_TX_QUEUES];
 	int indAddrRegUsed[NUM_OF_PADDRS];
 	u8 paddr[NUM_OF_PADDRS][ENET_NUM_OCTETS_PER_ADDRESS];	/* ethernet address */
 	u8 numGroupAddrInHash;
@@ -1249,6 +1185,16 @@ struct ucc_geth_private {
 	int oldspeed;
 	int oldduplex;
 	int oldlink;
+
+	struct device_node *node;
 };
+
+void uec_set_ethtool_ops(struct net_device *netdev);
+int init_flow_control_params(u32 automatic_flow_control_mode,
+		int rx_flow_control_enable, int tx_flow_control_enable,
+		u16 pause_period, u16 extension_field,
+		u32 __iomem *upsmr_register, u32 __iomem *uempr_register,
+		u32 __iomem *maccfg1_register);
+
 
 #endif				/* __UCC_GETH_H__ */

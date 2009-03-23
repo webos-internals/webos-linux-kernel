@@ -28,8 +28,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * Version: $Id: quota.h,v 2.0 1996/11/17 16:48:14 mvw Exp mvw $
  */
 
 #ifndef _LINUX_QUOTA_
@@ -38,20 +36,7 @@
 #include <linux/errno.h>
 #include <linux/types.h>
 
-#define __DQUOT_VERSION__	"dquot_6.5.1"
-#define __DQUOT_NUM_VERSION__	6*10000+5*100+1
-
-typedef __kernel_uid32_t qid_t; /* Type in which we store ids in memory */
-typedef __u64 qsize_t;          /* Type in which we store sizes */
-
-/* Size of blocks in which are counted size limits */
-#define QUOTABLOCK_BITS 10
-#define QUOTABLOCK_SIZE (1 << QUOTABLOCK_BITS)
-
-/* Conversion routines from and to quota blocks */
-#define qb2kb(x) ((x) << (QUOTABLOCK_BITS-10))
-#define kb2qb(x) ((x) >> (QUOTABLOCK_BITS-10))
-#define toqb(x) (((x) + QUOTABLOCK_SIZE - 1) >> QUOTABLOCK_BITS)
+#define __DQUOT_VERSION__	"dquot_6.5.2"
 
 #define MAXQUOTAS 2
 #define USRQUOTA  0		/* element used for user quotas */
@@ -85,16 +70,34 @@ typedef __u64 qsize_t;          /* Type in which we store sizes */
 #define Q_GETQUOTA 0x800007	/* get user quota structure */
 #define Q_SETQUOTA 0x800008	/* set user quota structure */
 
+/* Quota format type IDs */
+#define	QFMT_VFS_OLD 1
+#define	QFMT_VFS_V0 2
+
+/* Size of block in which space limits are passed through the quota
+ * interface */
+#define QIF_DQBLKSIZE_BITS 10
+#define QIF_DQBLKSIZE (1 << QIF_DQBLKSIZE_BITS)
+
 /*
  * Quota structure used for communication with userspace via quotactl
  * Following flags are used to specify which fields are valid
  */
-#define QIF_BLIMITS	1
-#define QIF_SPACE	2
-#define QIF_ILIMITS	4
-#define QIF_INODES	8
-#define QIF_BTIME	16
-#define QIF_ITIME	32
+enum {
+	QIF_BLIMITS_B = 0,
+	QIF_SPACE_B,
+	QIF_ILIMITS_B,
+	QIF_INODES_B,
+	QIF_BTIME_B,
+	QIF_ITIME_B,
+};
+
+#define QIF_BLIMITS	(1 << QIF_BLIMITS_B)
+#define QIF_SPACE	(1 << QIF_SPACE_B)
+#define QIF_ILIMITS	(1 << QIF_ILIMITS_B)
+#define QIF_INODES	(1 << QIF_INODES_B)
+#define QIF_BTIME	(1 << QIF_BTIME_B)
+#define QIF_ITIME	(1 << QIF_ITIME_B)
 #define QIF_LIMITS	(QIF_BLIMITS | QIF_ILIMITS)
 #define QIF_USAGE	(QIF_SPACE | QIF_INODES)
 #define QIF_TIMES	(QIF_BTIME | QIF_ITIME)
@@ -138,6 +141,10 @@ struct if_dqinfo {
 #define QUOTA_NL_BHARDWARN 4		/* Block hardlimit reached */
 #define QUOTA_NL_BSOFTLONGWARN 5	/* Block grace time expired */
 #define QUOTA_NL_BSOFTWARN 6		/* Block softlimit reached */
+#define QUOTA_NL_IHARDBELOW 7		/* Usage got below inode hardlimit */
+#define QUOTA_NL_ISOFTBELOW 8		/* Usage got below inode softlimit */
+#define QUOTA_NL_BHARDBELOW 9		/* Usage got below block hardlimit */
+#define QUOTA_NL_BSOFTBELOW 10		/* Usage got below block softlimit */
 
 enum {
 	QUOTA_NL_C_UNSPEC,
@@ -160,13 +167,20 @@ enum {
 
 
 #ifdef __KERNEL__
-#include <linux/spinlock.h>
-#include <linux/rwsem.h>
+#include <linux/list.h>
 #include <linux/mutex.h>
+#include <linux/rwsem.h>
+#include <linux/spinlock.h>
+#include <linux/wait.h>
 
 #include <linux/dqblk_xfs.h>
 #include <linux/dqblk_v1.h>
 #include <linux/dqblk_v2.h>
+
+#include <asm/atomic.h>
+
+typedef __kernel_uid32_t qid_t; /* Type in which we store ids in memory */
+typedef long long qsize_t;	/* Type in which we store sizes */
 
 extern spinlock_t dq_data_lock;
 
@@ -181,12 +195,12 @@ extern spinlock_t dq_data_lock;
  * Data for one user/group kept in memory
  */
 struct mem_dqblk {
-	__u32 dqb_bhardlimit;	/* absolute limit on disk blks alloc */
-	__u32 dqb_bsoftlimit;	/* preferred limit on disk blks */
+	qsize_t dqb_bhardlimit;	/* absolute limit on disk blks alloc */
+	qsize_t dqb_bsoftlimit;	/* preferred limit on disk blks */
 	qsize_t dqb_curspace;	/* current used space */
-	__u32 dqb_ihardlimit;	/* absolute limit on allocated inodes */
-	__u32 dqb_isoftlimit;	/* preferred inode limit */
-	__u32 dqb_curinodes;	/* current # allocated inodes */
+	qsize_t dqb_ihardlimit;	/* absolute limit on allocated inodes */
+	qsize_t dqb_isoftlimit;	/* preferred inode limit */
+	qsize_t dqb_curinodes;	/* current # allocated inodes */
 	time_t dqb_btime;	/* time limit for excessive disk use */
 	time_t dqb_itime;	/* time limit for excessive inode use */
 };
@@ -198,14 +212,15 @@ struct quota_format_type;
 
 struct mem_dqinfo {
 	struct quota_format_type *dqi_format;
+	int dqi_fmt_id;		/* Id of the dqi_format - used when turning
+				 * quotas on after remount RW */
 	struct list_head dqi_dirty_list;	/* List of dirty dquots */
 	unsigned long dqi_flags;
 	unsigned int dqi_bgrace;
 	unsigned int dqi_igrace;
-	union {
-		struct v1_mem_dqinfo v1_i;
-		struct v2_mem_dqinfo v2_i;
-	} u;
+	qsize_t dqi_maxblimit;
+	qsize_t dqi_maxilimit;
+	void *dqi_priv;
 };
 
 struct super_block;
@@ -215,12 +230,10 @@ struct super_block;
 #define DQF_INFO_DIRTY (1 << DQF_INFO_DIRTY_B)	/* Is info dirty? */
 
 extern void mark_info_dirty(struct super_block *sb, int type);
-#define info_dirty(info) test_bit(DQF_INFO_DIRTY_B, &(info)->dqi_flags)
-#define info_any_dquot_dirty(info) (!list_empty(&(info)->dqi_dirty_list))
-#define info_any_dirty(info) (info_dirty(info) || info_any_dquot_dirty(info))
-
-#define sb_dqopt(sb) (&(sb)->s_dquot)
-#define sb_dqinfo(sb, type) (sb_dqopt(sb)->info+(type))
+static inline int info_dirty(struct mem_dqinfo *info)
+{
+	return test_bit(DQF_INFO_DIRTY_B, &info->dqi_flags);
+}
 
 struct dqstats {
 	int lookups;
@@ -241,6 +254,11 @@ extern struct dqstats dqstats;
 #define DQ_FAKE_B	3	/* no limits only usage */
 #define DQ_READ_B	4	/* dquot was read into memory */
 #define DQ_ACTIVE_B	5	/* dquot is active (dquot_release not called) */
+#define DQ_LASTSET_B	6	/* Following 6 bits (see QIF_) are reserved\
+				 * for the mask of entries set via SETQUOTA\
+				 * quotactl. They are set under dq_data_lock\
+				 * and the quota format handling dquot can\
+				 * clear them when it sees fit. */
 
 struct dquot {
 	struct hlist_node dq_hash;	/* Hash list in memory */
@@ -279,11 +297,13 @@ struct dquot_operations {
 	int (*initialize) (struct inode *, int);
 	int (*drop) (struct inode *);
 	int (*alloc_space) (struct inode *, qsize_t, int);
-	int (*alloc_inode) (const struct inode *, unsigned long);
+	int (*alloc_inode) (const struct inode *, qsize_t);
 	int (*free_space) (struct inode *, qsize_t);
-	int (*free_inode) (const struct inode *, unsigned long);
+	int (*free_inode) (const struct inode *, qsize_t);
 	int (*transfer) (struct inode *, struct iattr *);
 	int (*write_dquot) (struct dquot *);		/* Ordinary dquot write */
+	struct dquot *(*alloc_dquot)(struct super_block *, int);	/* Allocate memory for new dquot */
+	void (*destroy_dquot)(struct dquot *);		/* Free memory for dquot */
 	int (*acquire_dquot) (struct dquot *);		/* Quota is going to be created on disk */
 	int (*release_dquot) (struct dquot *);		/* Quota is going to be deleted from disk */
 	int (*mark_dirty) (struct dquot *);		/* Dquot is marked dirty */
@@ -292,8 +312,8 @@ struct dquot_operations {
 
 /* Operations handling requests from userspace */
 struct quotactl_ops {
-	int (*quota_on)(struct super_block *, int, int, char *);
-	int (*quota_off)(struct super_block *, int);
+	int (*quota_on)(struct super_block *, int, int, char *, int);
+	int (*quota_off)(struct super_block *, int, int);
 	int (*quota_sync)(struct super_block *, int);
 	int (*get_info)(struct super_block *, int, struct if_dqinfo *);
 	int (*set_info)(struct super_block *, int, struct if_dqinfo *);
@@ -312,8 +332,42 @@ struct quota_format_type {
 	struct quota_format_type *qf_next;
 };
 
-#define DQUOT_USR_ENABLED	0x01		/* User diskquotas enabled */
-#define DQUOT_GRP_ENABLED	0x02		/* Group diskquotas enabled */
+/* Quota state flags - they actually come in two flavors - for users and groups */
+enum {
+	_DQUOT_USAGE_ENABLED = 0,		/* Track disk usage for users */
+	_DQUOT_LIMITS_ENABLED,			/* Enforce quota limits for users */
+	_DQUOT_SUSPENDED,			/* User diskquotas are off, but
+						 * we have necessary info in
+						 * memory to turn them on */
+	_DQUOT_STATE_FLAGS
+};
+#define DQUOT_USAGE_ENABLED	(1 << _DQUOT_USAGE_ENABLED)
+#define DQUOT_LIMITS_ENABLED	(1 << _DQUOT_LIMITS_ENABLED)
+#define DQUOT_SUSPENDED		(1 << _DQUOT_SUSPENDED)
+#define DQUOT_STATE_FLAGS	(DQUOT_USAGE_ENABLED | DQUOT_LIMITS_ENABLED | \
+				 DQUOT_SUSPENDED)
+/* Other quota flags */
+#define DQUOT_QUOTA_SYS_FILE	(1 << 6)	/* Quota file is a special
+						 * system file and user cannot
+						 * touch it. Filesystem is
+						 * responsible for setting
+						 * S_NOQUOTA, S_NOATIME flags
+						 */
+#define DQUOT_NEGATIVE_USAGE	(1 << 7)	/* Allow negative quota usage */
+
+static inline unsigned int dquot_state_flag(unsigned int flags, int type)
+{
+	if (type == USRQUOTA)
+		return flags;
+	return flags << _DQUOT_STATE_FLAGS;
+}
+
+static inline unsigned int dquot_generic_flag(unsigned int flags, int type)
+{
+	if (type == USRQUOTA)
+		return flags;
+	return flags >> _DQUOT_STATE_FLAGS;
+}
 
 struct quota_info {
 	unsigned int flags;			/* Flags for diskquotas on this device */
@@ -324,17 +378,6 @@ struct quota_info {
 	struct mem_dqinfo info[MAXQUOTAS];	/* Information for each quota type */
 	struct quota_format_ops *ops[MAXQUOTAS];	/* Operations for each type */
 };
-
-/* Inline would be better but we need to dereference super_block which is not defined yet */
-int mark_dquot_dirty(struct dquot *dquot);
-
-#define dquot_dirty(dquot) test_bit(DQ_MOD_B, &(dquot)->dq_flags)
-
-#define sb_has_quota_enabled(sb, type) ((type)==USRQUOTA ? \
-	(sb_dqopt(sb)->flags & DQUOT_USR_ENABLED) : (sb_dqopt(sb)->flags & DQUOT_GRP_ENABLED))
-
-#define sb_any_quota_enabled(sb) (sb_has_quota_enabled(sb, USRQUOTA) | \
-				  sb_has_quota_enabled(sb, GRPQUOTA))
 
 int register_quota_format(struct quota_format_type *fmt);
 void unregister_quota_format(struct quota_format_type *fmt);

@@ -6,6 +6,7 @@
 #include <linux/netfilter.h>
 #include <linux/seq_file.h>
 #include <net/protocol.h>
+#include <net/netfilter/nf_log.h>
 
 #include "nf_internals.h"
 
@@ -14,16 +15,16 @@
 
 #define NF_LOG_PREFIXLEN		128
 
-static struct nf_logger *nf_loggers[NPROTO];
+static const struct nf_logger *nf_loggers[NFPROTO_NUMPROTO] __read_mostly;
 static DEFINE_MUTEX(nf_log_mutex);
 
 /* return EBUSY if somebody else is registered, EEXIST if the same logger
  * is registred, 0 on success. */
-int nf_log_register(int pf, struct nf_logger *logger)
+int nf_log_register(u_int8_t pf, const struct nf_logger *logger)
 {
 	int ret;
 
-	if (pf >= NPROTO)
+	if (pf >= ARRAY_SIZE(nf_loggers))
 		return -EINVAL;
 
 	/* Any setup of logging members must be done before
@@ -44,9 +45,9 @@ int nf_log_register(int pf, struct nf_logger *logger)
 }
 EXPORT_SYMBOL(nf_log_register);
 
-void nf_log_unregister_pf(int pf)
+void nf_log_unregister_pf(u_int8_t pf)
 {
-	if (pf >= NPROTO)
+	if (pf >= ARRAY_SIZE(nf_loggers))
 		return;
 	mutex_lock(&nf_log_mutex);
 	rcu_assign_pointer(nf_loggers[pf], NULL);
@@ -57,12 +58,12 @@ void nf_log_unregister_pf(int pf)
 }
 EXPORT_SYMBOL(nf_log_unregister_pf);
 
-void nf_log_unregister(struct nf_logger *logger)
+void nf_log_unregister(const struct nf_logger *logger)
 {
 	int i;
 
 	mutex_lock(&nf_log_mutex);
-	for (i = 0; i < NPROTO; i++) {
+	for (i = 0; i < ARRAY_SIZE(nf_loggers); i++) {
 		if (nf_loggers[i] == logger)
 			rcu_assign_pointer(nf_loggers[i], NULL);
 	}
@@ -72,17 +73,17 @@ void nf_log_unregister(struct nf_logger *logger)
 }
 EXPORT_SYMBOL(nf_log_unregister);
 
-void nf_log_packet(int pf,
+void nf_log_packet(u_int8_t pf,
 		   unsigned int hooknum,
 		   const struct sk_buff *skb,
 		   const struct net_device *in,
 		   const struct net_device *out,
-		   struct nf_loginfo *loginfo,
+		   const struct nf_loginfo *loginfo,
 		   const char *fmt, ...)
 {
 	va_list args;
 	char prefix[NF_LOG_PREFIXLEN];
-	struct nf_logger *logger;
+	const struct nf_logger *logger;
 
 	rcu_read_lock();
 	logger = rcu_dereference(nf_loggers[pf]);
@@ -90,12 +91,7 @@ void nf_log_packet(int pf,
 		va_start(args, fmt);
 		vsnprintf(prefix, sizeof(prefix), fmt, args);
 		va_end(args);
-		/* We must read logging before nf_logfn[pf] */
 		logger->logfn(pf, hooknum, skb, in, out, loginfo, prefix);
-	} else if (net_ratelimit()) {
-		printk(KERN_WARNING "nf_log_packet: can\'t log since "
-		       "no backend logging module loaded in! Please either "
-		       "load one, or disable logging explicitly\n");
 	}
 	rcu_read_unlock();
 }
@@ -103,10 +99,11 @@ EXPORT_SYMBOL(nf_log_packet);
 
 #ifdef CONFIG_PROC_FS
 static void *seq_start(struct seq_file *seq, loff_t *pos)
+	__acquires(RCU)
 {
 	rcu_read_lock();
 
-	if (*pos >= NPROTO)
+	if (*pos >= ARRAY_SIZE(nf_loggers))
 		return NULL;
 
 	return pos;
@@ -116,13 +113,14 @@ static void *seq_next(struct seq_file *s, void *v, loff_t *pos)
 {
 	(*pos)++;
 
-	if (*pos >= NPROTO)
+	if (*pos >= ARRAY_SIZE(nf_loggers))
 		return NULL;
 
 	return pos;
 }
 
 static void seq_stop(struct seq_file *s, void *v)
+	__releases(RCU)
 {
 	rcu_read_unlock();
 }
@@ -166,13 +164,9 @@ static const struct file_operations nflog_file_ops = {
 int __init netfilter_log_init(void)
 {
 #ifdef CONFIG_PROC_FS
-	struct proc_dir_entry *pde;
-
-	pde = create_proc_entry("nf_log", S_IRUGO, proc_net_netfilter);
-	if (!pde)
+	if (!proc_create("nf_log", S_IRUGO,
+			 proc_net_netfilter, &nflog_file_ops))
 		return -1;
-
-	pde->proc_fops = &nflog_file_ops;
 #endif
 	return 0;
 }

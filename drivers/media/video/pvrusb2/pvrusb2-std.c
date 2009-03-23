@@ -1,6 +1,5 @@
 /*
  *
- *  $Id$
  *
  *  Copyright (C) 2005 Mike Isely <isely@pobox.com>
  *
@@ -50,6 +49,10 @@ struct std_name {
 	 V4L2_STD_NTSC_M_KR| \
 	 V4L2_STD_NTSC_443)
 
+#define CSTD_ATSC \
+	(V4L2_STD_ATSC_8_VSB| \
+	 V4L2_STD_ATSC_16_VSB)
+
 #define CSTD_SECAM \
 	(V4L2_STD_SECAM_B| \
 	 V4L2_STD_SECAM_D| \
@@ -75,13 +78,14 @@ struct std_name {
 #define TSTD_Nc  (V4L2_STD_PAL_Nc)
 #define TSTD_60  (V4L2_STD_PAL_60)
 
-#define CSTD_ALL (CSTD_PAL|CSTD_NTSC|CSTD_SECAM)
+#define CSTD_ALL (CSTD_PAL|CSTD_NTSC|CSTD_ATSC|CSTD_SECAM)
 
 /* Mapping of standard bits to color system */
 static const struct std_name std_groups[] = {
 	{"PAL",CSTD_PAL},
 	{"NTSC",CSTD_NTSC},
 	{"SECAM",CSTD_SECAM},
+	{"ATSC",CSTD_ATSC},
 };
 
 /* Mapping of standard bits to modulation system */
@@ -104,6 +108,8 @@ static const struct std_name std_items[] = {
 	{"N",TSTD_N},
 	{"Nc",TSTD_Nc},
 	{"60",TSTD_60},
+	{"8VSB",V4L2_STD_ATSC_8_VSB},
+	{"16VSB",V4L2_STD_ATSC_16_VSB},
 };
 
 
@@ -321,7 +327,7 @@ struct v4l2_standard *pvr2_std_create_enum(unsigned int *countptr,
 	struct v4l2_standard *stddefs;
 
 	if (pvrusb2_debug & PVR2_TRACE_STD) {
-		char buf[50];
+		char buf[100];
 		bcnt = pvr2_std_id_to_str(buf,sizeof(buf),id);
 		pvr2_trace(
 			PVR2_TRACE_STD,"Mapping standards mask=0x%x (%.*s)",
@@ -345,8 +351,11 @@ struct v4l2_standard *pvr2_std_create_enum(unsigned int *countptr,
 		if ((id & std_mixes[idx2]) == std_mixes[idx2]) std_cnt++;
 	}
 
+	/* Don't complain about ATSC standard values */
+	fmsk &= ~CSTD_ATSC;
+
 	if (fmsk) {
-		char buf[50];
+		char buf[100];
 		bcnt = pvr2_std_id_to_str(buf,sizeof(buf),fmsk);
 		pvr2_trace(
 			PVR2_TRACE_ERROR_LEGS,

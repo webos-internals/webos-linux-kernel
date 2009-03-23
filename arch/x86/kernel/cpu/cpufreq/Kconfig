@@ -29,7 +29,7 @@ config X86_ACPI_CPUFREQ
 config ELAN_CPUFREQ
 	tristate "AMD Elan SC400 and SC410"
 	select CPU_FREQ_TABLE
-	depends on X86_32 && X86_ELAN
+	depends on X86_ELAN
 	---help---
 	  This adds the CPUFreq driver for AMD Elan SC400 and SC410
 	  processors.
@@ -45,7 +45,7 @@ config ELAN_CPUFREQ
 config SC520_CPUFREQ
 	tristate "AMD Elan SC520"
 	select CPU_FREQ_TABLE
-	depends on X86_32 && X86_ELAN
+	depends on X86_ELAN
 	---help---
 	  This adds the CPUFreq driver for AMD Elan SC520 processor.
 
@@ -235,26 +235,15 @@ config X86_LONGHAUL
 	  If in doubt, say N.
 
 config X86_E_POWERSAVER
-	tristate "VIA C7 Enhanced PowerSaver (EXPERIMENTAL)"
+	tristate "VIA C7 Enhanced PowerSaver"
 	select CPU_FREQ_TABLE
-	depends on X86_32 && EXPERIMENTAL
+	depends on X86_32
 	help
 	  This adds the CPUFreq driver for VIA C7 processors.
 
 	  If in doubt, say N.
 
 comment "shared options"
-
-config X86_ACPI_CPUFREQ_PROC_INTF
-	bool "/proc/acpi/processor/../performance interface (deprecated)"
-	depends on PROC_FS
-	depends on X86_ACPI_CPUFREQ || X86_POWERNOW_K7_ACPI || X86_POWERNOW_K8_ACPI
-	help
-	  This enables the deprecated /proc/acpi/processor/../performance
-	  interface. While it is helpful for debugging, the generic,
-	  cross-architecture cpufreq interfaces should be used.
-
-	  If in doubt, say N.
 
 config X86_SPEEDSTEP_LIB
 	tristate

@@ -79,7 +79,7 @@ config SERIO_PARKBD
 
 config SERIO_RPCKBD
 	tristate "Acorn RiscPC keyboard controller"
-	depends on ARCH_ACORN || ARCH_CLPS7500
+	depends on ARCH_ACORN
 	default y
 	help
 	  Say Y here if you have the Acorn RiscPC and want to use an AT
@@ -87,6 +87,16 @@ config SERIO_RPCKBD
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called rpckbd.
+
+config SERIO_AT32PSIF
+	tristate "AVR32 PSIF PS/2 keyboard and mouse controller"
+	depends on AVR32
+	help
+	  Say Y here if you want to use the PSIF peripheral on AVR32 devices
+	  and connect a PS/2 keyboard and/or mouse to it.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called at32psif.
 
 config SERIO_AMBAKMI
 	tristate "AMBA KMI keyboard controller"
@@ -179,5 +189,15 @@ config SERIO_RAW
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called serio_raw.
+
+config SERIO_XILINX_XPS_PS2
+	tristate "Xilinx XPS PS/2 Controller Support"
+	depends on PPC
+	help
+	  This driver supports XPS PS/2 IP from the Xilinx EDK on
+	  PowerPC platform.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called xilinx_ps2.
 
 endif

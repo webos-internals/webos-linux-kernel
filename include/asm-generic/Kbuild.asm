@@ -1,4 +1,12 @@
+ifneq ($(wildcard $(srctree)/arch/$(SRCARCH)/include/asm/kvm.h \
+      		  $(srctree)/include/asm-$(SRCARCH)/kvm.h),)
+header-y  += kvm.h
+endif
+
+ifneq ($(wildcard $(srctree)/arch/$(SRCARCH)/include/asm/a.out.h \
+      		  $(srctree)/include/asm-$(SRCARCH)/a.out.h),)
 unifdef-y += a.out.h
+endif
 unifdef-y += auxvec.h
 unifdef-y += byteorder.h
 unifdef-y += errno.h
@@ -23,12 +31,8 @@ unifdef-y += socket.h
 unifdef-y += sockios.h
 unifdef-y += stat.h
 unifdef-y += statfs.h
+unifdef-y += swab.h
 unifdef-y += termbits.h
 unifdef-y += termios.h
 unifdef-y += types.h
 unifdef-y += unistd.h
-unifdef-y += user.h
-
-# These probably shouldn't be exported
-unifdef-y += elf.h
-unifdef-y += page.h

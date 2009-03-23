@@ -1,37 +1,9 @@
 menu "Platform support"
 
-choice
-	prompt "Machine type"
-	depends on PPC64 || 6xx
-	default PPC_MULTIPLATFORM
-
 config PPC_MULTIPLATFORM
-	bool "Generic desktop/server/laptop"
-	help
-	  Select this option if configuring for an IBM pSeries or
-	  RS/6000 machine, an Apple machine, or a PReP, CHRP,
-	  Maple or Cell-based machine.
-
-config PPC_82xx
-	bool "Freescale 82xx"
-	depends on 6xx
-	select WANT_DEVICE_TREE
-
-config PPC_83xx
-	bool "Freescale 83xx"
-	depends on 6xx
-	select FSL_SOC
-	select 83xx
-	select WANT_DEVICE_TREE
-
-config PPC_86xx
-	bool "Freescale 86xx"
-	depends on 6xx
-	select FSL_SOC
-	select ALTIVEC
-	help
-	  The Freescale E600 SoCs have 74xx cores.
-endchoice
+	bool
+	depends on PPC64 || 6xx
+	default y
 
 config CLASSIC32
 	def_bool y
@@ -40,12 +12,12 @@ config CLASSIC32
 source "arch/powerpc/platforms/pseries/Kconfig"
 source "arch/powerpc/platforms/iseries/Kconfig"
 source "arch/powerpc/platforms/chrp/Kconfig"
+source "arch/powerpc/platforms/512x/Kconfig"
 source "arch/powerpc/platforms/52xx/Kconfig"
 source "arch/powerpc/platforms/powermac/Kconfig"
 source "arch/powerpc/platforms/prep/Kconfig"
 source "arch/powerpc/platforms/maple/Kconfig"
 source "arch/powerpc/platforms/pasemi/Kconfig"
-source "arch/powerpc/platforms/celleb/Kconfig"
 source "arch/powerpc/platforms/ps3/Kconfig"
 source "arch/powerpc/platforms/cell/Kconfig"
 source "arch/powerpc/platforms/8xx/Kconfig"
@@ -79,6 +51,10 @@ config XICS
 	depends on PPC_PSERIES
 	bool
 	default y
+
+config IPIC
+	bool
+	default n
 
 config MPIC
 	bool
@@ -263,35 +239,38 @@ config TAU_AVERAGE
 	  If in doubt, say N here.
 
 config QUICC_ENGINE
-	bool
+	bool "Freescale QUICC Engine (QE) Support"
+	depends on FSL_SOC
 	select PPC_LIB_RHEAP
+	select CRC32
 	help
 	  The QUICC Engine (QE) is a new generation of communications
 	  coprocessors on Freescale embedded CPUs (akin to CPM in older chips).
 	  Selecting this option means that you wish to build a kernel
 	  for a machine with a QE coprocessor.
 
+config QE_GPIO
+	bool "QE GPIO support"
+	depends on QUICC_ENGINE
+	select GENERIC_GPIO
+	select ARCH_REQUIRE_GPIOLIB
+	help
+	  Say Y here if you're going to use hardware that connects to the
+	  QE GPIOs.
+
 config CPM2
-	bool
-	default n
+	bool "Enable support for the CPM2 (Communications Processor Module)"
+	depends on MPC85xx || 8260
 	select CPM
 	select PPC_LIB_RHEAP
+	select PPC_PCI_CHOICE
+	select ARCH_REQUIRE_GPIOLIB
+	select GENERIC_GPIO
 	help
 	  The CPM2 (Communications Processor Module) is a coprocessor on
 	  embedded CPUs made by Freescale.  Selecting this option means that
 	  you wish to build a kernel for a machine with a CPM2 coprocessor
 	  on it (826x, 827x, 8560).
-
-config PPC_CPM_NEW_BINDING
-	bool
-	depends on CPM1 || CPM2
-	help
-	  Select this if your board has been converted to use the new
-	  device tree bindings for CPM, and no longer needs the
-	  ioport callbacks or the platform device glue code.
-
-	  The fs_enet and cpm_uart drivers will be built as
-	  of_platform devices.
 
 config AXON_RAM
 	tristate "Axon DDR2 memory device driver"
@@ -314,7 +293,45 @@ config FSL_ULI1575
 
 config CPM
 	bool
+	select PPC_CLOCK
+
+config OF_RTC
+	bool
+	help
+	  Uses information from the OF or flattened device tree to instatiate
+	  platform devices for direct mapped RTC chips like the DS1742 or DS1743.
 
 source "arch/powerpc/sysdev/bestcomm/Kconfig"
+
+config MPC8xxx_GPIO
+	bool "MPC8xxx GPIO support"
+	depends on PPC_MPC831x || PPC_MPC834x || PPC_MPC837x || PPC_85xx || PPC_86xx
+	select GENERIC_GPIO
+	select ARCH_REQUIRE_GPIOLIB
+	help
+	  Say Y here if you're going to use hardware that connects to the
+	  MPC831x/834x/837x/8572/8610 GPIOs.
+
+config SIMPLE_GPIO
+	bool "Support for simple, memory-mapped GPIO controllers"
+	depends on PPC
+	select GENERIC_GPIO
+	select ARCH_REQUIRE_GPIOLIB
+	help
+	  Say Y here to support simple, memory-mapped GPIO controllers.
+	  These are usually BCSRs used to control board's switches, LEDs,
+	  chip-selects, Ethernet/USB PHY's power and various other small
+	  on-board peripherals.
+
+config MCU_MPC8349EMITX
+	tristate "MPC8349E-mITX MCU driver"
+	depends on I2C && PPC_83xx
+	select GENERIC_GPIO
+	select ARCH_REQUIRE_GPIOLIB
+	help
+	  Say Y here to enable soft power-off functionality on the Freescale
+	  boards with the MPC8349E-mITX-compatible MCU chips. This driver will
+	  also register MCU GPIOs with the generic GPIO API, so you'll able
+	  to use MCU pins as GPIOs.
 
 endmenu

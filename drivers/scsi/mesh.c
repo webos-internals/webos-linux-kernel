@@ -1759,12 +1759,13 @@ static int mesh_suspend(struct macio_dev *mdev, pm_message_t mesg)
 
 	switch (mesg.event) {
 	case PM_EVENT_SUSPEND:
+	case PM_EVENT_HIBERNATE:
 	case PM_EVENT_FREEZE:
 		break;
 	default:
 		return 0;
 	}
-	if (mesg.event == mdev->ofdev.dev.power.power_state.event)
+	if (ms->phase == sleeping)
 		return 0;
 
 	scsi_block_requests(ms->host);
@@ -1779,8 +1780,6 @@ static int mesh_suspend(struct macio_dev *mdev, pm_message_t mesg)
 	disable_irq(ms->meshintr);
 	set_mesh_power(ms, 0);
 
-	mdev->ofdev.dev.power.power_state = mesg;
-
 	return 0;
 }
 
@@ -1789,7 +1788,7 @@ static int mesh_resume(struct macio_dev *mdev)
 	struct mesh_state *ms = (struct mesh_state *)macio_get_drvdata(mdev);
 	unsigned long flags;
 
-	if (mdev->ofdev.dev.power.power_state.event == PM_EVENT_ON)
+	if (ms->phase != sleeping)
 		return 0;
 
 	set_mesh_power(ms, 1);
@@ -1799,8 +1798,6 @@ static int mesh_resume(struct macio_dev *mdev)
 	spin_unlock_irqrestore(ms->host->host_lock, flags);
 	enable_irq(ms->meshintr);
 	scsi_unblock_requests(ms->host);
-
-	mdev->ofdev.dev.power.power_state.event = PM_EVENT_ON;
 
 	return 0;
 }
@@ -1843,7 +1840,6 @@ static struct scsi_host_template mesh_template = {
 	.sg_tablesize			= SG_ALL,
 	.cmd_per_lun			= 2,
 	.use_clustering			= DISABLE_CLUSTERING,
-	.use_sg_chaining		= ENABLE_SG_CHAINING,
 };
 
 static int mesh_probe(struct macio_dev *mdev, const struct of_device_id *match)

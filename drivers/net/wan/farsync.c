@@ -47,10 +47,7 @@ MODULE_LICENSE("GPL");
 /*      Default parameters for the link
  */
 #define FST_TX_QUEUE_LEN        100	/* At 8Mbps a longer queue length is
-					 * useful, the syncppp module forces
-					 * this down assuming a slower line I
-					 * guess.
-					 */
+					 * useful */
 #define FST_TXQ_DEPTH           16	/* This one is for the buffering
 					 * of frames on the way down to the card
 					 * so that we can keep the card busy
@@ -845,7 +842,6 @@ fst_tx_dma_complete(struct fst_card_info *card, struct fst_port_info *port,
 		    int len, int txpos)
 {
 	struct net_device *dev = port_to_dev(port);
-	struct net_device_stats *stats = hdlc_stats(dev);
 
 	/*
 	 * Everything is now set, just tell the card to go
@@ -853,8 +849,8 @@ fst_tx_dma_complete(struct fst_card_info *card, struct fst_port_info *port,
 	dbg(DBG_TX, "fst_tx_dma_complete\n");
 	FST_WRB(card, txDescrRing[port->index][txpos].bits,
 		DMA_OWN | TX_STP | TX_ENP);
-	stats->tx_packets++;
-	stats->tx_bytes += len;
+	dev->stats.tx_packets++;
+	dev->stats.tx_bytes += len;
 	dev->trans_start = jiffies;
 }
 
@@ -876,7 +872,6 @@ fst_rx_dma_complete(struct fst_card_info *card, struct fst_port_info *port,
 		    int len, struct sk_buff *skb, int rxp)
 {
 	struct net_device *dev = port_to_dev(port);
-	struct net_device_stats *stats = hdlc_stats(dev);
 	int pi;
 	int rx_status;
 
@@ -888,8 +883,8 @@ fst_rx_dma_complete(struct fst_card_info *card, struct fst_port_info *port,
 	FST_WRB(card, rxDescrRing[pi][rxp].bits, DMA_OWN);
 
 	/* Update stats */
-	stats->rx_packets++;
-	stats->rx_bytes += len;
+	dev->stats.rx_packets++;
+	dev->stats.rx_bytes += len;
 
 	/* Push upstream */
 	dbg(DBG_RX, "Pushing the frame up the stack\n");
@@ -900,8 +895,7 @@ fst_rx_dma_complete(struct fst_card_info *card, struct fst_port_info *port,
 	rx_status = netif_rx(skb);
 	fst_process_rx_status(rx_status, port_to_dev(port)->name);
 	if (rx_status == NET_RX_DROP)
-		stats->rx_dropped++;
-	dev->last_rx = jiffies;
+		dev->stats.rx_dropped++;
 }
 
 /*
@@ -1163,29 +1157,28 @@ fst_log_rx_error(struct fst_card_info *card, struct fst_port_info *port,
 		 unsigned char dmabits, int rxp, unsigned short len)
 {
 	struct net_device *dev = port_to_dev(port);
-	struct net_device_stats *stats = hdlc_stats(dev);
 
-	/* 
+	/*
 	 * Increment the appropriate error counter
 	 */
-	stats->rx_errors++;
+	dev->stats.rx_errors++;
 	if (dmabits & RX_OFLO) {
-		stats->rx_fifo_errors++;
+		dev->stats.rx_fifo_errors++;
 		dbg(DBG_ASS, "Rx fifo error on card %d port %d buffer %d\n",
 		    card->card_no, port->index, rxp);
 	}
 	if (dmabits & RX_CRC) {
-		stats->rx_crc_errors++;
+		dev->stats.rx_crc_errors++;
 		dbg(DBG_ASS, "Rx crc error on card %d port %d\n",
 		    card->card_no, port->index);
 	}
 	if (dmabits & RX_FRAM) {
-		stats->rx_frame_errors++;
+		dev->stats.rx_frame_errors++;
 		dbg(DBG_ASS, "Rx frame error on card %d port %d\n",
 		    card->card_no, port->index);
 	}
 	if (dmabits == (RX_STP | RX_ENP)) {
-		stats->rx_length_errors++;
+		dev->stats.rx_length_errors++;
 		dbg(DBG_ASS, "Rx length error (%d) on card %d port %d\n",
 		    len, card->card_no, port->index);
 	}
@@ -1242,7 +1235,6 @@ fst_intr_rx(struct fst_card_info *card, struct fst_port_info *port)
 	unsigned short len;
 	struct sk_buff *skb;
 	struct net_device *dev = port_to_dev(port);
-	struct net_device_stats *stats = hdlc_stats(dev);
 
 	/* Check we have a buffer to process */
 	pi = port->index;
@@ -1291,7 +1283,7 @@ fst_intr_rx(struct fst_card_info *card, struct fst_port_info *port)
 	if ((skb = dev_alloc_skb(len)) == NULL) {
 		dbg(DBG_RX, "intr_rx: can't allocate buffer\n");
 
-		stats->rx_dropped++;
+		dev->stats.rx_dropped++;
 
 		/* Return descriptor to card */
 		FST_WRB(card, rxDescrRing[pi][rxp].bits, DMA_OWN);
@@ -1316,8 +1308,8 @@ fst_intr_rx(struct fst_card_info *card, struct fst_port_info *port)
 		FST_WRB(card, rxDescrRing[pi][rxp].bits, DMA_OWN);
 
 		/* Update stats */
-		stats->rx_packets++;
-		stats->rx_bytes += len;
+		dev->stats.rx_packets++;
+		dev->stats.rx_bytes += len;
 
 		/* Push upstream */
 		dbg(DBG_RX, "Pushing frame up the stack\n");
@@ -1327,10 +1319,8 @@ fst_intr_rx(struct fst_card_info *card, struct fst_port_info *port)
 			skb->protocol = hdlc_type_trans(skb, dev);
 		rx_status = netif_rx(skb);
 		fst_process_rx_status(rx_status, port_to_dev(port)->name);
-		if (rx_status == NET_RX_DROP) {
-			stats->rx_dropped++;
-		}
-		dev->last_rx = jiffies;
+		if (rx_status == NET_RX_DROP)
+			dev->stats.rx_dropped++;
 	} else {
 		card->dma_skb_rx = skb;
 		card->dma_port_rx = port;
@@ -1361,7 +1351,6 @@ do_bottom_half_tx(struct fst_card_info *card)
 	struct sk_buff *skb;
 	unsigned long flags;
 	struct net_device *dev;
-	struct net_device_stats *stats;
 
 	/*
 	 *  Find a free buffer for the transmit
@@ -1373,12 +1362,10 @@ do_bottom_half_tx(struct fst_card_info *card)
 		if (!port->run)
 			continue;
 
-                dev = port_to_dev(port);
-                stats = hdlc_stats(dev);
-		while (!
-		       (FST_RDB(card, txDescrRing[pi][port->txpos].bits) &
-			DMA_OWN)
-                       && !(card->dmatx_in_progress)) {
+		dev = port_to_dev(port);
+		while (!(FST_RDB(card, txDescrRing[pi][port->txpos].bits) &
+			 DMA_OWN)
+		       && !(card->dmatx_in_progress)) {
 			/*
 			 * There doesn't seem to be a txdone event per-se
 			 * We seem to have to deduce it, by checking the DMA_OWN
@@ -1422,8 +1409,8 @@ do_bottom_half_tx(struct fst_card_info *card)
 						txDescrRing[pi][port->txpos].
 						bits,
 						DMA_OWN | TX_STP | TX_ENP);
-					stats->tx_packets++;
-					stats->tx_bytes += skb->len;
+					dev->stats.tx_packets++;
+					dev->stats.tx_bytes += skb->len;
 					dev->trans_start = jiffies;
 				} else {
 					/* Or do it through dma */
@@ -1498,9 +1485,9 @@ do_bottom_half_rx(struct fst_card_info *card)
  *      Dev_id is our fst_card_info pointer
  */
 static irqreturn_t
-fst_intr(int irq, void *dev_id)
+fst_intr(int dummy, void *dev_id)
 {
-	struct fst_card_info *card;
+	struct fst_card_info *card = dev_id;
 	struct fst_port_info *port;
 	int rdidx;		/* Event buffer indices */
 	int wridx;
@@ -1509,17 +1496,12 @@ fst_intr(int irq, void *dev_id)
 	unsigned int do_card_interrupt;
 	unsigned int int_retry_count;
 
-	if ((card = dev_id) == NULL) {
-		dbg(DBG_INTR, "intr: spurious %d\n", irq);
-		return IRQ_NONE;
-	}
-
 	/*
 	 * Check to see if the interrupt was for this card
 	 * return if not
 	 * Note that the call to clear the interrupt is important
 	 */
-	dbg(DBG_INTR, "intr: %d %p\n", irq, card);
+	dbg(DBG_INTR, "intr: %d %p\n", card->irq, card);
 	if (card->state != FST_RUNNING) {
 		printk_err
 		    ("Interrupt received for card %d in a non running state (%d)\n",
@@ -1633,8 +1615,8 @@ fst_intr(int irq, void *dev_id)
 			 * always load up the entire packet for DMA.
 			 */
 			dbg(DBG_TX, "Tx underflow port %d\n", port->index);
-                        hdlc_stats(port_to_dev(port))->tx_errors++;
-                        hdlc_stats(port_to_dev(port))->tx_fifo_errors++;
+			port_to_dev(port)->stats.tx_errors++;
+			port_to_dev(port)->stats.tx_fifo_errors++;
 			dbg(DBG_ASS, "Tx underflow on card %d port %d\n",
 			    card->card_no, port->index);
 			break;
@@ -2029,6 +2011,7 @@ fst_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	struct fstioc_write wrthdr;
 	struct fstioc_info info;
 	unsigned long flags;
+	void *buf;
 
 	dbg(DBG_IOCTL, "ioctl: %x, %p\n", cmd, ifr->ifr_data);
 
@@ -2070,15 +2053,21 @@ fst_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 			return -ENXIO;
 		}
 
-		/* Now copy the data to the card.
-		 * This will probably break on some architectures.
-		 * I'll fix it when I have something to test on.
-		 */
-		if (copy_from_user(card->mem + wrthdr.offset,
+		/* Now copy the data to the card. */
+
+		buf = kmalloc(wrthdr.size, GFP_KERNEL);
+		if (!buf)
+			return -ENOMEM;
+
+		if (copy_from_user(buf,
 				   ifr->ifr_data + sizeof (struct fstioc_write),
 				   wrthdr.size)) {
+			kfree(buf);
 			return -EFAULT;
 		}
+
+		memcpy_toio(card->mem + wrthdr.offset, buf, wrthdr.size);
+		kfree(buf);
 
 		/* Writes to the memory of a card in the reset state constitute
 		 * a download
@@ -2290,12 +2279,11 @@ fst_tx_timeout(struct net_device *dev)
 {
 	struct fst_port_info *port;
 	struct fst_card_info *card;
-	struct net_device_stats *stats = hdlc_stats(dev);
 
 	port = dev_to_port(dev);
 	card = port->card;
-	stats->tx_errors++;
-	stats->tx_aborted_errors++;
+	dev->stats.tx_errors++;
+	dev->stats.tx_aborted_errors++;
 	dbg(DBG_ASS, "Tx timeout card %d port %d\n",
 	    card->card_no, port->index);
 	fst_issue_cmd(port, ABORTTX);
@@ -2310,7 +2298,6 @@ fst_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct fst_card_info *card;
 	struct fst_port_info *port;
-	struct net_device_stats *stats = hdlc_stats(dev);
 	unsigned long flags;
 	int txq_length;
 
@@ -2321,8 +2308,8 @@ fst_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	/* Drop packet with error if we don't have carrier */
 	if (!netif_carrier_ok(dev)) {
 		dev_kfree_skb(skb);
-		stats->tx_errors++;
-		stats->tx_carrier_errors++;
+		dev->stats.tx_errors++;
+		dev->stats.tx_carrier_errors++;
 		dbg(DBG_ASS,
 		    "Tried to transmit but no carrier on card %d port %d\n",
 		    card->card_no, port->index);
@@ -2334,7 +2321,7 @@ fst_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		dbg(DBG_ASS, "Packet too large %d vs %d\n", skb->len,
 		    LEN_TX_BUFFER);
 		dev_kfree_skb(skb);
-		stats->tx_errors++;
+		dev->stats.tx_errors++;
 		return 0;
 	}
 
@@ -2366,7 +2353,7 @@ fst_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		 * This shouldn't have happened but such is life
 		 */
 		dev_kfree_skb(skb);
-		stats->tx_errors++;
+		dev->stats.tx_errors++;
 		dbg(DBG_ASS, "Tx queue overflow card %d port %d\n",
 		    card->card_no, port->index);
 		return 0;

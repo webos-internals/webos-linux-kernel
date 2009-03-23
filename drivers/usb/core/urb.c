@@ -10,6 +10,7 @@
 
 #define to_urb(d) container_of(d, struct urb, kref)
 
+
 static void urb_destroy(struct kref *kref)
 {
 	struct urb *urb = to_urb(kref);
@@ -42,6 +43,7 @@ void usb_init_urb(struct urb *urb)
 		INIT_LIST_HEAD(&urb->anchor_list);
 	}
 }
+EXPORT_SYMBOL_GPL(usb_init_urb);
 
 /**
  * usb_alloc_urb - creates a new urb for a USB driver to use
@@ -67,12 +69,13 @@ struct urb *usb_alloc_urb(int iso_packets, gfp_t mem_flags)
 		iso_packets * sizeof(struct usb_iso_packet_descriptor),
 		mem_flags);
 	if (!urb) {
-		err("alloc_urb: kmalloc failed");
+		printk(KERN_ERR "alloc_urb: kmalloc failed\n");
 		return NULL;
 	}
 	usb_init_urb(urb);
 	return urb;
 }
+EXPORT_SYMBOL_GPL(usb_alloc_urb);
 
 /**
  * usb_free_urb - frees the memory used by a urb when all users of it are finished
@@ -81,14 +84,15 @@ struct urb *usb_alloc_urb(int iso_packets, gfp_t mem_flags)
  * Must be called when a user of a urb is finished with it.  When the last user
  * of the urb calls this function, the memory of the urb is freed.
  *
- * Note: The transfer buffer associated with the urb is not freed, that must be
- * done elsewhere.
+ * Note: The transfer buffer associated with the urb is not freed unless the
+ * URB_FREE_BUFFER transfer flag is set.
  */
 void usb_free_urb(struct urb *urb)
 {
 	if (urb)
 		kref_put(&urb->kref, urb_destroy);
 }
+EXPORT_SYMBOL_GPL(usb_free_urb);
 
 /**
  * usb_get_urb - increments the reference count of the urb
@@ -100,12 +104,13 @@ void usb_free_urb(struct urb *urb)
  *
  * A pointer to the urb with the incremented reference counter is returned.
  */
-struct urb * usb_get_urb(struct urb *urb)
+struct urb *usb_get_urb(struct urb *urb)
 {
 	if (urb)
 		kref_get(&urb->kref);
 	return urb;
 }
+EXPORT_SYMBOL_GPL(usb_get_urb);
 
 /**
  * usb_anchor_urb - anchors an URB while it is processed
@@ -123,6 +128,11 @@ void usb_anchor_urb(struct urb *urb, struct usb_anchor *anchor)
 	usb_get_urb(urb);
 	list_add_tail(&urb->anchor_list, &anchor->urb_list);
 	urb->anchor = anchor;
+
+	if (unlikely(anchor->poisoned)) {
+		atomic_inc(&urb->reject);
+	}
+
 	spin_unlock_irqrestore(&anchor->lock, flags);
 }
 EXPORT_SYMBOL_GPL(usb_anchor_urb);
@@ -172,7 +182,7 @@ EXPORT_SYMBOL_GPL(usb_unanchor_urb);
  * describing that request to the USB subsystem.  Request completion will
  * be indicated later, asynchronously, by calling the completion handler.
  * The three types of completion are success, error, and unlink
- * (a software-induced fault, also called "request cancellation").  
+ * (a software-induced fault, also called "request cancellation").
  *
  * URBs may be submitted in interrupt context.
  *
@@ -255,7 +265,7 @@ EXPORT_SYMBOL_GPL(usb_unanchor_urb);
  *       semaphores), or
  *   (c) current->state != TASK_RUNNING, this is the case only after
  *       you've changed it.
- * 
+ *
  * GFP_NOIO is used in the block io path and error handling of storage
  * devices.
  *
@@ -284,7 +294,8 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
 
 	if (!urb || urb->hcpriv || !urb->complete)
 		return -EINVAL;
-	if (!(dev = urb->dev) || dev->state < USB_STATE_DEFAULT)
+	dev = urb->dev;
+	if ((!dev) || (dev->state < USB_STATE_DEFAULT))
 		return -ENODEV;
 
 	/* For now, get the endpoint from the pipe.  Eventually drivers
@@ -329,7 +340,7 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
 		dev_dbg(&dev->dev,
 			"bogus endpoint ep%d%s in %s (bad maxpacket %d)\n",
 			usb_endpoint_num(&ep->desc), is_out ? "out" : "in",
-			__FUNCTION__, max);
+			__func__, max);
 		return -EMSGSIZE;
 	}
 
@@ -347,11 +358,11 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
 			max *= mult;
 		}
 
-		if (urb->number_of_packets <= 0)		    
+		if (urb->number_of_packets <= 0)
 			return -EINVAL;
 		for (n = 0; n < urb->number_of_packets; n++) {
 			len = urb->iso_frame_desc[n].length;
-			if (len < 0 || len > max) 
+			if (len < 0 || len > max)
 				return -EMSGSIZE;
 			urb->iso_frame_desc[n].status = -EXDEV;
 			urb->iso_frame_desc[n].actual_length = 0;
@@ -393,7 +404,7 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
 
 	/* fail if submitter gave bogus flags */
 	if (urb->transfer_flags != orig_flags) {
-		err("BOGUS urb flags, %x --> %x",
+		dev_err(&dev->dev, "BOGUS urb flags, %x --> %x\n",
 			orig_flags, urb->transfer_flags);
 		return -EINVAL;
 	}
@@ -416,7 +427,7 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
 		/* too big? */
 		switch (dev->speed) {
 		case USB_SPEED_HIGH:	/* units are microframes */
-			// NOTE usb handles 2^15
+			/* NOTE usb handles 2^15 */
 			if (urb->interval > (1024 * 8))
 				urb->interval = 1024 * 8;
 			max = 1024 * 8;
@@ -426,12 +437,12 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
 			if (xfertype == USB_ENDPOINT_XFER_INT) {
 				if (urb->interval > 255)
 					return -EINVAL;
-				// NOTE ohci only handles up to 32
+				/* NOTE ohci only handles up to 32 */
 				max = 128;
 			} else {
 				if (urb->interval > 1024)
 					urb->interval = 1024;
-				// NOTE usb and ohci handle up to 2^15
+				/* NOTE usb and ohci handle up to 2^15 */
 				max = 1024;
 			}
 			break;
@@ -444,6 +455,7 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
 
 	return usb_hcd_submit_urb(urb, mem_flags);
 }
+EXPORT_SYMBOL_GPL(usb_submit_urb);
 
 /*-------------------------------------------------------------------*/
 
@@ -458,6 +470,12 @@ int usb_submit_urb(struct urb *urb, gfp_t mem_flags)
  * and the completion handler will be called with a status code
  * indicating that the request has been canceled (rather than any other
  * code).
+ *
+ * Drivers should not call this routine or related routines, such as
+ * usb_kill_urb() or usb_unlink_anchored_urbs(), after their disconnect
+ * method has returned.  The disconnect function should synchronize with
+ * a driver's I/O routines to insure that all URB-related activity has
+ * completed before it returns.
  *
  * This request is always asynchronous.  Success is indicated by
  * returning -EINPROGRESS, at which time the URB will probably not yet
@@ -514,6 +532,7 @@ int usb_unlink_urb(struct urb *urb)
 		return -EIDRM;
 	return usb_hcd_unlink_urb(urb, -ECONNRESET);
 }
+EXPORT_SYMBOL_GPL(usb_unlink_urb);
 
 /**
  * usb_kill_urb - cancel a transfer request and wait for it to finish
@@ -534,25 +553,67 @@ int usb_unlink_urb(struct urb *urb)
  * This routine may not be used in an interrupt context (such as a bottom
  * half or a completion handler), or when holding a spinlock, or in other
  * situations where the caller can't schedule().
+ *
+ * This routine should not be called by a driver after its disconnect
+ * method has returned.
  */
 void usb_kill_urb(struct urb *urb)
 {
-	static DEFINE_MUTEX(reject_mutex);
-
 	might_sleep();
 	if (!(urb && urb->dev && urb->ep))
 		return;
-	mutex_lock(&reject_mutex);
-	++urb->reject;
-	mutex_unlock(&reject_mutex);
+	atomic_inc(&urb->reject);
 
 	usb_hcd_unlink_urb(urb, -ENOENT);
 	wait_event(usb_kill_urb_queue, atomic_read(&urb->use_count) == 0);
 
-	mutex_lock(&reject_mutex);
-	--urb->reject;
-	mutex_unlock(&reject_mutex);
+	atomic_dec(&urb->reject);
 }
+EXPORT_SYMBOL_GPL(usb_kill_urb);
+
+/**
+ * usb_poison_urb - reliably kill a transfer and prevent further use of an URB
+ * @urb: pointer to URB describing a previously submitted request,
+ *	may be NULL
+ *
+ * This routine cancels an in-progress request.  It is guaranteed that
+ * upon return all completion handlers will have finished and the URB
+ * will be totally idle and cannot be reused.  These features make
+ * this an ideal way to stop I/O in a disconnect() callback.
+ * If the request has not already finished or been unlinked
+ * the completion handler will see urb->status == -ENOENT.
+ *
+ * After and while the routine runs, attempts to resubmit the URB will fail
+ * with error -EPERM.  Thus even if the URB's completion handler always
+ * tries to resubmit, it will not succeed and the URB will become idle.
+ *
+ * This routine may not be used in an interrupt context (such as a bottom
+ * half or a completion handler), or when holding a spinlock, or in other
+ * situations where the caller can't schedule().
+ *
+ * This routine should not be called by a driver after its disconnect
+ * method has returned.
+ */
+void usb_poison_urb(struct urb *urb)
+{
+	might_sleep();
+	if (!(urb && urb->dev && urb->ep))
+		return;
+	atomic_inc(&urb->reject);
+
+	usb_hcd_unlink_urb(urb, -ENOENT);
+	wait_event(usb_kill_urb_queue, atomic_read(&urb->use_count) == 0);
+}
+EXPORT_SYMBOL_GPL(usb_poison_urb);
+
+void usb_unpoison_urb(struct urb *urb)
+{
+	if (!urb)
+		return;
+
+	atomic_dec(&urb->reject);
+}
+EXPORT_SYMBOL_GPL(usb_unpoison_urb);
 
 /**
  * usb_kill_anchored_urbs - cancel transfer requests en masse
@@ -560,6 +621,9 @@ void usb_kill_urb(struct urb *urb)
  *
  * this allows all outstanding URBs to be killed starting
  * from the back of the queue
+ *
+ * This routine should not be called by a driver after its disconnect
+ * method has returned.
  */
 void usb_kill_anchored_urbs(struct usb_anchor *anchor)
 {
@@ -567,7 +631,8 @@ void usb_kill_anchored_urbs(struct usb_anchor *anchor)
 
 	spin_lock_irq(&anchor->lock);
 	while (!list_empty(&anchor->urb_list)) {
-		victim = list_entry(anchor->urb_list.prev, struct urb, anchor_list);
+		victim = list_entry(anchor->urb_list.prev, struct urb,
+				    anchor_list);
 		/* we must make sure the URB isn't freed before we kill it*/
 		usb_get_urb(victim);
 		spin_unlock_irq(&anchor->lock);
@@ -579,6 +644,91 @@ void usb_kill_anchored_urbs(struct usb_anchor *anchor)
 	spin_unlock_irq(&anchor->lock);
 }
 EXPORT_SYMBOL_GPL(usb_kill_anchored_urbs);
+
+
+/**
+ * usb_poison_anchored_urbs - cease all traffic from an anchor
+ * @anchor: anchor the requests are bound to
+ *
+ * this allows all outstanding URBs to be poisoned starting
+ * from the back of the queue. Newly added URBs will also be
+ * poisoned
+ *
+ * This routine should not be called by a driver after its disconnect
+ * method has returned.
+ */
+void usb_poison_anchored_urbs(struct usb_anchor *anchor)
+{
+	struct urb *victim;
+
+	spin_lock_irq(&anchor->lock);
+	anchor->poisoned = 1;
+	while (!list_empty(&anchor->urb_list)) {
+		victim = list_entry(anchor->urb_list.prev, struct urb,
+				    anchor_list);
+		/* we must make sure the URB isn't freed before we kill it*/
+		usb_get_urb(victim);
+		spin_unlock_irq(&anchor->lock);
+		/* this will unanchor the URB */
+		usb_poison_urb(victim);
+		usb_put_urb(victim);
+		spin_lock_irq(&anchor->lock);
+	}
+	spin_unlock_irq(&anchor->lock);
+}
+EXPORT_SYMBOL_GPL(usb_poison_anchored_urbs);
+
+/**
+ * usb_unpoison_anchored_urbs - let an anchor be used successfully again
+ * @anchor: anchor the requests are bound to
+ *
+ * Reverses the effect of usb_poison_anchored_urbs
+ * the anchor can be used normally after it returns
+ */
+void usb_unpoison_anchored_urbs(struct usb_anchor *anchor)
+{
+	unsigned long flags;
+	struct urb *lazarus;
+
+	spin_lock_irqsave(&anchor->lock, flags);
+	list_for_each_entry(lazarus, &anchor->urb_list, anchor_list) {
+		usb_unpoison_urb(lazarus);
+	}
+	anchor->poisoned = 0;
+	spin_unlock_irqrestore(&anchor->lock, flags);
+}
+EXPORT_SYMBOL_GPL(usb_unpoison_anchored_urbs);
+/**
+ * usb_unlink_anchored_urbs - asynchronously cancel transfer requests en masse
+ * @anchor: anchor the requests are bound to
+ *
+ * this allows all outstanding URBs to be unlinked starting
+ * from the back of the queue. This function is asynchronous.
+ * The unlinking is just tiggered. It may happen after this
+ * function has returned.
+ *
+ * This routine should not be called by a driver after its disconnect
+ * method has returned.
+ */
+void usb_unlink_anchored_urbs(struct usb_anchor *anchor)
+{
+	struct urb *victim;
+	unsigned long flags;
+
+	spin_lock_irqsave(&anchor->lock, flags);
+	while (!list_empty(&anchor->urb_list)) {
+		victim = list_entry(anchor->urb_list.prev, struct urb,
+				    anchor_list);
+		usb_get_urb(victim);
+		spin_unlock_irqrestore(&anchor->lock, flags);
+		/* this will unanchor the URB */
+		usb_unlink_urb(victim);
+		usb_put_urb(victim);
+		spin_lock_irqsave(&anchor->lock, flags);
+	}
+	spin_unlock_irqrestore(&anchor->lock, flags);
+}
+EXPORT_SYMBOL_GPL(usb_unlink_anchored_urbs);
 
 /**
  * usb_wait_anchor_empty_timeout - wait for an anchor to be unused
@@ -596,10 +746,72 @@ int usb_wait_anchor_empty_timeout(struct usb_anchor *anchor,
 }
 EXPORT_SYMBOL_GPL(usb_wait_anchor_empty_timeout);
 
-EXPORT_SYMBOL(usb_init_urb);
-EXPORT_SYMBOL(usb_alloc_urb);
-EXPORT_SYMBOL(usb_free_urb);
-EXPORT_SYMBOL(usb_get_urb);
-EXPORT_SYMBOL(usb_submit_urb);
-EXPORT_SYMBOL(usb_unlink_urb);
-EXPORT_SYMBOL(usb_kill_urb);
+/**
+ * usb_get_from_anchor - get an anchor's oldest urb
+ * @anchor: the anchor whose urb you want
+ *
+ * this will take the oldest urb from an anchor,
+ * unanchor and return it
+ */
+struct urb *usb_get_from_anchor(struct usb_anchor *anchor)
+{
+	struct urb *victim;
+	unsigned long flags;
+
+	spin_lock_irqsave(&anchor->lock, flags);
+	if (!list_empty(&anchor->urb_list)) {
+		victim = list_entry(anchor->urb_list.next, struct urb,
+				    anchor_list);
+		usb_get_urb(victim);
+		spin_unlock_irqrestore(&anchor->lock, flags);
+		usb_unanchor_urb(victim);
+	} else {
+		spin_unlock_irqrestore(&anchor->lock, flags);
+		victim = NULL;
+	}
+
+	return victim;
+}
+
+EXPORT_SYMBOL_GPL(usb_get_from_anchor);
+
+/**
+ * usb_scuttle_anchored_urbs - unanchor all an anchor's urbs
+ * @anchor: the anchor whose urbs you want to unanchor
+ *
+ * use this to get rid of all an anchor's urbs
+ */
+void usb_scuttle_anchored_urbs(struct usb_anchor *anchor)
+{
+	struct urb *victim;
+	unsigned long flags;
+
+	spin_lock_irqsave(&anchor->lock, flags);
+	while (!list_empty(&anchor->urb_list)) {
+		victim = list_entry(anchor->urb_list.prev, struct urb,
+				    anchor_list);
+		usb_get_urb(victim);
+		spin_unlock_irqrestore(&anchor->lock, flags);
+		/* this may free the URB */
+		usb_unanchor_urb(victim);
+		usb_put_urb(victim);
+		spin_lock_irqsave(&anchor->lock, flags);
+	}
+	spin_unlock_irqrestore(&anchor->lock, flags);
+}
+
+EXPORT_SYMBOL_GPL(usb_scuttle_anchored_urbs);
+
+/**
+ * usb_anchor_empty - is an anchor empty
+ * @anchor: the anchor you want to query
+ *
+ * returns 1 if the anchor has no urbs associated with it
+ */
+int usb_anchor_empty(struct usb_anchor *anchor)
+{
+	return list_empty(&anchor->urb_list);
+}
+
+EXPORT_SYMBOL_GPL(usb_anchor_empty);
+

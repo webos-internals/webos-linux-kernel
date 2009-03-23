@@ -122,7 +122,7 @@ struct pmcmsptwi_data {
 };
 
 /* The default settings */
-const static struct pmcmsptwi_clockcfg pmcmsptwi_defclockcfg = {
+static const struct pmcmsptwi_clockcfg pmcmsptwi_defclockcfg = {
 	.standard = {
 		.filter	= 0x3,
 		.clock	= 0x1f,
@@ -133,7 +133,7 @@ const static struct pmcmsptwi_clockcfg pmcmsptwi_defclockcfg = {
 	},
 };
 
-const static struct pmcmsptwi_cfg pmcmsptwi_defcfg = {
+static const struct pmcmsptwi_cfg pmcmsptwi_defcfg = {
 	.arbf		= 0x03,
 	.nak		= 0x03,
 	.add10		= 0x00,
@@ -467,7 +467,7 @@ static enum pmcmsptwi_xfer_result pmcmsptwi_xfer_cmd(
 	    (cmd->read_len == 0 || cmd->write_len == 0))) {
 		dev_err(&pmcmsptwi_adapter.dev,
 			"%s: Cannot transfer less than 1 byte\n",
-			__FUNCTION__);
+			__func__);
 		return -EINVAL;
 	}
 
@@ -475,7 +475,7 @@ static enum pmcmsptwi_xfer_result pmcmsptwi_xfer_cmd(
 	    cmd->write_len > MSP_MAX_BYTES_PER_RW) {
 		dev_err(&pmcmsptwi_adapter.dev,
 			"%s: Cannot transfer more than %d bytes\n",
-			__FUNCTION__, MSP_MAX_BYTES_PER_RW);
+			__func__, MSP_MAX_BYTES_PER_RW);
 		return -EINVAL;
 	}
 
@@ -486,7 +486,7 @@ static enum pmcmsptwi_xfer_result pmcmsptwi_xfer_cmd(
 
 	if (cmd->type == MSP_TWI_CMD_WRITE ||
 	    cmd->type == MSP_TWI_CMD_WRITE_READ) {
-		__be64 tmp = cpu_to_be64p((u64 *)cmd->write_data);
+		u64 tmp = be64_to_cpup((__be64 *)cmd->write_data);
 		tmp >>= (MSP_MAX_BYTES_PER_RW - cmd->write_len) * 8;
 		dev_dbg(&pmcmsptwi_adapter.dev, "Writing 0x%016llx\n", tmp);
 		pmcmsptwi_writel(tmp & 0x00000000ffffffffLL,
@@ -622,10 +622,13 @@ static struct i2c_algorithm pmcmsptwi_algo = {
 
 static struct i2c_adapter pmcmsptwi_adapter = {
 	.owner		= THIS_MODULE,
-	.class		= I2C_CLASS_HWMON,
+	.class		= I2C_CLASS_HWMON | I2C_CLASS_SPD,
 	.algo		= &pmcmsptwi_algo,
 	.name		= DRV_NAME,
 };
+
+/* work with hotplug and coldplug */
+MODULE_ALIAS("platform:" DRV_NAME);
 
 static struct platform_driver pmcmsptwi_driver = {
 	.probe  = pmcmsptwi_probe,

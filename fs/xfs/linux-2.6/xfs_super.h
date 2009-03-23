@@ -20,24 +20,12 @@
 
 #include <linux/exportfs.h>
 
-#ifdef CONFIG_XFS_DMAPI
-# define vfs_insertdmapi(vfs)	vfs_insertops(vfsp, &xfs_dmops)
-# define vfs_initdmapi()	dmapi_init()
-# define vfs_exitdmapi()	dmapi_uninit()
-#else
-# define vfs_insertdmapi(vfs)	do { } while (0)
-# define vfs_initdmapi()	do { } while (0)
-# define vfs_exitdmapi()	do { } while (0)
-#endif
-
 #ifdef CONFIG_XFS_QUOTA
-# define vfs_insertquota(vfs)	vfs_insertops(vfsp, &xfs_qmops)
 extern void xfs_qm_init(void);
 extern void xfs_qm_exit(void);
 # define vfs_initquota()	xfs_qm_init()
 # define vfs_exitquota()	xfs_qm_exit()
 #else
-# define vfs_insertquota(vfs)	do { } while (0)
 # define vfs_initquota()	do { } while (0)
 # define vfs_exitquota()	do { } while (0)
 #endif
@@ -50,13 +38,7 @@ extern void xfs_qm_exit(void);
 # define set_posix_acl_flag(sb)	do { } while (0)
 #endif
 
-#ifdef CONFIG_XFS_SECURITY
-# define XFS_SECURITY_STRING	"security attributes, "
-# define ENOSECURITY		0
-#else
-# define XFS_SECURITY_STRING
-# define ENOSECURITY		EOPNOTSUPP
-#endif
+#define XFS_SECURITY_STRING	"security attributes, "
 
 #ifdef CONFIG_XFS_RT
 # define XFS_REALTIME_STRING	"realtime, "
@@ -107,18 +89,10 @@ struct block_device;
 
 extern __uint64_t xfs_max_file_offset(unsigned int);
 
-extern void xfs_initialize_vnode(struct xfs_mount *mp, bhv_vnode_t *vp,
-		struct xfs_inode *ip);
-
-extern void xfs_flush_inode(struct xfs_inode *);
-extern void xfs_flush_device(struct xfs_inode *);
-
-extern int  xfs_blkdev_get(struct xfs_mount *, const char *,
-				struct block_device **);
-extern void xfs_blkdev_put(struct block_device *);
 extern void xfs_blkdev_issue_flush(struct xfs_buftarg *);
 
 extern const struct export_operations xfs_export_operations;
+extern struct xattr_handler *xfs_xattr_handlers[];
 
 #define XFS_M(sb)		((struct xfs_mount *)((sb)->s_fs_info))
 

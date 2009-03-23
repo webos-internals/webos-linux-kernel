@@ -4,6 +4,19 @@
 comment "USB Host Controller Drivers"
 	depends on USB
 
+config USB_C67X00_HCD
+	tristate "Cypress C67x00 HCD support"
+	depends on USB
+	help
+	  The Cypress C67x00 (EZ-Host/EZ-OTG) chips are dual-role
+	  host/peripheral/OTG USB controllers.
+
+	  Enable this option to support this chip in host controller mode.
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called c67x00.
+
 config USB_EHCI_HCD
 	tristate "EHCI HCD (USB 2.0) support"
 	depends on USB && USB_ARCH_HAS_EHCI
@@ -29,18 +42,9 @@ config USB_EHCI_HCD
 	  To compile this driver as a module, choose M here: the
 	  module will be called ehci-hcd.
 
-config USB_EHCI_SPLIT_ISO
-	bool "Full speed ISO transactions (EXPERIMENTAL)"
-	depends on USB_EHCI_HCD && EXPERIMENTAL
-	default n
-	---help---
-	  This code is new and hasn't been used with many different
-	  EHCI or USB 2.0 transaction translator implementations.
-	  It should work for ISO-OUT transfers, like audio.
-
 config USB_EHCI_ROOT_HUB_TT
-	bool "Root Hub Transaction Translators (EXPERIMENTAL)"
-	depends on USB_EHCI_HCD && EXPERIMENTAL
+	bool "Root Hub Transaction Translators"
+	depends on USB_EHCI_HCD
 	---help---
 	  Some EHCI chips have vendor-specific extensions to integrate
 	  transaction translators, so that no OHCI or UHCI companion
@@ -69,20 +73,41 @@ config USB_EHCI_TT_NEWSCHED
 
 config USB_EHCI_BIG_ENDIAN_MMIO
 	bool
-	depends on USB_EHCI_HCD && (PPC_CELLEB || PPC_PS3 || 440EPX)
+	depends on USB_EHCI_HCD && (PPC_CELLEB || PPC_PS3 || 440EPX || ARCH_IXP4XX)
 	default y
 
 config USB_EHCI_BIG_ENDIAN_DESC
 	bool
-	depends on USB_EHCI_HCD && 440EPX
+	depends on USB_EHCI_HCD && (440EPX || ARCH_IXP4XX)
 	default y
 
 config USB_EHCI_FSL
-	bool
+	bool "Support for Freescale on-chip EHCI USB controller"
+	depends on USB_EHCI_HCD && FSL_SOC
 	select USB_EHCI_ROOT_HUB_TT
-	default y if MPC834x || PPC_MPC831x
 	---help---
 	  Variation of ARC USB block used in some Freescale chips.
+
+config USB_EHCI_HCD_PPC_OF
+	bool "EHCI support for PPC USB controller on OF platform bus"
+	depends on USB_EHCI_HCD && PPC_OF
+	default y
+	---help---
+	  Enables support for the USB controller present on the PowerPC
+	  OpenFirmware platform bus.
+
+config USB_OXU210HP_HCD
+	tristate "OXU210HP HCD support"
+	depends on USB
+	---help---
+	  The OXU210HP is an USB host/OTG/device controller. Enable this
+	  option if your board has this chip. If unsure, say N.
+
+	  This driver does not support isochronous transfers and doesn't
+	  implement OTG nor USB device controllers.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called oxu210hp-hcd.
 
 config USB_ISP116X_HCD
 	tristate "ISP116X HCD support"
@@ -96,11 +121,26 @@ config USB_ISP116X_HCD
 	  To compile this driver as a module, choose M here: the
 	  module will be called isp116x-hcd.
 
+config USB_ISP1760_HCD
+	tristate "ISP 1760 HCD support"
+	depends on USB && EXPERIMENTAL && (PCI || PPC_OF)
+	---help---
+	  The ISP1760 chip is a USB 2.0 host controller.
+
+	  This driver does not support isochronous transfers or OTG.
+	  This USB controller is usually attached to a non-DMA-Master
+	  capable bus. NXP's eval kit brings this chip on PCI card
+	  where the chip itself is behind a PLB to simulate such
+	  a bus.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called isp1760.
+
 config USB_OHCI_HCD
 	tristate "OHCI HCD support"
 	depends on USB && USB_ARCH_HAS_OHCI
 	select ISP1301_OMAP if MACH_OMAP_H2 || MACH_OMAP_H3
-	select I2C if ARCH_PNX4008
+	select USB_OTG_UTILS if ARCH_OMAP
 	---help---
 	  The Open Host Controller Interface (OHCI) is a standard for accessing
 	  USB 1.1 host controller hardware.  It does more in hardware than Intel's
@@ -199,6 +239,23 @@ config USB_UHCI_HCD
 	  To compile this driver as a module, choose M here: the
 	  module will be called uhci-hcd.
 
+config USB_FHCI_HCD
+	tristate "Freescale QE USB Host Controller support"
+	depends on USB && OF_GPIO && QE_GPIO && QUICC_ENGINE
+	select FSL_GTM
+	select QE_USB
+	help
+	  This driver enables support for Freescale QE USB Host Controller
+	  (as found on MPC8360 and MPC8323 processors), the driver supports
+	  Full and Low Speed USB.
+
+config FHCI_DEBUG
+	bool "Freescale QE USB Host Controller debug support"
+	depends on USB_FHCI_HCD && DEBUG_FS
+	help
+	  Say "y" to see some FHCI debug information and statistics
+	  throught debugfs.
+
 config USB_U132_HCD
 	tristate "Elan U132 Adapter Host Controller"
 	depends on USB && USB_FTDI_ELAN
@@ -261,3 +318,37 @@ config USB_R8A66597_HCD
 	  To compile this driver as a module, choose M here: the
 	  module will be called r8a66597-hcd.
 
+config SUPERH_ON_CHIP_R8A66597
+	boolean "Enable SuperH on-chip R8A66597 USB"
+	depends on USB_R8A66597_HCD && (CPU_SUBTYPE_SH7366 || CPU_SUBTYPE_SH7723)
+	help
+	   This driver enables support for the on-chip R8A66597 in the
+	   SH7366 and SH7723 processors.
+
+config USB_WHCI_HCD
+	tristate "Wireless USB Host Controller Interface (WHCI) driver (EXPERIMENTAL)"
+	depends on EXPERIMENTAL
+	depends on PCI && USB
+	select USB_WUSB
+	select UWB_WHCI
+	help
+	  A driver for PCI-based Wireless USB Host Controllers that are
+	  compliant with the WHCI specification.
+
+	  To compile this driver a module, choose M here: the module
+	  will be called "whci-hcd".
+
+config USB_HWA_HCD
+	tristate "Host Wire Adapter (HWA) driver (EXPERIMENTAL)"
+	depends on EXPERIMENTAL
+	depends on USB
+	select USB_WUSB
+	select UWB_HWA
+	help
+	  This driver enables you to connect Wireless USB devices to
+	  your system using a Host Wire Adaptor USB dongle. This is an
+	  UWB Radio Controller and WUSB Host Controller connected to
+	  your machine via USB (specified in WUSB1.0).
+
+	  To compile this driver a module, choose M here: the module
+	  will be called "hwa-hc".

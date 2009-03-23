@@ -25,7 +25,6 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/pci.h>
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/control.h>
 #include <sound/initval.h>
@@ -98,6 +97,8 @@ static int snd_cs5535audio_playback_open(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
 	runtime->hw = snd_cs5535audio_playback;
+	runtime->hw.rates = cs5535au->ac97->rates[AC97_RATES_FRONT_DAC];
+	snd_pcm_limit_hw_rates(runtime);
 	cs5535au->playback_substream = substream;
 	runtime->private_data = &(cs5535au->dmas[CS5535AUDIO_DMA_PLAYBACK]);
 	if ((err = snd_pcm_hw_constraint_integer(runtime,
@@ -259,6 +260,9 @@ static int snd_cs5535audio_hw_params(struct snd_pcm_substream *substream,
 	err = cs5535audio_build_dma_packets(cs5535au, dma, substream,
 					    params_periods(hw_params),
 					    params_period_bytes(hw_params));
+	if (!err)
+		dma->pcm_open_flag = 1;
+
 	return err;
 }
 
@@ -267,6 +271,15 @@ static int snd_cs5535audio_hw_free(struct snd_pcm_substream *substream)
 	struct cs5535audio *cs5535au = snd_pcm_substream_chip(substream);
 	struct cs5535audio_dma *dma = substream->runtime->private_data;
 
+	if (dma->pcm_open_flag) {
+		if (substream == cs5535au->playback_substream)
+			snd_ac97_update_power(cs5535au->ac97,
+					AC97_PCM_FRONT_DAC_RATE, 0);
+		else
+			snd_ac97_update_power(cs5535au->ac97,
+					AC97_PCM_LR_ADC_RATE, 0);
+		dma->pcm_open_flag = 0;
+	}
 	cs5535audio_clear_dma_packets(cs5535au, dma, substream);
 	return snd_pcm_lib_free_pages(substream);
 }
@@ -343,16 +356,21 @@ static int snd_cs5535audio_capture_open(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
 	runtime->hw = snd_cs5535audio_capture;
+	runtime->hw.rates = cs5535au->ac97->rates[AC97_RATES_ADC];
+	snd_pcm_limit_hw_rates(runtime);
 	cs5535au->capture_substream = substream;
 	runtime->private_data = &(cs5535au->dmas[CS5535AUDIO_DMA_CAPTURE]);
 	if ((err = snd_pcm_hw_constraint_integer(runtime,
 					 SNDRV_PCM_HW_PARAM_PERIODS)) < 0)
 		return err;
+	olpc_capture_open(cs5535au->ac97);
 	return 0;
 }
 
 static int snd_cs5535audio_capture_close(struct snd_pcm_substream *substream)
 {
+	struct cs5535audio *cs5535au = snd_pcm_substream_chip(substream);
+	olpc_capture_close(cs5535au->ac97);
 	return 0;
 }
 

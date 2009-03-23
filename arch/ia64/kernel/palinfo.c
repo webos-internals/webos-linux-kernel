@@ -900,12 +900,6 @@ static void
 palinfo_smp_call(void *info)
 {
 	palinfo_smp_data_t *data = (palinfo_smp_data_t *)info;
-	if (data == NULL) {
-		printk(KERN_ERR "palinfo: data pointer is NULL\n");
-		data->ret = 0; /* no output */
-		return;
-	}
-	/* does this actual call */
 	data->ret = (*data->func)(data->page);
 }
 
@@ -927,7 +921,7 @@ int palinfo_handle_smp(pal_func_cpu_u_t *f, char *page)
 
 
 	/* will send IPI to other CPU and wait for completion of remote call */
-	if ((ret=smp_call_function_single(f->req_cpu, palinfo_smp_call, &ptr, 0, 1))) {
+	if ((ret=smp_call_function_single(f->req_cpu, palinfo_smp_call, &ptr, 1))) {
 		printk(KERN_ERR "palinfo: remote CPU call from %d to %d on function %d: "
 		       "error %d\n", smp_processor_id(), f->req_cpu, f->func_id, ret);
 		return 0;
@@ -1053,7 +1047,7 @@ static int __cpuinit palinfo_cpu_callback(struct notifier_block *nfb,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block palinfo_cpu_notifier __cpuinitdata =
+static struct notifier_block __refdata palinfo_cpu_notifier =
 {
 	.notifier_call = palinfo_cpu_callback,
 	.priority = 0,

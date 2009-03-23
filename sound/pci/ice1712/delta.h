@@ -31,13 +31,16 @@
 		"{MidiMan M Audio,Delta DiO 2496},"\
 		"{MidiMan M Audio,Delta 66},"\
 		"{MidiMan M Audio,Delta 44},"\
+		"{MidiMan M Audio,Delta 410},"\
 		"{MidiMan M Audio,Audiophile 24/96},"\
 		"{Digigram,VX442},"\
 		"{Lionstracs,Mediastation},"
 
 #define ICE1712_SUBDEVICE_DELTA1010	0x121430d6
+#define ICE1712_SUBDEVICE_DELTA1010E	0xff1430d6
 #define ICE1712_SUBDEVICE_DELTADIO2496	0x121431d6
 #define ICE1712_SUBDEVICE_DELTA66	0x121432d6
+#define ICE1712_SUBDEVICE_DELTA66E	0xff1432d6
 #define ICE1712_SUBDEVICE_DELTA44	0x121433d6
 #define ICE1712_SUBDEVICE_AUDIOPHILE	0x121434d6
 #define ICE1712_SUBDEVICE_DELTA410	0x121438d6

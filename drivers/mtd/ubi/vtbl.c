@@ -86,8 +86,10 @@ int ubi_change_vtbl_record(struct ubi_device *ubi, int idx,
 {
 	int i, err;
 	uint32_t crc;
+	struct ubi_volume *layout_vol;
 
 	ubi_assert(idx >= 0 && idx < ubi->vtbl_slots);
+	layout_vol = ubi->volumes[vol_id2idx(ubi, UBI_LAYOUT_VOLUME_ID)];
 
 	if (!vtbl_rec)
 		vtbl_rec = &empty_vtbl_record;
@@ -96,31 +98,75 @@ int ubi_change_vtbl_record(struct ubi_device *ubi, int idx,
 		vtbl_rec->crc = cpu_to_be32(crc);
 	}
 
-	mutex_lock(&ubi->vtbl_mutex);
 	memcpy(&ubi->vtbl[idx], vtbl_rec, sizeof(struct ubi_vtbl_record));
 	for (i = 0; i < UBI_LAYOUT_VOLUME_EBS; i++) {
-		err = ubi_eba_unmap_leb(ubi, UBI_LAYOUT_VOL_ID, i);
-		if (err) {
-			mutex_unlock(&ubi->vtbl_mutex);
+		err = ubi_eba_unmap_leb(ubi, layout_vol, i);
+		if (err)
 			return err;
-		}
-		err = ubi_eba_write_leb(ubi, UBI_LAYOUT_VOL_ID, i, ubi->vtbl, 0,
+
+		err = ubi_eba_write_leb(ubi, layout_vol, i, ubi->vtbl, 0,
 					ubi->vtbl_size, UBI_LONGTERM);
-		if (err) {
-			mutex_unlock(&ubi->vtbl_mutex);
+		if (err)
 			return err;
-		}
 	}
 
 	paranoid_vtbl_check(ubi);
-	mutex_unlock(&ubi->vtbl_mutex);
-	return ubi_wl_flush(ubi);
+	return 0;
 }
 
 /**
- * vol_til_check - check if volume table is not corrupted and contains sensible
- * data.
+ * ubi_vtbl_rename_volumes - rename UBI volumes in the volume table.
+ * @ubi: UBI device description object
+ * @rename_list: list of &struct ubi_rename_entry objects
  *
+ * This function re-names multiple volumes specified in @req in the volume
+ * table. Returns zero in case of success and a negative error code in case of
+ * failure.
+ */
+int ubi_vtbl_rename_volumes(struct ubi_device *ubi,
+			    struct list_head *rename_list)
+{
+	int i, err;
+	struct ubi_rename_entry *re;
+	struct ubi_volume *layout_vol;
+
+	list_for_each_entry(re, rename_list, list) {
+		uint32_t crc;
+		struct ubi_volume *vol = re->desc->vol;
+		struct ubi_vtbl_record *vtbl_rec = &ubi->vtbl[vol->vol_id];
+
+		if (re->remove) {
+			memcpy(vtbl_rec, &empty_vtbl_record,
+			       sizeof(struct ubi_vtbl_record));
+			continue;
+		}
+
+		vtbl_rec->name_len = cpu_to_be16(re->new_name_len);
+		memcpy(vtbl_rec->name, re->new_name, re->new_name_len);
+		memset(vtbl_rec->name + re->new_name_len, 0,
+		       UBI_VOL_NAME_MAX + 1 - re->new_name_len);
+		crc = crc32(UBI_CRC32_INIT, vtbl_rec,
+			    UBI_VTBL_RECORD_SIZE_CRC);
+		vtbl_rec->crc = cpu_to_be32(crc);
+	}
+
+	layout_vol = ubi->volumes[vol_id2idx(ubi, UBI_LAYOUT_VOLUME_ID)];
+	for (i = 0; i < UBI_LAYOUT_VOLUME_EBS; i++) {
+		err = ubi_eba_unmap_leb(ubi, layout_vol, i);
+		if (err)
+			return err;
+
+		err = ubi_eba_write_leb(ubi, layout_vol, i, ubi->vtbl, 0,
+					ubi->vtbl_size, UBI_LONGTERM);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
+/**
+ * vtbl_check - check if volume table is not corrupted and sensible.
  * @ubi: UBI device description object
  * @vtbl: volume table
  *
@@ -131,7 +177,7 @@ static int vtbl_check(const struct ubi_device *ubi,
 		      const struct ubi_vtbl_record *vtbl)
 {
 	int i, n, reserved_pebs, alignment, data_pad, vol_type, name_len;
-	int upd_marker;
+	int upd_marker, err;
 	uint32_t crc;
 	const char *name;
 
@@ -157,7 +203,7 @@ static int vtbl_check(const struct ubi_device *ubi,
 		if (reserved_pebs == 0) {
 			if (memcmp(&vtbl[i], &empty_vtbl_record,
 						UBI_VTBL_RECORD_SIZE)) {
-				dbg_err("bad empty record");
+				err = 2;
 				goto bad;
 			}
 			continue;
@@ -165,56 +211,57 @@ static int vtbl_check(const struct ubi_device *ubi,
 
 		if (reserved_pebs < 0 || alignment < 0 || data_pad < 0 ||
 		    name_len < 0) {
-			dbg_err("negative values");
+			err = 3;
 			goto bad;
 		}
 
 		if (alignment > ubi->leb_size || alignment == 0) {
-			dbg_err("bad alignment");
+			err = 4;
 			goto bad;
 		}
 
-		n = alignment % ubi->min_io_size;
+		n = alignment & (ubi->min_io_size - 1);
 		if (alignment != 1 && n) {
-			dbg_err("alignment is not multiple of min I/O unit");
+			err = 5;
 			goto bad;
 		}
 
 		n = ubi->leb_size % alignment;
 		if (data_pad != n) {
 			dbg_err("bad data_pad, has to be %d", n);
+			err = 6;
 			goto bad;
 		}
 
 		if (vol_type != UBI_VID_DYNAMIC && vol_type != UBI_VID_STATIC) {
-			dbg_err("bad vol_type");
+			err = 7;
 			goto bad;
 		}
 
 		if (upd_marker != 0 && upd_marker != 1) {
-			dbg_err("bad upd_marker");
+			err = 8;
 			goto bad;
 		}
 
 		if (reserved_pebs > ubi->good_peb_count) {
-			dbg_err("too large reserved_pebs, good PEBs %d",
-				ubi->good_peb_count);
+			dbg_err("too large reserved_pebs %d, good PEBs %d",
+				reserved_pebs, ubi->good_peb_count);
+			err = 9;
 			goto bad;
 		}
 
 		if (name_len > UBI_VOL_NAME_MAX) {
-			dbg_err("too long volume name, max %d",
-				UBI_VOL_NAME_MAX);
+			err = 10;
 			goto bad;
 		}
 
 		if (name[0] == '\0') {
-			dbg_err("NULL volume name");
+			err = 11;
 			goto bad;
 		}
 
 		if (name_len != strnlen(name, name_len + 1)) {
-			dbg_err("bad name_len");
+			err = 12;
 			goto bad;
 		}
 	}
@@ -239,7 +286,7 @@ static int vtbl_check(const struct ubi_device *ubi,
 	return 0;
 
 bad:
-	ubi_err("volume table check failed, record %d", i);
+	ubi_err("volume table check failed: record %d, error %d", i, err);
 	ubi_dbg_dump_vtbl_record(&vtbl[i], i);
 	return -EINVAL;
 }
@@ -273,7 +320,7 @@ static int create_vtbl(struct ubi_device *ubi, struct ubi_scan_info *si,
 	 * this volume table copy was found during scanning. It has to be wiped
 	 * out.
 	 */
-	sv = ubi_scan_find_sv(si, UBI_LAYOUT_VOL_ID);
+	sv = ubi_scan_find_sv(si, UBI_LAYOUT_VOLUME_ID);
 	if (sv)
 		old_seb = ubi_scan_find_seb(sv, copy);
 
@@ -285,13 +332,12 @@ retry:
 	}
 
 	vid_hdr->vol_type = UBI_VID_DYNAMIC;
-	vid_hdr->vol_id = cpu_to_be32(UBI_LAYOUT_VOL_ID);
+	vid_hdr->vol_id = cpu_to_be32(UBI_LAYOUT_VOLUME_ID);
 	vid_hdr->compat = UBI_LAYOUT_VOLUME_COMPAT;
 	vid_hdr->data_size = vid_hdr->used_ebs =
 			     vid_hdr->data_pad = cpu_to_be32(0);
 	vid_hdr->lnum = cpu_to_be32(copy);
 	vid_hdr->sqnum = cpu_to_be64(++si->max_sqnum);
-	vid_hdr->leb_ver = cpu_to_be32(old_seb ? old_seb->leb_ver + 1: 0);
 
 	/* The EC header is already there, write the VID header */
 	err = ubi_io_write_vid_hdr(ubi, new_seb->pnum, vid_hdr);
@@ -374,7 +420,7 @@ static struct ubi_vtbl_record *process_lvol(struct ubi_device *ubi,
 	 *    to LEB 0.
 	 */
 
-	dbg_msg("check layout volume");
+	dbg_gen("check layout volume");
 
 	/* Read both LEB 0 and LEB 1 into memory */
 	ubi_rb_for_each_entry(rb, seb, &sv->root, u.rb) {
@@ -388,7 +434,16 @@ static struct ubi_vtbl_record *process_lvol(struct ubi_device *ubi,
 		err = ubi_io_read_data(ubi, leb[seb->lnum], seb->pnum, 0,
 				       ubi->vtbl_size);
 		if (err == UBI_IO_BITFLIPS || err == -EBADMSG)
-			/* Scrub the PEB later */
+			/*
+			 * Scrub the PEB later. Note, -EBADMSG indicates an
+			 * uncorrectable ECC error, but we have our own CRC and
+			 * the data will be checked later. If the data is OK,
+			 * the PEB will be scrubbed (because we set
+			 * seb->scrub). If the data is not OK, the contents of
+			 * the PEB will be recovered from the second copy, and
+			 * seb->scrub will be cleared in
+			 * 'ubi_scan_add_used()'.
+			 */
 			seb->scrub = 1;
 		else if (err)
 			goto out_free;
@@ -404,7 +459,8 @@ static struct ubi_vtbl_record *process_lvol(struct ubi_device *ubi,
 	if (!leb_corrupted[0]) {
 		/* LEB 0 is OK */
 		if (leb[1])
-			leb_corrupted[1] = memcmp(leb[0], leb[1], ubi->vtbl_size);
+			leb_corrupted[1] = memcmp(leb[0], leb[1],
+						  ubi->vtbl_size);
 		if (leb_corrupted[1]) {
 			ubi_warn("volume table copy #2 is corrupted");
 			err = create_vtbl(ubi, si, 1, leb[0]);
@@ -518,6 +574,18 @@ static int init_volumes(struct ubi_device *ubi, const struct ubi_scan_info *si,
 		vol->name[vol->name_len] = '\0';
 		vol->vol_id = i;
 
+		if (vtbl[i].flags & UBI_VTBL_AUTORESIZE_FLG) {
+			/* Auto re-size flag may be set only for one volume */
+			if (ubi->autoresize_vol_id != -1) {
+				ubi_err("more than one auto-resize volume (%d "
+					"and %d)", ubi->autoresize_vol_id, i);
+				kfree(vol);
+				return -EINVAL;
+			}
+
+			ubi->autoresize_vol_id = i;
+		}
+
 		ubi_assert(!ubi->volumes[i]);
 		ubi->volumes[i] = vol;
 		ubi->vol_count += 1;
@@ -568,6 +636,7 @@ static int init_volumes(struct ubi_device *ubi, const struct ubi_scan_info *si,
 		vol->last_eb_bytes = sv->last_data_size;
 	}
 
+	/* And add the layout volume */
 	vol = kzalloc(sizeof(struct ubi_volume), GFP_KERNEL);
 	if (!vol)
 		return -ENOMEM;
@@ -582,7 +651,8 @@ static int init_volumes(struct ubi_device *ubi, const struct ubi_scan_info *si,
 	vol->last_eb_bytes = vol->reserved_pebs;
 	vol->used_bytes =
 		(long long)vol->used_ebs * (ubi->leb_size - vol->data_pad);
-	vol->vol_id = UBI_LAYOUT_VOL_ID;
+	vol->vol_id = UBI_LAYOUT_VOLUME_ID;
+	vol->ref_count = 1;
 
 	ubi_assert(!ubi->volumes[i]);
 	ubi->volumes[vol_id2idx(ubi, vol->vol_id)] = vol;
@@ -610,30 +680,32 @@ static int init_volumes(struct ubi_device *ubi, const struct ubi_scan_info *si,
 static int check_sv(const struct ubi_volume *vol,
 		    const struct ubi_scan_volume *sv)
 {
+	int err;
+
 	if (sv->highest_lnum >= vol->reserved_pebs) {
-		dbg_err("bad highest_lnum");
+		err = 1;
 		goto bad;
 	}
 	if (sv->leb_count > vol->reserved_pebs) {
-		dbg_err("bad leb_count");
+		err = 2;
 		goto bad;
 	}
 	if (sv->vol_type != vol->vol_type) {
-		dbg_err("bad vol_type");
+		err = 3;
 		goto bad;
 	}
 	if (sv->used_ebs > vol->reserved_pebs) {
-		dbg_err("bad used_ebs");
+		err = 4;
 		goto bad;
 	}
 	if (sv->data_pad != vol->data_pad) {
-		dbg_err("bad data_pad");
+		err = 5;
 		goto bad;
 	}
 	return 0;
 
 bad:
-	ubi_err("bad scanning information");
+	ubi_err("bad scanning information, error %d", err);
 	ubi_dbg_dump_sv(sv);
 	ubi_dbg_dump_vol_info(vol);
 	return -EINVAL;
@@ -662,13 +734,12 @@ static int check_scanning_info(const struct ubi_device *ubi,
 		return -EINVAL;
 	}
 
-	if (si->highest_vol_id >= ubi->vtbl_slots + UBI_INT_VOL_COUNT&&
+	if (si->highest_vol_id >= ubi->vtbl_slots + UBI_INT_VOL_COUNT &&
 	    si->highest_vol_id < UBI_INTERNAL_VOL_START) {
 		ubi_err("too large volume ID %d found by scanning",
 			si->highest_vol_id);
 		return -EINVAL;
 	}
-
 
 	for (i = 0; i < ubi->vtbl_slots + UBI_INT_VOL_COUNT; i++) {
 		cond_resched();
@@ -707,8 +778,7 @@ static int check_scanning_info(const struct ubi_device *ubi,
 }
 
 /**
- * ubi_read_volume_table - read volume table.
- * information.
+ * ubi_read_volume_table - read the volume table.
  * @ubi: UBI device description object
  * @si: scanning information
  *
@@ -734,7 +804,7 @@ int ubi_read_volume_table(struct ubi_device *ubi, struct ubi_scan_info *si)
 	ubi->vtbl_size = ubi->vtbl_slots * UBI_VTBL_RECORD_SIZE;
 	ubi->vtbl_size = ALIGN(ubi->vtbl_size, ubi->min_io_size);
 
-	sv = ubi_scan_find_sv(si, UBI_LAYOUT_VOL_ID);
+	sv = ubi_scan_find_sv(si, UBI_LAYOUT_VOLUME_ID);
 	if (!sv) {
 		/*
 		 * No logical eraseblocks belonging to the layout volume were
@@ -787,11 +857,10 @@ int ubi_read_volume_table(struct ubi_device *ubi, struct ubi_scan_info *si)
 
 out_free:
 	vfree(ubi->vtbl);
-	for (i = 0; i < ubi->vtbl_slots + UBI_INT_VOL_COUNT; i++)
-		if (ubi->volumes[i]) {
-			kfree(ubi->volumes[i]);
-			ubi->volumes[i] = NULL;
-		}
+	for (i = 0; i < ubi->vtbl_slots + UBI_INT_VOL_COUNT; i++) {
+		kfree(ubi->volumes[i]);
+		ubi->volumes[i] = NULL;
+	}
 	return err;
 }
 

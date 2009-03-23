@@ -66,6 +66,7 @@ struct ehca_av;
 #include "ehca_irq.h"
 
 #define EHCA_EQE_CACHE_SIZE 20
+#define EHCA_MAX_NUM_QUEUES 0xffff
 
 struct ehca_eqe_cache_entry {
 	struct ehca_eqe *eqe;
@@ -94,9 +95,14 @@ struct ehca_sma_attr {
 
 struct ehca_sport {
 	struct ib_cq *ibcq_aqp1;
-	struct ib_qp *ibqp_aqp1;
+	struct ib_qp *ibqp_sqp[2];
+	/* lock to serialze modify_qp() calls for sqp in normal
+	 * and irq path (when event PORT_ACTIVE is received first time)
+	 */
+	spinlock_t mod_sqp_lock;
 	enum ib_port_state port_state;
 	struct ehca_sma_attr saved_attr;
+	u32 pma_qp_nr;
 };
 
 #define HCA_CAP_MR_PGSIZE_4K  0x80000000
@@ -122,12 +128,15 @@ struct ehca_shca {
 	/* MR pgsize: bit 0-3 means 4K, 64K, 1M, 16M respectively */
 	u32 hca_cap_mr_pgsize;
 	int max_mtu;
+	int max_num_qps;
+	int max_num_cqs;
+	atomic_t num_cqs;
+	atomic_t num_qps;
 };
 
 struct ehca_pd {
 	struct ib_pd ib_pd;
 	struct ipz_pd fw_pd;
-	u32 ownpid;
 	/* small queue mgmt */
 	struct mutex lock;
 	struct list_head free[2];
@@ -141,6 +150,38 @@ enum ehca_ext_qp_type {
 	EQPT_SRQ       = 3,
 };
 
+/* struct to cache modify_qp()'s parms for GSI/SMI qp */
+struct ehca_mod_qp_parm {
+	int mask;
+	struct ib_qp_attr attr;
+};
+
+#define EHCA_MOD_QP_PARM_MAX 4
+
+#define QMAP_IDX_MASK 0xFFFFULL
+
+/* struct for tracking if cqes have been reported to the application */
+struct ehca_qmap_entry {
+	u16 app_wr_id;
+	u8 reported;
+	u8 cqe_req;
+};
+
+struct ehca_queue_map {
+	struct ehca_qmap_entry *map;
+	unsigned int entries;
+	unsigned int tail;
+	unsigned int left_to_poll;
+	unsigned int next_wqe_idx;   /* Idx to first wqe to be flushed */
+};
+
+/* function to calculate the next index for the qmap */
+static inline unsigned int next_index(unsigned int cur_index, unsigned int limit)
+{
+	unsigned int temp = cur_index + 1;
+	return (temp == limit) ? 0 : temp;
+}
+
 struct ehca_qp {
 	union {
 		struct ib_qp ib_qp;
@@ -148,8 +189,11 @@ struct ehca_qp {
 	};
 	u32 qp_type;
 	enum ehca_ext_qp_type ext_type;
+	enum ib_qp_state state;
 	struct ipz_queue ipz_squeue;
+	struct ehca_queue_map sq_map;
 	struct ipz_queue ipz_rqueue;
+	struct ehca_queue_map rq_map;
 	struct h_galpas galpas;
 	u32 qkey;
 	u32 real_qp_num;
@@ -164,10 +208,23 @@ struct ehca_qp {
 	struct ehca_cq *recv_cq;
 	unsigned int sqerr_purgeflag;
 	struct hlist_node list_entries;
+	/* array to cache modify_qp()'s parms for GSI/SMI qp */
+	struct ehca_mod_qp_parm *mod_qp_parm;
+	int mod_qp_parm_idx;
 	/* mmap counter for resources mapped into user space */
 	u32 mm_count_squeue;
 	u32 mm_count_rqueue;
 	u32 mm_count_galpa;
+	/* unsolicited ack circumvention */
+	int unsol_ack_circ;
+	int mtu_shift;
+	u32 message_count;
+	u32 packet_count;
+	atomic_t nr_events; /* events seen */
+	wait_queue_head_t wait_completion;
+	int mig_armed;
+	struct list_head sq_err_node;
+	struct list_head rq_err_node;
 };
 
 #define IS_SRQ(qp) (qp->ext_type == EQPT_SRQ)
@@ -194,10 +251,11 @@ struct ehca_cq {
 	atomic_t nr_events; /* #events seen */
 	wait_queue_head_t wait_completion;
 	spinlock_t task_lock;
-	u32 ownpid;
 	/* mmap counter for resources mapped into user space */
 	u32 mm_count_queue;
 	u32 mm_count_galpa;
+	struct list_head sqp_err_list;
+	struct list_head rqp_err_list;
 };
 
 enum ehca_mr_flag {
@@ -323,6 +381,9 @@ extern int ehca_port_act_time;
 extern int ehca_use_hp_mr;
 extern int ehca_scaling_code;
 extern int ehca_lock_hcalls;
+extern int ehca_nr_ports;
+extern int ehca_max_cq;
+extern int ehca_max_qp;
 
 struct ipzu_queue_resp {
 	u32 qe_size;      /* queue entry size */

@@ -15,6 +15,7 @@
 #include <linux/poll.h>
 #include <linux/compat.h>
 #include <linux/mm.h>
+#include <linux/smp_lock.h>
 
 #include <asm/uaccess.h>
 
@@ -36,6 +37,7 @@
 #define MON_IOCX_GET   _IOW(MON_IOC_MAGIC, 6, struct mon_bin_get)
 #define MON_IOCX_MFETCH _IOWR(MON_IOC_MAGIC, 7, struct mon_bin_mfetch)
 #define MON_IOCH_MFLUSH _IO(MON_IOC_MAGIC, 8)
+
 #ifdef CONFIG_COMPAT
 #define MON_IOCX_GET32 _IOW(MON_IOC_MAGIC, 6, struct mon_bin_get32)
 #define MON_IOCX_MFETCH32 _IOWR(MON_IOC_MAGIC, 7, struct mon_bin_mfetch32)
@@ -527,14 +529,17 @@ static int mon_bin_open(struct inode *inode, struct file *file)
 	size_t size;
 	int rc;
 
+	lock_kernel();
 	mutex_lock(&mon_lock);
 	if ((mbus = mon_bus_lookup(iminor(inode))) == NULL) {
 		mutex_unlock(&mon_lock);
+		unlock_kernel();
 		return -ENODEV;
 	}
 	if (mbus != &mon_bus0 && mbus->u_bus == NULL) {
 		printk(KERN_ERR TAG ": consistency error on open\n");
 		mutex_unlock(&mon_lock);
+		unlock_kernel();
 		return -ENODEV;
 	}
 
@@ -568,6 +573,7 @@ static int mon_bin_open(struct inode *inode, struct file *file)
 
 	file->private_data = rp;
 	mutex_unlock(&mon_lock);
+	unlock_kernel();
 	return 0;
 
 err_allocbuff:
@@ -576,6 +582,7 @@ err_allocvec:
 	kfree(rp);
 err_alloc:
 	mutex_unlock(&mon_lock);
+	unlock_kernel();
 	return rc;
 }
 
@@ -681,7 +688,10 @@ static ssize_t mon_bin_read(struct file *file, char __user *buf,
 	}
 
 	if (rp->b_read >= sizeof(struct mon_bin_hdr)) {
-		step_len = min(nbytes, (size_t)ep->len_cap);
+		step_len = ep->len_cap;
+		step_len -= rp->b_read - sizeof(struct mon_bin_hdr);
+		if (step_len > nbytes)
+			step_len = nbytes;
 		offset = rp->b_out + PKT_SIZE;
 		offset += rp->b_read - sizeof(struct mon_bin_hdr);
 		if (offset >= rp->b_size)
@@ -912,21 +922,6 @@ static int mon_bin_ioctl(struct inode *inode, struct file *file,
 		}
 		break;
 
-#ifdef CONFIG_COMPAT
-	case MON_IOCX_GET32: {
-		struct mon_bin_get32 getb;
-
-		if (copy_from_user(&getb, (void __user *)arg,
-					    sizeof(struct mon_bin_get32)))
-			return -EFAULT;
-
-		ret = mon_bin_get_event(file, rp,
-		    compat_ptr(getb.hdr32), compat_ptr(getb.data32),
-		    getb.alloc32);
-		}
-		break;
-#endif
-
 	case MON_IOCX_MFETCH:
 		{
 		struct mon_bin_mfetch mfetch;
@@ -952,35 +947,6 @@ static int mon_bin_ioctl(struct inode *inode, struct file *file,
 		ret = 0;
 		}
 		break;
-
-#ifdef CONFIG_COMPAT
-	case MON_IOCX_MFETCH32:
-		{
-		struct mon_bin_mfetch32 mfetch;
-		struct mon_bin_mfetch32 __user *uptr;
-
-		uptr = (struct mon_bin_mfetch32 __user *) compat_ptr(arg);
-
-		if (copy_from_user(&mfetch, uptr, sizeof(mfetch)))
-			return -EFAULT;
-
-		if (mfetch.nflush32) {
-			ret = mon_bin_flush(rp, mfetch.nflush32);
-			if (ret < 0)
-				return ret;
-			if (put_user(ret, &uptr->nflush32))
-				return -EFAULT;
-		}
-		ret = mon_bin_fetch(file, rp, compat_ptr(mfetch.offvec32),
-		    mfetch.nfetch32);
-		if (ret < 0)
-			return ret;
-		if (put_user(ret, &uptr->nfetch32))
-			return -EFAULT;
-		ret = 0;
-		}
-		break;
-#endif
 
 	case MON_IOCG_STATS: {
 		struct mon_bin_stats __user *sp;
@@ -1008,6 +974,73 @@ static int mon_bin_ioctl(struct inode *inode, struct file *file,
 
 	return ret;
 }
+
+#ifdef CONFIG_COMPAT
+static long mon_bin_compat_ioctl(struct file *file,
+    unsigned int cmd, unsigned long arg)
+{
+	struct mon_reader_bin *rp = file->private_data;
+	int ret;
+
+	switch (cmd) {
+
+	case MON_IOCX_GET32: {
+		struct mon_bin_get32 getb;
+
+		if (copy_from_user(&getb, (void __user *)arg,
+					    sizeof(struct mon_bin_get32)))
+			return -EFAULT;
+
+		ret = mon_bin_get_event(file, rp,
+		    compat_ptr(getb.hdr32), compat_ptr(getb.data32),
+		    getb.alloc32);
+		if (ret < 0)
+			return ret;
+		}
+		return 0;
+
+	case MON_IOCX_MFETCH32:
+		{
+		struct mon_bin_mfetch32 mfetch;
+		struct mon_bin_mfetch32 __user *uptr;
+
+		uptr = (struct mon_bin_mfetch32 __user *) compat_ptr(arg);
+
+		if (copy_from_user(&mfetch, uptr, sizeof(mfetch)))
+			return -EFAULT;
+
+		if (mfetch.nflush32) {
+			ret = mon_bin_flush(rp, mfetch.nflush32);
+			if (ret < 0)
+				return ret;
+			if (put_user(ret, &uptr->nflush32))
+				return -EFAULT;
+		}
+		ret = mon_bin_fetch(file, rp, compat_ptr(mfetch.offvec32),
+		    mfetch.nfetch32);
+		if (ret < 0)
+			return ret;
+		if (put_user(ret, &uptr->nfetch32))
+			return -EFAULT;
+		}
+		return 0;
+
+	case MON_IOCG_STATS:
+		return mon_bin_ioctl(NULL, file, cmd,
+					    (unsigned long) compat_ptr(arg));
+
+	case MON_IOCQ_URB_LEN:
+	case MON_IOCQ_RING_SIZE:
+	case MON_IOCT_RING_SIZE:
+	case MON_IOCH_MFLUSH:
+		return mon_bin_ioctl(NULL, file, cmd, arg);
+
+	default:
+		;
+	}
+	return -ENOTTY;
+}
+#endif /* CONFIG_COMPAT */
 
 static unsigned int
 mon_bin_poll(struct file *file, struct poll_table_struct *wait)
@@ -1045,33 +1078,31 @@ static void mon_bin_vma_close(struct vm_area_struct *vma)
 /*
  * Map ring pages to user space.
  */
-struct page *mon_bin_vma_nopage(struct vm_area_struct *vma,
-                                unsigned long address, int *type)
+static int mon_bin_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct mon_reader_bin *rp = vma->vm_private_data;
 	unsigned long offset, chunk_idx;
 	struct page *pageptr;
 
-	offset = (address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
+	offset = vmf->pgoff << PAGE_SHIFT;
 	if (offset >= rp->b_size)
-		return NOPAGE_SIGBUS;
+		return VM_FAULT_SIGBUS;
 	chunk_idx = offset / CHUNK_SIZE;
 	pageptr = rp->b_vec[chunk_idx].pg;
 	get_page(pageptr);
-	if (type)
-		*type = VM_FAULT_MINOR;
-	return pageptr;
+	vmf->page = pageptr;
+	return 0;
 }
 
-struct vm_operations_struct mon_bin_vm_ops = {
+static struct vm_operations_struct mon_bin_vm_ops = {
 	.open =     mon_bin_vma_open,
 	.close =    mon_bin_vma_close,
-	.nopage =   mon_bin_vma_nopage,
+	.fault =    mon_bin_vma_fault,
 };
 
-int mon_bin_mmap(struct file *filp, struct vm_area_struct *vma)
+static int mon_bin_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	/* don't do anything here: "nopage" will set up page table entries */
+	/* don't do anything here: "fault" will set up page table entries */
 	vma->vm_ops = &mon_bin_vm_ops;
 	vma->vm_flags |= VM_RESERVED;
 	vma->vm_private_data = filp->private_data;
@@ -1079,7 +1110,7 @@ int mon_bin_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
-struct file_operations mon_fops_binary = {
+static const struct file_operations mon_fops_binary = {
 	.owner =	THIS_MODULE,
 	.open =		mon_bin_open,
 	.llseek =	no_llseek,
@@ -1087,7 +1118,11 @@ struct file_operations mon_fops_binary = {
 	/* .write =	mon_text_write, */
 	.poll =		mon_bin_poll,
 	.ioctl =	mon_bin_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl =	mon_bin_compat_ioctl,
+#endif
 	.release =	mon_bin_release,
+	.mmap =		mon_bin_mmap,
 };
 
 static int mon_bin_wait_event(struct file *file, struct mon_reader_bin *rp)
@@ -1157,8 +1192,9 @@ int mon_bin_add(struct mon_bus *mbus, const struct usb_bus *ubus)
 	if (minor >= MON_BIN_MAX_MINOR)
 		return 0;
 
-	dev = device_create(mon_bin_class, ubus? ubus->controller: NULL,
-			MKDEV(MAJOR(mon_bin_dev0), minor), "usbmon%d", minor);
+	dev = device_create(mon_bin_class, ubus ? ubus->controller : NULL,
+			    MKDEV(MAJOR(mon_bin_dev0), minor), NULL,
+			    "usbmon%d", minor);
 	if (IS_ERR(dev))
 		return 0;
 

@@ -25,12 +25,12 @@
 
 #include <media/saa7146_vv.h>
 
-static int debug = 0;
+static int debug;
 module_param(debug, int, 0);
 MODULE_PARM_DESC(debug, "debug verbosity");
 
 /* global variables */
-static int hexium_num = 0;
+static int hexium_num;
 
 #define HEXIUM_HV_PCI6_ORION		1
 #define HEXIUM_ORION_1SVHS_3BNC		2
@@ -370,7 +370,7 @@ static int hexium_detach(struct saa7146_dev *dev)
 	return 0;
 }
 
-static int hexium_ioctl(struct saa7146_fh *fh, unsigned int cmd, void *arg)
+static long hexium_ioctl(struct saa7146_fh *fh, unsigned int cmd, void *arg)
 {
 	struct saa7146_dev *dev = fh->dev;
 	struct hexium *hexium = (struct hexium *) dev->ext_priv;

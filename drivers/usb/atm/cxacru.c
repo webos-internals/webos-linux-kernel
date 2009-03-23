@@ -38,6 +38,7 @@
 #include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/mutex.h>
+#include <asm/unaligned.h>
 
 #include "usbatm.h"
 
@@ -285,9 +286,7 @@ static ssize_t cxacru_sysfs_show_mac_address(struct device *dev,
 	struct usbatm_data *usbatm_instance = usb_get_intfdata(intf);
 	struct atm_dev *atm_dev = usbatm_instance->atm_dev;
 
-	return snprintf(buf, PAGE_SIZE, "%02x:%02x:%02x:%02x:%02x:%02x\n",
-			atm_dev->esi[0], atm_dev->esi[1], atm_dev->esi[2],
-			atm_dev->esi[3], atm_dev->esi[4], atm_dev->esi[5]);
+	return snprintf(buf, PAGE_SIZE, "%pM\n", atm_dev->esi);
 }
 
 static ssize_t cxacru_sysfs_show_adsl_state(struct device *dev,
@@ -444,7 +443,7 @@ CXACRU_ALL_FILES(INIT);
 /* the following three functions are stolen from drivers/usb/core/message.c */
 static void cxacru_blocking_completion(struct urb *urb)
 {
-	complete((struct completion *)urb->context);
+	complete(urb->context);
 }
 
 static void cxacru_timeout_kill(unsigned long data)
@@ -486,7 +485,7 @@ static int cxacru_cm(struct cxacru_data *instance, enum cxacru_cm_request cm,
 			usb_err(instance->usbatm, "requested transfer size too large (%d, %d)\n",
 				wbuflen, rbuflen);
 		ret = -ENOMEM;
-		goto fail;
+		goto err;
 	}
 
 	mutex_lock(&instance->cm_serialize);
@@ -566,6 +565,7 @@ static int cxacru_cm(struct cxacru_data *instance, enum cxacru_cm_request cm,
 	dbg("cm %#x", cm);
 fail:
 	mutex_unlock(&instance->cm_serialize);
+err:
 	return ret;
 }
 
@@ -573,7 +573,7 @@ static int cxacru_cm_get_array(struct cxacru_data *instance, enum cxacru_cm_requ
 			       u32 *data, int size)
 {
 	int ret, len;
-	u32 *buf;
+	__le32 *buf;
 	int offb, offd;
 	const int stride = CMD_PACKET_SIZE / (4 * 2) - 1;
 	int buflen =  ((size - 1) / stride + 1 + size * 2) * 4;
@@ -601,7 +601,7 @@ static int cxacru_cm_get_array(struct cxacru_data *instance, enum cxacru_cm_requ
 			offd = le32_to_cpu(buf[offb++]);
 			if (offd >= size) {
 				if (printk_ratelimit())
-					usb_err(instance->usbatm, "wrong index #%x in response to cm #%x\n",
+					usb_err(instance->usbatm, "wrong index %#x in response to cm %#x\n",
 						offd, cm);
 				ret = -EIO;
 				goto cleanup;
@@ -819,7 +819,7 @@ reschedule:
 }
 
 static int cxacru_fw(struct usb_device *usb_dev, enum cxacru_fw_request fw,
-		     u8 code1, u8 code2, u32 addr, u8 *data, int size)
+		     u8 code1, u8 code2, u32 addr, const u8 *data, int size)
 {
 	int ret;
 	u8 *buf;
@@ -837,7 +837,7 @@ static int cxacru_fw(struct usb_device *usb_dev, enum cxacru_fw_request fw,
 		buf[offb++] = l;
 		buf[offb++] = code1;
 		buf[offb++] = code2;
-		*((u32 *) (buf + offb)) = cpu_to_le32(addr);
+		put_unaligned(cpu_to_le32(addr), (__le32 *)(buf + offb));
 		offb += 4;
 		addr += l;
 		if(l)
@@ -874,8 +874,9 @@ static void cxacru_upload_firmware(struct cxacru_data *instance,
 	int off;
 	struct usbatm_data *usbatm = instance->usbatm;
 	struct usb_device *usb_dev = usbatm->usb_dev;
-	u16 signature[] = { usb_dev->descriptor.idVendor, usb_dev->descriptor.idProduct };
-	u32 val;
+	__le16 signature[] = { usb_dev->descriptor.idVendor,
+			       usb_dev->descriptor.idProduct };
+	__le32 val;
 
 	dbg("cxacru_upload_firmware");
 
@@ -955,7 +956,7 @@ static void cxacru_upload_firmware(struct cxacru_data *instance,
 	/* Load config data (le32), doing one packet at a time */
 	if (cf)
 		for (off = 0; off < cf->size / 4; ) {
-			u32 buf[CMD_PACKET_SIZE / 4 - 1];
+			__le32 buf[CMD_PACKET_SIZE / 4 - 1];
 			int i, len = min_t(int, cf->size / 4 - off, CMD_PACKET_SIZE / 4 / 2 - 1);
 			buf[0] = cpu_to_le32(len);
 			for (i = 0; i < len; i++, off++) {
@@ -1050,7 +1051,6 @@ static int cxacru_bind(struct usbatm_data *usbatm_instance,
 
 	instance->usbatm = usbatm_instance;
 	instance->modem_type = (struct cxacru_modem_type *) id->driver_info;
-	memset(instance->card_info, 0, sizeof(instance->card_info));
 
 	mutex_init(&instance->poll_state_serialize);
 	instance->poll_state = CXPOLL_STOPPED;

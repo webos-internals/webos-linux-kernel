@@ -129,6 +129,10 @@ static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addres
 #define move_pte(pte, prot, old_addr, new_addr)	(pte)
 #endif
 
+#ifndef pgprot_writecombine
+#define pgprot_writecombine pgprot_noncached
+#endif
+
 /*
  * When walking page tables, get the address of the next boundary,
  * or the end address of the range if that comes earlier.  Although no
@@ -195,6 +199,63 @@ static inline int pmd_none_or_clear_bad(pmd_t *pmd)
 	}
 	return 0;
 }
+
+static inline pte_t __ptep_modify_prot_start(struct mm_struct *mm,
+					     unsigned long addr,
+					     pte_t *ptep)
+{
+	/*
+	 * Get the current pte state, but zero it out to make it
+	 * non-present, preventing the hardware from asynchronously
+	 * updating it.
+	 */
+	return ptep_get_and_clear(mm, addr, ptep);
+}
+
+static inline void __ptep_modify_prot_commit(struct mm_struct *mm,
+					     unsigned long addr,
+					     pte_t *ptep, pte_t pte)
+{
+	/*
+	 * The pte is non-present, so there's no hardware state to
+	 * preserve.
+	 */
+	set_pte_at(mm, addr, ptep, pte);
+}
+
+#ifndef __HAVE_ARCH_PTEP_MODIFY_PROT_TRANSACTION
+/*
+ * Start a pte protection read-modify-write transaction, which
+ * protects against asynchronous hardware modifications to the pte.
+ * The intention is not to prevent the hardware from making pte
+ * updates, but to prevent any updates it may make from being lost.
+ *
+ * This does not protect against other software modifications of the
+ * pte; the appropriate pte lock must be held over the transation.
+ *
+ * Note that this interface is intended to be batchable, meaning that
+ * ptep_modify_prot_commit may not actually update the pte, but merely
+ * queue the update to be done at some later time.  The update must be
+ * actually committed before the pte lock is released, however.
+ */
+static inline pte_t ptep_modify_prot_start(struct mm_struct *mm,
+					   unsigned long addr,
+					   pte_t *ptep)
+{
+	return __ptep_modify_prot_start(mm, addr, ptep);
+}
+
+/*
+ * Commit an update to a pte, leaving any hardware-controlled bits in
+ * the PTE unmodified.
+ */
+static inline void ptep_modify_prot_commit(struct mm_struct *mm,
+					   unsigned long addr,
+					   pte_t *ptep, pte_t pte)
+{
+	__ptep_modify_prot_commit(mm, addr, ptep, pte);
+}
+#endif /* __HAVE_ARCH_PTEP_MODIFY_PROT_TRANSACTION */
 #endif /* CONFIG_MMU */
 
 /*
@@ -230,6 +291,52 @@ static inline int pmd_none_or_clear_bad(pmd_t *pmd)
 #define arch_enter_lazy_cpu_mode()	do {} while (0)
 #define arch_leave_lazy_cpu_mode()	do {} while (0)
 #define arch_flush_lazy_cpu_mode()	do {} while (0)
+#endif
+
+#ifndef __HAVE_PFNMAP_TRACKING
+/*
+ * Interface that can be used by architecture code to keep track of
+ * memory type of pfn mappings (remap_pfn_range, vm_insert_pfn)
+ *
+ * track_pfn_vma_new is called when a _new_ pfn mapping is being established
+ * for physical range indicated by pfn and size.
+ */
+static inline int track_pfn_vma_new(struct vm_area_struct *vma, pgprot_t *prot,
+					unsigned long pfn, unsigned long size)
+{
+	return 0;
+}
+
+/*
+ * Interface that can be used by architecture code to keep track of
+ * memory type of pfn mappings (remap_pfn_range, vm_insert_pfn)
+ *
+ * track_pfn_vma_copy is called when vma that is covering the pfnmap gets
+ * copied through copy_page_range().
+ */
+static inline int track_pfn_vma_copy(struct vm_area_struct *vma)
+{
+	return 0;
+}
+
+/*
+ * Interface that can be used by architecture code to keep track of
+ * memory type of pfn mappings (remap_pfn_range, vm_insert_pfn)
+ *
+ * untrack_pfn_vma is called while unmapping a pfnmap for a region.
+ * untrack can be called for a specific region indicated by pfn and size or
+ * can be for the entire vma (in which case size can be zero).
+ */
+static inline void untrack_pfn_vma(struct vm_area_struct *vma,
+					unsigned long pfn, unsigned long size)
+{
+}
+#else
+extern int track_pfn_vma_new(struct vm_area_struct *vma, pgprot_t *prot,
+				unsigned long pfn, unsigned long size);
+extern int track_pfn_vma_copy(struct vm_area_struct *vma);
+extern void untrack_pfn_vma(struct vm_area_struct *vma, unsigned long pfn,
+				unsigned long size);
 #endif
 
 #endif /* !__ASSEMBLY__ */

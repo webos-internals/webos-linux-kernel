@@ -208,7 +208,6 @@ static int __init jazz_sonic_probe(struct platform_device *pdev)
 	struct sonic_local *lp;
 	struct resource *res;
 	int err = 0;
-	DECLARE_MAC_BUF(mac);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
@@ -233,8 +232,7 @@ static int __init jazz_sonic_probe(struct platform_device *pdev)
 	if (err)
 		goto out1;
 
-	printk("%s: MAC %s IRQ %d\n",
-	       dev->name, print_mac(mac, dev->dev_addr), dev->irq);
+	printk("%s: MAC %pM IRQ %d\n", dev->name, dev->dev_addr, dev->irq);
 
 	return 0;
 
@@ -249,6 +247,7 @@ out:
 MODULE_DESCRIPTION("Jazz SONIC ethernet driver");
 module_param(sonic_debug, int, 0);
 MODULE_PARM_DESC(sonic_debug, "jazzsonic debug level (1-4)");
+MODULE_ALIAS("platform:jazzsonic");
 
 #include "sonic.c"
 
@@ -271,6 +270,7 @@ static struct platform_driver jazz_sonic_driver = {
 	.remove	= __devexit_p(jazz_sonic_device_remove),
 	.driver	= {
 		.name	= jazz_sonic_string,
+		.owner	= THIS_MODULE,
 	},
 };
 

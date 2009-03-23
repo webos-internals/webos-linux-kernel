@@ -53,11 +53,15 @@ xfs_read_xfsstats(
 		{ "icluster",		XFSSTAT_END_INODE_CLUSTER	},
 		{ "vnodes",		XFSSTAT_END_VNODE_OPS		},
 		{ "buf",		XFSSTAT_END_BUF			},
+		{ "abtb2",		XFSSTAT_END_ABTB_V2		},
+		{ "abtc2",		XFSSTAT_END_ABTC_V2		},
+		{ "bmbt2",		XFSSTAT_END_BMBT_V2		},
+		{ "ibt2",		XFSSTAT_END_IBT_V2		},
 	};
 
 	/* Loop over all stats groups */
 	for (i=j=len = 0; i < ARRAY_SIZE(xstats); i++) {
-		len += sprintf(buffer + len, xstats[i].desc);
+		len += sprintf(buffer + len, "%s", xstats[i].desc);
 		/* inner loop does each group */
 		while (j < xstats[i].endpoint) {
 			val = 0;
@@ -98,12 +102,21 @@ xfs_read_xfsstats(
 	return len;
 }
 
-void
+int
 xfs_init_procfs(void)
 {
 	if (!proc_mkdir("fs/xfs", NULL))
-		return;
-	create_proc_read_entry("fs/xfs/stat", 0, NULL, xfs_read_xfsstats, NULL);
+		goto out;
+
+	if (!create_proc_read_entry("fs/xfs/stat", 0, NULL,
+			xfs_read_xfsstats, NULL))
+		goto out_remove_entry;
+	return 0;
+
+ out_remove_entry:
+	remove_proc_entry("fs/xfs", NULL);
+ out:
+	return -ENOMEM;
 }
 
 void

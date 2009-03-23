@@ -34,7 +34,7 @@ static int repeat = 1;
 module_param(repeat, int, 0444);
 MODULE_PARM_DESC(repeat,"auto-repeat for IR keys (default: on)");
 
-static int debug = 0;    /* debug level (0,1,2) */
+static int debug;    /* debug level (0,1,2) */
 module_param(debug, int, 0644);
 
 #define dprintk(level, fmt, arg...)	if (debug >= level) \
@@ -66,7 +66,6 @@ void ir_input_init(struct input_dev *dev, struct ir_input_state *ir,
 	if (ir_codes)
 		memcpy(ir->ir_codes, ir_codes, sizeof(ir->ir_codes));
 
-
 	dev->keycode     = ir->ir_codes;
 	dev->keycodesize = sizeof(IR_KEYTAB_TYPE);
 	dev->keycodemax  = IR_KEYTAB_SIZE;
@@ -78,6 +77,7 @@ void ir_input_init(struct input_dev *dev, struct ir_input_state *ir,
 	if (repeat)
 		set_bit(EV_REP, dev->evbit);
 }
+EXPORT_SYMBOL_GPL(ir_input_init);
 
 void ir_input_nokey(struct input_dev *dev, struct ir_input_state *ir)
 {
@@ -86,6 +86,7 @@ void ir_input_nokey(struct input_dev *dev, struct ir_input_state *ir)
 		ir_input_key_event(dev,ir);
 	}
 }
+EXPORT_SYMBOL_GPL(ir_input_nokey);
 
 void ir_input_keydown(struct input_dev *dev, struct ir_input_state *ir,
 		      u32 ir_key, u32 ir_raw)
@@ -104,6 +105,7 @@ void ir_input_keydown(struct input_dev *dev, struct ir_input_state *ir,
 		ir_input_key_event(dev,ir);
 	}
 }
+EXPORT_SYMBOL_GPL(ir_input_keydown);
 
 /* -------------------------------------------------------------------------- */
 /* extract mask bits out of data and pack them into the result */
@@ -122,6 +124,7 @@ u32 ir_extract_bits(u32 data, u32 mask)
 
 	return value;
 }
+EXPORT_SYMBOL_GPL(ir_extract_bits);
 
 static int inline getbit(u32 *samples, int bit)
 {
@@ -146,6 +149,7 @@ int ir_dump_samples(u32 *samples, int count)
 	printk("\n");
 	return 0;
 }
+EXPORT_SYMBOL_GPL(ir_dump_samples);
 
 /* decode raw samples, pulse distance coding used by NEC remotes */
 int ir_decode_pulsedistance(u32 *samples, int count, int low, int high)
@@ -212,6 +216,7 @@ int ir_decode_pulsedistance(u32 *samples, int count, int low, int high)
 
 	return value;
 }
+EXPORT_SYMBOL_GPL(ir_decode_pulsedistance);
 
 /* decode raw samples, biphase coding, used by rc5 for example */
 int ir_decode_biphase(u32 *samples, int count, int low, int high)
@@ -253,12 +258,13 @@ int ir_decode_biphase(u32 *samples, int count, int low, int high)
 	}
 	return value;
 }
+EXPORT_SYMBOL_GPL(ir_decode_biphase);
 
 /* RC5 decoding stuff, moved from bttv-input.c to share it with
  * saa7134 */
 
 /* decode raw bit pattern to RC5 code */
-u32 ir_rc5_decode(unsigned int code)
+static u32 ir_rc5_decode(unsigned int code)
 {
 	unsigned int org_code = code;
 	unsigned int pair;
@@ -353,6 +359,7 @@ void ir_rc5_timer_end(unsigned long data)
 		}
 	}
 }
+EXPORT_SYMBOL_GPL(ir_rc5_timer_end);
 
 void ir_rc5_timer_keyup(unsigned long data)
 {
@@ -361,22 +368,4 @@ void ir_rc5_timer_keyup(unsigned long data)
 	dprintk(1, "ir-common: key released\n");
 	ir_input_nokey(ir->dev, &ir->ir);
 }
-
-EXPORT_SYMBOL_GPL(ir_input_init);
-EXPORT_SYMBOL_GPL(ir_input_nokey);
-EXPORT_SYMBOL_GPL(ir_input_keydown);
-
-EXPORT_SYMBOL_GPL(ir_extract_bits);
-EXPORT_SYMBOL_GPL(ir_dump_samples);
-EXPORT_SYMBOL_GPL(ir_decode_biphase);
-EXPORT_SYMBOL_GPL(ir_decode_pulsedistance);
-
-EXPORT_SYMBOL_GPL(ir_rc5_decode);
-EXPORT_SYMBOL_GPL(ir_rc5_timer_end);
 EXPORT_SYMBOL_GPL(ir_rc5_timer_keyup);
-
-/*
- * Local variables:
- * c-basic-offset: 8
- * End:
- */

@@ -1,6 +1,5 @@
 /* Wrapper for DMA channel allocator that updates DMA client muxing.
- * Copyright 2004, Axis Communications AB
- * $Id: dma.c,v 1.1 2004/12/13 12:21:51 starvik Exp $
+ * Copyright 2004-2007, Axis Communications AB
  */
 
 #include <linux/kernel.h>
@@ -8,7 +7,7 @@
 #include <linux/errno.h>
 
 #include <asm/dma.h>
-#include <asm/arch/svinto.h>
+#include <arch/svinto.h>
 
 /* Macro to access ETRAX 100 registers */
 #define SETS(var, reg, field, val) var = (var & ~IO_MASK_(reg##_, field##_)) | \

@@ -21,10 +21,8 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/sysctl.h>
 #include <linux/configfs.h>
 
-#include "endian.h"
 #include "tcp.h"
 #include "nodemanager.h"
 #include "heartbeat.h"
@@ -37,65 +35,6 @@
  * cluster references throughout where nodes are looked up */
 struct o2nm_cluster *o2nm_single_cluster = NULL;
 
-#define OCFS2_MAX_HB_CTL_PATH 256
-static char ocfs2_hb_ctl_path[OCFS2_MAX_HB_CTL_PATH] = "/sbin/ocfs2_hb_ctl";
-
-static ctl_table ocfs2_nm_table[] = {
-	{
-		.ctl_name	= 1,
-		.procname	= "hb_ctl_path",
-		.data		= ocfs2_hb_ctl_path,
-		.maxlen		= OCFS2_MAX_HB_CTL_PATH,
-		.mode		= 0644,
-		.proc_handler	= &proc_dostring,
-		.strategy	= &sysctl_string,
-	},
-	{ .ctl_name = 0 }
-};
-
-static ctl_table ocfs2_mod_table[] = {
-	{
-		.ctl_name	= FS_OCFS2_NM,
-		.procname	= "nm",
-		.data		= NULL,
-		.maxlen		= 0,
-		.mode		= 0555,
-		.child		= ocfs2_nm_table
-	},
-	{ .ctl_name = 0}
-};
-
-static ctl_table ocfs2_kern_table[] = {
-	{
-		.ctl_name	= FS_OCFS2,
-		.procname	= "ocfs2",
-		.data		= NULL,
-		.maxlen		= 0,
-		.mode		= 0555,
-		.child		= ocfs2_mod_table
-	},
-	{ .ctl_name = 0}
-};
-
-static ctl_table ocfs2_root_table[] = {
-	{
-		.ctl_name	= CTL_FS,
-		.procname	= "fs",
-		.data		= NULL,
-		.maxlen		= 0,
-		.mode		= 0555,
-		.child		= ocfs2_kern_table
-	},
-	{ .ctl_name = 0 }
-};
-
-static struct ctl_table_header *ocfs2_table_header = NULL;
-
-const char *o2nm_get_hb_ctl_path(void)
-{
-	return ocfs2_hb_ctl_path;
-}
-EXPORT_SYMBOL_GPL(o2nm_get_hb_ctl_path);
 
 struct o2nm_node *o2nm_get_node_by_num(u8 node_num)
 {
@@ -311,7 +250,7 @@ static ssize_t o2nm_node_ipv4_port_write(struct o2nm_node *node,
 
 static ssize_t o2nm_node_ipv4_address_read(struct o2nm_node *node, char *page)
 {
-	return sprintf(page, "%u.%u.%u.%u\n", NIPQUAD(node->nd_ipv4_address));
+	return sprintf(page, "%pI4\n", &node->nd_ipv4_address);
 }
 
 static ssize_t o2nm_node_ipv4_address_write(struct o2nm_node *node,
@@ -709,26 +648,19 @@ static struct config_item *o2nm_node_group_make_item(struct config_group *group,
 						     const char *name)
 {
 	struct o2nm_node *node = NULL;
-	struct config_item *ret = NULL;
 
 	if (strlen(name) > O2NM_MAX_NAME_LEN)
-		goto out; /* ENAMETOOLONG */
+		return ERR_PTR(-ENAMETOOLONG);
 
 	node = kzalloc(sizeof(struct o2nm_node), GFP_KERNEL);
 	if (node == NULL)
-		goto out; /* ENOMEM */
+		return ERR_PTR(-ENOMEM);
 
 	strcpy(node->nd_name, name); /* use item.ci_namebuf instead? */
 	config_item_init_type_name(&node->nd_item, name, &o2nm_node_type);
 	spin_lock_init(&node->nd_lock);
 
-	ret = &node->nd_item;
-
-out:
-	if (ret == NULL)
-		kfree(node);
-
-	return ret;
+	return &node->nd_item;
 }
 
 static void o2nm_node_group_drop_item(struct config_group *group,
@@ -823,7 +755,7 @@ static struct config_group *o2nm_cluster_group_make_group(struct config_group *g
 	/* this runs under the parent dir's i_mutex; there can be only
 	 * one caller in here at a time */
 	if (o2nm_single_cluster)
-		goto out; /* ENOSPC */
+		return ERR_PTR(-ENOSPC);
 
 	cluster = kzalloc(sizeof(struct o2nm_cluster), GFP_KERNEL);
 	ns = kzalloc(sizeof(struct o2nm_node_group), GFP_KERNEL);
@@ -856,6 +788,7 @@ out:
 		kfree(ns);
 		o2hb_free_hb_set(o2hb_group);
 		kfree(defs);
+		ret = ERR_PTR(-ENOMEM);
 	}
 
 	return ret;
@@ -942,9 +875,6 @@ void o2nm_undepend_this_node(void)
 
 static void __exit exit_o2nm(void)
 {
-	if (ocfs2_table_header)
-		unregister_sysctl_table(ocfs2_table_header);
-
 	/* XXX sync with hb callbacks and shut down hb? */
 	o2net_unregister_hb_callbacks();
 	configfs_unregister_subsystem(&o2nm_cluster_group.cs_subsys);
@@ -960,18 +890,14 @@ static int __init init_o2nm(void)
 	cluster_print_version();
 
 	o2hb_init();
-	o2net_init();
 
-	ocfs2_table_header = register_sysctl_table(ocfs2_root_table);
-	if (!ocfs2_table_header) {
-		printk(KERN_ERR "nodemanager: unable to register sysctl\n");
-		ret = -ENOMEM; /* or something. */
-		goto out_o2net;
-	}
+	ret = o2net_init();
+	if (ret)
+		goto out;
 
 	ret = o2net_register_hb_callbacks();
 	if (ret)
-		goto out_sysctl;
+		goto out_o2net;
 
 	config_group_init(&o2nm_cluster_group.cs_subsys.su_group);
 	mutex_init(&o2nm_cluster_group.cs_subsys.su_mutex);
@@ -988,8 +914,6 @@ static int __init init_o2nm(void)
 	configfs_unregister_subsystem(&o2nm_cluster_group.cs_subsys);
 out_callbacks:
 	o2net_unregister_hb_callbacks();
-out_sysctl:
-	unregister_sysctl_table(ocfs2_table_header);
 out_o2net:
 	o2net_exit();
 out:

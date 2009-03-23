@@ -1,32 +1,29 @@
 /* Copyright (C) 2006, Red Hat, Inc. */
 
-#ifndef _WLAN_ASSOC_H_
-#define _WLAN_ASSOC_H_
+#ifndef _LBS_ASSOC_H_
+#define _LBS_ASSOC_H_
 
 #include "dev.h"
 
-void libertas_association_worker(struct work_struct *work);
+void lbs_association_worker(struct work_struct *work);
+struct assoc_request *lbs_get_association_request(struct lbs_private *priv);
 
-struct assoc_request * wlan_get_association_request(wlan_adapter *adapter);
+struct cmd_ds_command;
+int lbs_cmd_80211_authenticate(struct lbs_private *priv,
+					struct cmd_ds_command *cmd,
+					void *pdata_buf);
 
-void libertas_sync_channel(struct work_struct *work);
+int lbs_adhoc_stop(struct lbs_private *priv);
 
-#define ASSOC_DELAY (HZ / 2)
-static inline void wlan_postpone_association_work(wlan_private *priv)
-{
-	if (priv->adapter->surpriseremoved)
-		return;
-	cancel_delayed_work(&priv->assoc_work);
-	queue_delayed_work(priv->work_thread, &priv->assoc_work, ASSOC_DELAY);
-}
+int lbs_cmd_80211_deauthenticate(struct lbs_private *priv,
+				 u8 bssid[ETH_ALEN], u16 reason);
+int lbs_cmd_80211_associate(struct lbs_private *priv,
+				     struct cmd_ds_command *cmd,
+				     void *pdata_buf);
 
-static inline void wlan_cancel_association_work(wlan_private *priv)
-{
-	cancel_delayed_work(&priv->assoc_work);
-	if (priv->adapter->pending_assoc_req) {
-		kfree(priv->adapter->pending_assoc_req);
-		priv->adapter->pending_assoc_req = NULL;
-	}
-}
+int lbs_ret_80211_ad_hoc_start(struct lbs_private *priv,
+					struct cmd_ds_command *resp);
+int lbs_ret_80211_associate(struct lbs_private *priv,
+				     struct cmd_ds_command *resp);
 
-#endif /* _WLAN_ASSOC_H */
+#endif /* _LBS_ASSOC_H */

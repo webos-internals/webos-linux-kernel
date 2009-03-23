@@ -98,11 +98,10 @@ void __init plat_mem_setup(void)
 {
 	extern void wrppmc_machine_restart(char *command);
 	extern void wrppmc_machine_halt(void);
-	extern void wrppmc_machine_power_off(void);
 
 	_machine_restart = wrppmc_machine_restart;
 	_machine_halt	 = wrppmc_machine_halt;
-	pm_power_off	 = wrppmc_machine_power_off;
+	pm_power_off	 = wrppmc_machine_halt;
 
 	/* This makes the operations of 'in/out[bwl]' to the
 	 * physical address ( < KSEG0) can work via KSEG1
@@ -121,8 +120,6 @@ const char *get_system_type(void)
  */
 void __init prom_init(void)
 {
-	mips_machtype = MACH_WRPPMC;
-
 	add_memory_region(WRPPMC_SDRAM_SCS0_BASE, WRPPMC_SDRAM_SCS0_SIZE, BOOT_MEM_RAM);
 	add_memory_region(WRPPMC_BOOTROM_BASE, WRPPMC_BOOTROM_SIZE, BOOT_MEM_ROM_DATA);
 

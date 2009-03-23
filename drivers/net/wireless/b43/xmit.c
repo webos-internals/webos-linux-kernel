@@ -5,7 +5,7 @@
   Transmission (TX/RX) related functions.
 
   Copyright (C) 2005 Martin Langer <martin-langer@gmx.de>
-  Copyright (C) 2005 Stefano Brivio <st3@riseup.net>
+  Copyright (C) 2005 Stefano Brivio <stefano.brivio@polimi.it>
   Copyright (C) 2005, 2006 Michael Buesch <mb@bu3sch.de>
   Copyright (C) 2005 Danny van Dyk <kugelfang@gentoo.org>
   Copyright (C) 2005 Andreas Jaggi <andreas.jaggi@waterwave.ch>
@@ -28,50 +28,51 @@
 */
 
 #include "xmit.h"
-#include "phy.h"
+#include "phy_common.h"
 #include "dma.h"
 #include "pio.h"
 
-/* Extract the bitrate out of a CCK PLCP header. */
-static u8 b43_plcp_get_bitrate_cck(struct b43_plcp_hdr6 *plcp)
+
+/* Extract the bitrate index out of a CCK PLCP header. */
+static int b43_plcp_get_bitrate_idx_cck(struct b43_plcp_hdr6 *plcp)
 {
 	switch (plcp->raw[0]) {
 	case 0x0A:
-		return B43_CCK_RATE_1MB;
+		return 0;
 	case 0x14:
-		return B43_CCK_RATE_2MB;
+		return 1;
 	case 0x37:
-		return B43_CCK_RATE_5MB;
+		return 2;
 	case 0x6E:
-		return B43_CCK_RATE_11MB;
+		return 3;
 	}
-	B43_WARN_ON(1);
-	return 0;
+	return -1;
 }
 
-/* Extract the bitrate out of an OFDM PLCP header. */
-static u8 b43_plcp_get_bitrate_ofdm(struct b43_plcp_hdr6 *plcp)
+/* Extract the bitrate index out of an OFDM PLCP header. */
+static u8 b43_plcp_get_bitrate_idx_ofdm(struct b43_plcp_hdr6 *plcp, bool aphy)
 {
+	int base = aphy ? 0 : 4;
+
 	switch (plcp->raw[0] & 0xF) {
 	case 0xB:
-		return B43_OFDM_RATE_6MB;
+		return base + 0;
 	case 0xF:
-		return B43_OFDM_RATE_9MB;
+		return base + 1;
 	case 0xA:
-		return B43_OFDM_RATE_12MB;
+		return base + 2;
 	case 0xE:
-		return B43_OFDM_RATE_18MB;
+		return base + 3;
 	case 0x9:
-		return B43_OFDM_RATE_24MB;
+		return base + 4;
 	case 0xD:
-		return B43_OFDM_RATE_36MB;
+		return base + 5;
 	case 0x8:
-		return B43_OFDM_RATE_48MB;
+		return base + 6;
 	case 0xC:
-		return B43_OFDM_RATE_54MB;
+		return base + 7;
 	}
-	B43_WARN_ON(1);
-	return 0;
+	return -1;
 }
 
 u8 b43_plcp_get_ratecode_cck(const u8 bitrate)
@@ -177,30 +178,37 @@ static u8 b43_calc_fallback_rate(u8 bitrate)
 	return 0;
 }
 
-static void generate_txhdr_fw4(struct b43_wldev *dev,
-			       struct b43_txhdr_fw4 *txhdr,
-			       const unsigned char *fragment_data,
-			       unsigned int fragment_len,
-			       const struct ieee80211_tx_control *txctl,
-			       u16 cookie)
+/* Generate a TX data header. */
+int b43_generate_txhdr(struct b43_wldev *dev,
+		       u8 *_txhdr,
+		       const unsigned char *fragment_data,
+		       unsigned int fragment_len,
+		       struct ieee80211_tx_info *info,
+		       u16 cookie)
 {
+	struct b43_txhdr *txhdr = (struct b43_txhdr *)_txhdr;
 	const struct b43_phy *phy = &dev->phy;
 	const struct ieee80211_hdr *wlhdr =
 	    (const struct ieee80211_hdr *)fragment_data;
-	int use_encryption = (!(txctl->flags & IEEE80211_TXCTL_DO_NOT_ENCRYPT));
-	u16 fctl = le16_to_cpu(wlhdr->frame_control);
+	int use_encryption = !!info->control.hw_key;
+	__le16 fctl = wlhdr->frame_control;
+	struct ieee80211_rate *fbrate;
 	u8 rate, rate_fb;
 	int rate_ofdm, rate_fb_ofdm;
 	unsigned int plcp_fragment_len;
 	u32 mac_ctl = 0;
 	u16 phy_ctl = 0;
 	u8 extra_ft = 0;
+	struct ieee80211_rate *txrate;
+	struct ieee80211_tx_rate *rates;
 
 	memset(txhdr, 0, sizeof(*txhdr));
 
-	rate = txctl->tx_rate;
+	txrate = ieee80211_get_tx_rate(dev->wl->hw, info);
+	rate = txrate ? txrate->hw_value : B43_CCK_RATE_1MB;
 	rate_ofdm = b43_is_ofdm_rate(rate);
-	rate_fb = (txctl->alt_retry_rate == -1) ? rate : txctl->alt_retry_rate;
+	fbrate = ieee80211_get_alt_retry_rate(dev->wl->hw, info, 0) ? : txrate;
+	rate_fb = fbrate->hw_value;
 	rate_fb_ofdm = b43_is_ofdm_rate(rate_fb);
 
 	if (rate_ofdm)
@@ -219,45 +227,57 @@ static void generate_txhdr_fw4(struct b43_wldev *dev,
 		 * use the original dur_id field. */
 		txhdr->dur_fb = wlhdr->duration_id;
 	} else {
-		int fbrate_base100kbps = B43_RATE_TO_BASE100KBPS(rate_fb);
-		txhdr->dur_fb = ieee80211_generic_frame_duration(dev->wl->hw,
-								 dev->wl->if_id,
-								 fragment_len,
-								 fbrate_base100kbps);
+		txhdr->dur_fb = ieee80211_generic_frame_duration(
+			dev->wl->hw, info->control.vif, fragment_len, fbrate);
 	}
 
 	plcp_fragment_len = fragment_len + FCS_LEN;
 	if (use_encryption) {
-		u8 key_idx = (u16) (txctl->key_idx);
+		u8 key_idx = info->control.hw_key->hw_key_idx;
 		struct b43_key *key;
 		int wlhdr_len;
 		size_t iv_len;
 
 		B43_WARN_ON(key_idx >= dev->max_nr_keys);
 		key = &(dev->key[key_idx]);
-		B43_WARN_ON(!key->keyconf);
+
+		if (unlikely(!key->keyconf)) {
+			/* This key is invalid. This might only happen
+			 * in a short timeframe after machine resume before
+			 * we were able to reconfigure keys.
+			 * Drop this packet completely. Do not transmit it
+			 * unencrypted to avoid leaking information. */
+			return -ENOKEY;
+		}
 
 		/* Hardware appends ICV. */
-		plcp_fragment_len += txctl->icv_len;
+		plcp_fragment_len += info->control.hw_key->icv_len;
 
 		key_idx = b43_kidx_to_fw(dev, key_idx);
-		mac_ctl |= (key_idx << B43_TX4_MAC_KEYIDX_SHIFT) &
-			   B43_TX4_MAC_KEYIDX;
-		mac_ctl |= (key->algorithm << B43_TX4_MAC_KEYALG_SHIFT) &
-			   B43_TX4_MAC_KEYALG;
-		wlhdr_len = ieee80211_get_hdrlen(fctl);
-		iv_len = min((size_t) txctl->iv_len,
+		mac_ctl |= (key_idx << B43_TXH_MAC_KEYIDX_SHIFT) &
+			   B43_TXH_MAC_KEYIDX;
+		mac_ctl |= (key->algorithm << B43_TXH_MAC_KEYALG_SHIFT) &
+			   B43_TXH_MAC_KEYALG;
+		wlhdr_len = ieee80211_hdrlen(fctl);
+		iv_len = min((size_t) info->control.hw_key->iv_len,
 			     ARRAY_SIZE(txhdr->iv));
 		memcpy(txhdr->iv, ((u8 *) wlhdr) + wlhdr_len, iv_len);
 	}
-	b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)(&txhdr->plcp),
-			      plcp_fragment_len, rate);
+	if (b43_is_old_txhdr_format(dev)) {
+		b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)(&txhdr->old_format.plcp),
+				      plcp_fragment_len, rate);
+	} else {
+		b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)(&txhdr->new_format.plcp),
+				      plcp_fragment_len, rate);
+	}
 	b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)(&txhdr->plcp_fb),
 			      plcp_fragment_len, rate_fb);
 
 	/* Extra Frame Types */
 	if (rate_fb_ofdm)
-		extra_ft |= B43_TX4_EFT_FBOFDM;
+		extra_ft |= B43_TXH_EFT_FB_OFDM;
+	else
+		extra_ft |= B43_TXH_EFT_FB_CCK;
 
 	/* Set channel radio code. Note that the micrcode ORs 0x100 to
 	 * this value before comparing it to the value in SHM, if this
@@ -267,101 +287,153 @@ static void generate_txhdr_fw4(struct b43_wldev *dev,
 
 	/* PHY TX Control word */
 	if (rate_ofdm)
-		phy_ctl |= B43_TX4_PHY_OFDM;
-	if (dev->short_preamble)
-		phy_ctl |= B43_TX4_PHY_SHORTPRMBL;
-	switch (txctl->antenna_sel_tx) {
-	case 0:
-		phy_ctl |= B43_TX4_PHY_ANTLAST;
+		phy_ctl |= B43_TXH_PHY_ENC_OFDM;
+	else
+		phy_ctl |= B43_TXH_PHY_ENC_CCK;
+	if (info->control.rates[0].flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE)
+		phy_ctl |= B43_TXH_PHY_SHORTPRMBL;
+
+	switch (b43_ieee80211_antenna_sanitize(dev, info->antenna_sel_tx)) {
+	case 0: /* Default */
+		phy_ctl |= B43_TXH_PHY_ANT01AUTO;
 		break;
-	case 1:
-		phy_ctl |= B43_TX4_PHY_ANT0;
+	case 1: /* Antenna 0 */
+		phy_ctl |= B43_TXH_PHY_ANT0;
 		break;
-	case 2:
-		phy_ctl |= B43_TX4_PHY_ANT1;
+	case 2: /* Antenna 1 */
+		phy_ctl |= B43_TXH_PHY_ANT1;
+		break;
+	case 3: /* Antenna 2 */
+		phy_ctl |= B43_TXH_PHY_ANT2;
+		break;
+	case 4: /* Antenna 3 */
+		phy_ctl |= B43_TXH_PHY_ANT3;
 		break;
 	default:
 		B43_WARN_ON(1);
 	}
 
+	rates = info->control.rates;
 	/* MAC control */
-	if (!(txctl->flags & IEEE80211_TXCTL_NO_ACK))
-		mac_ctl |= B43_TX4_MAC_ACK;
-	if (!(((fctl & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_CTL) &&
-	      ((fctl & IEEE80211_FCTL_STYPE) == IEEE80211_STYPE_PSPOLL)))
-		mac_ctl |= B43_TX4_MAC_HWSEQ;
-	if (txctl->flags & IEEE80211_TXCTL_FIRST_FRAGMENT)
-		mac_ctl |= B43_TX4_MAC_STMSDU;
+	if (!(info->flags & IEEE80211_TX_CTL_NO_ACK))
+		mac_ctl |= B43_TXH_MAC_ACK;
+	/* use hardware sequence counter as the non-TID counter */
+	if (info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)
+		mac_ctl |= B43_TXH_MAC_HWSEQ;
+	if (info->flags & IEEE80211_TX_CTL_FIRST_FRAGMENT)
+		mac_ctl |= B43_TXH_MAC_STMSDU;
 	if (phy->type == B43_PHYTYPE_A)
-		mac_ctl |= B43_TX4_MAC_5GHZ;
+		mac_ctl |= B43_TXH_MAC_5GHZ;
+
+	/* Overwrite rates[0].count to make the retry calculation
+	 * in the tx status easier. need the actual retry limit to
+	 * detect whether the fallback rate was used.
+	 */
+	if ((rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS) ||
+	    (rates[0].count <= dev->wl->hw->conf.long_frame_max_tx_count)) {
+		rates[0].count = dev->wl->hw->conf.long_frame_max_tx_count;
+		mac_ctl |= B43_TXH_MAC_LONGFRAME;
+	} else {
+		rates[0].count = dev->wl->hw->conf.short_frame_max_tx_count;
+	}
 
 	/* Generate the RTS or CTS-to-self frame */
-	if ((txctl->flags & IEEE80211_TXCTL_USE_RTS_CTS) ||
-	    (txctl->flags & IEEE80211_TXCTL_USE_CTS_PROTECT)) {
+	if ((rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS) ||
+	    (rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT)) {
 		unsigned int len;
 		struct ieee80211_hdr *hdr;
 		int rts_rate, rts_rate_fb;
 		int rts_rate_ofdm, rts_rate_fb_ofdm;
+		struct b43_plcp_hdr6 *plcp;
+		struct ieee80211_rate *rts_cts_rate;
 
-		rts_rate = txctl->rts_cts_rate;
+		rts_cts_rate = ieee80211_get_rts_cts_rate(dev->wl->hw, info);
+
+		rts_rate = rts_cts_rate ? rts_cts_rate->hw_value : B43_CCK_RATE_1MB;
 		rts_rate_ofdm = b43_is_ofdm_rate(rts_rate);
 		rts_rate_fb = b43_calc_fallback_rate(rts_rate);
 		rts_rate_fb_ofdm = b43_is_ofdm_rate(rts_rate_fb);
 
-		if (txctl->flags & IEEE80211_TXCTL_USE_CTS_PROTECT) {
-			ieee80211_ctstoself_get(dev->wl->hw, dev->wl->if_id,
+		if (rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT) {
+			struct ieee80211_cts *cts;
+
+			if (b43_is_old_txhdr_format(dev)) {
+				cts = (struct ieee80211_cts *)
+					(txhdr->old_format.rts_frame);
+			} else {
+				cts = (struct ieee80211_cts *)
+					(txhdr->new_format.rts_frame);
+			}
+			ieee80211_ctstoself_get(dev->wl->hw, info->control.vif,
 						fragment_data, fragment_len,
-						txctl,
-						(struct ieee80211_cts *)(txhdr->
-									 rts_frame));
-			mac_ctl |= B43_TX4_MAC_SENDCTS;
+						info, cts);
+			mac_ctl |= B43_TXH_MAC_SENDCTS;
 			len = sizeof(struct ieee80211_cts);
 		} else {
-			ieee80211_rts_get(dev->wl->hw, dev->wl->if_id,
-					  fragment_data, fragment_len, txctl,
-					  (struct ieee80211_rts *)(txhdr->
-								   rts_frame));
-			mac_ctl |= B43_TX4_MAC_SENDRTS;
+			struct ieee80211_rts *rts;
+
+			if (b43_is_old_txhdr_format(dev)) {
+				rts = (struct ieee80211_rts *)
+					(txhdr->old_format.rts_frame);
+			} else {
+				rts = (struct ieee80211_rts *)
+					(txhdr->new_format.rts_frame);
+			}
+			ieee80211_rts_get(dev->wl->hw, info->control.vif,
+					  fragment_data, fragment_len,
+					  info, rts);
+			mac_ctl |= B43_TXH_MAC_SENDRTS;
 			len = sizeof(struct ieee80211_rts);
 		}
 		len += FCS_LEN;
-		b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)(&txhdr->
-							       rts_plcp), len,
-				      rts_rate);
-		b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)(&txhdr->
-							       rts_plcp_fb),
+
+		/* Generate the PLCP headers for the RTS/CTS frame */
+		if (b43_is_old_txhdr_format(dev))
+			plcp = &txhdr->old_format.rts_plcp;
+		else
+			plcp = &txhdr->new_format.rts_plcp;
+		b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)plcp,
+				      len, rts_rate);
+		plcp = &txhdr->rts_plcp_fb;
+		b43_generate_plcp_hdr((struct b43_plcp_hdr4 *)plcp,
 				      len, rts_rate_fb);
-		hdr = (struct ieee80211_hdr *)(&txhdr->rts_frame);
+
+		if (b43_is_old_txhdr_format(dev)) {
+			hdr = (struct ieee80211_hdr *)
+				(&txhdr->old_format.rts_frame);
+		} else {
+			hdr = (struct ieee80211_hdr *)
+				(&txhdr->new_format.rts_frame);
+		}
 		txhdr->rts_dur_fb = hdr->duration_id;
+
 		if (rts_rate_ofdm) {
-			extra_ft |= B43_TX4_EFT_RTSOFDM;
+			extra_ft |= B43_TXH_EFT_RTS_OFDM;
 			txhdr->phy_rate_rts =
 			    b43_plcp_get_ratecode_ofdm(rts_rate);
-		} else
+		} else {
+			extra_ft |= B43_TXH_EFT_RTS_CCK;
 			txhdr->phy_rate_rts =
 			    b43_plcp_get_ratecode_cck(rts_rate);
+		}
 		if (rts_rate_fb_ofdm)
-			extra_ft |= B43_TX4_EFT_RTSFBOFDM;
-		mac_ctl |= B43_TX4_MAC_LONGFRAME;
+			extra_ft |= B43_TXH_EFT_RTSFB_OFDM;
+		else
+			extra_ft |= B43_TXH_EFT_RTSFB_CCK;
 	}
 
 	/* Magic cookie */
-	txhdr->cookie = cpu_to_le16(cookie);
+	if (b43_is_old_txhdr_format(dev))
+		txhdr->old_format.cookie = cpu_to_le16(cookie);
+	else
+		txhdr->new_format.cookie = cpu_to_le16(cookie);
 
 	/* Apply the bitfields */
 	txhdr->mac_ctl = cpu_to_le32(mac_ctl);
 	txhdr->phy_ctl = cpu_to_le16(phy_ctl);
 	txhdr->extra_ft = extra_ft;
-}
 
-void b43_generate_txhdr(struct b43_wldev *dev,
-			u8 * txhdr,
-			const unsigned char *fragment_data,
-			unsigned int fragment_len,
-			const struct ieee80211_tx_control *txctl, u16 cookie)
-{
-	generate_txhdr_fw4(dev, (struct b43_txhdr_fw4 *)txhdr,
-			   fragment_data, fragment_len, txctl, cookie);
+	return 0;
 }
 
 static s8 b43_rssi_postprocess(struct b43_wldev *dev,
@@ -369,6 +441,7 @@ static s8 b43_rssi_postprocess(struct b43_wldev *dev,
 			       int adjust_2053, int adjust_2050)
 {
 	struct b43_phy *phy = &dev->phy;
+	struct b43_phy_g *gphy = phy->g;
 	s32 tmp;
 
 	switch (phy->radio_ver) {
@@ -384,11 +457,12 @@ static s8 b43_rssi_postprocess(struct b43_wldev *dev,
 			else
 				tmp -= 3;
 		} else {
-			if (dev->dev->bus->sprom.r1.
+			if (dev->dev->bus->sprom.
 			    boardflags_lo & B43_BFL_RSSI) {
 				if (in_rssi > 63)
 					in_rssi = 63;
-				tmp = phy->nrssi_lt[in_rssi];
+				B43_WARN_ON(phy->type != B43_PHYTYPE_G);
+				tmp = gphy->nrssi_lt[in_rssi];
 				tmp = 31 - tmp;
 				tmp *= -131;
 				tmp /= 128;
@@ -447,11 +521,11 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 	struct b43_plcp_hdr6 *plcp;
 	struct ieee80211_hdr *wlhdr;
 	const struct b43_rxhdr_fw4 *rxhdr = _rxhdr;
-	u16 fctl;
+	__le16 fctl;
 	u16 phystat0, phystat3, chanstat, mactime;
 	u32 macstat;
 	u16 chanid;
-	u8 jssi;
+	u16 phytype;
 	int padding;
 
 	memset(&status, 0, sizeof(status));
@@ -459,10 +533,10 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 	/* Get metadata about the frame from the header. */
 	phystat0 = le16_to_cpu(rxhdr->phy_status0);
 	phystat3 = le16_to_cpu(rxhdr->phy_status3);
-	jssi = rxhdr->jssi;
 	macstat = le32_to_cpu(rxhdr->mac_status);
 	mactime = le16_to_cpu(rxhdr->mac_time);
 	chanstat = le16_to_cpu(rxhdr->channel);
+	phytype = chanstat & B43_RX_CHAN_PHYTYPE;
 
 	if (macstat & B43_RX_MAC_FCSERR)
 		dev->wl->ieee_stats.dot11FCSErrorCount++;
@@ -487,8 +561,7 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 		goto drop;
 	}
 	wlhdr = (struct ieee80211_hdr *)(skb->data);
-	fctl = le16_to_cpu(wlhdr->frame_control);
-	skb_trim(skb, skb->len - FCS_LEN);
+	fctl = wlhdr->frame_control;
 
 	if (macstat & B43_RX_MAC_DEC) {
 		unsigned int keyidx;
@@ -503,7 +576,7 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 		B43_WARN_ON(keyidx >= dev->max_nr_keys);
 
 		if (dev->key[keyidx].algorithm != B43_SEC_ALGO_NONE) {
-			wlhdr_len = ieee80211_get_hdrlen(fctl);
+			wlhdr_len = ieee80211_hdrlen(fctl);
 			if (unlikely(skb->len < (wlhdr_len + 3))) {
 				b43dbg(dev->wl,
 				       "RX: Packet size underrun (3)\n");
@@ -513,46 +586,75 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
 		}
 	}
 
-	status.ssi = b43_rssi_postprocess(dev, jssi,
-					  (phystat0 & B43_RX_PHYST0_OFDM),
-					  (phystat0 & B43_RX_PHYST0_GAINCTL),
-					  (phystat3 & B43_RX_PHYST3_TRSTATE));
+	/* Link quality statistics */
 	status.noise = dev->stats.link_noise;
-	/* the next line looks wrong, but is what mac80211 wants */
-	status.signal = (jssi * 100) / B43_RX_MAX_SSI;
+	if ((chanstat & B43_RX_CHAN_PHYTYPE) == B43_PHYTYPE_N) {
+//		s8 rssi = max(rxhdr->power0, rxhdr->power1);
+		//TODO: Find out what the rssi value is (dBm or percentage?)
+		//      and also find out what the maximum possible value is.
+		//      Fill status.ssi and status.signal fields.
+	} else {
+		status.signal = b43_rssi_postprocess(dev, rxhdr->jssi,
+						  (phystat0 & B43_RX_PHYST0_OFDM),
+						  (phystat0 & B43_RX_PHYST0_GAINCTL),
+						  (phystat3 & B43_RX_PHYST3_TRSTATE));
+		status.qual = (rxhdr->jssi * 100) / B43_RX_MAX_SSI;
+	}
+
 	if (phystat0 & B43_RX_PHYST0_OFDM)
-		status.rate = b43_plcp_get_bitrate_ofdm(plcp);
+		status.rate_idx = b43_plcp_get_bitrate_idx_ofdm(plcp,
+						phytype == B43_PHYTYPE_A);
 	else
-		status.rate = b43_plcp_get_bitrate_cck(plcp);
+		status.rate_idx = b43_plcp_get_bitrate_idx_cck(plcp);
+	if (unlikely(status.rate_idx == -1))
+		goto drop;
 	status.antenna = !!(phystat0 & B43_RX_PHYST0_ANT);
-	status.mactime = mactime;
+
+	/*
+	 * All frames on monitor interfaces and beacons always need a full
+	 * 64-bit timestamp. Monitor interfaces need it for diagnostic
+	 * purposes and beacons for IBSS merging.
+	 * This code assumes we get to process the packet within 16 bits
+	 * of timestamp, i.e. about 65 milliseconds after the PHY received
+	 * the first symbol.
+	 */
+	if (ieee80211_is_beacon(fctl) || dev->wl->radiotap_enabled) {
+		u16 low_mactime_now;
+
+		b43_tsf_read(dev, &status.mactime);
+		low_mactime_now = status.mactime;
+		status.mactime = status.mactime & ~0xFFFFULL;
+		status.mactime += mactime;
+		if (low_mactime_now <= mactime)
+			status.mactime -= 0x10000;
+		status.flag |= RX_FLAG_TSFT;
+	}
 
 	chanid = (chanstat & B43_RX_CHAN_ID) >> B43_RX_CHAN_ID_SHIFT;
 	switch (chanstat & B43_RX_CHAN_PHYTYPE) {
 	case B43_PHYTYPE_A:
-		status.phymode = MODE_IEEE80211A;
+		status.band = IEEE80211_BAND_5GHZ;
 		B43_WARN_ON(1);
 		/* FIXME: We don't really know which value the "chanid" contains.
 		 *        So the following assignment might be wrong. */
-		status.channel = chanid;
-		status.freq = b43_channel_to_freq_5ghz(status.channel);
+		status.freq = b43_channel_to_freq_5ghz(chanid);
 		break;
 	case B43_PHYTYPE_G:
-		status.phymode = MODE_IEEE80211G;
+		status.band = IEEE80211_BAND_2GHZ;
 		/* chanid is the radio channel cookie value as used
 		 * to tune the radio. */
 		status.freq = chanid + 2400;
-		status.channel = b43_freq_to_channel_2ghz(status.freq);
 		break;
 	case B43_PHYTYPE_N:
-		status.phymode = 0xDEAD /*FIXME MODE_IEEE80211N*/;
 		/* chanid is the SHM channel cookie. Which is the plain
 		 * channel number in b43. */
-		status.channel = chanid;
-		if (chanstat & B43_RX_CHAN_5GHZ)
-			status.freq = b43_freq_to_channel_5ghz(status.freq);
-		else
-			status.freq = b43_freq_to_channel_2ghz(status.freq);
+		if (chanstat & B43_RX_CHAN_5GHZ) {
+			status.band = IEEE80211_BAND_5GHZ;
+			status.freq = b43_freq_to_channel_5ghz(chanid);
+		} else {
+			status.band = IEEE80211_BAND_2GHZ;
+			status.freq = b43_freq_to_channel_2ghz(chanid);
+		}
 		break;
 	default:
 		B43_WARN_ON(1);
@@ -586,40 +688,73 @@ void b43_handle_txstatus(struct b43_wldev *dev,
 			dev->wl->ieee_stats.dot11RTSSuccessCount++;
 	}
 
-	if (b43_using_pio(dev))
+	if (b43_using_pio_transfers(dev))
 		b43_pio_handle_txstatus(dev, status);
 	else
 		b43_dma_handle_txstatus(dev, status);
+
+	b43_phy_txpower_check(dev, 0);
 }
 
-/* Handle TX status report as received through DMA/PIO queues */
-void b43_handle_hwtxstatus(struct b43_wldev *dev,
-			   const struct b43_hwtxstatus *hw)
+/* Fill out the mac80211 TXstatus report based on the b43-specific
+ * txstatus report data. This returns a boolean whether the frame was
+ * successfully transmitted. */
+bool b43_fill_txstatus_report(struct b43_wldev *dev,
+			      struct ieee80211_tx_info *report,
+			      const struct b43_txstatus *status)
 {
-	struct b43_txstatus status;
-	u8 tmp;
+	bool frame_success = 1;
+	int retry_limit;
 
-	status.cookie = le16_to_cpu(hw->cookie);
-	status.seq = le16_to_cpu(hw->seq);
-	status.phy_stat = hw->phy_stat;
-	tmp = hw->count;
-	status.frame_count = (tmp >> 4);
-	status.rts_count = (tmp & 0x0F);
-	tmp = hw->flags;
-	status.supp_reason = ((tmp & 0x1C) >> 2);
-	status.pm_indicated = !!(tmp & 0x80);
-	status.intermediate = !!(tmp & 0x40);
-	status.for_ampdu = !!(tmp & 0x20);
-	status.acked = !!(tmp & 0x02);
+	/* preserve the confiured retry limit before clearing the status
+	 * The xmit function has overwritten the rc's value with the actual
+	 * retry limit done by the hardware */
+	retry_limit = report->status.rates[0].count;
+	ieee80211_tx_info_clear_status(report);
 
-	b43_handle_txstatus(dev, &status);
+	if (status->acked) {
+		/* The frame was ACKed. */
+		report->flags |= IEEE80211_TX_STAT_ACK;
+	} else {
+		/* The frame was not ACKed... */
+		if (!(report->flags & IEEE80211_TX_CTL_NO_ACK)) {
+			/* ...but we expected an ACK. */
+			frame_success = 0;
+		}
+	}
+	if (status->frame_count == 0) {
+		/* The frame was not transmitted at all. */
+		report->status.rates[0].count = 0;
+	} else if (status->rts_count > dev->wl->hw->conf.short_frame_max_tx_count) {
+		/*
+		 * If the short retries (RTS, not data frame) have exceeded
+		 * the limit, the hw will not have tried the selected rate,
+		 * but will have used the fallback rate instead.
+		 * Don't let the rate control count attempts for the selected
+		 * rate in this case, otherwise the statistics will be off.
+		 */
+		report->status.rates[0].count = 0;
+		report->status.rates[1].count = status->frame_count;
+	} else {
+		if (status->frame_count > retry_limit) {
+			report->status.rates[0].count = retry_limit;
+			report->status.rates[1].count = status->frame_count -
+					retry_limit;
+
+		} else {
+			report->status.rates[0].count = status->frame_count;
+			report->status.rates[1].idx = -1;
+		}
+	}
+
+	return frame_success;
 }
 
 /* Stop any TX operation on the device (suspend the hardware queues) */
 void b43_tx_suspend(struct b43_wldev *dev)
 {
-	if (b43_using_pio(dev))
-		b43_pio_freeze_txqueues(dev);
+	if (b43_using_pio_transfers(dev))
+		b43_pio_tx_suspend(dev);
 	else
 		b43_dma_tx_suspend(dev);
 }
@@ -627,35 +762,8 @@ void b43_tx_suspend(struct b43_wldev *dev)
 /* Resume any TX operation on the device (resume the hardware queues) */
 void b43_tx_resume(struct b43_wldev *dev)
 {
-	if (b43_using_pio(dev))
-		b43_pio_thaw_txqueues(dev);
+	if (b43_using_pio_transfers(dev))
+		b43_pio_tx_resume(dev);
 	else
 		b43_dma_tx_resume(dev);
-}
-
-#if 0
-static void upload_qos_parms(struct b43_wldev *dev,
-			     const u16 * parms, u16 offset)
-{
-	int i;
-
-	for (i = 0; i < B43_NR_QOSPARMS; i++) {
-		b43_shm_write16(dev, B43_SHM_SHARED,
-				offset + (i * 2), parms[i]);
-	}
-}
-#endif
-
-/* Initialize the QoS parameters */
-void b43_qos_init(struct b43_wldev *dev)
-{
-	/* FIXME: This function must probably be called from the mac80211
-	 * config callback. */
-	return;
-
-	b43_hf_write(dev, b43_hf_read(dev) | B43_HF_EDCF);
-	//FIXME kill magic
-	b43_write16(dev, 0x688, b43_read16(dev, 0x688) | 0x4);
-
-	/*TODO: We might need some stack support here to get the values. */
 }

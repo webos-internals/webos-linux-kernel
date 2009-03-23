@@ -1171,7 +1171,9 @@ static int dib7000m_set_frontend(struct dvb_frontend* fe,
 				struct dvb_frontend_parameters *fep)
 {
 	struct dib7000m_state *state = fe->demodulator_priv;
-	int time;
+	int time, ret;
+
+    dib7000m_set_output_mode(state, OUTMODE_HIGH_Z);
 
 	state->current_bandwidth = fep->u.ofdm.bandwidth;
 	dib7000m_set_bandwidth(state, BANDWIDTH_TO_KHZ(fep->u.ofdm.bandwidth));
@@ -1206,10 +1208,11 @@ static int dib7000m_set_frontend(struct dvb_frontend* fe,
 		dib7000m_get_frontend(fe, fep);
 	}
 
+	ret = dib7000m_tune(fe, fep);
+
 	/* make this a config parameter */
 	dib7000m_set_output_mode(state, OUTMODE_MPEG2_FIFO);
-
-	return dib7000m_tune(fe, fep);
+	return ret;
 }
 
 static int dib7000m_read_status(struct dvb_frontend *fe, fe_status_t *stat)
@@ -1281,7 +1284,10 @@ struct i2c_adapter * dib7000m_get_i2c_master(struct dvb_frontend *demod, enum di
 }
 EXPORT_SYMBOL(dib7000m_get_i2c_master);
 
-int dib7000m_i2c_enumeration(struct i2c_adapter *i2c, int no_of_demods, u8 default_addr, struct dib7000m_config cfg[])
+#if 0
+/* used with some prototype boards */
+int dib7000m_i2c_enumeration(struct i2c_adapter *i2c, int no_of_demods,
+		u8 default_addr, struct dib7000m_config cfg[])
 {
 	struct dib7000m_state st = { .i2c_adap = i2c };
 	int k = 0;
@@ -1326,6 +1332,7 @@ int dib7000m_i2c_enumeration(struct i2c_adapter *i2c, int no_of_demods, u8 defau
 	return 0;
 }
 EXPORT_SYMBOL(dib7000m_i2c_enumeration);
+#endif
 
 static struct dvb_frontend_ops dib7000m_ops;
 struct dvb_frontend * dib7000m_attach(struct i2c_adapter *i2c_adap, u8 i2c_addr, struct dib7000m_config *cfg)

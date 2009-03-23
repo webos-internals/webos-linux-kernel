@@ -54,6 +54,7 @@ static int __init plat_nand_probe(struct platform_device *pdev)
 	data->chip.priv = &data;
 	data->mtd.priv = &data->chip;
 	data->mtd.owner = THIS_MODULE;
+	data->mtd.name = dev_name(&pdev->dev);
 
 	data->chip.IO_ADDR_R = data->io_base;
 	data->chip.IO_ADDR_W = data->io_base;
@@ -110,7 +111,9 @@ out:
 static int __devexit plat_nand_remove(struct platform_device *pdev)
 {
 	struct plat_nand_data *data = platform_get_drvdata(pdev);
+#ifdef CONFIG_MTD_PARTITIONS
 	struct platform_nand_data *pdata = pdev->dev.platform_data;
+#endif
 
 	nand_release(&data->mtd);
 #ifdef CONFIG_MTD_PARTITIONS
@@ -148,3 +151,4 @@ module_exit(plat_nand_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Vitaly Wool");
 MODULE_DESCRIPTION("Simple generic NAND driver");
+MODULE_ALIAS("platform:gen_nand");

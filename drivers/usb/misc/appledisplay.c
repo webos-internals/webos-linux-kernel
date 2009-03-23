@@ -29,7 +29,6 @@
 #include <linux/timer.h>
 #include <linux/workqueue.h>
 #include <asm/atomic.h>
-#include <asm/semaphore.h>
 
 #define APPLE_VENDOR_ID		0x05AC
 
@@ -104,11 +103,11 @@ static void appledisplay_complete(struct urb *urb)
 	case -ESHUTDOWN:
 		/* This urb is terminated, clean up */
 		dbg("%s - urb shuttingdown with status: %d",
-			__FUNCTION__, status);
+			__func__, status);
 		return;
 	default:
 		dbg("%s - nonzero urb status received: %d",
-			__FUNCTION__, status);
+			__func__, status);
 		goto exit;
 	}
 
@@ -131,8 +130,9 @@ static void appledisplay_complete(struct urb *urb)
 exit:
 	retval = usb_submit_urb(pdata->urb, GFP_ATOMIC);
 	if (retval) {
-		err("%s - usb_submit_urb failed with result %d",
-			__FUNCTION__, retval);
+		dev_err(&pdata->udev->dev,
+			"%s - usb_submit_urb failed with result %d\n",
+			__func__, retval);
 	}
 }
 
@@ -221,7 +221,7 @@ static int appledisplay_probe(struct usb_interface *iface,
 		}
 	}
 	if (!int_in_endpointAddr) {
-		err("Could not find int-in endpoint");
+		dev_err(&iface->dev, "Could not find int-in endpoint\n");
 		return -EIO;
 	}
 
@@ -229,7 +229,7 @@ static int appledisplay_probe(struct usb_interface *iface,
 	pdata = kzalloc(sizeof(struct appledisplay), GFP_KERNEL);
 	if (!pdata) {
 		retval = -ENOMEM;
-		err("Out of memory");
+		dev_err(&iface->dev, "Out of memory\n");
 		goto error;
 	}
 
@@ -242,8 +242,8 @@ static int appledisplay_probe(struct usb_interface *iface,
 	pdata->msgdata = kmalloc(ACD_MSG_BUFFER_LEN, GFP_KERNEL);
 	if (!pdata->msgdata) {
 		retval = -ENOMEM;
-		err("appledisplay: Allocating buffer for control messages "
-			"failed");
+		dev_err(&iface->dev,
+			"Allocating buffer for control messages failed\n");
 		goto error;
 	}
 
@@ -251,7 +251,7 @@ static int appledisplay_probe(struct usb_interface *iface,
 	pdata->urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!pdata->urb) {
 		retval = -ENOMEM;
-		err("appledisplay: Allocating URB failed");
+		dev_err(&iface->dev, "Allocating URB failed\n");
 		goto error;
 	}
 
@@ -260,7 +260,7 @@ static int appledisplay_probe(struct usb_interface *iface,
 		GFP_KERNEL, &pdata->urb->transfer_dma);
 	if (!pdata->urbdata) {
 		retval = -ENOMEM;
-		err("appledisplay: Allocating URB buffer failed");
+		dev_err(&iface->dev, "Allocating URB buffer failed\n");
 		goto error;
 	}
 
@@ -271,7 +271,7 @@ static int appledisplay_probe(struct usb_interface *iface,
 		pdata, 1);
 	if (usb_submit_urb(pdata->urb, GFP_KERNEL)) {
 		retval = -EIO;
-		err("appledisplay: Submitting URB failed");
+		dev_err(&iface->dev, "Submitting URB failed\n");
 		goto error;
 	}
 
@@ -281,7 +281,7 @@ static int appledisplay_probe(struct usb_interface *iface,
 	pdata->bd = backlight_device_register(bl_name, NULL, pdata,
 						&appledisplay_bl_data);
 	if (IS_ERR(pdata->bd)) {
-		err("appledisplay: Backlight registration failed");
+		dev_err(&iface->dev, "Backlight registration failed\n");
 		goto error;
 	}
 
@@ -292,7 +292,8 @@ static int appledisplay_probe(struct usb_interface *iface,
 
 	if (brightness < 0) {
 		retval = brightness;
-		err("appledisplay: Error while getting initial brightness: %d", retval);
+		dev_err(&iface->dev,
+			"Error while getting initial brightness: %d\n", retval);
 		goto error;
 	}
 
@@ -315,7 +316,7 @@ error:
 					pdata->urbdata, pdata->urb->transfer_dma);
 			usb_free_urb(pdata->urb);
 		}
-		if (pdata->bd)
+		if (pdata->bd && !IS_ERR(pdata->bd))
 			backlight_device_unregister(pdata->bd);
 		kfree(pdata->msgdata);
 	}
@@ -353,7 +354,7 @@ static int __init appledisplay_init(void)
 {
 	wq = create_singlethread_workqueue("appledisplay");
 	if (!wq) {
-		err("Could not create work queue\n");
+		printk(KERN_ERR "appledisplay: Could not create work queue\n");
 		return -ENOMEM;
 	}
 

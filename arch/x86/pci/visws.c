@@ -8,42 +8,21 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 
-#include "cobalt.h"
-#include "lithium.h"
-
-#include "pci.h"
-
-
-extern struct pci_raw_ops pci_direct_conf1;
+#include <asm/setup.h>
+#include <asm/pci_x86.h>
+#include <asm/visws/cobalt.h>
+#include <asm/visws/lithium.h>
 
 static int pci_visws_enable_irq(struct pci_dev *dev) { return 0; }
 static void pci_visws_disable_irq(struct pci_dev *dev) { }
 
-int (*pcibios_enable_irq)(struct pci_dev *dev) = &pci_visws_enable_irq;
-void (*pcibios_disable_irq)(struct pci_dev *dev) = &pci_visws_disable_irq;
+/* int (*pcibios_enable_irq)(struct pci_dev *dev) = &pci_visws_enable_irq; */
+/* void (*pcibios_disable_irq)(struct pci_dev *dev) = &pci_visws_disable_irq; */
 
-void __init pcibios_penalize_isa_irq(int irq, int active) {}
+/* void __init pcibios_penalize_isa_irq(int irq, int active) {} */
 
 
 unsigned int pci_bus0, pci_bus1;
-
-static inline u8 bridge_swizzle(u8 pin, u8 slot) 
-{
-	return (((pin - 1) + slot) % 4) + 1;
-}
-
-static u8 __init visws_swizzle(struct pci_dev *dev, u8 *pinp)
-{
-	u8 pin = *pinp;
-
-	while (dev->bus->self) {	/* Move up the chain of bridges. */
-		pin = bridge_swizzle(pin, PCI_SLOT(dev->devfn));
-		dev = dev->bus->self;
-	}
-	*pinp = pin;
-
-	return PCI_SLOT(dev->devfn);
-}
 
 static int __init visws_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
 {
@@ -88,8 +67,14 @@ void __init pcibios_update_irq(struct pci_dev *dev, int irq)
 	pci_write_config_byte(dev, PCI_INTERRUPT_LINE, irq);
 }
 
-static int __init pcibios_init(void)
+int __init pci_visws_init(void)
 {
+	if (!is_visws_box())
+		return -1;
+
+	pcibios_enable_irq = &pci_visws_enable_irq;
+	pcibios_disable_irq = &pci_visws_disable_irq;
+
 	/* The VISWS supports configuration access type 1 only */
 	pci_probe = (pci_probe | PCI_PROBE_CONF1) &
 		    ~(PCI_PROBE_BIOS | PCI_PROBE_CONF2);
@@ -103,9 +88,7 @@ static int __init pcibios_init(void)
 	raw_pci_ops = &pci_direct_conf1;
 	pci_scan_bus_with_sysdata(pci_bus0);
 	pci_scan_bus_with_sysdata(pci_bus1);
-	pci_fixup_irqs(visws_swizzle, visws_map_irq);
+	pci_fixup_irqs(pci_common_swizzle, visws_map_irq);
 	pcibios_resource_survey();
 	return 0;
 }
-
-subsys_initcall(pcibios_init);

@@ -32,17 +32,13 @@
 #include <linux/shm.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
-#include <linux/nfs_fs.h>
+#include <linux/socket.h>
 #include <linux/quota.h>
-#include <linux/sunrpc/svc.h>
-#include <linux/nfsd/nfsd.h>
-#include <linux/nfsd/cache.h>
-#include <linux/nfsd/xdr.h>
-#include <linux/nfsd/syscall.h>
 #include <linux/poll.h>
 #include <linux/eventpoll.h>
 #include <linux/personality.h>
 #include <linux/ptrace.h>
+#include <linux/regset.h>
 #include <linux/stat.h>
 #include <linux/ipc.h>
 #include <linux/capability.h>
@@ -122,41 +118,6 @@ sys32_execve (char __user *name, compat_uptr_t __user *argv, compat_uptr_t __use
 	return error;
 }
 
-int cp_compat_stat(struct kstat *stat, struct compat_stat __user *ubuf)
-{
-	compat_ino_t ino;
-	int err;
-
-	if ((u64) stat->size > MAX_NON_LFS ||
-	    !old_valid_dev(stat->dev) ||
-	    !old_valid_dev(stat->rdev))
-		return -EOVERFLOW;
-
-	ino = stat->ino;
-	if (sizeof(ino) < sizeof(stat->ino) && ino != stat->ino)
-		return -EOVERFLOW;
-
-	if (clear_user(ubuf, sizeof(*ubuf)))
-		return -EFAULT;
-
-	err  = __put_user(old_encode_dev(stat->dev), &ubuf->st_dev);
-	err |= __put_user(ino, &ubuf->st_ino);
-	err |= __put_user(stat->mode, &ubuf->st_mode);
-	err |= __put_user(stat->nlink, &ubuf->st_nlink);
-	err |= __put_user(high2lowuid(stat->uid), &ubuf->st_uid);
-	err |= __put_user(high2lowgid(stat->gid), &ubuf->st_gid);
-	err |= __put_user(old_encode_dev(stat->rdev), &ubuf->st_rdev);
-	err |= __put_user(stat->size, &ubuf->st_size);
-	err |= __put_user(stat->atime.tv_sec, &ubuf->st_atime);
-	err |= __put_user(stat->atime.tv_nsec, &ubuf->st_atime_nsec);
-	err |= __put_user(stat->mtime.tv_sec, &ubuf->st_mtime);
-	err |= __put_user(stat->mtime.tv_nsec, &ubuf->st_mtime_nsec);
-	err |= __put_user(stat->ctime.tv_sec, &ubuf->st_ctime);
-	err |= __put_user(stat->ctime.tv_nsec, &ubuf->st_ctime_nsec);
-	err |= __put_user(stat->blksize, &ubuf->st_blksize);
-	err |= __put_user(stat->blocks, &ubuf->st_blocks);
-	return err;
-}
 
 #if PAGE_SHIFT > IA32_PAGE_SHIFT
 
@@ -1137,213 +1098,10 @@ sys32_mremap (unsigned int addr, unsigned int old_len, unsigned int new_len,
 	return ret;
 }
 
-asmlinkage long
-sys32_pipe (int __user *fd)
-{
-	int retval;
-	int fds[2];
-
-	retval = do_pipe(fds);
-	if (retval)
-		goto out;
-	if (copy_to_user(fd, fds, sizeof(fds)))
-		retval = -EFAULT;
-  out:
-	return retval;
-}
-
-static inline long
-get_tv32 (struct timeval *o, struct compat_timeval __user *i)
-{
-	return (!access_ok(VERIFY_READ, i, sizeof(*i)) ||
-		(__get_user(o->tv_sec, &i->tv_sec) | __get_user(o->tv_usec, &i->tv_usec)));
-}
-
-static inline long
-put_tv32 (struct compat_timeval __user *o, struct timeval *i)
-{
-	return (!access_ok(VERIFY_WRITE, o, sizeof(*o)) ||
-		(__put_user(i->tv_sec, &o->tv_sec) | __put_user(i->tv_usec, &o->tv_usec)));
-}
-
 asmlinkage unsigned long
 sys32_alarm (unsigned int seconds)
 {
 	return alarm_setitimer(seconds);
-}
-
-/* Translations due to time_t size differences.  Which affects all
-   sorts of things, like timeval and itimerval.  */
-
-extern struct timezone sys_tz;
-
-asmlinkage long
-sys32_gettimeofday (struct compat_timeval __user *tv, struct timezone __user *tz)
-{
-	if (tv) {
-		struct timeval ktv;
-		do_gettimeofday(&ktv);
-		if (put_tv32(tv, &ktv))
-			return -EFAULT;
-	}
-	if (tz) {
-		if (copy_to_user(tz, &sys_tz, sizeof(sys_tz)))
-			return -EFAULT;
-	}
-	return 0;
-}
-
-asmlinkage long
-sys32_settimeofday (struct compat_timeval __user *tv, struct timezone __user *tz)
-{
-	struct timeval ktv;
-	struct timespec kts;
-	struct timezone ktz;
-
-	if (tv) {
-		if (get_tv32(&ktv, tv))
-			return -EFAULT;
-		kts.tv_sec = ktv.tv_sec;
-		kts.tv_nsec = ktv.tv_usec * 1000;
-	}
-	if (tz) {
-		if (copy_from_user(&ktz, tz, sizeof(ktz)))
-			return -EFAULT;
-	}
-
-	return do_sys_settimeofday(tv ? &kts : NULL, tz ? &ktz : NULL);
-}
-
-struct getdents32_callback {
-	struct compat_dirent __user *current_dir;
-	struct compat_dirent __user *previous;
-	int count;
-	int error;
-};
-
-struct readdir32_callback {
-	struct old_linux32_dirent __user * dirent;
-	int count;
-};
-
-static int
-filldir32 (void *__buf, const char *name, int namlen, loff_t offset, u64 ino,
-	   unsigned int d_type)
-{
-	struct compat_dirent __user * dirent;
-	struct getdents32_callback * buf = (struct getdents32_callback *) __buf;
-	int reclen = ROUND_UP(offsetof(struct compat_dirent, d_name) + namlen + 1, 4);
-	u32 d_ino;
-
-	buf->error = -EINVAL;	/* only used if we fail.. */
-	if (reclen > buf->count)
-		return -EINVAL;
-	d_ino = ino;
-	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino)
-		return -EOVERFLOW;
-	buf->error = -EFAULT;	/* only used if we fail.. */
-	dirent = buf->previous;
-	if (dirent)
-		if (put_user(offset, &dirent->d_off))
-			return -EFAULT;
-	dirent = buf->current_dir;
-	buf->previous = dirent;
-	if (put_user(d_ino, &dirent->d_ino)
-	    || put_user(reclen, &dirent->d_reclen)
-	    || copy_to_user(dirent->d_name, name, namlen)
-	    || put_user(0, dirent->d_name + namlen))
-		return -EFAULT;
-	dirent = (struct compat_dirent __user *) ((char __user *) dirent + reclen);
-	buf->current_dir = dirent;
-	buf->count -= reclen;
-	return 0;
-}
-
-asmlinkage long
-sys32_getdents (unsigned int fd, struct compat_dirent __user *dirent, unsigned int count)
-{
-	struct file * file;
-	struct compat_dirent __user * lastdirent;
-	struct getdents32_callback buf;
-	int error;
-
-	error = -EFAULT;
-	if (!access_ok(VERIFY_WRITE, dirent, count))
-		goto out;
-
-	error = -EBADF;
-	file = fget(fd);
-	if (!file)
-		goto out;
-
-	buf.current_dir = dirent;
-	buf.previous = NULL;
-	buf.count = count;
-	buf.error = 0;
-
-	error = vfs_readdir(file, filldir32, &buf);
-	if (error < 0)
-		goto out_putf;
-	error = buf.error;
-	lastdirent = buf.previous;
-	if (lastdirent) {
-		if (put_user(file->f_pos, &lastdirent->d_off))
-			error = -EFAULT;
-		else
-			error = count - buf.count;
-	}
-
-out_putf:
-	fput(file);
-out:
-	return error;
-}
-
-static int
-fillonedir32 (void * __buf, const char * name, int namlen, loff_t offset, u64 ino,
-	      unsigned int d_type)
-{
-	struct readdir32_callback * buf = (struct readdir32_callback *) __buf;
-	struct old_linux32_dirent __user * dirent;
-	u32 d_ino;
-
-	if (buf->count)
-		return -EINVAL;
-	d_ino = ino;
-	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino)
-		return -EOVERFLOW;
-	buf->count++;
-	dirent = buf->dirent;
-	if (put_user(d_ino, &dirent->d_ino)
-	    || put_user(offset, &dirent->d_offset)
-	    || put_user(namlen, &dirent->d_namlen)
-	    || copy_to_user(dirent->d_name, name, namlen)
-	    || put_user(0, dirent->d_name + namlen))
-		return -EFAULT;
-	return 0;
-}
-
-asmlinkage long
-sys32_readdir (unsigned int fd, void __user *dirent, unsigned int count)
-{
-	int error;
-	struct file * file;
-	struct readdir32_callback buf;
-
-	error = -EBADF;
-	file = fget(fd);
-	if (!file)
-		goto out;
-
-	buf.count = 0;
-	buf.dirent = dirent;
-
-	error = vfs_readdir(file, fillonedir32, &buf);
-	if (error >= 0)
-		error = buf.count;
-	fput(file);
-out:
-	return error;
 }
 
 struct sel_arg_struct {
@@ -1434,25 +1192,6 @@ asmlinkage long
 sys32_waitpid (int pid, unsigned int *stat_addr, int options)
 {
 	return compat_sys_wait4(pid, stat_addr, options, NULL);
-}
-
-static unsigned int
-ia32_peek (struct task_struct *child, unsigned long addr, unsigned int *val)
-{
-	size_t copied;
-	unsigned int ret;
-
-	copied = access_process_vm(child, addr, val, sizeof(*val), 0);
-	return (copied != sizeof(ret)) ? -EIO : 0;
-}
-
-static unsigned int
-ia32_poke (struct task_struct *child, unsigned long addr, unsigned int val)
-{
-
-	if (access_process_vm(child, addr, &val, sizeof(val), 1) != sizeof(val))
-		return -EIO;
-	return 0;
 }
 
 /*
@@ -1752,49 +1491,15 @@ restore_ia32_fpxstate (struct task_struct *tsk, struct ia32_user_fxsr_struct __u
 	return 0;
 }
 
-asmlinkage long
-sys32_ptrace (int request, pid_t pid, unsigned int addr, unsigned int data)
+long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
+	compat_ulong_t caddr, compat_ulong_t cdata)
 {
-	struct task_struct *child;
-	unsigned int value, tmp;
+	unsigned long addr = caddr;
+	unsigned long data = cdata;
+	unsigned int tmp;
 	long i, ret;
 
-	lock_kernel();
-	if (request == PTRACE_TRACEME) {
-		ret = ptrace_traceme();
-		goto out;
-	}
-
-	child = ptrace_get_task_struct(pid);
-	if (IS_ERR(child)) {
-		ret = PTR_ERR(child);
-		goto out;
-	}
-
-	if (request == PTRACE_ATTACH) {
-		ret = sys_ptrace(request, pid, addr, data);
-		goto out_tsk;
-	}
-
-	ret = ptrace_check_attach(child, request == PTRACE_KILL);
-	if (ret < 0)
-		goto out_tsk;
-
 	switch (request) {
-	      case PTRACE_PEEKTEXT:
-	      case PTRACE_PEEKDATA:	/* read word at location addr */
-		ret = ia32_peek(child, addr, &value);
-		if (ret == 0)
-			ret = put_user(value, (unsigned int __user *) compat_ptr(data));
-		else
-			ret = -EIO;
-		goto out_tsk;
-
-	      case PTRACE_POKETEXT:
-	      case PTRACE_POKEDATA:	/* write the word at location addr */
-		ret = ia32_poke(child, addr, data);
-		goto out_tsk;
-
 	      case PTRACE_PEEKUSR:	/* read word at addr in USER area */
 		ret = -EIO;
 		if ((addr & 3) || addr > 17*sizeof(int))
@@ -1859,27 +1564,9 @@ sys32_ptrace (int request, pid_t pid, unsigned int addr, unsigned int data)
 					    compat_ptr(data));
 		break;
 
-	      case PTRACE_GETEVENTMSG:   
-		ret = put_user(child->ptrace_message, (unsigned int __user *) compat_ptr(data));
-		break;
-
-	      case PTRACE_SYSCALL:	/* continue, stop after next syscall */
-	      case PTRACE_CONT:		/* restart after signal. */
-	      case PTRACE_KILL:
-	      case PTRACE_SINGLESTEP:	/* execute chile for one instruction */
-	      case PTRACE_DETACH:	/* detach a process */
-		ret = sys_ptrace(request, pid, addr, data);
-		break;
-
 	      default:
-		ret = ptrace_request(child, request, addr, data);
-		break;
-
+		return compat_ptrace_request(child, request, caddr, cdata);
 	}
-  out_tsk:
-	put_task_struct(child);
-  out:
-	unlock_kernel();
 	return ret;
 }
 
@@ -1928,14 +1615,6 @@ out:
 			return -EFAULT;
 	}
 	return ret;
-}
-
-asmlinkage int
-sys32_pause (void)
-{
-	current->state = TASK_INTERRUPTIBLE;
-	schedule();
-	return -ERESTARTNOHAND;
 }
 
 asmlinkage int
@@ -2088,25 +1767,24 @@ groups16_from_user(struct group_info *group_info, short __user *grouplist)
 asmlinkage long
 sys32_getgroups16 (int gidsetsize, short __user *grouplist)
 {
+	const struct cred *cred = current_cred();
 	int i;
 
 	if (gidsetsize < 0)
 		return -EINVAL;
 
-	get_group_info(current->group_info);
-	i = current->group_info->ngroups;
+	i = cred->group_info->ngroups;
 	if (gidsetsize) {
 		if (i > gidsetsize) {
 			i = -EINVAL;
 			goto out;
 		}
-		if (groups16_to_user(grouplist, current->group_info)) {
+		if (groups16_to_user(grouplist, cred->group_info)) {
 			i = -EFAULT;
 			goto out;
 		}
 	}
 out:
-	put_group_info(current->group_info);
 	return i;
 }
 
@@ -2392,16 +2070,45 @@ get_free_idx (void)
 	return -ESRCH;
 }
 
+static void set_tls_desc(struct task_struct *p, int idx,
+		const struct ia32_user_desc *info, int n)
+{
+	struct thread_struct *t = &p->thread;
+	struct desc_struct *desc = &t->tls_array[idx - GDT_ENTRY_TLS_MIN];
+	int cpu;
+
+	/*
+	 * We must not get preempted while modifying the TLS.
+	 */
+	cpu = get_cpu();
+
+	while (n-- > 0) {
+		if (LDT_empty(info)) {
+			desc->a = 0;
+			desc->b = 0;
+		} else {
+			desc->a = LDT_entry_a(info);
+			desc->b = LDT_entry_b(info);
+		}
+
+		++info;
+		++desc;
+	}
+
+	if (t == &current->thread)
+		load_TLS(t, cpu);
+
+	put_cpu();
+}
+
 /*
  * Set a given TLS descriptor:
  */
 asmlinkage int
 sys32_set_thread_area (struct ia32_user_desc __user *u_info)
 {
-	struct thread_struct *t = &current->thread;
 	struct ia32_user_desc info;
-	struct desc_struct *desc;
-	int cpu, idx;
+	int idx;
 
 	if (copy_from_user(&info, u_info, sizeof(info)))
 		return -EFAULT;
@@ -2421,18 +2128,7 @@ sys32_set_thread_area (struct ia32_user_desc __user *u_info)
 	if (idx < GDT_ENTRY_TLS_MIN || idx > GDT_ENTRY_TLS_MAX)
 		return -EINVAL;
 
-	desc = t->tls_array + idx - GDT_ENTRY_TLS_MIN;
-
-	cpu = smp_processor_id();
-
-	if (LDT_empty(&info)) {
-		desc->a = 0;
-		desc->b = 0;
-	} else {
-		desc->a = LDT_entry_a(&info);
-		desc->b = LDT_entry_b(&info);
-	}
-	load_TLS(t, cpu);
+	set_tls_desc(current, idx, &info, 1);
 	return 0;
 }
 
@@ -2456,6 +2152,20 @@ sys32_set_thread_area (struct ia32_user_desc __user *u_info)
 #define GET_PRESENT(desc)	(((desc)->b >> 15) & 1)
 #define GET_USEABLE(desc)	(((desc)->b >> 20) & 1)
 
+static void fill_user_desc(struct ia32_user_desc *info, int idx,
+		const struct desc_struct *desc)
+{
+	info->entry_number = idx;
+	info->base_addr = GET_BASE(desc);
+	info->limit = GET_LIMIT(desc);
+	info->seg_32bit = GET_32BIT(desc);
+	info->contents = GET_CONTENTS(desc);
+	info->read_exec_only = !GET_WRITABLE(desc);
+	info->limit_in_pages = GET_LIMIT_PAGES(desc);
+	info->seg_not_present = !GET_PRESENT(desc);
+	info->useable = GET_USEABLE(desc);
+}
+
 asmlinkage int
 sys32_get_thread_area (struct ia32_user_desc __user *u_info)
 {
@@ -2469,21 +2179,587 @@ sys32_get_thread_area (struct ia32_user_desc __user *u_info)
 		return -EINVAL;
 
 	desc = current->thread.tls_array + idx - GDT_ENTRY_TLS_MIN;
-
-	info.entry_number = idx;
-	info.base_addr = GET_BASE(desc);
-	info.limit = GET_LIMIT(desc);
-	info.seg_32bit = GET_32BIT(desc);
-	info.contents = GET_CONTENTS(desc);
-	info.read_exec_only = !GET_WRITABLE(desc);
-	info.limit_in_pages = GET_LIMIT_PAGES(desc);
-	info.seg_not_present = !GET_PRESENT(desc);
-	info.useable = GET_USEABLE(desc);
+	fill_user_desc(&info, idx, desc);
 
 	if (copy_to_user(u_info, &info, sizeof(info)))
 		return -EFAULT;
 	return 0;
 }
+
+struct regset_get {
+	void *kbuf;
+	void __user *ubuf;
+};
+
+struct regset_set {
+	const void *kbuf;
+	const void __user *ubuf;
+};
+
+struct regset_getset {
+	struct task_struct *target;
+	const struct user_regset *regset;
+	union {
+		struct regset_get get;
+		struct regset_set set;
+	} u;
+	unsigned int pos;
+	unsigned int count;
+	int ret;
+};
+
+static void getfpreg(struct task_struct *task, int regno, int *val)
+{
+	switch (regno / sizeof(int)) {
+	case 0:
+		*val = task->thread.fcr & 0xffff;
+		break;
+	case 1:
+		*val = task->thread.fsr & 0xffff;
+		break;
+	case 2:
+		*val = (task->thread.fsr>>16) & 0xffff;
+		break;
+	case 3:
+		*val = task->thread.fir;
+		break;
+	case 4:
+		*val = (task->thread.fir>>32) & 0xffff;
+		break;
+	case 5:
+		*val = task->thread.fdr;
+		break;
+	case 6:
+		*val = (task->thread.fdr >> 32) & 0xffff;
+		break;
+	}
+}
+
+static void setfpreg(struct task_struct *task, int regno, int val)
+{
+	switch (regno / sizeof(int)) {
+	case 0:
+		task->thread.fcr = (task->thread.fcr & (~0x1f3f))
+			| (val & 0x1f3f);
+		break;
+	case 1:
+		task->thread.fsr = (task->thread.fsr & (~0xffff)) | val;
+		break;
+	case 2:
+		task->thread.fsr = (task->thread.fsr & (~0xffff0000))
+			| (val << 16);
+		break;
+	case 3:
+		task->thread.fir = (task->thread.fir & (~0xffffffff)) | val;
+		break;
+	case 5:
+		task->thread.fdr = (task->thread.fdr & (~0xffffffff)) | val;
+		break;
+	}
+}
+
+static void access_fpreg_ia32(int regno, void *reg,
+		struct pt_regs *pt, struct switch_stack *sw,
+		int tos, int write)
+{
+	void *f;
+
+	if ((regno += tos) >= 8)
+		regno -= 8;
+	if (regno < 4)
+		f = &pt->f8 + regno;
+	else if (regno <= 7)
+		f = &sw->f12 + (regno - 4);
+	else {
+		printk(KERN_ERR "regno must be less than 7 \n");
+		 return;
+	}
+
+	if (write)
+		memcpy(f, reg, sizeof(struct _fpreg_ia32));
+	else
+		memcpy(reg, f, sizeof(struct _fpreg_ia32));
+}
+
+static void do_fpregs_get(struct unw_frame_info *info, void *arg)
+{
+	struct regset_getset *dst = arg;
+	struct task_struct *task = dst->target;
+	struct pt_regs *pt;
+	int start, end, tos;
+	char buf[80];
+
+	if (dst->count == 0 || unw_unwind_to_user(info) < 0)
+		return;
+	if (dst->pos < 7 * sizeof(int)) {
+		end = min((dst->pos + dst->count),
+			(unsigned int)(7 * sizeof(int)));
+		for (start = dst->pos; start < end; start += sizeof(int))
+			getfpreg(task, start, (int *)(buf + start));
+		dst->ret = user_regset_copyout(&dst->pos, &dst->count,
+				&dst->u.get.kbuf, &dst->u.get.ubuf, buf,
+				0, 7 * sizeof(int));
+		if (dst->ret || dst->count == 0)
+			return;
+	}
+	if (dst->pos < sizeof(struct ia32_user_i387_struct)) {
+		pt = task_pt_regs(task);
+		tos = (task->thread.fsr >> 11) & 7;
+		end = min(dst->pos + dst->count,
+			(unsigned int)(sizeof(struct ia32_user_i387_struct)));
+		start = (dst->pos - 7 * sizeof(int)) /
+			sizeof(struct _fpreg_ia32);
+		end = (end - 7 * sizeof(int)) / sizeof(struct _fpreg_ia32);
+		for (; start < end; start++)
+			access_fpreg_ia32(start,
+				(struct _fpreg_ia32 *)buf + start,
+				pt, info->sw, tos, 0);
+		dst->ret = user_regset_copyout(&dst->pos, &dst->count,
+				&dst->u.get.kbuf, &dst->u.get.ubuf,
+				buf, 7 * sizeof(int),
+				sizeof(struct ia32_user_i387_struct));
+		if (dst->ret || dst->count == 0)
+			return;
+	}
+}
+
+static void do_fpregs_set(struct unw_frame_info *info, void *arg)
+{
+	struct regset_getset *dst = arg;
+	struct task_struct *task = dst->target;
+	struct pt_regs *pt;
+	char buf[80];
+	int end, start, tos;
+
+	if (dst->count == 0 || unw_unwind_to_user(info) < 0)
+		return;
+
+	if (dst->pos < 7 * sizeof(int)) {
+		start = dst->pos;
+		dst->ret = user_regset_copyin(&dst->pos, &dst->count,
+				&dst->u.set.kbuf, &dst->u.set.ubuf, buf,
+				0, 7 * sizeof(int));
+		if (dst->ret)
+			return;
+		for (; start < dst->pos; start += sizeof(int))
+			setfpreg(task, start, *((int *)(buf + start)));
+		if (dst->count == 0)
+			return;
+	}
+	if (dst->pos < sizeof(struct ia32_user_i387_struct)) {
+		start = (dst->pos - 7 * sizeof(int)) /
+			sizeof(struct _fpreg_ia32);
+		dst->ret = user_regset_copyin(&dst->pos, &dst->count,
+				&dst->u.set.kbuf, &dst->u.set.ubuf,
+				buf, 7 * sizeof(int),
+				sizeof(struct ia32_user_i387_struct));
+		if (dst->ret)
+			return;
+		pt = task_pt_regs(task);
+		tos = (task->thread.fsr >> 11) & 7;
+		end = (dst->pos - 7 * sizeof(int)) / sizeof(struct _fpreg_ia32);
+		for (; start < end; start++)
+			access_fpreg_ia32(start,
+				(struct _fpreg_ia32 *)buf + start,
+				pt, info->sw, tos, 1);
+		if (dst->count == 0)
+			return;
+	}
+}
+
+#define OFFSET(member) ((int)(offsetof(struct ia32_user_fxsr_struct, member)))
+static void getfpxreg(struct task_struct *task, int start, int end, char *buf)
+{
+	int min_val;
+
+	min_val = min(end, OFFSET(fop));
+	while (start < min_val) {
+		if (start == OFFSET(cwd))
+			*((short *)buf) = task->thread.fcr & 0xffff;
+		else if (start == OFFSET(swd))
+			*((short *)buf) = task->thread.fsr & 0xffff;
+		else if (start == OFFSET(twd))
+			*((short *)buf) = (task->thread.fsr>>16) & 0xffff;
+		buf += 2;
+		start += 2;
+	}
+	/* skip fop element */
+	if (start == OFFSET(fop)) {
+		start += 2;
+		buf += 2;
+	}
+	while (start < end) {
+		if (start == OFFSET(fip))
+			*((int *)buf) = task->thread.fir;
+		else if (start == OFFSET(fcs))
+			*((int *)buf) = (task->thread.fir>>32) & 0xffff;
+		else if (start == OFFSET(foo))
+			*((int *)buf) = task->thread.fdr;
+		else if (start == OFFSET(fos))
+			*((int *)buf) = (task->thread.fdr>>32) & 0xffff;
+		else if (start == OFFSET(mxcsr))
+			*((int *)buf) = ((task->thread.fcr>>32) & 0xff80)
+					 | ((task->thread.fsr>>32) & 0x3f);
+		buf += 4;
+		start += 4;
+	}
+}
+
+static void setfpxreg(struct task_struct *task, int start, int end, char *buf)
+{
+	int min_val, num32;
+	short num;
+	unsigned long num64;
+
+	min_val = min(end, OFFSET(fop));
+	while (start < min_val) {
+		num = *((short *)buf);
+		if (start == OFFSET(cwd)) {
+			task->thread.fcr = (task->thread.fcr & (~0x1f3f))
+						| (num & 0x1f3f);
+		} else if (start == OFFSET(swd)) {
+			task->thread.fsr = (task->thread.fsr & (~0xffff)) | num;
+		} else if (start == OFFSET(twd)) {
+			task->thread.fsr = (task->thread.fsr & (~0xffff0000))
+				| (((int)num) << 16);
+		}
+		buf += 2;
+		start += 2;
+	}
+	/* skip fop element */
+	if (start == OFFSET(fop)) {
+		start += 2;
+		buf += 2;
+	}
+	while (start < end) {
+		num32 = *((int *)buf);
+		if (start == OFFSET(fip))
+			task->thread.fir = (task->thread.fir & (~0xffffffff))
+						 | num32;
+		else if (start == OFFSET(foo))
+			task->thread.fdr = (task->thread.fdr & (~0xffffffff))
+						 | num32;
+		else if (start == OFFSET(mxcsr)) {
+			num64 = num32 & 0xff10;
+			task->thread.fcr = (task->thread.fcr &
+				(~0xff1000000000UL)) | (num64<<32);
+			num64 = num32 & 0x3f;
+			task->thread.fsr = (task->thread.fsr &
+				(~0x3f00000000UL)) | (num64<<32);
+		}
+		buf += 4;
+		start += 4;
+	}
+}
+
+static void do_fpxregs_get(struct unw_frame_info *info, void *arg)
+{
+	struct regset_getset *dst = arg;
+	struct task_struct *task = dst->target;
+	struct pt_regs *pt;
+	char buf[128];
+	int start, end, tos;
+
+	if (dst->count == 0 || unw_unwind_to_user(info) < 0)
+		return;
+	if (dst->pos < OFFSET(st_space[0])) {
+		end = min(dst->pos + dst->count, (unsigned int)32);
+		getfpxreg(task, dst->pos, end, buf);
+		dst->ret = user_regset_copyout(&dst->pos, &dst->count,
+				&dst->u.get.kbuf, &dst->u.get.ubuf, buf,
+				0, OFFSET(st_space[0]));
+		if (dst->ret || dst->count == 0)
+			return;
+	}
+	if (dst->pos < OFFSET(xmm_space[0])) {
+		pt = task_pt_regs(task);
+		tos = (task->thread.fsr >> 11) & 7;
+		end = min(dst->pos + dst->count,
+				(unsigned int)OFFSET(xmm_space[0]));
+		start = (dst->pos - OFFSET(st_space[0])) / 16;
+		end = (end - OFFSET(st_space[0])) / 16;
+		for (; start < end; start++)
+			access_fpreg_ia32(start, buf + 16 * start, pt,
+						info->sw, tos, 0);
+		dst->ret = user_regset_copyout(&dst->pos, &dst->count,
+				&dst->u.get.kbuf, &dst->u.get.ubuf,
+				buf, OFFSET(st_space[0]), OFFSET(xmm_space[0]));
+		if (dst->ret || dst->count == 0)
+			return;
+	}
+	if (dst->pos < OFFSET(padding[0]))
+		dst->ret = user_regset_copyout(&dst->pos, &dst->count,
+				&dst->u.get.kbuf, &dst->u.get.ubuf,
+				&info->sw->f16, OFFSET(xmm_space[0]),
+				OFFSET(padding[0]));
+}
+
+static void do_fpxregs_set(struct unw_frame_info *info, void *arg)
+{
+	struct regset_getset *dst = arg;
+	struct task_struct *task = dst->target;
+	char buf[128];
+	int start, end;
+
+	if (dst->count == 0 || unw_unwind_to_user(info) < 0)
+		return;
+
+	if (dst->pos < OFFSET(st_space[0])) {
+		start = dst->pos;
+		dst->ret = user_regset_copyin(&dst->pos, &dst->count,
+				&dst->u.set.kbuf, &dst->u.set.ubuf,
+				buf, 0, OFFSET(st_space[0]));
+		if (dst->ret)
+			return;
+		setfpxreg(task, start, dst->pos, buf);
+		if (dst->count == 0)
+			return;
+	}
+	if (dst->pos < OFFSET(xmm_space[0])) {
+		struct pt_regs *pt;
+		int tos;
+		pt = task_pt_regs(task);
+		tos = (task->thread.fsr >> 11) & 7;
+		start = (dst->pos - OFFSET(st_space[0])) / 16;
+		dst->ret = user_regset_copyin(&dst->pos, &dst->count,
+				&dst->u.set.kbuf, &dst->u.set.ubuf,
+				buf, OFFSET(st_space[0]), OFFSET(xmm_space[0]));
+		if (dst->ret)
+			return;
+		end = (dst->pos - OFFSET(st_space[0])) / 16;
+		for (; start < end; start++)
+			access_fpreg_ia32(start, buf + 16 * start, pt, info->sw,
+						 tos, 1);
+		if (dst->count == 0)
+			return;
+	}
+	if (dst->pos < OFFSET(padding[0]))
+		dst->ret = user_regset_copyin(&dst->pos, &dst->count,
+				&dst->u.set.kbuf, &dst->u.set.ubuf,
+				&info->sw->f16, OFFSET(xmm_space[0]),
+				 OFFSET(padding[0]));
+}
+#undef OFFSET
+
+static int do_regset_call(void (*call)(struct unw_frame_info *, void *),
+		struct task_struct *target,
+		const struct user_regset *regset,
+		unsigned int pos, unsigned int count,
+		const void *kbuf, const void __user *ubuf)
+{
+	struct regset_getset info = { .target = target, .regset = regset,
+		.pos = pos, .count = count,
+		.u.set = { .kbuf = kbuf, .ubuf = ubuf },
+		.ret = 0 };
+
+	if (target == current)
+		unw_init_running(call, &info);
+	else {
+		struct unw_frame_info ufi;
+		memset(&ufi, 0, sizeof(ufi));
+		unw_init_from_blocked_task(&ufi, target);
+		(*call)(&ufi, &info);
+	}
+
+	return info.ret;
+}
+
+static int ia32_fpregs_get(struct task_struct *target,
+		const struct user_regset *regset,
+		unsigned int pos, unsigned int count,
+		void *kbuf, void __user *ubuf)
+{
+	return do_regset_call(do_fpregs_get, target, regset, pos, count,
+		kbuf, ubuf);
+}
+
+static int ia32_fpregs_set(struct task_struct *target,
+		const struct user_regset *regset,
+		unsigned int pos, unsigned int count,
+		const void *kbuf, const void __user *ubuf)
+{
+	return do_regset_call(do_fpregs_set, target, regset, pos, count,
+		kbuf, ubuf);
+}
+
+static int ia32_fpxregs_get(struct task_struct *target,
+		const struct user_regset *regset,
+		unsigned int pos, unsigned int count,
+		void *kbuf, void __user *ubuf)
+{
+	return do_regset_call(do_fpxregs_get, target, regset, pos, count,
+		kbuf, ubuf);
+}
+
+static int ia32_fpxregs_set(struct task_struct *target,
+		const struct user_regset *regset,
+		unsigned int pos, unsigned int count,
+		const void *kbuf, const void __user *ubuf)
+{
+	return do_regset_call(do_fpxregs_set, target, regset, pos, count,
+		kbuf, ubuf);
+}
+
+static int ia32_genregs_get(struct task_struct *target,
+		const struct user_regset *regset,
+		unsigned int pos, unsigned int count,
+		void *kbuf, void __user *ubuf)
+{
+	if (kbuf) {
+		u32 *kp = kbuf;
+		while (count > 0) {
+			*kp++ = getreg(target, pos);
+			pos += 4;
+			count -= 4;
+		}
+	} else {
+		u32 __user *up = ubuf;
+		while (count > 0) {
+			if (__put_user(getreg(target, pos), up++))
+				return -EFAULT;
+			pos += 4;
+			count -= 4;
+		}
+	}
+	return 0;
+}
+
+static int ia32_genregs_set(struct task_struct *target,
+		const struct user_regset *regset,
+		unsigned int pos, unsigned int count,
+		const void *kbuf, const void __user *ubuf)
+{
+	int ret = 0;
+
+	if (kbuf) {
+		const u32 *kp = kbuf;
+		while (!ret && count > 0) {
+			putreg(target, pos, *kp++);
+			pos += 4;
+			count -= 4;
+		}
+	} else {
+		const u32 __user *up = ubuf;
+		u32 val;
+		while (!ret && count > 0) {
+			ret = __get_user(val, up++);
+			if (!ret)
+				putreg(target, pos, val);
+			pos += 4;
+			count -= 4;
+		}
+	}
+	return ret;
+}
+
+static int ia32_tls_active(struct task_struct *target,
+		const struct user_regset *regset)
+{
+	struct thread_struct *t = &target->thread;
+	int n = GDT_ENTRY_TLS_ENTRIES;
+	while (n > 0 && desc_empty(&t->tls_array[n -1]))
+		--n;
+	return n;
+}
+
+static int ia32_tls_get(struct task_struct *target,
+		const struct user_regset *regset, unsigned int pos,
+		unsigned int count, void *kbuf, void __user *ubuf)
+{
+	const struct desc_struct *tls;
+
+	if (pos > GDT_ENTRY_TLS_ENTRIES * sizeof(struct ia32_user_desc) ||
+			(pos % sizeof(struct ia32_user_desc)) != 0 ||
+			(count % sizeof(struct ia32_user_desc)) != 0)
+		return -EINVAL;
+
+	pos /= sizeof(struct ia32_user_desc);
+	count /= sizeof(struct ia32_user_desc);
+
+	tls = &target->thread.tls_array[pos];
+
+	if (kbuf) {
+		struct ia32_user_desc *info = kbuf;
+		while (count-- > 0)
+			fill_user_desc(info++, GDT_ENTRY_TLS_MIN + pos++,
+					tls++);
+	} else {
+		struct ia32_user_desc __user *u_info = ubuf;
+		while (count-- > 0) {
+			struct ia32_user_desc info;
+			fill_user_desc(&info, GDT_ENTRY_TLS_MIN + pos++, tls++);
+			if (__copy_to_user(u_info++, &info, sizeof(info)))
+				return -EFAULT;
+		}
+	}
+
+	return 0;
+}
+
+static int ia32_tls_set(struct task_struct *target,
+		const struct user_regset *regset, unsigned int pos,
+		unsigned int count, const void *kbuf, const void __user *ubuf)
+{
+	struct ia32_user_desc infobuf[GDT_ENTRY_TLS_ENTRIES];
+	const struct ia32_user_desc *info;
+
+	if (pos > GDT_ENTRY_TLS_ENTRIES * sizeof(struct ia32_user_desc) ||
+			(pos % sizeof(struct ia32_user_desc)) != 0 ||
+			(count % sizeof(struct ia32_user_desc)) != 0)
+		return -EINVAL;
+
+	if (kbuf)
+		info = kbuf;
+	else if (__copy_from_user(infobuf, ubuf, count))
+		return -EFAULT;
+	else
+		info = infobuf;
+
+	set_tls_desc(target,
+		GDT_ENTRY_TLS_MIN + (pos / sizeof(struct ia32_user_desc)),
+		info, count / sizeof(struct ia32_user_desc));
+
+	return 0;
+}
+
+/*
+ * This should match arch/i386/kernel/ptrace.c:native_regsets.
+ * XXX ioperm? vm86?
+ */
+static const struct user_regset ia32_regsets[] = {
+	{
+		.core_note_type = NT_PRSTATUS,
+		.n = sizeof(struct user_regs_struct32)/4,
+		.size = 4, .align = 4,
+		.get = ia32_genregs_get, .set = ia32_genregs_set
+	},
+	{
+		.core_note_type = NT_PRFPREG,
+		.n = sizeof(struct ia32_user_i387_struct) / 4,
+		.size = 4, .align = 4,
+		.get = ia32_fpregs_get, .set = ia32_fpregs_set
+	},
+	{
+		.core_note_type = NT_PRXFPREG,
+		.n = sizeof(struct ia32_user_fxsr_struct) / 4,
+		.size = 4, .align = 4,
+		.get = ia32_fpxregs_get, .set = ia32_fpxregs_set
+	},
+	{
+		.core_note_type = NT_386_TLS,
+		.n = GDT_ENTRY_TLS_ENTRIES,
+		.bias = GDT_ENTRY_TLS_MIN,
+		.size = sizeof(struct ia32_user_desc),
+		.align = sizeof(struct ia32_user_desc),
+		.active = ia32_tls_active,
+		.get = ia32_tls_get, .set = ia32_tls_set,
+	},
+};
+
+const struct user_regset_view user_ia32_view = {
+	.name = "i386", .e_machine = EM_386,
+	.regsets = ia32_regsets, .n = ARRAY_SIZE(ia32_regsets)
+};
 
 long sys32_fadvise64_64(int fd, __u32 offset_low, __u32 offset_high, 
 			__u32 len_low, __u32 len_high, int advice)

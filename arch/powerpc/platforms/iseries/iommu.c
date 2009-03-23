@@ -41,8 +41,9 @@
 #include <asm/iseries/hv_call_event.h>
 #include <asm/iseries/iommu.h>
 
-static void tce_build_iSeries(struct iommu_table *tbl, long index, long npages,
-		unsigned long uaddr, enum dma_data_direction direction)
+static int tce_build_iSeries(struct iommu_table *tbl, long index, long npages,
+		unsigned long uaddr, enum dma_data_direction direction,
+		struct dma_attrs *attrs)
 {
 	u64 rc;
 	u64 tce, rpn;
@@ -65,11 +66,12 @@ static void tce_build_iSeries(struct iommu_table *tbl, long index, long npages,
 
 		rc = HvCallXm_setTce((u64)tbl->it_index, (u64)index, tce);
 		if (rc)
-			panic("PCI_DMA: HvCallXm_setTce failed, Rc: 0x%lx\n",
+			panic("PCI_DMA: HvCallXm_setTce failed, Rc: 0x%llx\n",
 					rc);
 		index++;
 		uaddr += TCE_PAGE_SIZE;
 	}
+	return 0;
 }
 
 static void tce_free_iSeries(struct iommu_table *tbl, long index, long npages)
@@ -79,7 +81,7 @@ static void tce_free_iSeries(struct iommu_table *tbl, long index, long npages)
 	while (npages--) {
 		rc = HvCallXm_setTce((u64)tbl->it_index, (u64)index, 0);
 		if (rc)
-			panic("PCI_DMA: HvCallXm_setTce failed, Rc: 0x%lx\n",
+			panic("PCI_DMA: HvCallXm_setTce failed, Rc: 0x%llx\n",
 					rc);
 		index++;
 	}
@@ -163,8 +165,10 @@ static struct iommu_table *iommu_table_find(struct iommu_table * tbl)
 		    (it->it_type == TCE_PCI) &&
 		    (it->it_offset == tbl->it_offset) &&
 		    (it->it_index == tbl->it_index) &&
-		    (it->it_size == tbl->it_size))
+		    (it->it_size == tbl->it_size)) {
+			of_node_put(node);
 			return it;
+		}
 	}
 	return NULL;
 }
@@ -197,7 +201,7 @@ static struct iommu_table vio_iommu_table;
 
 void *iseries_hv_alloc(size_t size, dma_addr_t *dma_handle, gfp_t flag)
 {
-	return iommu_alloc_coherent(&vio_iommu_table, size, dma_handle,
+	return iommu_alloc_coherent(NULL, &vio_iommu_table, size, dma_handle,
 				DMA_32BIT_MASK, flag, -1);
 }
 EXPORT_SYMBOL_GPL(iseries_hv_alloc);
@@ -211,14 +215,15 @@ EXPORT_SYMBOL_GPL(iseries_hv_free);
 dma_addr_t iseries_hv_map(void *vaddr, size_t size,
 			enum dma_data_direction direction)
 {
-	return iommu_map_single(&vio_iommu_table, vaddr, size,
-				DMA_32BIT_MASK, direction);
+	return iommu_map_page(NULL, &vio_iommu_table, virt_to_page(vaddr),
+			      (unsigned long)vaddr % PAGE_SIZE, size,
+			      DMA_32BIT_MASK, direction, NULL);
 }
 
 void iseries_hv_unmap(dma_addr_t dma_handle, size_t size,
 			enum dma_data_direction direction)
 {
-	iommu_unmap_single(&vio_iommu_table, dma_handle, size, direction);
+	iommu_unmap_page(&vio_iommu_table, dma_handle, size, direction, NULL);
 }
 
 void __init iommu_vio_init(void)

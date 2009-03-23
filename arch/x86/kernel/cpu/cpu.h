@@ -1,3 +1,6 @@
+#ifndef ARCH_X86_CPU_H
+
+#define ARCH_X86_CPU_H
 
 struct cpu_model_info {
 	int vendor;
@@ -14,15 +17,20 @@ struct cpu_dev {
 
 	struct		cpu_model_info c_models[4];
 
+	void            (*c_early_init)(struct cpuinfo_x86 *c);
 	void		(*c_init)(struct cpuinfo_x86 * c);
 	void		(*c_identify)(struct cpuinfo_x86 * c);
 	unsigned int	(*c_size_cache)(struct cpuinfo_x86 * c, unsigned int size);
+	int	c_x86_vendor;
 };
 
-extern struct cpu_dev * cpu_devs [X86_VENDOR_NUM];
+#define cpu_dev_register(cpu_devX) \
+	static struct cpu_dev *__cpu_dev_##cpu_devX __used \
+	__attribute__((__section__(".x86_cpu_dev.init"))) = \
+	&cpu_devX;
 
-extern int get_model_name(struct cpuinfo_x86 *c);
+extern struct cpu_dev *__x86_cpu_dev_start[], *__x86_cpu_dev_end[];
+
 extern void display_cacheinfo(struct cpuinfo_x86 *c);
 
-extern void early_intel_workaround(struct cpuinfo_x86 *c);
-
+#endif

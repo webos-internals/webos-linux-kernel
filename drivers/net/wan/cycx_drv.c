@@ -322,7 +322,7 @@ static int cycx_data_boot(void __iomem *addr, u8 *code, u32 len)
 	void __iomem *pt_boot_cmd = addr + CMD_OFFSET;
 	u32 i;
 
-	/* boot buffer lenght */
+	/* boot buffer length */
 	writew(CFM_LOAD_BUFSZ, pt_boot_cmd + sizeof(u16));
 	writew(GEN_DEFPAR, pt_boot_cmd);
 
@@ -353,7 +353,7 @@ static int cycx_code_boot(void __iomem *addr, u8 *code, u32 len)
 	void __iomem *pt_boot_cmd = addr + CMD_OFFSET;
 	u32 i;
 
-	/* boot buffer lenght */
+	/* boot buffer length */
 	writew(CFM_LOAD_BUFSZ, pt_boot_cmd + sizeof(u16));
 	writew(GEN_DEFPAR, pt_boot_cmd);
 
@@ -407,7 +407,7 @@ static int load_cyc2x(struct cycx_hw *hw, struct cycx_firmware *cfm, u32 len)
 	if (cfm->version != CFM_VERSION) {
 		printk(KERN_ERR "%s:%s: firmware format %u rejected! "
 				"Expecting %u.\n",
-				modname, __FUNCTION__, cfm->version, CFM_VERSION);
+				modname, __func__, cfm->version, CFM_VERSION);
 		return -EINVAL;
 	}
 
@@ -420,7 +420,7 @@ static int load_cyc2x(struct cycx_hw *hw, struct cycx_firmware *cfm, u32 len)
 */
 	if (cksum != cfm->checksum) {
 		printk(KERN_ERR "%s:%s: firmware corrupted!\n",
-				modname, __FUNCTION__);
+				modname, __func__);
 		printk(KERN_ERR " cdsize = 0x%x (expected 0x%lx)\n",
 				len - (int)sizeof(struct cycx_firmware) - 1,
 				cfm->info.codesize);
@@ -432,7 +432,7 @@ static int load_cyc2x(struct cycx_hw *hw, struct cycx_firmware *cfm, u32 len)
 	/* If everything is ok, set reset, data and code pointers */
 	img_hdr = (struct cycx_fw_header *)&cfm->image;
 #ifdef FIRMWARE_DEBUG
-	printk(KERN_INFO "%s:%s: image sizes\n", __FUNCTION__, modname);
+	printk(KERN_INFO "%s:%s: image sizes\n", __func__, modname);
 	printk(KERN_INFO " reset=%lu\n", img_hdr->reset_size);
 	printk(KERN_INFO "  data=%lu\n", img_hdr->data_size);
 	printk(KERN_INFO "  code=%lu\n", img_hdr->code_size);

@@ -3,22 +3,15 @@
  * Licensed under the GPL
  */
 
-#include "linux/clockchips.h"
-#include "linux/interrupt.h"
-#include "linux/jiffies.h"
-#include "linux/threads.h"
-#include "asm/irq.h"
-#include "asm/param.h"
+#include <linux/clockchips.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/jiffies.h>
+#include <linux/threads.h>
+#include <asm/irq.h>
+#include <asm/param.h>
 #include "kern_util.h"
 #include "os.h"
-
-/*
- * Scheduler clock - returns current time in nanosec units.
- */
-unsigned long long sched_clock(void)
-{
-	return (unsigned long long)jiffies_64 * (NSEC_PER_SEC / HZ);
-}
 
 void timer_handler(int sig, struct uml_pt_regs *regs)
 {
@@ -32,7 +25,7 @@ void timer_handler(int sig, struct uml_pt_regs *regs)
 static void itimer_set_mode(enum clock_event_mode mode,
 			    struct clock_event_device *evt)
 {
-	switch(mode) {
+	switch (mode) {
 	case CLOCK_EVT_MODE_PERIODIC:
 		set_interval();
 		break;
@@ -57,7 +50,7 @@ static int itimer_next_event(unsigned long delta,
 static struct clock_event_device itimer_clockevent = {
 	.name		= "itimer",
 	.rating		= 250,
-	.cpumask	= CPU_MASK_ALL,
+	.cpumask	= cpu_all_mask,
 	.features	= CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
 	.set_mode	= itimer_set_mode,
 	.set_next_event = itimer_next_event,
@@ -74,7 +67,7 @@ static irqreturn_t um_timer(int irq, void *dev)
 
 static cycle_t itimer_read(void)
 {
-	return os_nsecs();
+	return os_nsecs() / 1000;
 }
 
 static struct clocksource itimer_clocksource = {
@@ -82,7 +75,7 @@ static struct clocksource itimer_clocksource = {
 	.rating		= 300,
 	.read		= itimer_read,
 	.mask		= CLOCKSOURCE_MASK(64),
-	.mult		= 1,
+	.mult		= 1000,
 	.shift		= 0,
 	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 };
@@ -108,8 +101,6 @@ static void __init setup_itimer(void)
 	}
 	clockevents_register_device(&itimer_clockevent);
 }
-
-extern void (*late_time_init)(void);
 
 void __init time_init(void)
 {

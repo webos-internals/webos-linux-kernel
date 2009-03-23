@@ -52,7 +52,7 @@ static int tape_proc_show(struct seq_file *m, void *v)
 		return 0;
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 	seq_printf(m, "%d\t", (int) n);
-	seq_printf(m, "%-10.10s ", device->cdev->dev.bus_id);
+	seq_printf(m, "%-10.10s ", dev_name(&device->cdev->dev));
 	seq_printf(m, "%04X/", device->cdev->id.cu_type);
 	seq_printf(m, "%02X\t", device->cdev->id.cu_model);
 	seq_printf(m, "%04X/", device->cdev->id.dev_type);
@@ -97,7 +97,7 @@ static void tape_proc_stop(struct seq_file *m, void *v)
 {
 }
 
-static struct seq_operations tape_proc_seq = {
+static const struct seq_operations tape_proc_seq = {
 	.start		= tape_proc_start,
 	.next		= tape_proc_next,
 	.stop		= tape_proc_stop,
@@ -111,6 +111,7 @@ static int tape_proc_open(struct inode *inode, struct file *file)
 
 static const struct file_operations tape_proc_ops =
 {
+	.owner		= THIS_MODULE,
 	.open		= tape_proc_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
@@ -124,14 +125,12 @@ void
 tape_proc_init(void)
 {
 	tape_proc_devices =
-		create_proc_entry ("tapedevices", S_IFREG | S_IRUGO | S_IWUSR,
-				   &proc_root);
+		proc_create("tapedevices", S_IFREG | S_IRUGO | S_IWUSR, NULL,
+			    &tape_proc_ops);
 	if (tape_proc_devices == NULL) {
 		PRINT_WARN("tape: Cannot register procfs entry tapedevices\n");
 		return;
 	}
-	tape_proc_devices->proc_fops = &tape_proc_ops;
-	tape_proc_devices->owner = THIS_MODULE;
 }
 
 /*
@@ -141,5 +140,5 @@ void
 tape_proc_cleanup(void)
 {
 	if (tape_proc_devices != NULL)
-		remove_proc_entry ("tapedevices", &proc_root);
+		remove_proc_entry ("tapedevices", NULL);
 }

@@ -8,7 +8,6 @@
  *
  */
 
-#include <linux/list.h>
 #include <linux/netdevice.h>
 #include <linux/ethtool.h>
 #include <linux/etherdevice.h>
@@ -30,13 +29,9 @@ struct veth_net_stats {
 
 struct veth_priv {
 	struct net_device *peer;
-	struct net_device *dev;
-	struct list_head list;
 	struct veth_net_stats *stats;
 	unsigned ip_summed;
 };
-
-static LIST_HEAD(veth_list);
 
 /*
  * ethtool interface
@@ -246,13 +241,11 @@ static int veth_open(struct net_device *dev)
 
 static int veth_close(struct net_device *dev)
 {
-	struct veth_priv *priv;
+	struct veth_priv *priv = netdev_priv(dev);
 
-	if (netif_carrier_ok(dev)) {
-		priv = netdev_priv(dev);
-		netif_carrier_off(dev);
-		netif_carrier_off(priv->peer);
-	}
+	netif_carrier_off(dev);
+	netif_carrier_off(priv->peer);
+
 	return 0;
 }
 
@@ -279,17 +272,22 @@ static void veth_dev_free(struct net_device *dev)
 	free_netdev(dev);
 }
 
+static const struct net_device_ops veth_netdev_ops = {
+	.ndo_init            = veth_dev_init,
+	.ndo_open            = veth_open,
+	.ndo_stop            = veth_close,
+	.ndo_start_xmit      = veth_xmit,
+	.ndo_get_stats       = veth_get_stats,
+	.ndo_set_mac_address = eth_mac_addr,
+};
+
 static void veth_setup(struct net_device *dev)
 {
 	ether_setup(dev);
 
-	dev->hard_start_xmit = veth_xmit;
-	dev->get_stats = veth_get_stats;
-	dev->open = veth_open;
-	dev->stop = veth_close;
+	dev->netdev_ops = &veth_netdev_ops;
 	dev->ethtool_ops = &veth_ethtool_ops;
 	dev->features |= NETIF_F_LLTX;
-	dev->init = veth_dev_init;
 	dev->destructor = veth_dev_free;
 }
 
@@ -350,7 +348,7 @@ static int veth_newlink(struct net_device *dev,
 	else
 		snprintf(ifname, IFNAMSIZ, DRV_NAME "%%d");
 
-	peer = rtnl_create_link(dev->nd_net, ifname, &veth_link_ops, tbp);
+	peer = rtnl_create_link(dev_net(dev), ifname, &veth_link_ops, tbp);
 	if (IS_ERR(peer))
 		return PTR_ERR(peer);
 
@@ -395,14 +393,10 @@ static int veth_newlink(struct net_device *dev,
 	 */
 
 	priv = netdev_priv(dev);
-	priv->dev = dev;
 	priv->peer = peer;
-	list_add(&priv->list, &veth_list);
 
 	priv = netdev_priv(peer);
-	priv->dev = peer;
 	priv->peer = dev;
-	INIT_LIST_HEAD(&priv->list);
 	return 0;
 
 err_register_dev:
@@ -423,13 +417,6 @@ static void veth_dellink(struct net_device *dev)
 
 	priv = netdev_priv(dev);
 	peer = priv->peer;
-
-	if (!list_empty(&priv->list))
-		list_del(&priv->list);
-
-	priv = netdev_priv(peer);
-	if (!list_empty(&priv->list))
-		list_del(&priv->list);
 
 	unregister_netdevice(dev);
 	unregister_netdevice(peer);

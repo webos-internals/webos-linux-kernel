@@ -88,26 +88,22 @@ xfs_qm_dquot_logitem_format(
 
 /*
  * Increment the pin count of the given dquot.
- * This value is protected by pinlock spinlock in the xQM structure.
  */
 STATIC void
 xfs_qm_dquot_logitem_pin(
 	xfs_dq_logitem_t *logitem)
 {
-	unsigned long	s;
-	xfs_dquot_t *dqp;
+	xfs_dquot_t *dqp = logitem->qli_dquot;
 
-	dqp = logitem->qli_dquot;
 	ASSERT(XFS_DQ_IS_LOCKED(dqp));
-	s = XFS_DQ_PINLOCK(dqp);
-	dqp->q_pincount++;
-	XFS_DQ_PINUNLOCK(dqp, s);
+	atomic_inc(&dqp->q_pincount);
 }
 
 /*
  * Decrement the pin count of the given dquot, and wake up
  * anyone in xfs_dqwait_unpin() if the count goes to 0.	 The
- * dquot must have been previously pinned with a call to xfs_dqpin().
+ * dquot must have been previously pinned with a call to
+ * xfs_qm_dquot_logitem_pin().
  */
 /* ARGSUSED */
 STATIC void
@@ -115,17 +111,11 @@ xfs_qm_dquot_logitem_unpin(
 	xfs_dq_logitem_t *logitem,
 	int		  stale)
 {
-	unsigned long	s;
-	xfs_dquot_t *dqp;
+	xfs_dquot_t *dqp = logitem->qli_dquot;
 
-	dqp = logitem->qli_dquot;
-	ASSERT(dqp->q_pincount > 0);
-	s = XFS_DQ_PINLOCK(dqp);
-	dqp->q_pincount--;
-	if (dqp->q_pincount == 0) {
-		sv_broadcast(&dqp->q_pinwait);
-	}
-	XFS_DQ_PINUNLOCK(dqp, s);
+	ASSERT(atomic_read(&dqp->q_pincount) > 0);
+	if (atomic_dec_and_test(&dqp->q_pincount))
+		wake_up(&dqp->q_pinwait);
 }
 
 /* ARGSUSED */
@@ -148,11 +138,12 @@ xfs_qm_dquot_logitem_push(
 	xfs_dq_logitem_t	*logitem)
 {
 	xfs_dquot_t	*dqp;
+	int		error;
 
 	dqp = logitem->qli_dquot;
 
 	ASSERT(XFS_DQ_IS_LOCKED(dqp));
-	ASSERT(XFS_DQ_IS_FLUSH_LOCKED(dqp));
+	ASSERT(!completion_done(&dqp->q_flush));
 
 	/*
 	 * Since we were able to lock the dquot's flush lock and
@@ -163,7 +154,11 @@ xfs_qm_dquot_logitem_push(
 	 * lock without sleeping, then there must not have been
 	 * anyone in the process of flushing the dquot.
 	 */
-	xfs_qm_dqflush(dqp, XFS_B_DELWRI);
+	error = xfs_qm_dqflush(dqp, XFS_QMOPT_DELWRI);
+	if (error)
+		xfs_fs_cmn_err(CE_WARN, dqp->q_mount,
+			"xfs_qm_dquot_logitem_push: push error %d on dqp %p",
+			error, dqp);
 	xfs_dqunlock(dqp);
 }
 
@@ -189,24 +184,15 @@ void
 xfs_qm_dqunpin_wait(
 	xfs_dquot_t	*dqp)
 {
-	SPLDECL(s);
-
 	ASSERT(XFS_DQ_IS_LOCKED(dqp));
-	if (dqp->q_pincount == 0) {
+	if (atomic_read(&dqp->q_pincount) == 0)
 		return;
-	}
 
 	/*
 	 * Give the log a push so we don't wait here too long.
 	 */
 	xfs_log_force(dqp->q_mount, (xfs_lsn_t)0, XFS_LOG_FORCE);
-	s = XFS_DQ_PINLOCK(dqp);
-	if (dqp->q_pincount == 0) {
-		XFS_DQ_PINUNLOCK(dqp, s);
-		return;
-	}
-	sv_wait(&(dqp->q_pinwait), PINOD,
-		&(XFS_DQ_TO_QINF(dqp)->qi_pinlock), s);
+	wait_event(dqp->q_pinwait, (atomic_read(&dqp->q_pincount) == 0));
 }
 
 /*
@@ -216,8 +202,8 @@ xfs_qm_dqunpin_wait(
  * If so, we want to push it out to help us take this item off the AIL as soon
  * as possible.
  *
- * We must not be holding the AIL_LOCK at this point. Calling incore() to
- * search the buffer cache can be a time consuming thing, and AIL_LOCK is a
+ * We must not be holding the AIL lock at this point. Calling incore() to
+ * search the buffer cache can be a time consuming thing, and AIL lock is a
  * spinlock.
  */
 STATIC void
@@ -244,7 +230,7 @@ xfs_qm_dquot_logitem_pushbuf(
 	 * inode flush completed and the inode was taken off the AIL.
 	 * So, just get out.
 	 */
-	if (!issemalocked(&(dqp->q_flock))  ||
+	if (completion_done(&dqp->q_flush)  ||
 	    ((qip->qli_item.li_flags & XFS_LI_IN_AIL) == 0)) {
 		qip->qli_pushbuf_flag = 0;
 		xfs_dqunlock(dqp);
@@ -257,7 +243,7 @@ xfs_qm_dquot_logitem_pushbuf(
 	if (bp != NULL) {
 		if (XFS_BUF_ISDELAYWRITE(bp)) {
 			dopush = ((qip->qli_item.li_flags & XFS_LI_IN_AIL) &&
-				  issemalocked(&(dqp->q_flock)));
+				  !completion_done(&dqp->q_flush));
 			qip->qli_pushbuf_flag = 0;
 			xfs_dqunlock(dqp);
 
@@ -266,11 +252,16 @@ xfs_qm_dquot_logitem_pushbuf(
 					      XFS_LOG_FORCE);
 			}
 			if (dopush) {
+				int	error;
 #ifdef XFSRACEDEBUG
 				delay_for_intr();
 				delay(300);
 #endif
-				xfs_bawrite(mp, bp);
+				error = xfs_bawrite(mp, bp);
+				if (error)
+					xfs_fs_cmn_err(CE_WARN, mp,
+	"xfs_qm_dquot_logitem_pushbuf: pushbuf error %d on qip %p, bp %p",
+							error, qip, bp);
 			} else {
 				xfs_buf_relse(bp);
 			}
@@ -304,14 +295,14 @@ xfs_qm_dquot_logitem_trylock(
 	uint			retval;
 
 	dqp = qip->qli_dquot;
-	if (dqp->q_pincount > 0)
+	if (atomic_read(&dqp->q_pincount) > 0)
 		return (XFS_ITEM_PINNED);
 
 	if (! xfs_qm_dqlock_nowait(dqp))
 		return (XFS_ITEM_LOCKED);
 
 	retval = XFS_ITEM_SUCCESS;
-	if (! xfs_qm_dqflock_nowait(dqp)) {
+	if (!xfs_dqflock_nowait(dqp)) {
 		/*
 		 * The dquot is already being flushed.	It may have been
 		 * flushed delayed write, however, and we don't want to
@@ -322,7 +313,7 @@ xfs_qm_dquot_logitem_trylock(
 		 * want to do that now since we might sleep in the device
 		 * strategy routine.  We also don't want to grab the buffer lock
 		 * here because we'd like not to call into the buffer cache
-		 * while holding the AIL_LOCK.
+		 * while holding the AIL lock.
 		 * Make sure to only return PUSHBUF if we set pushbuf_flag
 		 * ourselves.  If someone else is doing it then we don't
 		 * want to go to the push routine and duplicate their efforts.
@@ -562,17 +553,18 @@ xfs_qm_qoffend_logitem_committed(
 	xfs_lsn_t lsn)
 {
 	xfs_qoff_logitem_t	*qfs;
-	SPLDECL(s);
+	struct xfs_ail		*ailp;
 
 	qfs = qfe->qql_start_lip;
-	AIL_LOCK(qfs->qql_item.li_mountp,s);
+	ailp = qfs->qql_item.li_ailp;
+	spin_lock(&ailp->xa_lock);
 	/*
 	 * Delete the qoff-start logitem from the AIL.
-	 * xfs_trans_delete_ail() drops the AIL lock.
+	 * xfs_trans_ail_delete() drops the AIL lock.
 	 */
-	xfs_trans_delete_ail(qfs->qql_item.li_mountp, (xfs_log_item_t *)qfs, s);
-	kmem_free(qfs, sizeof(xfs_qoff_logitem_t));
-	kmem_free(qfe, sizeof(xfs_qoff_logitem_t));
+	xfs_trans_ail_delete(ailp, (xfs_log_item_t *)qfs);
+	kmem_free(qfs);
+	kmem_free(qfe);
 	return (xfs_lsn_t)-1;
 }
 

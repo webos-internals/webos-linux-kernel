@@ -31,10 +31,8 @@
 #include "ehea_phyp.h"
 #include "ehea_qmr.h"
 
+struct ehea_bmap *ehea_bmap = NULL;
 
-struct ehea_busmap ehea_bmap = { 0, 0, NULL };
-extern u64 ehea_driver_flags;
-extern struct work_struct ehea_rereg_mr_task;
 
 
 static void *hw_qpageit_get_inc(struct hw_queue *queue)
@@ -65,7 +63,7 @@ static int hw_queue_ctor(struct hw_queue *queue, const u32 nr_of_pages,
 	}
 
 	queue->queue_length = nr_of_pages * pagesize;
-	queue->queue_pages = kmalloc(nr_of_pages * sizeof(void*), GFP_KERNEL);
+	queue->queue_pages = kmalloc(nr_of_pages * sizeof(void *), GFP_KERNEL);
 	if (!queue->queue_pages) {
 		ehea_error("no mem for queue_pages");
 		return -ENOMEM;
@@ -78,11 +76,11 @@ static int hw_queue_ctor(struct hw_queue *queue, const u32 nr_of_pages,
 	 */
 	i = 0;
 	while (i < nr_of_pages) {
-		u8 *kpage = (u8*)get_zeroed_page(GFP_KERNEL);
+		u8 *kpage = (u8 *)get_zeroed_page(GFP_KERNEL);
 		if (!kpage)
 			goto out_nomem;
 		for (k = 0; k < pages_per_kpage && i < nr_of_pages; k++) {
-			(queue->queue_pages)[i] = (struct ehea_page*)kpage;
+			(queue->queue_pages)[i] = (struct ehea_page *)kpage;
 			kpage += pagesize;
 			i++;
 		}
@@ -170,7 +168,7 @@ struct ehea_cq *ehea_create_cq(struct ehea_adapter *adapter,
 					     cq->fw_handle, rpage, 1);
 		if (hret < H_SUCCESS) {
 			ehea_error("register_rpage_cq failed ehea_cq=%p "
-				   "hret=%lx counter=%i act_pages=%i",
+				   "hret=%llx counter=%i act_pages=%i",
 				   cq, hret, counter, cq->attr.nr_pages);
 			goto out_kill_hwq;
 		}
@@ -180,13 +178,13 @@ struct ehea_cq *ehea_create_cq(struct ehea_adapter *adapter,
 
 			if ((hret != H_SUCCESS) || (vpage)) {
 				ehea_error("registration of pages not "
-					   "complete hret=%lx\n", hret);
+					   "complete hret=%llx\n", hret);
 				goto out_kill_hwq;
 			}
 		} else {
-			if ((hret != H_PAGE_REGISTERED) || (!vpage)) {
+			if (hret != H_PAGE_REGISTERED) {
 				ehea_error("CQ: registration of page failed "
-					   "hret=%lx\n", hret);
+					   "hret=%llx\n", hret);
 				goto out_kill_hwq;
 			}
 		}
@@ -235,8 +233,8 @@ int ehea_destroy_cq(struct ehea_cq *cq)
 		return 0;
 
 	hcp_epas_dtor(&cq->epas);
-
-	if ((hret = ehea_destroy_cq_res(cq, NORMAL_FREE)) == H_R_STATE) {
+	hret = ehea_destroy_cq_res(cq, NORMAL_FREE);
+	if (hret == H_R_STATE) {
 		ehea_error_data(cq->adapter, cq->fw_handle);
 		hret = ehea_destroy_cq_res(cq, FORCE_FREE);
 	}
@@ -301,13 +299,13 @@ struct ehea_eq *ehea_create_eq(struct ehea_adapter *adapter,
 		if (i == (eq->attr.nr_pages - 1)) {
 			/* last page */
 			vpage = hw_qpageit_get_inc(&eq->hw_queue);
-			if ((hret != H_SUCCESS) || (vpage)) {
+			if ((hret != H_SUCCESS) || (vpage))
 				goto out_kill_hwq;
-			}
+
 		} else {
-			if ((hret != H_PAGE_REGISTERED) || (!vpage)) {
+			if (hret != H_PAGE_REGISTERED)
 				goto out_kill_hwq;
-			}
+
 		}
 	}
 
@@ -331,7 +329,7 @@ struct ehea_eqe *ehea_poll_eq(struct ehea_eq *eq)
 	unsigned long flags;
 
 	spin_lock_irqsave(&eq->spinlock, flags);
-	eqe = (struct ehea_eqe*)hw_eqit_eq_get_inc_valid(&eq->hw_queue);
+	eqe = (struct ehea_eqe *)hw_eqit_eq_get_inc_valid(&eq->hw_queue);
 	spin_unlock_irqrestore(&eq->spinlock, flags);
 
 	return eqe;
@@ -364,7 +362,8 @@ int ehea_destroy_eq(struct ehea_eq *eq)
 
 	hcp_epas_dtor(&eq->epas);
 
-	if ((hret = ehea_destroy_eq_res(eq, NORMAL_FREE)) == H_R_STATE) {
+	hret = ehea_destroy_eq_res(eq, NORMAL_FREE);
+	if (hret == H_R_STATE) {
 		ehea_error_data(eq->adapter, eq->fw_handle);
 		hret = ehea_destroy_eq_res(eq, FORCE_FREE);
 	}
@@ -546,7 +545,8 @@ int ehea_destroy_qp(struct ehea_qp *qp)
 
 	hcp_epas_dtor(&qp->epas);
 
-	if ((hret = ehea_destroy_qp_res(qp, NORMAL_FREE)) == H_R_STATE) {
+	hret = ehea_destroy_qp_res(qp, NORMAL_FREE);
+	if (hret == H_R_STATE) {
 		ehea_error_data(qp->adapter, qp->fw_handle);
 		hret = ehea_destroy_qp_res(qp, FORCE_FREE);
 	}
@@ -559,125 +559,372 @@ int ehea_destroy_qp(struct ehea_qp *qp)
 	return 0;
 }
 
-int ehea_create_busmap( void )
+static inline int ehea_calc_index(unsigned long i, unsigned long s)
 {
-	u64 vaddr = EHEA_BUSMAP_START;
-	unsigned long high_section_index = 0;
-	int i;
+	return (i >> s) & EHEA_INDEX_MASK;
+}
 
-	/*
-	 * Sections are not in ascending order -> Loop over all sections and
-	 * find the highest PFN to compute the required map size.
-	*/
-	ehea_bmap.valid_sections = 0;
-
-	for (i = 0; i < NR_MEM_SECTIONS; i++)
-		if (valid_section_nr(i))
-			high_section_index = i;
-
-	ehea_bmap.entries = high_section_index + 1;
-	ehea_bmap.vaddr = vmalloc(ehea_bmap.entries * sizeof(*ehea_bmap.vaddr));
-
-	if (!ehea_bmap.vaddr)
-		return -ENOMEM;
-
-	for (i = 0 ; i < ehea_bmap.entries; i++) {
-		unsigned long pfn = section_nr_to_pfn(i);
-
-		if (pfn_valid(pfn)) {
-			ehea_bmap.vaddr[i] = vaddr;
-			vaddr += EHEA_SECTSIZE;
-			ehea_bmap.valid_sections++;
-		} else
-			ehea_bmap.vaddr[i] = 0;
+static inline int ehea_init_top_bmap(struct ehea_top_bmap *ehea_top_bmap,
+				     int dir)
+{
+	if (!ehea_top_bmap->dir[dir]) {
+		ehea_top_bmap->dir[dir] =
+			kzalloc(sizeof(struct ehea_dir_bmap), GFP_KERNEL);
+		if (!ehea_top_bmap->dir[dir])
+			return -ENOMEM;
 	}
-
 	return 0;
 }
 
-void ehea_destroy_busmap( void )
+static inline int ehea_init_bmap(struct ehea_bmap *ehea_bmap, int top, int dir)
 {
-	vfree(ehea_bmap.vaddr);
+	if (!ehea_bmap->top[top]) {
+		ehea_bmap->top[top] =
+			kzalloc(sizeof(struct ehea_top_bmap), GFP_KERNEL);
+		if (!ehea_bmap->top[top])
+			return -ENOMEM;
+	}
+	return ehea_init_top_bmap(ehea_bmap->top[top], dir);
+}
+
+static DEFINE_MUTEX(ehea_busmap_mutex);
+static unsigned long ehea_mr_len;
+
+#define EHEA_BUSMAP_ADD_SECT 1
+#define EHEA_BUSMAP_REM_SECT 0
+
+static void ehea_rebuild_busmap(void)
+{
+	u64 vaddr = EHEA_BUSMAP_START;
+	int top, dir, idx;
+
+	for (top = 0; top < EHEA_MAP_ENTRIES; top++) {
+		struct ehea_top_bmap *ehea_top;
+		int valid_dir_entries = 0;
+
+		if (!ehea_bmap->top[top])
+			continue;
+		ehea_top = ehea_bmap->top[top];
+		for (dir = 0; dir < EHEA_MAP_ENTRIES; dir++) {
+			struct ehea_dir_bmap *ehea_dir;
+			int valid_entries = 0;
+
+			if (!ehea_top->dir[dir])
+				continue;
+			valid_dir_entries++;
+			ehea_dir = ehea_top->dir[dir];
+			for (idx = 0; idx < EHEA_MAP_ENTRIES; idx++) {
+				if (!ehea_dir->ent[idx])
+					continue;
+				valid_entries++;
+				ehea_dir->ent[idx] = vaddr;
+				vaddr += EHEA_SECTSIZE;
+			}
+			if (!valid_entries) {
+				ehea_top->dir[dir] = NULL;
+				kfree(ehea_dir);
+			}
+		}
+		if (!valid_dir_entries) {
+			ehea_bmap->top[top] = NULL;
+			kfree(ehea_top);
+		}
+	}
+}
+
+static int ehea_update_busmap(unsigned long pfn, unsigned long nr_pages, int add)
+{
+	unsigned long i, start_section, end_section;
+
+	if (!nr_pages)
+		return 0;
+
+	if (!ehea_bmap) {
+		ehea_bmap = kzalloc(sizeof(struct ehea_bmap), GFP_KERNEL);
+		if (!ehea_bmap)
+			return -ENOMEM;
+	}
+
+	start_section = (pfn * PAGE_SIZE) / EHEA_SECTSIZE;
+	end_section = start_section + ((nr_pages * PAGE_SIZE) / EHEA_SECTSIZE);
+	/* Mark entries as valid or invalid only; address is assigned later */
+	for (i = start_section; i < end_section; i++) {
+		u64 flag;
+		int top = ehea_calc_index(i, EHEA_TOP_INDEX_SHIFT);
+		int dir = ehea_calc_index(i, EHEA_DIR_INDEX_SHIFT);
+		int idx = i & EHEA_INDEX_MASK;
+
+		if (add) {
+			int ret = ehea_init_bmap(ehea_bmap, top, dir);
+			if (ret)
+				return ret;
+			flag = 1; /* valid */
+			ehea_mr_len += EHEA_SECTSIZE;
+		} else {
+			if (!ehea_bmap->top[top])
+				continue;
+			if (!ehea_bmap->top[top]->dir[dir])
+				continue;
+			flag = 0; /* invalid */
+			ehea_mr_len -= EHEA_SECTSIZE;
+		}
+
+		ehea_bmap->top[top]->dir[dir]->ent[idx] = flag;
+	}
+	ehea_rebuild_busmap(); /* Assign contiguous addresses for mr */
+	return 0;
+}
+
+int ehea_add_sect_bmap(unsigned long pfn, unsigned long nr_pages)
+{
+	int ret;
+
+	mutex_lock(&ehea_busmap_mutex);
+	ret = ehea_update_busmap(pfn, nr_pages, EHEA_BUSMAP_ADD_SECT);
+	mutex_unlock(&ehea_busmap_mutex);
+	return ret;
+}
+
+int ehea_rem_sect_bmap(unsigned long pfn, unsigned long nr_pages)
+{
+	int ret;
+
+	mutex_lock(&ehea_busmap_mutex);
+	ret = ehea_update_busmap(pfn, nr_pages, EHEA_BUSMAP_REM_SECT);
+	mutex_unlock(&ehea_busmap_mutex);
+	return ret;
+}
+
+static int ehea_is_hugepage(unsigned long pfn)
+{
+	int page_order;
+
+	if (pfn & EHEA_HUGEPAGE_PFN_MASK)
+		return 0;
+
+	page_order = compound_order(pfn_to_page(pfn));
+	if (page_order + PAGE_SHIFT != EHEA_HUGEPAGESHIFT)
+		return 0;
+
+	return 1;
+}
+
+static int ehea_create_busmap_callback(unsigned long initial_pfn,
+				       unsigned long total_nr_pages, void *arg)
+{
+	int ret;
+	unsigned long pfn, start_pfn, end_pfn, nr_pages;
+
+	if ((total_nr_pages * PAGE_SIZE) < EHEA_HUGEPAGE_SIZE)
+		return ehea_update_busmap(initial_pfn, total_nr_pages,
+					  EHEA_BUSMAP_ADD_SECT);
+
+	/* Given chunk is >= 16GB -> check for hugepages */
+	start_pfn = initial_pfn;
+	end_pfn = initial_pfn + total_nr_pages;
+	pfn = start_pfn;
+
+	while (pfn < end_pfn) {
+		if (ehea_is_hugepage(pfn)) {
+			/* Add mem found in front of the hugepage */
+			nr_pages = pfn - start_pfn;
+			ret = ehea_update_busmap(start_pfn, nr_pages,
+						 EHEA_BUSMAP_ADD_SECT);
+			if (ret)
+				return ret;
+
+			/* Skip the hugepage */
+			pfn += (EHEA_HUGEPAGE_SIZE / PAGE_SIZE);
+			start_pfn = pfn;
+		} else
+			pfn += (EHEA_SECTSIZE / PAGE_SIZE);
+	}
+
+	/* Add mem found behind the hugepage(s)  */
+	nr_pages = pfn - start_pfn;
+	return ehea_update_busmap(start_pfn, nr_pages, EHEA_BUSMAP_ADD_SECT);
+}
+
+int ehea_create_busmap(void)
+{
+	int ret;
+
+	mutex_lock(&ehea_busmap_mutex);
+	ehea_mr_len = 0;
+	ret = walk_memory_resource(0, 1ULL << MAX_PHYSMEM_BITS, NULL,
+				   ehea_create_busmap_callback);
+	mutex_unlock(&ehea_busmap_mutex);
+	return ret;
+}
+
+void ehea_destroy_busmap(void)
+{
+	int top, dir;
+	mutex_lock(&ehea_busmap_mutex);
+	if (!ehea_bmap)
+		goto out_destroy;
+
+	for (top = 0; top < EHEA_MAP_ENTRIES; top++) {
+		if (!ehea_bmap->top[top])
+			continue;
+
+		for (dir = 0; dir < EHEA_MAP_ENTRIES; dir++) {
+			if (!ehea_bmap->top[top]->dir[dir])
+				continue;
+
+			kfree(ehea_bmap->top[top]->dir[dir]);
+		}
+
+		kfree(ehea_bmap->top[top]);
+	}
+
+	kfree(ehea_bmap);
+	ehea_bmap = NULL;
+out_destroy:
+	mutex_unlock(&ehea_busmap_mutex);
 }
 
 u64 ehea_map_vaddr(void *caddr)
 {
-	u64 mapped_addr;
-	unsigned long index = __pa(caddr) >> SECTION_SIZE_BITS;
+	int top, dir, idx;
+	unsigned long index, offset;
 
-	if (likely(index < ehea_bmap.entries)) {
-		mapped_addr = ehea_bmap.vaddr[index];
-		if (likely(mapped_addr))
-			mapped_addr |= (((unsigned long)caddr)
-					& (EHEA_SECTSIZE - 1));
-		else
-			mapped_addr = -1;
-	} else
-		mapped_addr = -1;
+	if (!ehea_bmap)
+		return EHEA_INVAL_ADDR;
 
-	if (unlikely(mapped_addr == -1))
-		if (!test_and_set_bit(__EHEA_STOP_XFER, &ehea_driver_flags))
-			schedule_work(&ehea_rereg_mr_task);
+	index = virt_to_abs(caddr) >> SECTION_SIZE_BITS;
+	top = (index >> EHEA_TOP_INDEX_SHIFT) & EHEA_INDEX_MASK;
+	if (!ehea_bmap->top[top])
+		return EHEA_INVAL_ADDR;
 
-	return mapped_addr;
+	dir = (index >> EHEA_DIR_INDEX_SHIFT) & EHEA_INDEX_MASK;
+	if (!ehea_bmap->top[top]->dir[dir])
+		return EHEA_INVAL_ADDR;
+
+	idx = index & EHEA_INDEX_MASK;
+	if (!ehea_bmap->top[top]->dir[dir]->ent[idx])
+		return EHEA_INVAL_ADDR;
+
+	offset = (unsigned long)caddr & (EHEA_SECTSIZE - 1);
+	return ehea_bmap->top[top]->dir[dir]->ent[idx] | offset;
+}
+
+static inline void *ehea_calc_sectbase(int top, int dir, int idx)
+{
+	unsigned long ret = idx;
+	ret |= dir << EHEA_DIR_INDEX_SHIFT;
+	ret |= top << EHEA_TOP_INDEX_SHIFT;
+	return abs_to_virt(ret << SECTION_SIZE_BITS);
+}
+
+static u64 ehea_reg_mr_section(int top, int dir, int idx, u64 *pt,
+			       struct ehea_adapter *adapter,
+			       struct ehea_mr *mr)
+{
+	void *pg;
+	u64 j, m, hret;
+	unsigned long k = 0;
+	u64 pt_abs = virt_to_abs(pt);
+
+	void *sectbase = ehea_calc_sectbase(top, dir, idx);
+
+	for (j = 0; j < (EHEA_PAGES_PER_SECTION / EHEA_MAX_RPAGE); j++) {
+
+		for (m = 0; m < EHEA_MAX_RPAGE; m++) {
+			pg = sectbase + ((k++) * EHEA_PAGESIZE);
+			pt[m] = virt_to_abs(pg);
+		}
+		hret = ehea_h_register_rpage_mr(adapter->handle, mr->handle, 0,
+						0, pt_abs, EHEA_MAX_RPAGE);
+
+		if ((hret != H_SUCCESS)
+		    && (hret != H_PAGE_REGISTERED)) {
+			ehea_h_free_resource(adapter->handle, mr->handle,
+					     FORCE_FREE);
+			ehea_error("register_rpage_mr failed");
+			return hret;
+		}
+	}
+	return hret;
+}
+
+static u64 ehea_reg_mr_sections(int top, int dir, u64 *pt,
+				struct ehea_adapter *adapter,
+				struct ehea_mr *mr)
+{
+	u64 hret = H_SUCCESS;
+	int idx;
+
+	for (idx = 0; idx < EHEA_MAP_ENTRIES; idx++) {
+		if (!ehea_bmap->top[top]->dir[dir]->ent[idx])
+			continue;
+
+		hret = ehea_reg_mr_section(top, dir, idx, pt, adapter, mr);
+		if ((hret != H_SUCCESS) && (hret != H_PAGE_REGISTERED))
+			return hret;
+	}
+	return hret;
+}
+
+static u64 ehea_reg_mr_dir_sections(int top, u64 *pt,
+				    struct ehea_adapter *adapter,
+				    struct ehea_mr *mr)
+{
+	u64 hret = H_SUCCESS;
+	int dir;
+
+	for (dir = 0; dir < EHEA_MAP_ENTRIES; dir++) {
+		if (!ehea_bmap->top[top]->dir[dir])
+			continue;
+
+		hret = ehea_reg_mr_sections(top, dir, pt, adapter, mr);
+		if ((hret != H_SUCCESS) && (hret != H_PAGE_REGISTERED))
+			return hret;
+	}
+	return hret;
 }
 
 int ehea_reg_kernel_mr(struct ehea_adapter *adapter, struct ehea_mr *mr)
 {
 	int ret;
 	u64 *pt;
-	void *pg;
-	u64 hret, pt_abs, i, j, m, mr_len;
+	u64 hret;
 	u32 acc_ctrl = EHEA_MR_ACC_CTRL;
 
-	mr_len = ehea_bmap.valid_sections * EHEA_SECTSIZE;
+	unsigned long top;
 
-	pt =  kzalloc(PAGE_SIZE, GFP_KERNEL);
+	pt = (void *)get_zeroed_page(GFP_KERNEL);
 	if (!pt) {
 		ehea_error("no mem");
 		ret = -ENOMEM;
 		goto out;
 	}
-	pt_abs = virt_to_abs(pt);
 
-	hret = ehea_h_alloc_resource_mr(adapter->handle,
-					EHEA_BUSMAP_START, mr_len,
-					acc_ctrl, adapter->pd,
+	hret = ehea_h_alloc_resource_mr(adapter->handle, EHEA_BUSMAP_START,
+					ehea_mr_len, acc_ctrl, adapter->pd,
 					&mr->handle, &mr->lkey);
+
 	if (hret != H_SUCCESS) {
 		ehea_error("alloc_resource_mr failed");
 		ret = -EIO;
 		goto out;
 	}
 
-	for (i = 0 ; i < ehea_bmap.entries; i++)
-		if (ehea_bmap.vaddr[i]) {
-			void *sectbase = __va(i << SECTION_SIZE_BITS);
-			unsigned long k = 0;
+	if (!ehea_bmap) {
+		ehea_h_free_resource(adapter->handle, mr->handle, FORCE_FREE);
+		ehea_error("no busmap available");
+		ret = -EIO;
+		goto out;
+	}
 
-			for (j = 0; j < (EHEA_PAGES_PER_SECTION /
-					 EHEA_MAX_RPAGE); j++) {
+	for (top = 0; top < EHEA_MAP_ENTRIES; top++) {
+		if (!ehea_bmap->top[top])
+			continue;
 
-				for (m = 0; m < EHEA_MAX_RPAGE; m++) {
-					pg = sectbase + ((k++) * EHEA_PAGESIZE);
-					pt[m] = virt_to_abs(pg);
-				}
-
-				hret = ehea_h_register_rpage_mr(adapter->handle,
-								mr->handle,
-								0, 0, pt_abs,
-								EHEA_MAX_RPAGE);
-				if ((hret != H_SUCCESS)
-				    && (hret != H_PAGE_REGISTERED)) {
-					ehea_h_free_resource(adapter->handle,
-							     mr->handle,
-							     FORCE_FREE);
-					ehea_error("register_rpage_mr failed");
-					ret = -EIO;
-					goto out;
-				}
-			}
-		}
+		hret = ehea_reg_mr_dir_sections(top, pt, adapter, mr);
+		if((hret != H_PAGE_REGISTERED) && (hret != H_SUCCESS))
+			break;
+	}
 
 	if (hret != H_SUCCESS) {
 		ehea_h_free_resource(adapter->handle, mr->handle, FORCE_FREE);
@@ -690,7 +937,7 @@ int ehea_reg_kernel_mr(struct ehea_adapter *adapter, struct ehea_mr *mr)
 	mr->adapter = adapter;
 	ret = 0;
 out:
-	kfree(pt);
+	free_page((unsigned long)pt);
 	return ret;
 }
 
@@ -739,15 +986,15 @@ void print_error_data(u64 *data)
 		length = EHEA_PAGESIZE;
 
 	if (type == 0x8) /* Queue Pair */
-		ehea_error("QP (resource=%lX) state: AER=0x%lX, AERR=0x%lX, "
-			   "port=%lX", resource, data[6], data[12], data[22]);
+		ehea_error("QP (resource=%llX) state: AER=0x%llX, AERR=0x%llX, "
+			   "port=%llX", resource, data[6], data[12], data[22]);
 
 	if (type == 0x4) /* Completion Queue */
-		ehea_error("CQ (resource=%lX) state: AER=0x%lX", resource,
+		ehea_error("CQ (resource=%llX) state: AER=0x%llX", resource,
 			   data[6]);
 
 	if (type == 0x3) /* Event Queue */
-		ehea_error("EQ (resource=%lX) state: AER=0x%lX", resource,
+		ehea_error("EQ (resource=%llX) state: AER=0x%llX", resource,
 			   data[6]);
 
 	ehea_dump(data, length, "error data");
@@ -769,11 +1016,11 @@ void ehea_error_data(struct ehea_adapter *adapter, u64 res_handle)
 				rblock);
 
 	if (ret == H_R_STATE)
-		ehea_error("No error data is available: %lX.", res_handle);
+		ehea_error("No error data is available: %llX.", res_handle);
 	else if (ret == H_SUCCESS)
 		print_error_data(rblock);
 	else
-		ehea_error("Error data could not be fetched: %lX", res_handle);
+		ehea_error("Error data could not be fetched: %llX", res_handle);
 
 	kfree(rblock);
 }

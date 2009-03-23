@@ -20,7 +20,6 @@
  *
  */
 
-#include <sound/driver.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -148,7 +147,7 @@ MODULE_SUPPORTED_DEVICE("{{RME,Hammerfall},"
 #define RME9652_start_bit	   (1<<0)	/* start record/play */
                                                 /* bits 1-3 encode buffersize/latency */
 #define RME9652_Master		   (1<<4)	/* Clock Mode Master=1,Slave/Auto=0 */
-#define RME9652_IE		   (1<<5)	/* Interupt Enable */
+#define RME9652_IE		   (1<<5)	/* Interrupt Enable */
 #define RME9652_freq		   (1<<6)       /* samplerate 0=44.1/88.2, 1=48/96 kHz */
 #define RME9652_freq1		   (1<<7)       /* if 0, 32kHz, else always 1 */
 #define RME9652_DS                 (1<<8)	/* Doule Speed 0=44.1/48, 1=88.2/96 Khz */
@@ -595,8 +594,6 @@ static void rme9652_set_thru(struct snd_rme9652 *rme9652, int channel, int enabl
 
 	} else {
 		int mapped_channel;
-
-		snd_assert(channel == RME9652_NCHANNELS, return);
 
 		mapped_channel = rme9652->channel_map[channel];
 
@@ -1826,7 +1823,7 @@ static void snd_rme9652_set_defaults(struct snd_rme9652 *rme9652)
 
 	/* ASSUMPTION: rme9652->lock is either held, or
 	   there is no need to hold it (e.g. during module
-	   initalization).
+	   initialization).
 	 */
 
 	/* set defaults:
@@ -1894,7 +1891,8 @@ static char *rme9652_channel_buffer_location(struct snd_rme9652 *rme9652,
 {
 	int mapped_channel;
 
-        snd_assert(channel >= 0 || channel < RME9652_NCHANNELS, return NULL);
+	if (snd_BUG_ON(channel < 0 || channel >= RME9652_NCHANNELS))
+		return NULL;
         
 	if ((mapped_channel = rme9652->channel_map[channel]) < 0) {
 		return NULL;
@@ -1915,12 +1913,14 @@ static int snd_rme9652_playback_copy(struct snd_pcm_substream *substream, int ch
 	struct snd_rme9652 *rme9652 = snd_pcm_substream_chip(substream);
 	char *channel_buf;
 
-	snd_assert(pos + count <= RME9652_CHANNEL_BUFFER_BYTES / 4, return -EINVAL);
+	if (snd_BUG_ON(pos + count > RME9652_CHANNEL_BUFFER_BYTES / 4))
+		return -EINVAL;
 
 	channel_buf = rme9652_channel_buffer_location (rme9652,
 						       substream->pstr->stream,
 						       channel);
-	snd_assert(channel_buf != NULL, return -EIO);
+	if (snd_BUG_ON(!channel_buf))
+		return -EIO;
 	if (copy_from_user(channel_buf + pos * 4, src, count * 4))
 		return -EFAULT;
 	return count;
@@ -1932,12 +1932,14 @@ static int snd_rme9652_capture_copy(struct snd_pcm_substream *substream, int cha
 	struct snd_rme9652 *rme9652 = snd_pcm_substream_chip(substream);
 	char *channel_buf;
 
-	snd_assert(pos + count <= RME9652_CHANNEL_BUFFER_BYTES / 4, return -EINVAL);
+	if (snd_BUG_ON(pos + count > RME9652_CHANNEL_BUFFER_BYTES / 4))
+		return -EINVAL;
 
 	channel_buf = rme9652_channel_buffer_location (rme9652,
 						       substream->pstr->stream,
 						       channel);
-	snd_assert(channel_buf != NULL, return -EIO);
+	if (snd_BUG_ON(!channel_buf))
+		return -EIO;
 	if (copy_to_user(dst, channel_buf + pos * 4, count * 4))
 		return -EFAULT;
 	return count;
@@ -1952,7 +1954,8 @@ static int snd_rme9652_hw_silence(struct snd_pcm_substream *substream, int chann
 	channel_buf = rme9652_channel_buffer_location (rme9652,
 						       substream->pstr->stream,
 						       channel);
-	snd_assert(channel_buf != NULL, return -EIO);
+	if (snd_BUG_ON(!channel_buf))
+		return -EIO;
 	memset(channel_buf + pos * 4, 0, count * 4);
 	return count;
 }
@@ -2054,7 +2057,8 @@ static int snd_rme9652_channel_info(struct snd_pcm_substream *substream,
 	struct snd_rme9652 *rme9652 = snd_pcm_substream_chip(substream);
 	int chn;
 
-	snd_assert(info->channel < RME9652_NCHANNELS, return -EINVAL);
+	if (snd_BUG_ON(info->channel >= RME9652_NCHANNELS))
+		return -EINVAL;
 
 	if ((chn = rme9652->channel_map[info->channel]) < 0) {
 		return -EINVAL;

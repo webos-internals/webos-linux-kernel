@@ -34,15 +34,16 @@
 #include <linux/firmware.h>
 #include <net/checksum.h>
 
+#include <asm/unaligned.h>
 #include <asm/io.h>
 
 #include "bttvp.h"
 #include <media/v4l2-common.h>
 #include <media/tvaudio.h>
+#include "bttv-audio-hook.h"
 
 /* fwd decl */
 static void boot_msp34xx(struct bttv *btv, int pin);
-static void boot_bt832(struct bttv *btv);
 static void hauppauge_eeprom(struct bttv *btv);
 static void avermedia_eeprom(struct bttv *btv);
 static void osprey_eeprom(struct bttv *btv, const u8 ee[256]);
@@ -50,20 +51,6 @@ static void modtec_eeprom(struct bttv *btv);
 static void init_PXC200(struct bttv *btv);
 static void init_RTV24(struct bttv *btv);
 
-static void winview_audio(struct bttv *btv, struct video_audio *v, int set);
-static void lt9415_audio(struct bttv *btv, struct video_audio *v, int set);
-static void avermedia_tvphone_audio(struct bttv *btv, struct video_audio *v,
-				    int set);
-static void avermedia_tv_stereo_audio(struct bttv *btv, struct video_audio *v,
-				      int set);
-static void terratv_audio(struct bttv *btv, struct video_audio *v, int set);
-static void gvbctv3pci_audio(struct bttv *btv, struct video_audio *v, int set);
-static void gvbctv5pci_audio(struct bttv *btv, struct video_audio *v, int set);
-static void winfast2000_audio(struct bttv *btv, struct video_audio *v, int set);
-static void pvbt878p9b_audio(struct bttv *btv, struct video_audio *v, int set);
-static void fv2000s_audio(struct bttv *btv, struct video_audio *v, int set);
-static void windvr_audio(struct bttv *btv, struct video_audio *v, int set);
-static void adtvk503_audio(struct bttv *btv, struct video_audio *v, int set);
 static void rv605_muxsel(struct bttv *btv, unsigned int input);
 static void eagle_muxsel(struct bttv *btv, unsigned int input);
 static void xguard_muxsel(struct bttv *btv, unsigned int input);
@@ -83,6 +70,8 @@ static void kodicom4400r_init(struct bttv *btv);
 
 static void sigmaSLC_muxsel(struct bttv *btv, unsigned int input);
 static void sigmaSQ_muxsel(struct bttv *btv, unsigned int input);
+
+static void geovision_muxsel(struct bttv *btv, unsigned int input);
 
 static int terratec_active_radio_upgrade(struct bttv *btv);
 static int tea5757_read(struct bttv *btv);
@@ -314,7 +303,8 @@ static struct CARD {
 	{ 0xd50018ac, BTTV_BOARD_DVICO_FUSIONHDTV_5_LITE,    "DViCO FusionHDTV 5 Lite" },
 	{ 0x00261822, BTTV_BOARD_TWINHAN_DST,	"DNTV Live! Mini "},
 	{ 0xd200dbc0, BTTV_BOARD_DVICO_FUSIONHDTV_2,	"DViCO FusionHDTV 2" },
-
+	{ 0x763c008a, BTTV_BOARD_GEOVISION_GV600,	"GeoVision GV-600" },
+	{ 0x18011000, BTTV_BOARD_ENLTV_FM_2,	"Encore ENL TV-FM-2" },
 	{ 0, -1, NULL }
 };
 
@@ -427,7 +417,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type	= UNSET,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook	= avermedia_tvphone_audio,
+		.audio_mode_gpio= avermedia_tvphone_audio,
 		.has_remote     = 1,
 	},
 	[BTTV_BOARD_MATRIX_VISION] = {
@@ -539,7 +529,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type	= TUNER_PHILIPS_PAL,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook     = avermedia_tv_stereo_audio,
+		.audio_mode_gpio= avermedia_tv_stereo_audio,
 		.no_gpioirq     = 1,
 	},
 	[BTTV_BOARD_VHX] = {
@@ -589,6 +579,8 @@ struct tvcard bttv_tvcards[] = {
 		.needs_tvaudio	= 1,
 		.pll		= PLL_28,
 		.tuner_type	= UNSET,
+		.tuner_addr     = ADDR_UNSET,
+		.radio_addr     = ADDR_UNSET,
 	},
 	[BTTV_BOARD_WINVIEW_601] = {
 		.name		= "Leadtek WinView 601",
@@ -604,7 +596,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type	= UNSET,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook	= winview_audio,
+		.volume_gpio	= winview_volume,
 		.has_radio	= 1,
 	},
 	[BTTV_BOARD_AVEC_INTERCAP] = {
@@ -728,7 +720,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type	= TUNER_PHILIPS_PAL,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook     = terratv_audio,
+		.audio_mode_gpio= terratv_audio,
 	},
 	[BTTV_BOARD_HAUPPAUG_WCAM] = {
 		.name		= "Hauppauge WinCam newer (bt878)",
@@ -776,7 +768,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type	= TUNER_PHILIPS_PAL,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook	= terratv_audio,
+		.audio_mode_gpio= terratv_audio,
 		/* GPIO wiring:
 		External 20 pin connector (for Active Radio Upgrade board)
 		gpio00: i2c-sda
@@ -915,7 +907,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type	= TUNER_PHILIPS_PAL, /* default for now, gpio reads BFFF06 for Pal bg+dk */
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook	= winfast2000_audio,
+		.audio_mode_gpio= winfast2000_audio,
 		.has_remote     = 1,
 	},
 	[BTTV_BOARD_CHRONOS_VS2] = {
@@ -1035,7 +1027,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
 		.has_radio	= 1,
-		.audio_hook	= avermedia_tvphone_audio,
+		.audio_mode_gpio= avermedia_tvphone_audio,
 	},
 	[BTTV_BOARD_PV951] = {
 		.name		= "ProVideo PV951", /* pic16c54 */
@@ -1167,7 +1159,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type	= TUNER_ALPS_TSHC6_NTSC,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook	= gvbctv3pci_audio,
+		.audio_mode_gpio= gvbctv3pci_audio,
 	},
 	[BTTV_BOARD_PXELVWPLTVPAK] = {
 		.name		= "Prolink PV-BT878P+4E / PixelView PlayTV PAK / Lenco MXTV-9578 CP",
@@ -1472,7 +1464,7 @@ struct tvcard bttv_tvcards[] = {
 				/* -dk-???: set mute=0x1800 for tda9874h daughterboard */
 		.gpiomux 	= { 0x0000,0x0800,0x1000,0x1000 },
 		.gpiomute 	= 0x1800,
-		.audio_hook	= fv2000s_audio,
+		.audio_mode_gpio= fv2000s_audio,
 		.no_msp34xx	= 1,
 		.no_tda9875	= 1,
 		.needs_tvaudio  = 1,
@@ -1513,7 +1505,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type     = TUNER_SHARP_2U5JF5540_NTSC,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook     = gvbctv3pci_audio,
+		.audio_mode_gpio= gvbctv3pci_audio,
 	},
 
 	/* ---- card 0x44 ---------------------------------- */
@@ -1632,7 +1624,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type	= TUNER_PHILIPS_PAL,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook	= pvbt878p9b_audio, /* Note: not all cards have stereo */
+		.audio_mode_gpio= pvbt878p9b_audio, /* Note: not all cards have stereo */
 		.has_radio	= 1,  /* Note: not all cards have radio */
 		.has_remote     = 1,
 		/* GPIO wiring:
@@ -1710,7 +1702,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type     = TUNER_PHILIPS_NTSC,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook     = windvr_audio,
+		.audio_mode_gpio= windvr_audio,
 	},
 	[BTTV_BOARD_GRANDTEC_MULTI] = {
 		.name           = "GrandTec Multi Capture Card (Bt878)",
@@ -1807,7 +1799,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type     = TUNER_PHILIPS_NTSC_M,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook     = gvbctv5pci_audio,
+		.audio_mode_gpio= gvbctv5pci_audio,
 		.has_radio      = 1,
 	},
 	[BTTV_BOARD_OSPREY1x0] = {
@@ -2106,7 +2098,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_type     = TUNER_PHILIPS_NTSC,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
-		.audio_hook	= adtvk503_audio,
+		.audio_mode_gpio= adtvk503_audio,
 	},
 
 		/* ---- card 0x64 ---------------------------------- */
@@ -2224,9 +2216,9 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
 	},
-	[BTTV_BOARD_VD009X1_MINIDIN] = {
+	[BTTV_BOARD_VD009X1_VD011_MINIDIN] = {
 		/* M.Klahr@phytec.de */
-		.name           = "PHYTEC VD-009-X1 MiniDIN (bt878)",
+		.name           = "PHYTEC VD-009-X1 VD-011 MiniDIN (bt878)",
 		.video_inputs   = 4,
 		.audio_inputs   = 0,
 		.tuner          = UNSET, /* card has no tuner */
@@ -2234,14 +2226,14 @@ struct tvcard bttv_tvcards[] = {
 		.gpiomask       = 0x00,
 		.muxsel         = { 2, 3, 1, 0 },
 		.gpiomux        = { 0, 0, 0, 0 }, /* card has no audio */
-		.needs_tvaudio  = 1,
+		.needs_tvaudio  = 0,
 		.pll            = PLL_28,
 		.tuner_type     = UNSET,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
 	},
-	[BTTV_BOARD_VD009X1_COMBI] = {
-		.name           = "PHYTEC VD-009-X1 Combi (bt878)",
+	[BTTV_BOARD_VD009X1_VD011_COMBI] = {
+		.name           = "PHYTEC VD-009-X1 VD-011 Combi (bt878)",
 		.video_inputs   = 4,
 		.audio_inputs   = 0,
 		.tuner          = UNSET, /* card has no tuner */
@@ -2249,7 +2241,7 @@ struct tvcard bttv_tvcards[] = {
 		.gpiomask       = 0x00,
 		.muxsel         = { 2, 3, 1, 1 },
 		.gpiomux        = { 0, 0, 0, 0 }, /* card has no audio */
-		.needs_tvaudio  = 1,
+		.needs_tvaudio  = 0,
 		.pll            = PLL_28,
 		.tuner_type     = UNSET,
 		.tuner_addr	= ADDR_UNSET,
@@ -2335,7 +2327,7 @@ struct tvcard bttv_tvcards[] = {
 		.tuner          = 0,
 		.svhs           = 2,
 		.muxsel         = { 2, 3, 1, 0 },
-		.tuner_type     = TUNER_PHILIPS_ATSC,
+		.tuner_type     = TUNER_PHILIPS_FCV1236D,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
 		.has_dvb        = 1,
@@ -2974,7 +2966,7 @@ struct tvcard bttv_tvcards[] = {
 	[BTTV_BOARD_DVICO_FUSIONHDTV_2] = {
 		.name           = "DViCO FusionHDTV 2",
 		.tuner          = 0,
-		.tuner_type     = TUNER_PHILIPS_ATSC, /* FCV1236D */
+		.tuner_type     = TUNER_PHILIPS_FCV1236D,
 		.tuner_addr	= ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
 		.video_inputs   = 3,
@@ -3005,6 +2997,118 @@ struct tvcard bttv_tvcards[] = {
 		.tuner_addr     = ADDR_UNSET,
 		.radio_addr     = ADDR_UNSET,
 	},
+	[BTTV_BOARD_GEOVISION_GV600] = {
+		/* emhn@usb.ve */
+		.name             = "Geovision GV-600",
+		.video_inputs     = 16,
+		.audio_inputs     = 0,
+		.tuner            = UNSET,
+		.svhs             = UNSET,
+		.gpiomask         = 0x0,
+		.muxsel           = { 2, 2, 2, 2, 2, 2, 2, 2,
+				      2, 2, 2, 2, 2, 2, 2, 2 },
+		.muxsel_hook      = geovision_muxsel,
+		.gpiomux          = { 0 },
+		.no_msp34xx       = 1,
+		.pll              = PLL_28,
+		.tuner_type       = UNSET,
+		.tuner_addr	  = ADDR_UNSET,
+		.radio_addr       = ADDR_UNSET,
+	},
+	[BTTV_BOARD_KOZUMI_KTV_01C] = {
+		/* Mauro Lacy <mauro@lacy.com.ar>
+		 * Based on MagicTV and Conceptronic CONTVFMi */
+
+		.name           = "Kozumi KTV-01C",
+		.video_inputs   = 3,
+		.audio_inputs   = 1,
+		.tuner          = 0,
+		.svhs           = 2,
+		.gpiomask       = 0x008007,
+		.muxsel         = { 2, 3, 1, 1 },
+		.gpiomux        = { 0, 1, 2, 2 }, /* CONTVFMi */
+		.gpiomute 	= 3, /* CONTVFMi */
+		.needs_tvaudio  = 0,
+		.tuner_type     = TUNER_PHILIPS_FM1216ME_MK3, /* TCL MK3 */
+		.tuner_addr     = ADDR_UNSET,
+		.radio_addr     = ADDR_UNSET,
+		.pll            = PLL_28,
+		.has_radio      = 1,
+		.has_remote     = 1,
+	},
+	[BTTV_BOARD_ENLTV_FM_2] = {
+		/* Encore TV Tuner Pro ENL TV-FM-2
+		   Mauro Carvalho Chehab <mchehab@infradead.org */
+		.name           = "Encore ENL TV-FM-2",
+		.video_inputs   = 3,
+		.audio_inputs   = 1,
+		.tuner          = 0,
+		.svhs           = 2,
+		/* bit 6          -> IR disabled
+		   bit 18/17 = 00 -> mute
+			       01 -> enable external audio input
+			       10 -> internal audio input (mono?)
+			       11 -> internal audio input
+		 */
+		.gpiomask       = 0x060040,
+		.muxsel         = { 2, 3, 3 },
+		.gpiomux        = { 0x60000, 0x60000, 0x20000, 0x20000 },
+		.gpiomute 	= 0,
+		.tuner_type	= TUNER_TCL_MF02GIP_5N,
+		.tuner_addr     = ADDR_UNSET,
+		.radio_addr     = ADDR_UNSET,
+		.pll            = PLL_28,
+		.has_radio      = 1,
+		.has_remote     = 1,
+	},
+		[BTTV_BOARD_VD012] = {
+		/* D.Heer@Phytec.de */
+		.name           = "PHYTEC VD-012 (bt878)",
+		.video_inputs   = 4,
+		.audio_inputs   = 0,
+		.tuner          = UNSET, /* card has no tuner */
+		.svhs           = UNSET, /* card has no s-video */
+		.gpiomask       = 0x00,
+		.muxsel         = { 0, 2, 3, 1 },
+		.gpiomux        = { 0, 0, 0, 0 }, /* card has no audio */
+		.needs_tvaudio  = 0,
+		.pll            = PLL_28,
+		.tuner_type     = UNSET,
+		.tuner_addr	= ADDR_UNSET,
+		.radio_addr     = ADDR_UNSET,
+	},
+		[BTTV_BOARD_VD012_X1] = {
+		/* D.Heer@Phytec.de */
+		.name           = "PHYTEC VD-012-X1 (bt878)",
+		.video_inputs   = 4,
+		.audio_inputs   = 0,
+		.tuner          = UNSET, /* card has no tuner */
+		.svhs           = 3,
+		.gpiomask       = 0x00,
+		.muxsel         = { 2, 3, 1 },
+		.gpiomux        = { 0, 0, 0, 0 }, /* card has no audio */
+		.needs_tvaudio  = 0,
+		.pll            = PLL_28,
+		.tuner_type     = UNSET,
+		.tuner_addr	= ADDR_UNSET,
+		.radio_addr     = ADDR_UNSET,
+	},
+		[BTTV_BOARD_VD012_X2] = {
+		/* D.Heer@Phytec.de */
+		.name           = "PHYTEC VD-012-X2 (bt878)",
+		.video_inputs   = 4,
+		.audio_inputs   = 0,
+		.tuner          = UNSET, /* card has no tuner */
+		.svhs           = 3,
+		.gpiomask       = 0x00,
+		.muxsel         = { 3, 2, 1 },
+		.gpiomux        = { 0, 0, 0, 0 }, /* card has no audio */
+		.needs_tvaudio  = 0,
+		.pll            = PLL_28,
+		.tuner_type     = UNSET,
+		.tuner_addr	= ADDR_UNSET,
+		.radio_addr     = ADDR_UNSET,
+	}
 };
 
 static const unsigned int bttv_num_tvcards = ARRAY_SIZE(bttv_tvcards);
@@ -3112,8 +3216,9 @@ static void identify_by_eeprom(struct bttv *btv, unsigned char eeprom_data[256])
 
 static void flyvideo_gpio(struct bttv *btv)
 {
-	int gpio,has_remote,has_radio,is_capture_only,is_lr90,has_tda9820_tda9821;
-	int tuner=UNSET,ttype;
+	int gpio, has_remote, has_radio, is_capture_only;
+	int is_lr90, has_tda9820_tda9821;
+	int tuner_type = UNSET, ttype;
 
 	gpio_inout(0xffffff, 0);
 	udelay(8);  /* without this we would see the 0x1800 mask */
@@ -3131,20 +3236,26 @@ static void flyvideo_gpio(struct bttv *btv)
 	 * xxxF00(LR26/LR50), xxxFE0(LR90): Remote control chip (LVA001 or CF45) soldered
 	 * Note: Some bits are Audio_Mask !
 	 */
-	ttype=(gpio&0x0f0000)>>16;
-	switch(ttype) {
-	case 0x0: tuner=2; /* NTSC, e.g. TPI8NSR11P */
+	ttype = (gpio & 0x0f0000) >> 16;
+	switch (ttype) {
+	case 0x0:
+		tuner_type = 2;  /* NTSC, e.g. TPI8NSR11P */
 		break;
-	case 0x2: tuner=39;/* LG NTSC (newer TAPC series) TAPC-H701P */
+	case 0x2:
+		tuner_type = 39; /* LG NTSC (newer TAPC series) TAPC-H701P */
 		break;
-	case 0x4: tuner=5; /* Philips PAL TPI8PSB02P, TPI8PSB12P, TPI8PSB12D or FI1216, FM1216 */
+	case 0x4:
+		tuner_type = 5;  /* Philips PAL TPI8PSB02P, TPI8PSB12P, TPI8PSB12D or FI1216, FM1216 */
 		break;
-	case 0x6: tuner=37;/* LG PAL (newer TAPC series) TAPC-G702P */
+	case 0x6:
+		tuner_type = 37; /* LG PAL (newer TAPC series) TAPC-G702P */
 		break;
-		case 0xC: tuner=3; /* Philips SECAM(+PAL) FQ1216ME or FI1216MF */
+	case 0xC:
+		tuner_type = 3;  /* Philips SECAM(+PAL) FQ1216ME or FI1216MF */
 		break;
 	default:
 		printk(KERN_INFO "bttv%d: FlyVideo_gpio: unknown tuner type.\n", btv->c.nr);
+		break;
 	}
 
 	has_remote          =   gpio & 0x800000;
@@ -3157,24 +3268,27 @@ static void flyvideo_gpio(struct bttv *btv)
 	/*
 	 * gpio & 0x001000    output bit for audio routing */
 
-	if(is_capture_only)
-		tuner = TUNER_ABSENT; /* No tuner present */
+	if (is_capture_only)
+		tuner_type = TUNER_ABSENT; /* No tuner present */
 
 	printk(KERN_INFO "bttv%d: FlyVideo Radio=%s RemoteControl=%s Tuner=%d gpio=0x%06x\n",
-	       btv->c.nr, has_radio? "yes":"no ", has_remote? "yes":"no ", tuner, gpio);
+		btv->c.nr, has_radio ? "yes" : "no ",
+		has_remote ? "yes" : "no ", tuner_type, gpio);
 	printk(KERN_INFO "bttv%d: FlyVideo  LR90=%s tda9821/tda9820=%s capture_only=%s\n",
-		btv->c.nr, is_lr90?"yes":"no ", has_tda9820_tda9821?"yes":"no ",
-		is_capture_only?"yes":"no ");
+		btv->c.nr, is_lr90 ? "yes" : "no ",
+		has_tda9820_tda9821 ? "yes" : "no ",
+		is_capture_only ? "yes" : "no ");
 
-	if (tuner != UNSET) /* only set if known tuner autodetected, else let insmod option through */
-		btv->tuner_type = tuner;
+	if (tuner_type != UNSET) /* only set if known tuner autodetected, else let insmod option through */
+		btv->tuner_type = tuner_type;
 	btv->has_radio = has_radio;
 
 	/* LR90 Audio Routing is done by 2 hef4052, so Audio_Mask has 4 bits: 0x001c80
 	 * LR26/LR50 only has 1 hef4052, Audio_Mask 0x000c00
 	 * Audio options: from tuner, from tda9821/tda9821(mono,stereo,sap), from tda9874, ext., mute */
-	if(has_tda9820_tda9821) btv->audio_hook = lt9415_audio;
-	/* todo: if(has_tda9874) btv->audio_hook = fv2000s_audio; */
+	if (has_tda9820_tda9821)
+		btv->audio_mode_gpio = lt9415_audio;
+	/* todo: if(has_tda9874) btv->audio_mode_gpio = fv2000s_audio; */
 }
 
 static int miro_tunermap[] = { 0,6,2,3,   4,5,6,0,  3,0,4,5,  5,2,16,1,
@@ -3342,6 +3456,13 @@ static void sigmaSLC_muxsel(struct bttv *btv, unsigned int input)
 	unsigned int inmux = input % 4;
 	gpio_inout( 3<<9, 3<<9 );
 	gpio_bits( 3<<9, inmux<<9 );
+}
+
+static void geovision_muxsel(struct bttv *btv, unsigned int input)
+{
+	unsigned int inmux = input % 16;
+	gpio_inout(0xf, 0xf);
+	gpio_bits(0xf, inmux);
 }
 
 /* ----------------------------------------------------------------------- */
@@ -3574,8 +3695,12 @@ void __devinit bttv_init_card2(struct bttv *btv)
 	}
 
 	if (btv->tda9887_conf) {
-		bttv_call_i2c_clients(btv, TDA9887_SET_CONFIG,
-							&btv->tda9887_conf);
+		struct v4l2_priv_tun_config tda9887_cfg;
+
+		tda9887_cfg.tuner = TUNER_TDA9887;
+		tda9887_cfg.priv = &btv->tda9887_conf;
+
+		bttv_call_i2c_clients(btv, TUNER_SET_CONFIG, &tda9887_cfg);
 	}
 
 	btv->svhs = bttv_tvcards[btv->c.type].svhs;
@@ -3590,15 +3715,10 @@ void __devinit bttv_init_card2(struct bttv *btv)
 		btv->has_remote=1;
 	if (!bttv_tvcards[btv->c.type].no_gpioirq)
 		btv->gpioirq=1;
-	if (bttv_tvcards[btv->c.type].audio_hook)
-		btv->audio_hook=bttv_tvcards[btv->c.type].audio_hook;
-
-	if (bttv_tvcards[btv->c.type].digital_mode == DIGITAL_MODE_CAMERA) {
-		/* detect Bt832 chip for quartzsight digital camera */
-		if ((bttv_I2CRead(btv, I2C_ADDR_BT832_ALT1, "Bt832") >=0) ||
-		    (bttv_I2CRead(btv, I2C_ADDR_BT832_ALT2, "Bt832") >=0))
-			boot_bt832(btv);
-	}
+	if (bttv_tvcards[btv->c.type].volume_gpio)
+		btv->volume_gpio=bttv_tvcards[btv->c.type].volume_gpio;
+	if (bttv_tvcards[btv->c.type].audio_mode_gpio)
+		btv->audio_mode_gpio=bttv_tvcards[btv->c.type].audio_mode_gpio;
 
 	if (!autoload)
 		return;
@@ -3723,7 +3843,8 @@ static int terratec_active_radio_upgrade(struct bttv *btv)
 #define BTTV_ALT_DCLK		0x100000
 #define BTTV_ALT_NCONFIG	0x800000
 
-static int __devinit pvr_altera_load(struct bttv *btv, u8 *micro, u32 microlen)
+static int __devinit pvr_altera_load(struct bttv *btv, const u8 *micro,
+				     u32 microlen)
 {
 	u32 n;
 	u8 bits;
@@ -3814,7 +3935,7 @@ static void __devinit osprey_eeprom(struct bttv *btv, const u8 ee[256])
 		ee += i;
 
 		/* found a valid descriptor */
-		type = be16_to_cpup((u16*)(ee+4));
+		type = get_unaligned_be16((__be16 *)(ee+4));
 
 		switch(type) {
 		/* 848 based */
@@ -3874,7 +3995,7 @@ static void __devinit osprey_eeprom(struct bttv *btv, const u8 ee[256])
 			       btv->c.nr, type);
 			break;
 		}
-		serial = be32_to_cpup((u32*)(ee+6));
+		serial = get_unaligned_be32((__be32 *)(ee+6));
 	}
 
 	printk(KERN_INFO "bttv%d: osprey eeprom: card=%d '%s' serial=%u\n",
@@ -3916,7 +4037,7 @@ static int tuner_1_table[] = {
 
 static void __devinit avermedia_eeprom(struct bttv *btv)
 {
-	int tuner_make,tuner_tv_fm,tuner_format,tuner=0;
+	int tuner_make, tuner_tv_fm, tuner_format, tuner_type = 0;
 
 	tuner_make      = (eeprom_data[0x41] & 0x7);
 	tuner_tv_fm     = (eeprom_data[0x41] & 0x18) >> 3;
@@ -3924,24 +4045,24 @@ static void __devinit avermedia_eeprom(struct bttv *btv)
 	btv->has_remote = (eeprom_data[0x42] & 0x01);
 
 	if (tuner_make == 0 || tuner_make == 2)
-		if(tuner_format <=0x0a)
-			tuner = tuner_0_table[tuner_format];
+		if (tuner_format <= 0x0a)
+			tuner_type = tuner_0_table[tuner_format];
 	if (tuner_make == 1)
-		if(tuner_format <=9)
-			tuner = tuner_1_table[tuner_format];
+		if (tuner_format <= 9)
+			tuner_type = tuner_1_table[tuner_format];
 
 	if (tuner_make == 4)
-		if(tuner_format == 0x09)
-			tuner = TUNER_LG_NTSC_NEW_TAPC; /* TAPC-G702P */
+		if (tuner_format == 0x09)
+			tuner_type = TUNER_LG_NTSC_NEW_TAPC; /* TAPC-G702P */
 
 	printk(KERN_INFO "bttv%d: Avermedia eeprom[0x%02x%02x]: tuner=",
-		btv->c.nr,eeprom_data[0x41],eeprom_data[0x42]);
-	if(tuner) {
-		btv->tuner_type=tuner;
-		printk("%d",tuner);
+		btv->c.nr, eeprom_data[0x41], eeprom_data[0x42]);
+	if (tuner_type) {
+		btv->tuner_type = tuner_type;
+		printk(KERN_CONT "%d", tuner_type);
 	} else
-		printk("Unknown type");
-	printk(" radio:%s remote control:%s\n",
+		printk(KERN_CONT "Unknown type");
+	printk(KERN_CONT " radio:%s remote control:%s\n",
 	       tuner_tv_fm     ? "yes" : "no",
 	       btv->has_remote ? "yes" : "no");
 }
@@ -3950,7 +4071,7 @@ static void __devinit avermedia_eeprom(struct bttv *btv)
 void bttv_tda9880_setnorm(struct bttv *btv, int norm)
 {
 	/* fix up our card entry */
-	if(norm==VIDEO_MODE_NTSC) {
+	if(norm==V4L2_STD_NTSC) {
 		bttv_tvcards[BTTV_BOARD_VOODOOTV_FM].gpiomux[TVAUDIO_INPUT_TUNER]=0x957fff;
 		bttv_tvcards[BTTV_BOARD_VOODOOTV_FM].gpiomute=0x957fff;
 		bttv_tvcards[BTTV_BOARD_VOODOOTV_200].gpiomux[TVAUDIO_INPUT_TUNER]=0x957fff;
@@ -3983,7 +4104,8 @@ static void __devinit boot_msp34xx(struct bttv *btv, int pin)
 
 	gpio_inout(mask,mask);
 	gpio_bits(mask,0);
-	udelay(2500);
+	mdelay(2);
+	udelay(500);
 	gpio_bits(mask,mask);
 
 	if (bttv_gpio)
@@ -3991,10 +4113,6 @@ static void __devinit boot_msp34xx(struct bttv *btv, int pin)
 	if (bttv_verbose)
 		printk(KERN_INFO "bttv%d: Hauppauge/Voodoo msp34xx: reset line "
 		       "init [%d]\n", btv->c.nr, pin);
-}
-
-static void __devinit boot_bt832(struct bttv *btv)
-{
 }
 
 /* ----------------------------------------------------------------------- */
@@ -4319,387 +4437,6 @@ void tea5757_set_freq(struct bttv *btv, unsigned short freq)
 	tea5757_write(btv, 5 * freq + 0x358); /* add 10.7MHz (see docs) */
 }
 
-
-/* ----------------------------------------------------------------------- */
-/* winview                                                                 */
-
-static void winview_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	/* PT2254A programming Jon Tombs, jon@gte.esi.us.es */
-	int bits_out, loops, vol, data;
-
-	if (!set) {
-		/* Fixed by Leandro Lucarella <luca@linuxmendoza.org.ar (07/31/01) */
-		v->flags |= VIDEO_AUDIO_VOLUME;
-		return;
-	}
-
-	/* 32 levels logarithmic */
-	vol = 32 - ((v->volume>>11));
-	/* units */
-	bits_out = (PT2254_DBS_IN_2>>(vol%5));
-	/* tens */
-	bits_out |= (PT2254_DBS_IN_10>>(vol/5));
-	bits_out |= PT2254_L_CHANNEL | PT2254_R_CHANNEL;
-	data = gpio_read();
-	data &= ~(WINVIEW_PT2254_CLK| WINVIEW_PT2254_DATA|
-		  WINVIEW_PT2254_STROBE);
-	for (loops = 17; loops >= 0 ; loops--) {
-		if (bits_out & (1<<loops))
-			data |=  WINVIEW_PT2254_DATA;
-		else
-			data &= ~WINVIEW_PT2254_DATA;
-		gpio_write(data);
-		udelay(5);
-		data |= WINVIEW_PT2254_CLK;
-		gpio_write(data);
-		udelay(5);
-		data &= ~WINVIEW_PT2254_CLK;
-		gpio_write(data);
-	}
-	data |=  WINVIEW_PT2254_STROBE;
-	data &= ~WINVIEW_PT2254_DATA;
-	gpio_write(data);
-	udelay(10);
-	data &= ~WINVIEW_PT2254_STROBE;
-	gpio_write(data);
-}
-
-/* ----------------------------------------------------------------------- */
-/* mono/stereo control for various cards (which don't use i2c chips but    */
-/* connect something to the GPIO pins                                      */
-
-static void
-gvbctv3pci_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	unsigned int con = 0;
-
-	if (set) {
-		gpio_inout(0x300, 0x300);
-		if (v->mode & VIDEO_SOUND_LANG1)
-			con = 0x000;
-		if (v->mode & VIDEO_SOUND_LANG2)
-			con = 0x300;
-		if (v->mode & VIDEO_SOUND_STEREO)
-			con = 0x200;
-/*		if (v->mode & VIDEO_SOUND_MONO)
- *			con = 0x100; */
-		gpio_bits(0x300, con);
-	} else {
-		v->mode = VIDEO_SOUND_STEREO |
-			  VIDEO_SOUND_LANG1  | VIDEO_SOUND_LANG2;
-	}
-}
-
-static void
-gvbctv5pci_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	unsigned int val, con;
-
-	if (btv->radio_user)
-		return;
-
-	val = gpio_read();
-	if (set) {
-		con = 0x000;
-		if (v->mode & VIDEO_SOUND_LANG2) {
-			if (v->mode & VIDEO_SOUND_LANG1) {
-				/* LANG1 + LANG2 */
-				con = 0x100;
-			}
-			else {
-				/* LANG2 */
-				con = 0x300;
-			}
-		}
-		if (con != (val & 0x300)) {
-			gpio_bits(0x300, con);
-			if (bttv_gpio)
-				bttv_gpio_tracking(btv,"gvbctv5pci");
-		}
-	} else {
-		switch (val & 0x70) {
-		  case 0x10:
-			v->mode = VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-			break;
-		  case 0x30:
-			v->mode = VIDEO_SOUND_LANG2;
-			break;
-		  case 0x50:
-			v->mode = VIDEO_SOUND_LANG1;
-			break;
-		  case 0x60:
-			v->mode = VIDEO_SOUND_STEREO;
-			break;
-		  case 0x70:
-			v->mode = VIDEO_SOUND_MONO;
-			break;
-		  default:
-			v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-				  VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-		}
-	}
-}
-
-/*
- * Mario Medina Nussbaum <medisoft@alohabbs.org.mx>
- *  I discover that on BT848_GPIO_DATA address a byte 0xcce enable stereo,
- *  0xdde enables mono and 0xccd enables sap
- *
- * Petr Vandrovec <VANDROVE@vc.cvut.cz>
- *  P.S.: At least mask in line above is wrong - GPIO pins 3,2 select
- *  input/output sound connection, so both must be set for output mode.
- *
- * Looks like it's needed only for the "tvphone", the "tvphone 98"
- * handles this with a tda9840
- *
- */
-static void
-avermedia_tvphone_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	int val = 0;
-
-	if (set) {
-		if (v->mode & VIDEO_SOUND_LANG2)   /* SAP */
-			val = 0x02;
-		if (v->mode & VIDEO_SOUND_STEREO)
-			val = 0x01;
-		if (val) {
-			gpio_bits(0x03,val);
-			if (bttv_gpio)
-				bttv_gpio_tracking(btv,"avermedia");
-		}
-	} else {
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			VIDEO_SOUND_LANG1;
-		return;
-	}
-}
-
-static void
-avermedia_tv_stereo_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	int val = 0;
-
-	if (set) {
-		if (v->mode & VIDEO_SOUND_LANG2)   /* SAP */
-			val = 0x01;
-		if (v->mode & VIDEO_SOUND_STEREO)  /* STEREO */
-			val = 0x02;
-		btaor(val, ~0x03, BT848_GPIO_DATA);
-		if (bttv_gpio)
-			bttv_gpio_tracking(btv,"avermedia");
-	} else {
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-		return;
-	}
-}
-
-/* Lifetec 9415 handling */
-static void
-lt9415_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	int val = 0;
-
-	if (gpio_read() & 0x4000) {
-		v->mode = VIDEO_SOUND_MONO;
-		return;
-	}
-
-	if (set) {
-		if (v->mode & VIDEO_SOUND_LANG2)  /* A2 SAP */
-			val = 0x0080;
-		if (v->mode & VIDEO_SOUND_STEREO) /* A2 stereo */
-			val = 0x0880;
-		if ((v->mode & VIDEO_SOUND_LANG1) ||
-		    (v->mode & VIDEO_SOUND_MONO))
-			val = 0;
-		gpio_bits(0x0880, val);
-		if (bttv_gpio)
-			bttv_gpio_tracking(btv,"lt9415");
-	} else {
-		/* autodetect doesn't work with this card :-( */
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-		return;
-	}
-}
-
-/* TDA9821 on TerraTV+ Bt848, Bt878 */
-static void
-terratv_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	unsigned int con = 0;
-
-	if (set) {
-		gpio_inout(0x180000,0x180000);
-		if (v->mode & VIDEO_SOUND_LANG2)
-			con = 0x080000;
-		if (v->mode & VIDEO_SOUND_STEREO)
-			con = 0x180000;
-		gpio_bits(0x180000, con);
-		if (bttv_gpio)
-			bttv_gpio_tracking(btv,"terratv");
-	} else {
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-	}
-}
-
-static void
-winfast2000_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	unsigned long val = 0;
-
-	if (set) {
-		/*btor (0xc32000, BT848_GPIO_OUT_EN);*/
-		if (v->mode & VIDEO_SOUND_MONO)		/* Mono */
-			val = 0x420000;
-		if (v->mode & VIDEO_SOUND_LANG1)	/* Mono */
-			val = 0x420000;
-		if (v->mode & VIDEO_SOUND_LANG2)	/* SAP */
-			val = 0x410000;
-		if (v->mode & VIDEO_SOUND_STEREO)	/* Stereo */
-			val = 0x020000;
-		if (val) {
-			gpio_bits(0x430000, val);
-			if (bttv_gpio)
-				bttv_gpio_tracking(btv,"winfast2000");
-		}
-	} else {
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			  VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-	}
-}
-
-/*
- * Dariusz Kowalewski <darekk@automex.pl>
- * sound control for Prolink PV-BT878P+9B (PixelView PlayTV Pro FM+NICAM
- * revision 9B has on-board TDA9874A sound decoder).
- *
- * Note: There are card variants without tda9874a. Forcing the "stereo sound route"
- *       will mute this cards.
- */
-static void
-pvbt878p9b_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	unsigned int val = 0;
-
-	if (btv->radio_user)
-		return;
-
-	if (set) {
-		if (v->mode & VIDEO_SOUND_MONO)	{
-			val = 0x01;
-		}
-		if ((v->mode & (VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2))
-		    || (v->mode & VIDEO_SOUND_STEREO)) {
-			val = 0x02;
-		}
-		if (val) {
-			gpio_bits(0x03,val);
-			if (bttv_gpio)
-				bttv_gpio_tracking(btv,"pvbt878p9b");
-		}
-	} else {
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-	}
-}
-
-/*
- * Dariusz Kowalewski <darekk@automex.pl>
- * sound control for FlyVideo 2000S (with tda9874 decoder)
- * based on pvbt878p9b_audio() - this is not tested, please fix!!!
- */
-static void
-fv2000s_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	unsigned int val = 0xffff;
-
-	if (btv->radio_user)
-		return;
-	if (set) {
-		if (v->mode & VIDEO_SOUND_MONO)	{
-			val = 0x0000;
-		}
-		if ((v->mode & (VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2))
-		    || (v->mode & VIDEO_SOUND_STEREO)) {
-			val = 0x1080; /*-dk-???: 0x0880, 0x0080, 0x1800 ... */
-		}
-		if (val != 0xffff) {
-			gpio_bits(0x1800, val);
-			if (bttv_gpio)
-				bttv_gpio_tracking(btv,"fv2000s");
-		}
-	} else {
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-	}
-}
-
-/*
- * sound control for Canopus WinDVR PCI
- * Masaki Suzuki <masaki@btree.org>
- */
-static void
-windvr_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	unsigned long val = 0;
-
-	if (set) {
-		if (v->mode & VIDEO_SOUND_MONO)
-			val = 0x040000;
-		if (v->mode & VIDEO_SOUND_LANG1)
-			val = 0;
-		if (v->mode & VIDEO_SOUND_LANG2)
-			val = 0x100000;
-		if (v->mode & VIDEO_SOUND_STEREO)
-			val = 0;
-		if (val) {
-			gpio_bits(0x140000, val);
-			if (bttv_gpio)
-				bttv_gpio_tracking(btv,"windvr");
-		}
-	} else {
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			  VIDEO_SOUND_LANG1 | VIDEO_SOUND_LANG2;
-	}
-}
-
-/*
- * sound control for AD-TVK503
- * Hiroshi Takekawa <sian@big.or.jp>
- */
-static void
-adtvk503_audio(struct bttv *btv, struct video_audio *v, int set)
-{
-	unsigned int con = 0xffffff;
-
-	/* btaor(0x1e0000, ~0x1e0000, BT848_GPIO_OUT_EN); */
-
-	if (set) {
-		/* btor(***, BT848_GPIO_OUT_EN); */
-		if (v->mode & VIDEO_SOUND_LANG1)
-			con = 0x00000000;
-		if (v->mode & VIDEO_SOUND_LANG2)
-			con = 0x00180000;
-		if (v->mode & VIDEO_SOUND_STEREO)
-			con = 0x00000000;
-		if (v->mode & VIDEO_SOUND_MONO)
-			con = 0x00060000;
-		if (con != 0xffffff) {
-			gpio_bits(0x1e0000,con);
-			if (bttv_gpio)
-				bttv_gpio_tracking(btv, "adtvk503");
-		}
-	} else {
-		v->mode = VIDEO_SOUND_MONO | VIDEO_SOUND_STEREO |
-			  VIDEO_SOUND_LANG1  | VIDEO_SOUND_LANG2;
-	}
-}
-
 /* RemoteVision MX (rv605) muxsel helper [Miguel Freitas]
  *
  * This is needed because rv605 don't use a normal multiplex, but a crosspoint
@@ -4732,7 +4469,7 @@ static void rv605_muxsel(struct bttv *btv, unsigned int input)
 	gpio_bits(0x200,0x000);
 	mdelay(1);
 
-	/* create a new conection */
+	/* create a new connection */
 	gpio_bits(0x480,0x080);
 	gpio_bits(0x480,0x480);
 	mdelay(1);

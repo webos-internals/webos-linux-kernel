@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_cmd.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/completion.h>
@@ -219,7 +217,7 @@ static void mthca_cmd_post_dbell(struct mthca_dev *dev,
 	__raw_writel((__force u32) cpu_to_be32((1 << HCR_GO_BIT)                |
 					       (1 << HCA_E_BIT)                 |
 					       (op_modifier << HCR_OPMOD_SHIFT) |
-					        op),                      ptr + offs[6]);
+						op),			  ptr + offs[6]);
 	wmb();
 	__raw_writel((__force u32) 0,                                     ptr + offs[7]);
 	wmb();
@@ -1255,9 +1253,14 @@ int mthca_QUERY_ADAPTER(struct mthca_dev *dev,
 	if (err)
 		goto out;
 
-	MTHCA_GET(adapter->vendor_id, outbox,   QUERY_ADAPTER_VENDOR_ID_OFFSET);
-	MTHCA_GET(adapter->device_id, outbox,   QUERY_ADAPTER_DEVICE_ID_OFFSET);
-	MTHCA_GET(adapter->revision_id, outbox, QUERY_ADAPTER_REVISION_ID_OFFSET);
+	if (!mthca_is_memfree(dev)) {
+		MTHCA_GET(adapter->vendor_id, outbox,
+			  QUERY_ADAPTER_VENDOR_ID_OFFSET);
+		MTHCA_GET(adapter->device_id, outbox,
+			  QUERY_ADAPTER_DEVICE_ID_OFFSET);
+		MTHCA_GET(adapter->revision_id, outbox,
+			  QUERY_ADAPTER_REVISION_ID_OFFSET);
+	}
 	MTHCA_GET(adapter->inta_pin, outbox,    QUERY_ADAPTER_INTA_PIN_OFFSET);
 
 	get_board_id(outbox + QUERY_ADAPTER_VSD_OFFSET / 4,
@@ -1333,6 +1336,10 @@ int mthca_INIT_HCA(struct mthca_dev *dev,
 #endif
 	/* Check port for UD address vector: */
 	*(inbox + INIT_HCA_FLAGS2_OFFSET / 4) |= cpu_to_be32(1);
+
+	/* Enable IPoIB checksumming if we can: */
+	if (dev->device_cap_flags & IB_DEVICE_UD_IP_CSUM)
+		*(inbox + INIT_HCA_FLAGS2_OFFSET / 4) |= cpu_to_be32(7 << 3);
 
 	/* We leave wqe_quota, responder_exu, etc as 0 (default) */
 

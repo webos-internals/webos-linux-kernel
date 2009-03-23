@@ -62,8 +62,10 @@ SECTIONS {
 	.text : {
 		_text = .;
 		_stext = . ;
+		HEAD_TEXT
 		TEXT_TEXT
 		SCHED_TEXT
+		LOCK_TEXT
         	*(.text.lock)
 
 		. = ALIGN(16);          /* Exception table              */
@@ -73,6 +75,7 @@ SECTIONS {
 
 		*(.rodata) *(.rodata.*)
 		*(__vermagic)		/* Kernel version magic */
+		*(__markers_strings)
 		*(.rodata1)
 		*(.rodata.str1.1)
 
@@ -112,6 +115,16 @@ SECTIONS {
 		*(__kcrctab_gpl)
 		__stop___kcrctab_gpl = .;
 
+		/* Kernel symbol table: Normal unused symbols */
+		__start___kcrctab_unused = .;
+		*(__kcrctab_unused)
+		__stop___kcrctab_unused = .;
+
+		/* Kernel symbol table: GPL-only unused symbols */
+		__start___kcrctab_unused_gpl = .;
+		*(__kcrctab_unused_gpl)
+		__stop___kcrctab_unused_gpl = .;
+
 		/* Kernel symbol table: GPL-future symbols */
 		__start___kcrctab_gpl_future = .;
 		*(__kcrctab_gpl_future)
@@ -143,9 +156,9 @@ SECTIONS {
 		. = ALIGN(4096);
 		__init_begin = .;
 		_sinittext = .;
-		*(.init.text)
+		INIT_TEXT
 		_einittext = .;
-		*(.init.data)
+		INIT_DATA
 		. = ALIGN(16);
 		__setup_start = .;
 		*(.init.setup)
@@ -170,8 +183,8 @@ SECTIONS {
 	} > INIT
 
 	/DISCARD/ : {
-		*(.exit.text)
-		*(.exit.data)
+		EXIT_TEXT
+		EXIT_DATA
 		*(.exitcall.exit)
 	}
 
@@ -182,6 +195,7 @@ SECTIONS {
 		*(COMMON)
 		. = ALIGN(4) ;
 		_ebss = . ;
+	 	_end = . ;
 	} > BSS
 
 }

@@ -28,6 +28,7 @@ static int debug;
 
 static struct usb_device_id id_table [] = {
 	{ USB_DEVICE(0x4348, 0x5523) },
+	{ USB_DEVICE(0x1a86, 0x7523) },
 	{ },
 };
 MODULE_DEVICE_TABLE(usb, id_table);
@@ -130,7 +131,7 @@ static int ch341_get_status(struct usb_device *dev)
 		return -ENOMEM;
 
 	r = ch341_control_in(dev, 0x95, 0x0706, 0, buffer, size);
-	if ( r < 0)
+	if (r < 0)
 		goto out;
 
 	/* Not having the datasheet for the CH341, we ignore the bytes returned
@@ -231,7 +232,8 @@ error:	kfree(priv);
 }
 
 /* open this device, set default parameters */
-static int ch341_open(struct usb_serial_port *port, struct file *filp)
+static int ch341_open(struct tty_struct *tty, struct usb_serial_port *port,
+				struct file *filp)
 {
 	struct usb_serial *serial = port->serial;
 	struct ch341_private *priv = usb_get_serial_port_data(serial->port[0]);
@@ -255,7 +257,7 @@ static int ch341_open(struct usb_serial_port *port, struct file *filp)
 	if (r)
 		goto out;
 
-	r = usb_serial_generic_open(port, filp);
+	r = usb_serial_generic_open(tty, port, filp);
 
 out:	return r;
 }
@@ -263,11 +265,10 @@ out:	return r;
 /* Old_termios contains the original termios settings and
  * tty->termios contains the new setting to be used.
  */
-static void ch341_set_termios(struct usb_serial_port *port,
-			      struct ktermios *old_termios)
+static void ch341_set_termios(struct tty_struct *tty,
+		struct usb_serial_port *port, struct ktermios *old_termios)
 {
 	struct ch341_private *priv = usb_get_serial_port_data(port);
-	struct tty_struct *tty = port->tty;
 	unsigned baud_rate;
 
 	dbg("ch341_set_termios()");
@@ -318,9 +319,6 @@ static struct usb_serial_driver ch341_device = {
 	},
 	.id_table         = id_table,
 	.usb_driver       = &ch341_driver,
-	.num_interrupt_in = NUM_DONT_CARE,
-	.num_bulk_in      = 1,
-	.num_bulk_out     = 1,
 	.num_ports        = 1,
 	.open             = ch341_open,
 	.set_termios      = ch341_set_termios,

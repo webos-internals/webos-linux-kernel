@@ -20,7 +20,6 @@
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-#include <sound/driver.h>
 #include <linux/wait.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -1024,7 +1023,8 @@ snd_emu8000_create_mixer(struct snd_card *card, struct snd_emu8000 *emu)
 {
 	int i, err = 0;
 
-	snd_assert(emu != NULL && card != NULL, return -EINVAL);
+	if (snd_BUG_ON(!emu || !card))
+		return -EINVAL;
 
 	spin_lock_init(&emu->control_lock);
 

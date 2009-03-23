@@ -6,6 +6,11 @@
  * firmware based USB peripherals.
  */
 
+#ifndef __LINUX_USB_CDC_H
+#define __LINUX_USB_CDC_H
+
+#include <linux/types.h>
+
 #define USB_CDC_SUBCLASS_ACM			0x02
 #define USB_CDC_SUBCLASS_ETHERNET		0x06
 #define USB_CDC_SUBCLASS_WHCM			0x08
@@ -29,16 +34,16 @@
  * Class-Specific descriptors ... there are a couple dozen of them
  */
 
-#define USB_CDC_HEADER_TYPE		0x00		/* header_desc */
-#define USB_CDC_CALL_MANAGEMENT_TYPE	0x01		/* call_mgmt_descriptor */
-#define USB_CDC_ACM_TYPE		0x02		/* acm_descriptor */
-#define USB_CDC_UNION_TYPE		0x06		/* union_desc */
+#define USB_CDC_HEADER_TYPE		0x00	/* header_desc */
+#define USB_CDC_CALL_MANAGEMENT_TYPE	0x01	/* call_mgmt_descriptor */
+#define USB_CDC_ACM_TYPE		0x02	/* acm_descriptor */
+#define USB_CDC_UNION_TYPE		0x06	/* union_desc */
 #define USB_CDC_COUNTRY_TYPE		0x07
-#define USB_CDC_NETWORK_TERMINAL_TYPE	0x0a		/* network_terminal_desc */
-#define USB_CDC_ETHERNET_TYPE		0x0f		/* ether_desc */
+#define USB_CDC_NETWORK_TERMINAL_TYPE	0x0a	/* network_terminal_desc */
+#define USB_CDC_ETHERNET_TYPE		0x0f	/* ether_desc */
 #define USB_CDC_WHCM_TYPE		0x11
-#define USB_CDC_MDLM_TYPE		0x12		/* mdlm_desc */
-#define USB_CDC_MDLM_DETAIL_TYPE	0x13		/* mdlm_detail_desc */
+#define USB_CDC_MDLM_TYPE		0x12	/* mdlm_desc */
+#define USB_CDC_MDLM_DETAIL_TYPE	0x13	/* mdlm_detail_desc */
 #define USB_CDC_DMM_TYPE		0x14
 #define USB_CDC_OBEX_TYPE		0x15
 
@@ -127,6 +132,15 @@ struct usb_cdc_ether_desc {
 	__u8	bNumberPowerFilters;
 } __attribute__ ((packed));
 
+/* "Telephone Control Model Functional Descriptor" from CDC WMC spec 6.3..3 */
+struct usb_cdc_dmm_desc {
+	__u8	bFunctionLength;
+	__u8	bDescriptorType;
+	__u8	bDescriptorSubtype;
+	__u16	bcdVersion;
+	__le16	wMaxCommand;
+} __attribute__ ((packed));
+
 /* "MDLM Functional Descriptor" from CDC WMC spec 6.7.2.3 */
 struct usb_cdc_mdlm_desc {
 	__u8	bLength;
@@ -146,6 +160,15 @@ struct usb_cdc_mdlm_detail_desc {
 	/* type is associated with mdlm_desc.bGUID */
 	__u8	bGuidDescriptorType;
 	__u8	bDetailData[0];
+} __attribute__ ((packed));
+
+/* "OBEX Control Model Functional Descriptor" */
+struct usb_cdc_obex_desc {
+	__u8	bLength;
+	__u8	bDescriptorType;
+	__u8	bDescriptorSubType;
+
+	__le16	bcdVersion;
 } __attribute__ ((packed));
 
 /*-------------------------------------------------------------------------*/
@@ -221,3 +244,4 @@ struct usb_cdc_notification {
 	__le16	wLength;
 } __attribute__ ((packed));
 
+#endif /* __LINUX_USB_CDC_H */

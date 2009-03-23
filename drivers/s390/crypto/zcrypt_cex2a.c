@@ -49,6 +49,7 @@
 
 static struct ap_device_id zcrypt_cex2a_ids[] = {
 	{ AP_DEVICE(AP_DEVICE_TYPE_CEX2A) },
+	{ AP_DEVICE(AP_DEVICE_TYPE_CEX2A2) },
 	{ /* end of list */ },
 };
 
@@ -242,9 +243,6 @@ static int convert_response(struct zcrypt_device *zdev,
 		return convert_type80(zdev, reply,
 				      outputdata, outputdatalength);
 	default: /* Unknown response type, this should NEVER EVER happen */
-		PRINTK("Unrecognized Message Header: %08x%08x\n",
-		       *(unsigned int *) reply->message,
-		       *(unsigned int *) (reply->message+4));
 		zdev->online = 0;
 		return -EAGAIN;	/* repeat the request on a different device. */
 	}
@@ -266,17 +264,21 @@ static void zcrypt_cex2a_receive(struct ap_device *ap_dev,
 		.type = TYPE82_RSP_CODE,
 		.reply_code = REP82_ERROR_MACHINE_FAILURE,
 	};
-	struct type80_hdr *t80h = reply->message;
+	struct type80_hdr *t80h;
 	int length;
 
 	/* Copy the reply message to the request message buffer. */
-	if (IS_ERR(reply))
+	if (IS_ERR(reply)) {
 		memcpy(msg->message, &error_reply, sizeof(error_reply));
-	else if (t80h->type == TYPE80_RSP_CODE) {
+		goto out;
+	}
+	t80h = reply->message;
+	if (t80h->type == TYPE80_RSP_CODE) {
 		length = min(CEX2A_MAX_RESPONSE_SIZE, (int) t80h->len);
 		memcpy(msg->message, reply->message, length);
 	} else
 		memcpy(msg->message, reply->message, sizeof error_reply);
+out:
 	complete((struct completion *) msg->private);
 }
 

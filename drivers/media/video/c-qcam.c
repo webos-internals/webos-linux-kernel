@@ -35,7 +35,9 @@
 #include <linux/sched.h>
 #include <linux/videodev.h>
 #include <media/v4l2-common.h>
+#include <media/v4l2-ioctl.h>
 #include <linux/mutex.h>
+#include <linux/jiffies.h>
 
 #include <asm/uaccess.h>
 
@@ -49,6 +51,7 @@ struct qcam_device {
 	int contrast, brightness, whitebal;
 	int top, left;
 	unsigned int bidirectional;
+	unsigned long in_use;
 	struct mutex lock;
 };
 
@@ -69,7 +72,7 @@ struct qcam_device {
 
 static int parport[MAX_CAMS] = { [1 ... MAX_CAMS-1] = -1 };
 static int probe = 2;
-static int force_rgb = 0;
+static int force_rgb;
 static int video_nr = -1;
 
 static inline void qcam_set_ack(struct qcam_device *qcam, unsigned int i)
@@ -95,7 +98,8 @@ static unsigned int qcam_await_ready1(struct qcam_device *qcam,
 	unsigned long oldjiffies = jiffies;
 	unsigned int i;
 
-	for (oldjiffies = jiffies; (jiffies - oldjiffies) < msecs_to_jiffies(40); )
+	for (oldjiffies = jiffies;
+	     time_before(jiffies, oldjiffies + msecs_to_jiffies(40)); )
 		if (qcam_ready1(qcam) == value)
 			return 0;
 
@@ -120,7 +124,8 @@ static unsigned int qcam_await_ready2(struct qcam_device *qcam, int value)
 	unsigned long oldjiffies = jiffies;
 	unsigned int i;
 
-	for (oldjiffies = jiffies; (jiffies - oldjiffies) < msecs_to_jiffies(40); )
+	for (oldjiffies = jiffies;
+	     time_before(jiffies, oldjiffies + msecs_to_jiffies(40)); )
 		if (qcam_ready2(qcam) == value)
 			return 0;
 
@@ -495,8 +500,7 @@ static long qc_capture(struct qcam_device *q, char __user *buf, unsigned long le
  *	Video4linux interfacing
  */
 
-static int qcam_do_ioctl(struct inode *inode, struct file *file,
-			 unsigned int cmd, void *arg)
+static long qcam_do_ioctl(struct file *file, unsigned int cmd, void *arg)
 {
 	struct video_device *dev = video_devdata(file);
 	struct qcam_device *qcam=(struct qcam_device *)dev;
@@ -661,10 +665,10 @@ static int qcam_do_ioctl(struct inode *inode, struct file *file,
 	return 0;
 }
 
-static int qcam_ioctl(struct inode *inode, struct file *file,
-		     unsigned int cmd, unsigned long arg)
+static long qcam_ioctl(struct file *file,
+		      unsigned int cmd, unsigned long arg)
 {
-	return video_usercopy(inode, file, cmd, arg, qcam_do_ioctl);
+	return video_usercopy(file, cmd, arg, qcam_do_ioctl);
 }
 
 static ssize_t qcam_read(struct file *file, char __user *buf,
@@ -683,23 +687,37 @@ static ssize_t qcam_read(struct file *file, char __user *buf,
 	return len;
 }
 
+static int qcam_exclusive_open(struct file *file)
+{
+	struct video_device *dev = video_devdata(file);
+	struct qcam_device *qcam = (struct qcam_device *)dev;
+
+	return test_and_set_bit(0, &qcam->in_use) ? -EBUSY : 0;
+}
+
+static int qcam_exclusive_release(struct file *file)
+{
+	struct video_device *dev = video_devdata(file);
+	struct qcam_device *qcam = (struct qcam_device *)dev;
+
+	clear_bit(0, &qcam->in_use);
+	return 0;
+}
+
 /* video device template */
-static const struct file_operations qcam_fops = {
+static const struct v4l2_file_operations qcam_fops = {
 	.owner		= THIS_MODULE,
-	.open           = video_exclusive_open,
-	.release        = video_exclusive_release,
+	.open           = qcam_exclusive_open,
+	.release        = qcam_exclusive_release,
 	.ioctl          = qcam_ioctl,
-	.compat_ioctl	= v4l_compat_ioctl32,
 	.read		= qcam_read,
-	.llseek         = no_llseek,
 };
 
 static struct video_device qcam_template=
 {
-	.owner		= THIS_MODULE,
 	.name		= "Colour QuickCam",
-	.type		= VID_TYPE_CAPTURE,
 	.fops           = &qcam_fops,
+	.release 	= video_device_release_empty,
 };
 
 /* Initialize the QuickCam driver control structure. */
@@ -741,7 +759,7 @@ static struct qcam_device *qcam_init(struct parport *port)
 }
 
 static struct qcam_device *qcams[MAX_CAMS];
-static unsigned int num_cams = 0;
+static unsigned int num_cams;
 
 static int init_cqcam(struct parport *port)
 {
@@ -783,8 +801,7 @@ static int init_cqcam(struct parport *port)
 
 	parport_release(qcam->pdev);
 
-	if (video_register_device(&qcam->vdev, VFL_TYPE_GRABBER, video_nr)==-1)
-	{
+	if (video_register_device(&qcam->vdev, VFL_TYPE_GRABBER, video_nr) < 0) {
 		printk(KERN_ERR "Unable to register Colour QuickCam on %s\n",
 		       qcam->pport->name);
 		parport_unregister_device(qcam->pdev);
@@ -793,7 +810,7 @@ static int init_cqcam(struct parport *port)
 	}
 
 	printk(KERN_INFO "video%d: Colour QuickCam found on %s\n",
-	       qcam->vdev.minor, qcam->pport->name);
+	       qcam->vdev.num, qcam->pport->name);
 
 	qcams[num_cams++] = qcam;
 

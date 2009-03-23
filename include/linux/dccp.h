@@ -168,6 +168,8 @@ enum {
 	DCCPO_MIN_CCID_SPECIFIC = 128,
 	DCCPO_MAX_CCID_SPECIFIC = 255,
 };
+/* maximum size of a single TLV-encoded DCCP option (sans type/len bytes) */
+#define DCCP_SINGLE_OPT_MAXLEN	253
 
 /* DCCP CCIDS */
 enum {
@@ -176,27 +178,21 @@ enum {
 };
 
 /* DCCP features (RFC 4340 section 6.4) */
-enum {
+enum dccp_feature_numbers {
 	DCCPF_RESERVED = 0,
 	DCCPF_CCID = 1,
-	DCCPF_SHORT_SEQNOS = 2,		/* XXX: not yet implemented */
+	DCCPF_SHORT_SEQNOS = 2,
 	DCCPF_SEQUENCE_WINDOW = 3,
-	DCCPF_ECN_INCAPABLE = 4,	/* XXX: not yet implemented */
+	DCCPF_ECN_INCAPABLE = 4,
 	DCCPF_ACK_RATIO = 5,
 	DCCPF_SEND_ACK_VECTOR = 6,
 	DCCPF_SEND_NDP_COUNT = 7,
 	DCCPF_MIN_CSUM_COVER = 8,
-	DCCPF_DATA_CHECKSUM = 9,	/* XXX: not yet implemented */
+	DCCPF_DATA_CHECKSUM = 9,
 	/* 10-127 reserved */
 	DCCPF_MIN_CCID_SPECIFIC = 128,
+	DCCPF_SEND_LEV_RATE = 192,	/* RFC 4342, sec. 8.4 */
 	DCCPF_MAX_CCID_SPECIFIC = 255,
-};
-
-/* this structure is argument to DCCP_SOCKOPT_CHANGE_X */
-struct dccp_so_feat {
-	__u8 dccpsf_feat;
-	__u8 __user *dccpsf_val;
-	__u8 dccpsf_len;
 };
 
 /* DCCP socket options */
@@ -205,8 +201,13 @@ struct dccp_so_feat {
 #define DCCP_SOCKOPT_CHANGE_L		3
 #define DCCP_SOCKOPT_CHANGE_R		4
 #define DCCP_SOCKOPT_GET_CUR_MPS	5
+#define DCCP_SOCKOPT_SERVER_TIMEWAIT	6
 #define DCCP_SOCKOPT_SEND_CSCOV		10
 #define DCCP_SOCKOPT_RECV_CSCOV		11
+#define DCCP_SOCKOPT_AVAILABLE_CCIDS	12
+#define DCCP_SOCKOPT_CCID		13
+#define DCCP_SOCKOPT_TX_CCID		14
+#define DCCP_SOCKOPT_RX_CCID		15
 #define DCCP_SOCKOPT_CCID_RX_INFO	128
 #define DCCP_SOCKOPT_CCID_TX_INFO	192
 
@@ -227,37 +228,50 @@ struct dccp_so_feat {
 #include <net/tcp_states.h>
 
 enum dccp_state {
-	DCCP_OPEN	= TCP_ESTABLISHED,
-	DCCP_REQUESTING	= TCP_SYN_SENT,
-	DCCP_PARTOPEN	= TCP_FIN_WAIT1, /* FIXME:
-					    This mapping is horrible, but TCP has
-					    no matching state for DCCP_PARTOPEN,
-					    as TCP_SYN_RECV is already used by
-					    DCCP_RESPOND, why don't stop using TCP
-					    mapping of states? OK, now we don't use
-					    sk_stream_sendmsg anymore, so doesn't
-					    seem to exist any reason for us to
-					    do the TCP mapping here */
-	DCCP_LISTEN	= TCP_LISTEN,
-	DCCP_RESPOND	= TCP_SYN_RECV,
-	DCCP_CLOSING	= TCP_CLOSING,
-	DCCP_TIME_WAIT	= TCP_TIME_WAIT,
-	DCCP_CLOSED	= TCP_CLOSE,
-	DCCP_MAX_STATES = TCP_MAX_STATES,
+	DCCP_OPEN	     = TCP_ESTABLISHED,
+	DCCP_REQUESTING	     = TCP_SYN_SENT,
+	DCCP_LISTEN	     = TCP_LISTEN,
+	DCCP_RESPOND	     = TCP_SYN_RECV,
+	/*
+	 * States involved in closing a DCCP connection:
+	 * 1) ACTIVE_CLOSEREQ is entered by a server sending a CloseReq.
+	 *
+	 * 2) CLOSING can have three different meanings (RFC 4340, 8.3):
+	 *  a. Client has performed active-close, has sent a Close to the server
+	 *     from state OPEN or PARTOPEN, and is waiting for the final Reset
+	 *     (in this case, SOCK_DONE == 1).
+	 *  b. Client is asked to perform passive-close, by receiving a CloseReq
+	 *     in (PART)OPEN state. It sends a Close and waits for final Reset
+	 *     (in this case, SOCK_DONE == 0).
+	 *  c. Server performs an active-close as in (a), keeps TIMEWAIT state.
+	 *
+	 * 3) The following intermediate states are employed to give passively
+	 *    closing nodes a chance to process their unread data:
+	 *    - PASSIVE_CLOSE    (from OPEN => CLOSED) and
+	 *    - PASSIVE_CLOSEREQ (from (PART)OPEN to CLOSING; case (b) above).
+	 */
+	DCCP_ACTIVE_CLOSEREQ = TCP_FIN_WAIT1,
+	DCCP_PASSIVE_CLOSE   = TCP_CLOSE_WAIT,	/* any node receiving a Close */
+	DCCP_CLOSING	     = TCP_CLOSING,
+	DCCP_TIME_WAIT	     = TCP_TIME_WAIT,
+	DCCP_CLOSED	     = TCP_CLOSE,
+	DCCP_PARTOPEN	     = TCP_MAX_STATES,
+	DCCP_PASSIVE_CLOSEREQ,			/* clients receiving CloseReq */
+	DCCP_MAX_STATES
 };
 
-#define DCCP_STATE_MASK 0xf
-#define DCCP_ACTION_FIN (1<<7)
+#define DCCP_STATE_MASK 0x1f
 
 enum {
-	DCCPF_OPEN	 = TCPF_ESTABLISHED,
-	DCCPF_REQUESTING = TCPF_SYN_SENT,
-	DCCPF_PARTOPEN	 = TCPF_FIN_WAIT1,
-	DCCPF_LISTEN	 = TCPF_LISTEN,
-	DCCPF_RESPOND	 = TCPF_SYN_RECV,
-	DCCPF_CLOSING	 = TCPF_CLOSING,
-	DCCPF_TIME_WAIT	 = TCPF_TIME_WAIT,
-	DCCPF_CLOSED	 = TCPF_CLOSE,
+	DCCPF_OPEN	      = TCPF_ESTABLISHED,
+	DCCPF_REQUESTING      = TCPF_SYN_SENT,
+	DCCPF_LISTEN	      = TCPF_LISTEN,
+	DCCPF_RESPOND	      = TCPF_SYN_RECV,
+	DCCPF_ACTIVE_CLOSEREQ = TCPF_FIN_WAIT1,
+	DCCPF_CLOSING	      = TCPF_CLOSING,
+	DCCPF_TIME_WAIT	      = TCPF_TIME_WAIT,
+	DCCPF_CLOSED	      = TCPF_CLOSE,
+	DCCPF_PARTOPEN	      = (1 << DCCP_PARTOPEN),
 };
 
 static inline struct dccp_hdr *dccp_hdr(const struct sk_buff *skb)
@@ -346,11 +360,8 @@ static inline unsigned int dccp_hdr_len(const struct sk_buff *skb)
 #define DCCPF_INITIAL_SEQUENCE_WINDOW		100
 #define DCCPF_INITIAL_ACK_RATIO			2
 #define DCCPF_INITIAL_CCID			DCCPC_CCID2
-#define DCCPF_INITIAL_SEND_ACK_VECTOR		1
 /* FIXME: for now we're default to 1 but it should really be 0 */
 #define DCCPF_INITIAL_SEND_NDP_COUNT		1
-
-#define DCCP_NDP_LIMIT 0xFFFFFF
 
 /**
   * struct dccp_minisock - Minimal DCCP connection representation
@@ -358,20 +369,11 @@ static inline unsigned int dccp_hdr_len(const struct sk_buff *skb)
   * Will be used to pass the state from dccp_request_sock to dccp_sock.
   *
   * @dccpms_sequence_window - Sequence Window Feature (section 7.5.2)
-  * @dccpms_ccid - Congestion Control Id (CCID) (section 10)
-  * @dccpms_send_ack_vector - Send Ack Vector Feature (section 11.5)
-  * @dccpms_send_ndp_count - Send NDP Count Feature (7.7.2)
-  * @dccpms_ack_ratio - Ack Ratio Feature (section 11.3)
   * @dccpms_pending - List of features being negotiated
   * @dccpms_conf -
   */
 struct dccp_minisock {
 	__u64			dccpms_sequence_window;
-	__u8			dccpms_rx_ccid;
-	__u8			dccpms_tx_ccid;
-	__u8			dccpms_send_ack_vector;
-	__u8			dccpms_send_ndp_count;
-	__u8			dccpms_ack_ratio;
 	struct list_head	dccpms_pending;
 	struct list_head	dccpms_conf;
 };
@@ -393,13 +395,25 @@ struct dccp_opt_pend {
 
 extern void dccp_minisock_init(struct dccp_minisock *dmsk);
 
-extern int dccp_parse_options(struct sock *sk, struct sk_buff *skb);
-
+/**
+ * struct dccp_request_sock  -  represent DCCP-specific connection request
+ * @dreq_inet_rsk: structure inherited from
+ * @dreq_iss: initial sequence number sent on the Response (RFC 4340, 7.1)
+ * @dreq_isr: initial sequence number received on the Request
+ * @dreq_service: service code present on the Request (there is just one)
+ * @dreq_featneg: feature negotiation options for this connection
+ * The following two fields are analogous to the ones in dccp_sock:
+ * @dreq_timestamp_echo: last received timestamp to echo (13.1)
+ * @dreq_timestamp_echo: the time of receiving the last @dreq_timestamp_echo
+ */
 struct dccp_request_sock {
 	struct inet_request_sock dreq_inet_rsk;
 	__u64			 dreq_iss;
 	__u64			 dreq_isr;
 	__be32			 dreq_service;
+	struct list_head	 dreq_featneg;
+	__u32			 dreq_timestamp_echo;
+	__u32			 dreq_timestamp_time;
 };
 
 static inline struct dccp_request_sock *dccp_rsk(const struct request_sock *req)
@@ -409,8 +423,11 @@ static inline struct dccp_request_sock *dccp_rsk(const struct request_sock *req)
 
 extern struct inet_timewait_death_row dccp_death_row;
 
+extern int dccp_parse_options(struct sock *sk, struct dccp_request_sock *dreq,
+			      struct sk_buff *skb);
+
 struct dccp_options_received {
-	u32	dccpor_ndp; /* only 24 bits */
+	u64	dccpor_ndp:48;
 	u32	dccpor_timestamp;
 	u32	dccpor_timestamp_echo;
 	u32	dccpor_elapsed_time;
@@ -462,16 +479,18 @@ struct dccp_ackvec;
  * @dccps_gar - greatest valid ack number received on a non-Sync; initialized to %dccps_iss
  * @dccps_service - first (passive sock) or unique (active sock) service code
  * @dccps_service_list - second .. last service code on passive socket
- * @dccps_timestamp_time - time of latest TIMESTAMP option
  * @dccps_timestamp_echo - latest timestamp received on a TIMESTAMP option
+ * @dccps_timestamp_time - time of receiving latest @dccps_timestamp_echo
  * @dccps_l_ack_ratio - feature-local Ack Ratio
  * @dccps_r_ack_ratio - feature-remote Ack Ratio
  * @dccps_pcslen - sender   partial checksum coverage (via sockopt)
  * @dccps_pcrlen - receiver partial checksum coverage (via sockopt)
+ * @dccps_send_ndp_count - local Send NDP Count feature (7.7.2)
  * @dccps_ndp_count - number of Non Data Packets since last data packet
  * @dccps_mss_cache - current value of MSS (path MTU minus header sizes)
  * @dccps_rate_last - timestamp for rate-limiting DCCP-Sync (RFC 4340, 7.5.4)
  * @dccps_minisock - associated minisock (accessed via dccp_msk)
+ * @dccps_featneg - tracks feature-negotiation state (mostly during handshake)
  * @dccps_hc_rx_ackvec - rx half connection ack vector
  * @dccps_hc_rx_ccid - CCID used for the receiver (or receiving half-connection)
  * @dccps_hc_tx_ccid - CCID used for the sender (or sending half-connection)
@@ -479,6 +498,7 @@ struct dccp_ackvec;
  * @dccps_role - role of this sock, one of %dccp_role
  * @dccps_hc_rx_insert_options - receiver wants to add options when acking
  * @dccps_hc_tx_insert_options - sender wants to add options when sending
+ * @dccps_server_timewait - server holds timewait state on close (RFC 4340, 8.3)
  * @dccps_xmit_timer - timer for when CCID is not ready to send
  * @dccps_syn_rtt - RTT sample from Request/Response exchange (in usecs)
  */
@@ -497,17 +517,19 @@ struct dccp_sock {
 	__u64				dccps_gsr;
 	__u64				dccps_gar;
 	__be32				dccps_service;
+	__u32				dccps_mss_cache;
 	struct dccp_service_list	*dccps_service_list;
-	ktime_t				dccps_timestamp_time;
 	__u32				dccps_timestamp_echo;
+	__u32				dccps_timestamp_time;
 	__u16				dccps_l_ack_ratio;
 	__u16				dccps_r_ack_ratio;
-	__u16				dccps_pcslen;
-	__u16				dccps_pcrlen;
-	unsigned long			dccps_ndp_count;
-	__u32				dccps_mss_cache;
+	__u8				dccps_pcslen:4;
+	__u8				dccps_pcrlen:4;
+	__u8				dccps_send_ndp_count:1;
+	__u64				dccps_ndp_count:48;
 	unsigned long			dccps_rate_last;
 	struct dccp_minisock		dccps_minisock;
+	struct list_head		dccps_featneg;
 	struct dccp_ackvec		*dccps_hc_rx_ackvec;
 	struct ccid			*dccps_hc_rx_ccid;
 	struct ccid			*dccps_hc_tx_ccid;
@@ -515,6 +537,7 @@ struct dccp_sock {
 	enum dccp_role			dccps_role:2;
 	__u8				dccps_hc_rx_insert_options:1;
 	__u8				dccps_hc_tx_insert_options:1;
+	__u8				dccps_server_timewait:1;
 	struct timer_list		dccps_xmit_timer;
 };
 

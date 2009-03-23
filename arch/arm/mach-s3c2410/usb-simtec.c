@@ -21,21 +21,21 @@
 #include <linux/timer.h>
 #include <linux/init.h>
 #include <linux/device.h>
+#include <linux/io.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 
-#include <asm/arch/bast-map.h>
-#include <asm/arch/bast-irq.h>
-#include <asm/arch/usb-control.h>
-#include <asm/arch/regs-gpio.h>
+#include <mach/bast-map.h>
+#include <mach/bast-irq.h>
+#include <mach/usb-control.h>
+#include <mach/regs-gpio.h>
 
-#include <asm/hardware.h>
-#include <asm/io.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
 
-#include <asm/plat-s3c24xx/devs.h>
+#include <plat/devs.h>
 #include "usb-simtec.h"
 
 /* control power and monitor over-current events on various Simtec
@@ -60,7 +60,7 @@ usb_simtec_powercontrol(int port, int to)
 static irqreturn_t
 usb_simtec_ocirq(int irq, void *pw)
 {
-	struct s3c2410_hcd_info *info = (struct s3c2410_hcd_info *)pw;
+	struct s3c2410_hcd_info *info = pw;
 
 	if (s3c2410_gpio_getpin(S3C2410_GPG10) == 0) {
 		pr_debug("usb_simtec: over-current irq (oc detected)\n");

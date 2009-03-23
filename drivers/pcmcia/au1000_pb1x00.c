@@ -35,10 +35,8 @@
 #include <pcmcia/cs_types.h>
 #include <pcmcia/cs.h>
 #include <pcmcia/ss.h>
-#include <pcmcia/bulkmem.h>
 #include <pcmcia/cistpl.h>
 #include <pcmcia/bus_ops.h>
-#include "cs_internal.h"
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -244,7 +242,7 @@ pb1x00_pcmcia_configure_socket(const struct pcmcia_configure *configure)
 					pcr |= SET_VCC_VPP(VCC_HIZ,VPP_HIZ,
 							configure->sock);
 					printk("%s: bad Vcc/Vpp (%d:%d)\n", 
-							__FUNCTION__, 
+							__func__,
 							configure->vcc, 
 							configure->vpp);
 					break;
@@ -272,7 +270,7 @@ pb1x00_pcmcia_configure_socket(const struct pcmcia_configure *configure)
 					pcr |= SET_VCC_VPP(VCC_HIZ,VPP_HIZ,
 							configure->sock);
 					printk("%s: bad Vcc/Vpp (%d:%d)\n", 
-							__FUNCTION__, 
+							__func__,
 							configure->vcc, 
 							configure->vpp);
 					break;
@@ -300,7 +298,7 @@ pb1x00_pcmcia_configure_socket(const struct pcmcia_configure *configure)
 					pcr |= SET_VCC_VPP(VCC_HIZ,VPP_HIZ,
 							configure->sock);
 					printk("%s: bad Vcc/Vpp (%d:%d)\n", 
-							__FUNCTION__, 
+							__func__,
 							configure->vcc, 
 							configure->vpp);
 					break;
@@ -309,7 +307,7 @@ pb1x00_pcmcia_configure_socket(const struct pcmcia_configure *configure)
 		default: /* what's this ? */
 			pcr |= SET_VCC_VPP(VCC_HIZ,VPP_HIZ,configure->sock);
 			printk(KERN_ERR "%s: bad Vcc %d\n", 
-					__FUNCTION__, configure->vcc);
+					__func__, configure->vcc);
 			break;
 	}
 
@@ -353,7 +351,7 @@ pb1x00_pcmcia_configure_socket(const struct pcmcia_configure *configure)
 				default:
 					pcr |= SET_VCC_VPP(0,0);
 					printk("%s: bad Vcc/Vpp (%d:%d)\n", 
-							__FUNCTION__, 
+							__func__,
 							configure->vcc, 
 							configure->vpp);
 					break;
@@ -374,7 +372,7 @@ pb1x00_pcmcia_configure_socket(const struct pcmcia_configure *configure)
 				default:
 					pcr |= SET_VCC_VPP(0,0);
 					printk("%s: bad Vcc/Vpp (%d:%d)\n", 
-							__FUNCTION__, 
+							__func__,
 							configure->vcc, 
 							configure->vpp);
 					break;
@@ -383,7 +381,7 @@ pb1x00_pcmcia_configure_socket(const struct pcmcia_configure *configure)
 		default: /* what's this ? */
 			pcr |= SET_VCC_VPP(0,0);
 			printk(KERN_ERR "%s: bad Vcc %d\n", 
-					__FUNCTION__, configure->vcc);
+					__func__, configure->vcc);
 			break;
 	}
 

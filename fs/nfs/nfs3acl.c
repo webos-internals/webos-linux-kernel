@@ -5,6 +5,8 @@
 #include <linux/posix_acl_xattr.h>
 #include <linux/nfsacl.h>
 
+#include "internal.h"
+
 #define NFSDBG_FACILITY	NFSDBG_PROC
 
 ssize_t nfs3_listxattr(struct dentry *dentry, char *buffer, size_t size)
@@ -205,6 +207,8 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 	status = nfs_revalidate_inode(server, inode);
 	if (status < 0)
 		return ERR_PTR(status);
+	if (NFS_I(inode)->cache_validity & NFS_INO_INVALID_ACL)
+		nfs_zap_acl_cache(inode);
 	acl = nfs3_get_cached_acl(inode, type);
 	if (acl != ERR_PTR(-EAGAIN))
 		return acl;
@@ -225,6 +229,7 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 
 	dprintk("NFS call getacl\n");
 	msg.rpc_proc = &server->client_acl->cl_procinfo[ACLPROC3_GETACL];
+	nfs_fattr_init(&fattr);
 	status = rpc_call_sync(server->client_acl, &msg, 0);
 	dprintk("NFS reply getacl: %d\n", status);
 
@@ -287,7 +292,7 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 {
 	struct nfs_server *server = NFS_SERVER(inode);
 	struct nfs_fattr fattr;
-	struct page *pages[NFSACL_MAXPAGES] = { };
+	struct page *pages[NFSACL_MAXPAGES];
 	struct nfs3_setaclargs args = {
 		.inode = inode,
 		.mask = NFS_ACL,
@@ -298,7 +303,7 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 		.rpc_argp	= &args,
 		.rpc_resp	= &fattr,
 	};
-	int status, count;
+	int status;
 
 	status = -EOPNOTSUPP;
 	if (!nfs_server_capable(inode, NFS_CAP_ACLS))
@@ -314,19 +319,29 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 	if (S_ISDIR(inode->i_mode)) {
 		args.mask |= NFS_DFACL;
 		args.acl_default = dfacl;
+		args.len = nfsacl_size(acl, dfacl);
+	} else
+		args.len = nfsacl_size(acl, NULL);
+
+	if (args.len > NFS_ACL_INLINE_BUFSIZE) {
+		unsigned int npages = 1 + ((args.len - 1) >> PAGE_SHIFT);
+
+		status = -ENOMEM;
+		do {
+			args.pages[args.npages] = alloc_page(GFP_KERNEL);
+			if (args.pages[args.npages] == NULL)
+				goto out_freepages;
+			args.npages++;
+		} while (args.npages < npages);
 	}
 
 	dprintk("NFS call setacl\n");
 	msg.rpc_proc = &server->client_acl->cl_procinfo[ACLPROC3_SETACL];
+	nfs_fattr_init(&fattr);
 	status = rpc_call_sync(server->client_acl, &msg, 0);
-	spin_lock(&inode->i_lock);
-	NFS_I(inode)->cache_validity |= NFS_INO_INVALID_ACCESS;
-	spin_unlock(&inode->i_lock);
+	nfs_access_zap_cache(inode);
+	nfs_zap_acl_cache(inode);
 	dprintk("NFS reply setacl: %d\n", status);
-
-	/* pages may have been allocated at the xdr layer. */
-	for (count = 0; count < NFSACL_MAXPAGES && args.pages[count]; count++)
-		__free_page(args.pages[count]);
 
 	switch (status) {
 		case 0:
@@ -340,6 +355,11 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 			server->caps &= ~NFS_CAP_ACLS;
 		case -ENOTSUPP:
 			status = -EOPNOTSUPP;
+	}
+out_freepages:
+	while (args.npages != 0) {
+		args.npages--;
+		__free_page(args.pages[args.npages]);
 	}
 out:
 	return status;

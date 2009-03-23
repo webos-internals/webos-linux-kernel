@@ -165,7 +165,7 @@ static void smp_snoop(struct ib_device *ibdev, u8 port_num, struct ib_mad *mad)
 			event.device	       = ibdev;
 			event.element.port_num = port_num;
 
-			if(pinfo->clientrereg_resv_subnetto & 0x80)
+			if (pinfo->clientrereg_resv_subnetto & 0x80)
 				event.event    = IB_EVENT_CLIENT_REREGISTER;
 			else
 				event.event    = IB_EVENT_LID_CHANGE;
@@ -255,7 +255,8 @@ int mlx4_ib_process_mad(struct ib_device *ibdev, int mad_flags,	u8 port_num,
 			return IB_MAD_RESULT_SUCCESS;
 	} else if (in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_PERF_MGMT ||
 		   in_mad->mad_hdr.mgmt_class == MLX4_IB_VENDOR_CLASS1   ||
-		   in_mad->mad_hdr.mgmt_class == MLX4_IB_VENDOR_CLASS2) {
+		   in_mad->mad_hdr.mgmt_class == MLX4_IB_VENDOR_CLASS2   ||
+		   in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_CONG_MGMT) {
 		if (in_mad->mad_hdr.method  != IB_MGMT_METHOD_GET &&
 		    in_mad->mad_hdr.method  != IB_MGMT_METHOD_SET)
 			return IB_MAD_RESULT_SUCCESS;
@@ -297,7 +298,7 @@ int mlx4_ib_mad_init(struct mlx4_ib_dev *dev)
 	int p, q;
 	int ret;
 
-	for (p = 0; p < dev->dev->caps.num_ports; ++p)
+	for (p = 0; p < dev->num_ports; ++p)
 		for (q = 0; q <= 1; ++q) {
 			agent = ib_register_mad_agent(&dev->ib_dev, p + 1,
 						      q ? IB_QPT_GSI : IB_QPT_SMI,
@@ -313,7 +314,7 @@ int mlx4_ib_mad_init(struct mlx4_ib_dev *dev)
 	return 0;
 
 err:
-	for (p = 0; p < dev->dev->caps.num_ports; ++p)
+	for (p = 0; p < dev->num_ports; ++p)
 		for (q = 0; q <= 1; ++q)
 			if (dev->send_agent[p][q])
 				ib_unregister_mad_agent(dev->send_agent[p][q]);
@@ -326,7 +327,7 @@ void mlx4_ib_mad_cleanup(struct mlx4_ib_dev *dev)
 	struct ib_mad_agent *agent;
 	int p, q;
 
-	for (p = 0; p < dev->dev->caps.num_ports; ++p) {
+	for (p = 0; p < dev->num_ports; ++p) {
 		for (q = 0; q <= 1; ++q) {
 			agent = dev->send_agent[p][q];
 			dev->send_agent[p][q] = NULL;

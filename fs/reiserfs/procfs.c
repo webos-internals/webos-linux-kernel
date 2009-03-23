@@ -8,8 +8,6 @@
 
 /* proc info support a la one created by Sizif@Botik.RU for PGC */
 
-/* $Id: procfs.c,v 1.1.8.2 2001/07/15 17:08:42 god Exp $ */
-
 #include <linux/module.h>
 #include <linux/time.h>
 #include <linux/seq_file.h>
@@ -444,7 +442,7 @@ static int r_show(struct seq_file *m, void *v)
 	return show(m, v);
 }
 
-static struct seq_operations r_ops = {
+static const struct seq_operations r_ops = {
 	.start = r_start,
 	.next = r_next,
 	.stop = r_stop,
@@ -467,6 +465,7 @@ static const struct file_operations r_file_operations = {
 	.read = seq_read,
 	.llseek = seq_lseek,
 	.release = seq_release,
+	.owner = THIS_MODULE,
 };
 
 static struct proc_dir_entry *proc_info_root = NULL;
@@ -475,12 +474,8 @@ static const char proc_info_root_name[] = "fs/reiserfs";
 static void add_file(struct super_block *sb, char *name,
 		     int (*func) (struct seq_file *, struct super_block *))
 {
-	struct proc_dir_entry *de;
-	de = create_proc_entry(name, 0, REISERFS_SB(sb)->procdir);
-	if (de) {
-		de->data = func;
-		de->proc_fops = &r_file_operations;
-	}
+	proc_create_data(name, 0, REISERFS_SB(sb)->procdir,
+			 &r_file_operations, func);
 }
 
 int reiserfs_proc_info_init(struct super_block *sb)
@@ -624,7 +619,6 @@ int reiserfs_global_version_in_proc(char *buffer, char **start,
 #endif
 
 /*
- * $Log: procfs.c,v $
  * Revision 1.1.8.2  2001/07/15 17:08:42  god
  *  . use get_super() in procfs.c
  *  . remove remove_save_link() from reiserfs_do_truncate()

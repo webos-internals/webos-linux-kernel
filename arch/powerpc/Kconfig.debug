@@ -2,6 +2,15 @@ menu "Kernel hacking"
 
 source "lib/Kconfig.debug"
 
+config PRINT_STACK_DEPTH
+	int "Stack depth to print" if DEBUG_KERNEL
+	default 64
+	help
+	  This option allows you to set the stack depth that the kernel
+	  prints in stack traces. This can be useful if your display is
+	  too small and stack traces cause important information to
+	  scroll off the screen.
+
 config DEBUG_STACKOVERFLOW
 	bool "Check for stack overflows"
 	depends on DEBUG_KERNEL
@@ -41,52 +50,24 @@ config HCALL_STATS
 	  This option will add a small amount of overhead to all hypervisor
 	  calls.
 
-config DEBUGGER
-	bool "Enable debugger hooks"
+config CODE_PATCHING_SELFTEST
+	bool "Run self-tests of the code-patching code."
 	depends on DEBUG_KERNEL
-	help
-	  Include in-kernel hooks for kernel debuggers. Unless you are
-	  intending to debug the kernel, say N here.
+	default n
 
-config KGDB
-	bool "Include kgdb kernel debugger"
-	depends on DEBUGGER && (BROKEN || PPC_GEN550 || 4xx)
-	select DEBUG_INFO
-	help
-	  Include in-kernel hooks for kgdb, the Linux kernel source level
-	  debugger.  See <http://kgdb.sourceforge.net/> for more information.
-	  Unless you are intending to debug the kernel, say N here.
+config FTR_FIXUP_SELFTEST
+	bool "Run self-tests of the feature-fixup code."
+	depends on DEBUG_KERNEL
+	default n
 
-choice
-	prompt "Serial Port"
-	depends on KGDB
-	default KGDB_TTYS1
-
-config KGDB_TTYS0
-	bool "ttyS0"
-
-config KGDB_TTYS1
-	bool "ttyS1"
-
-config KGDB_TTYS2
-	bool "ttyS2"
-
-config KGDB_TTYS3
-	bool "ttyS3"
-
-endchoice
-
-config KGDB_CONSOLE
-	bool "Enable serial console thru kgdb port"
-	depends on KGDB && 8xx || CPM2
-	help
-	  If you enable this, all serial console messages will be sent
-	  over the gdb stub.
-	  If unsure, say N.
+config MSI_BITMAP_SELFTEST
+	bool "Run self-tests of the MSI bitmap code."
+	depends on DEBUG_KERNEL
+	default n
 
 config XMON
 	bool "Include xmon kernel debugger"
-	depends on DEBUGGER
+	depends on DEBUG_KERNEL
 	help
 	  Include in-kernel hooks for the xmon kernel monitor/debugger.
 	  Unless you are intending to debug the kernel, say N here.
@@ -116,9 +97,13 @@ config XMON_DISASSEMBLY
 	  to say Y here, unless you're building for a memory-constrained
 	  system.
 
+config DEBUGGER
+	bool
+	depends on KGDB || XMON
+	default y
+
 config IRQSTACKS
 	bool "Use separate kernel stacks when processing interrupts"
-	depends on PPC64
 	help
 	  If you say Y here the kernel will use separate kernel stacks
 	  for handling hard and soft interrupts.  This can help avoid
@@ -126,7 +111,7 @@ config IRQSTACKS
 
 config VIRQ_DEBUG
 	bool "Expose hardware/virtual IRQ mapping via debugfs"
-	depends on DEBUG_FS && PPC_MERGE
+	depends on DEBUG_FS
 	help
 	  This option will show the mapping relationship between hardware irq
 	  numbers and virtual irq numbers. The mapping is exposed via debugfs
@@ -151,6 +136,16 @@ config BOOTX_TEXT
 
 config PPC_EARLY_DEBUG
 	bool "Early debugging (dangerous)"
+	# PPC_EARLY_DEBUG on 440 leaves AS=1 mappings above the TLB high water
+	# mark, which doesn't work with current 440 KVM.
+	depends on !KVM
+	help
+	  Say Y to enable some early debugging facilities that may be available
+	  for your processor/board combination. Those facilities are hacks
+	  intended to debug problems early during boot, this should not be
+	  enabled in a production kernel.
+	  Note that enabling this will also cause the kernel default log level
+	  to be pushed to max automatically very early during boot
 
 choice
 	prompt "Early debugging console"
@@ -218,7 +213,16 @@ config PPC_EARLY_DEBUG_44x
 	depends on 44x
 	help
 	  Select this to enable early debugging for IBM 44x chips via the
-	  inbuilt serial port.
+	  inbuilt serial port.  If you enable this, ensure you set
+          PPC_EARLY_DEBUG_44x_PHYSLOW below to suit your target board.
+
+config PPC_EARLY_DEBUG_40x
+	bool "Early serial debugging for IBM/AMCC 40x CPUs"
+	depends on 40x
+	help
+	  Select this to enable early debugging for IBM 40x chips via the
+	  inbuilt serial port. This works on chips with a 16550 compatible
+	  UART. Xilinx chips with uartlite cannot use this option.
 
 config PPC_EARLY_DEBUG_CPM
 	bool "Early serial debugging for Freescale CPM-based serial ports"
@@ -235,17 +239,25 @@ config PPC_EARLY_DEBUG_44x_PHYSLOW
 	hex "Low 32 bits of early debug UART physical address"
 	depends on PPC_EARLY_DEBUG_44x
 	default "0x40000200"
+	help
+	  You probably want 0x40000200 for ebony boards and
+          0x40000300 for taishan
 
 config PPC_EARLY_DEBUG_44x_PHYSHIGH
 	hex "EPRN of early debug UART physical address"
 	depends on PPC_EARLY_DEBUG_44x
 	default "0x1"
 
+config PPC_EARLY_DEBUG_40x_PHYSADDR
+	hex "Early debug UART physical address"
+	depends on PPC_EARLY_DEBUG_40x
+	default "0xef600300"
+
 config PPC_EARLY_DEBUG_CPM_ADDR
 	hex "CPM UART early debug transmit descriptor address"
 	depends on PPC_EARLY_DEBUG_CPM
 	default "0xfa202008" if PPC_EP88XC
-	default "0xf0000008" if CPM2
+	default "0xf0001ff8" if CPM2
 	default "0xff002008" if CPM1
 	help
 	  This specifies the address of the transmit descriptor

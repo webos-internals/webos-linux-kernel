@@ -12,39 +12,15 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 
-#include <asm/arch/pxa-regs.h>
-#include <asm/hardware.h>
+#include <asm/clkdev.h>
+#include <mach/pxa2xx-regs.h>
+#include <mach/hardware.h>
 
 #include "devices.h"
 #include "generic.h"
 #include "clock.h"
 
-static LIST_HEAD(clocks);
-static DEFINE_MUTEX(clocks_mutex);
 static DEFINE_SPINLOCK(clocks_lock);
-
-struct clk *clk_get(struct device *dev, const char *id)
-{
-	struct clk *p, *clk = ERR_PTR(-ENOENT);
-
-	mutex_lock(&clocks_mutex);
-	list_for_each_entry(p, &clocks, node) {
-		if (strcmp(id, p->name) == 0 &&
-		    (p->dev == NULL || p->dev == dev)) {
-			clk = p;
-			break;
-		}
-	}
-	mutex_unlock(&clocks_mutex);
-
-	return clk;
-}
-EXPORT_SYMBOL(clk_get);
-
-void clk_put(struct clk *clk)
-{
-}
-EXPORT_SYMBOL(clk_put);
 
 int clk_enable(struct clk *clk)
 {
@@ -88,21 +64,6 @@ unsigned long clk_get_rate(struct clk *clk)
 EXPORT_SYMBOL(clk_get_rate);
 
 
-static void clk_gpio27_enable(struct clk *clk)
-{
-	pxa_gpio_mode(GPIO11_3_6MHz_MD);
-}
-
-static void clk_gpio27_disable(struct clk *clk)
-{
-}
-
-static const struct clkops clk_gpio27_ops = {
-	.enable		= clk_gpio27_enable,
-	.disable	= clk_gpio27_disable,
-};
-
-
 void clk_cken_enable(struct clk *clk)
 {
 	CKEN |= 1 << clk->cken;
@@ -118,27 +79,27 @@ const struct clkops clk_cken_ops = {
 	.disable	= clk_cken_disable,
 };
 
-static struct clk common_clks[] = {
-	{
-		.name		= "GPIO27_CLK",
-		.ops		= &clk_gpio27_ops,
-		.rate		= 3686400,
-	},
-};
-
-void clks_register(struct clk *clks, size_t num)
+void clks_register(struct clk_lookup *clks, size_t num)
 {
 	int i;
 
-	mutex_lock(&clocks_mutex);
 	for (i = 0; i < num; i++)
-		list_add(&clks[i].node, &clocks);
-	mutex_unlock(&clocks_mutex);
+		clkdev_add(&clks[i]);
 }
 
-static int __init clk_init(void)
+int clk_add_alias(char *alias, struct device *alias_dev, char *id,
+	struct device *dev)
 {
-	clks_register(common_clks, ARRAY_SIZE(common_clks));
+	struct clk *r = clk_get(dev, id);
+	struct clk_lookup *l;
+
+	if (!r)
+		return -ENODEV;
+
+	l = clkdev_alloc(r, alias, alias_dev ? dev_name(alias_dev) : NULL);
+	clk_put(r);
+	if (!l)
+		return -ENODEV;
+	clkdev_add(l);
 	return 0;
 }
-arch_initcall(clk_init);

@@ -45,7 +45,7 @@
 
 #include "cpqphp.h"
 #include "cpqphp_nvram.h"
-#include "../../../arch/x86/pci/pci.h"	/* horrible hack showing how processor dependent we are... */
+#include <asm/pci_x86.h>
 
 
 /* Global variables */
@@ -315,13 +315,14 @@ static void release_slot(struct hotplug_slot *hotplug_slot)
 {
 	struct slot *slot = hotplug_slot->private;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	kfree(slot->hotplug_slot->info);
-	kfree(slot->hotplug_slot->name);
 	kfree(slot->hotplug_slot);
 	kfree(slot);
 }
+
+#define SLOT_NAME_SIZE 10
 
 static int ctrl_slot_setup(struct controller *ctrl,
 			void __iomem *smbios_start,
@@ -335,10 +336,11 @@ static int ctrl_slot_setup(struct controller *ctrl,
 	u8 slot_number;
 	u8 ctrl_slot;
 	u32 tempdword;
+	char name[SLOT_NAME_SIZE];
 	void __iomem *slot_entry= NULL;
 	int result = -ENOMEM;
 
-	dbg("%s\n", __FUNCTION__);
+	dbg("%s\n", __func__);
 
 	tempdword = readl(ctrl->hpc_reg + INT_INPUT_CLEAR);
 
@@ -363,16 +365,12 @@ static int ctrl_slot_setup(struct controller *ctrl,
 		if (!hotplug_slot->info)
 			goto error_hpslot;
 		hotplug_slot_info = hotplug_slot->info;
-		hotplug_slot->name = kmalloc(SLOT_NAME_SIZE, GFP_KERNEL);
-
-		if (!hotplug_slot->name)
-			goto error_info;
 
 		slot->ctrl = ctrl;
 		slot->bus = ctrl->bus;
 		slot->device = slot_device;
 		slot->number = slot_number;
-		dbg("slot->number = %d\n", slot->number);
+		dbg("slot->number = %u\n", slot->number);
 
 		slot_entry = get_SMBIOS_entry(smbios_start, smbios_table, 9,
 					slot_entry);
@@ -418,9 +416,9 @@ static int ctrl_slot_setup(struct controller *ctrl,
 		/* register this slot with the hotplug pci core */
 		hotplug_slot->release = &release_slot;
 		hotplug_slot->private = slot;
-		make_slot_name(hotplug_slot->name, SLOT_NAME_SIZE, slot);
+		snprintf(name, SLOT_NAME_SIZE, "%u", slot->number);
 		hotplug_slot->ops = &cpqphp_hotplug_slot_ops;
-		
+
 		hotplug_slot_info->power_status = get_slot_enabled(ctrl, slot);
 		hotplug_slot_info->attention_status =
 			cpq_get_attention_status(ctrl, slot);
@@ -434,10 +432,13 @@ static int ctrl_slot_setup(struct controller *ctrl,
 				slot->bus, slot->device,
 				slot->number, ctrl->slot_device_offset,
 				slot_number);
-		result = pci_hp_register(hotplug_slot);
+		result = pci_hp_register(hotplug_slot,
+					 ctrl->pci_dev->bus,
+					 slot->device,
+					 name);
 		if (result) {
 			err("pci_hp_register failed with error %d\n", result);
-			goto error_name;
+			goto error_info;
 		}
 		
 		slot->next = ctrl->slot;
@@ -449,8 +450,6 @@ static int ctrl_slot_setup(struct controller *ctrl,
 	}
 
 	return 0;
-error_name:
-	kfree(hotplug_slot->name);
 error_info:
 	kfree(hotplug_slot_info);
 error_hpslot:
@@ -513,7 +512,7 @@ get_slot_mapping(struct pci_bus *bus, u8 bus_num, u8 dev_num, u8 *slot)
 
 	u8 tbus, tdevice, tslot, bridgeSlot;
 
-	dbg("%s: %p, %d, %d, %p\n", __FUNCTION__, bus, bus_num, dev_num, slot);
+	dbg("%s: %p, %d, %d, %p\n", __func__, bus, bus_num, dev_num, slot);
 
 	bridgeSlot = 0xFF;
 
@@ -636,7 +635,7 @@ static int set_attention_status (struct hotplug_slot *hotplug_slot, u8 status)
 	u8 device;
 	u8 function;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	if (cpqhp_get_bus_dev(ctrl, &bus, &devfn, slot->number) == -1)
 		return -ENODEV;
@@ -663,7 +662,7 @@ static int process_SI(struct hotplug_slot *hotplug_slot)
 	u8 device;
 	u8 function;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	if (cpqhp_get_bus_dev(ctrl, &bus, &devfn, slot->number) == -1)
 		return -ENODEV;
@@ -695,7 +694,7 @@ static int process_SS(struct hotplug_slot *hotplug_slot)
 	u8 device;
 	u8 function;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	if (cpqhp_get_bus_dev(ctrl, &bus, &devfn, slot->number) == -1)
 		return -ENODEV;
@@ -708,7 +707,7 @@ static int process_SS(struct hotplug_slot *hotplug_slot)
 	if (!slot_func)
 		return -ENODEV;
 
-	dbg("In %s, slot_func = %p, ctrl = %p\n", __FUNCTION__, slot_func, ctrl);
+	dbg("In %s, slot_func = %p, ctrl = %p\n", __func__, slot_func, ctrl);
 	return cpqhp_process_SS(ctrl, slot_func);
 }
 
@@ -718,7 +717,7 @@ static int hardware_test(struct hotplug_slot *hotplug_slot, u32 value)
 	struct slot *slot = hotplug_slot->private;
 	struct controller *ctrl = slot->ctrl;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	return cpqhp_hardware_test(ctrl, value);	
 }
@@ -729,7 +728,7 @@ static int get_power_status(struct hotplug_slot *hotplug_slot, u8 *value)
 	struct slot *slot = hotplug_slot->private;
 	struct controller *ctrl = slot->ctrl;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	*value = get_slot_enabled(ctrl, slot);
 	return 0;
@@ -740,7 +739,7 @@ static int get_attention_status(struct hotplug_slot *hotplug_slot, u8 *value)
 	struct slot *slot = hotplug_slot->private;
 	struct controller *ctrl = slot->ctrl;
 	
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	*value = cpq_get_attention_status(ctrl, slot);
 	return 0;
@@ -751,7 +750,7 @@ static int get_latch_status(struct hotplug_slot *hotplug_slot, u8 *value)
 	struct slot *slot = hotplug_slot->private;
 	struct controller *ctrl = slot->ctrl;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	*value = cpq_get_latch_status(ctrl, slot);
 
@@ -763,7 +762,7 @@ static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 *value)
 	struct slot *slot = hotplug_slot->private;
 	struct controller *ctrl = slot->ctrl;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	*value = get_presence_status(ctrl, slot);
 
@@ -775,7 +774,7 @@ static int get_max_bus_speed (struct hotplug_slot *hotplug_slot, enum pci_bus_sp
 	struct slot *slot = hotplug_slot->private;
 	struct controller *ctrl = slot->ctrl;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	*value = ctrl->speed_capability;
 
@@ -787,7 +786,7 @@ static int get_cur_bus_speed (struct hotplug_slot *hotplug_slot, enum pci_bus_sp
 	struct slot *slot = hotplug_slot->private;
 	struct controller *ctrl = slot->ctrl;
 
-	dbg("%s - physical_slot = %s\n", __FUNCTION__, hotplug_slot->name);
+	dbg("%s - physical_slot = %s\n", __func__, slot_name(slot));
 
 	*value = ctrl->speed;
 
@@ -841,7 +840,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		// TODO: This code can be made to support non-Compaq or Intel subsystem IDs
 		rc = pci_read_config_word(pdev, PCI_SUBSYSTEM_VENDOR_ID, &subsystem_vid);
 		if (rc) {
-			err("%s : pci_read_config_word failed\n", __FUNCTION__);
+			err("%s : pci_read_config_word failed\n", __func__);
 			goto err_disable_device;
 		}
 		dbg("Subsystem Vendor ID: %x\n", subsystem_vid);
@@ -853,14 +852,14 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 		ctrl = kzalloc(sizeof(struct controller), GFP_KERNEL);
 		if (!ctrl) {
-			err("%s : out of memory\n", __FUNCTION__);
+			err("%s : out of memory\n", __func__);
 			rc = -ENOMEM;
 			goto err_disable_device;
 		}
 
 		rc = pci_read_config_word(pdev, PCI_SUBSYSTEM_ID, &subsystem_deviceid);
 		if (rc) {
-			err("%s : pci_read_config_word failed\n", __FUNCTION__);
+			err("%s : pci_read_config_word failed\n", __func__);
 			goto err_free_ctrl;
 		}
 
@@ -1142,7 +1141,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	rc = cpqhp_save_config(ctrl, ctrl->bus, readb(ctrl->hpc_reg + SLOT_MASK));
 	if (rc) {
 		err("%s: unable to save PCI configuration data, error %d\n",
-				__FUNCTION__, rc);
+				__func__, rc);
 		goto err_iounmap;
 	}
 
@@ -1180,7 +1179,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (rc) {
 		err(msg_initialization_err, 6);
 		err("%s: unable to save PCI configuration data, error %d\n",
-			__FUNCTION__, rc);
+			__func__, rc);
 		goto err_iounmap;
 	}
 	

@@ -576,6 +576,7 @@ static int set_control(struct saa7146_fh *fh, struct v4l2_control *c)
 		vv->vflip = c->value;
 		break;
 	default: {
+		mutex_unlock(&dev->lock);
 		return -EINVAL;
 	}
 	}
@@ -605,8 +606,8 @@ static int saa7146_pgtable_build(struct saa7146_dev *dev, struct saa7146_buf *bu
 		struct saa7146_pgtable *pt1 = &buf->pt[0];
 		struct saa7146_pgtable *pt2 = &buf->pt[1];
 		struct saa7146_pgtable *pt3 = &buf->pt[2];
-		u32  *ptr1, *ptr2, *ptr3;
-		u32 fill;
+		__le32  *ptr1, *ptr2, *ptr3;
+		__le32 fill;
 
 		int size = buf->fmt->width*buf->fmt->height;
 		int i,p,m1,m2,m3,o1,o2;
@@ -656,7 +657,7 @@ static int saa7146_pgtable_build(struct saa7146_dev *dev, struct saa7146_buf *bu
 
 		/* if we have a user buffer, the first page may not be
 		   aligned to a page boundary. */
-		pt1->offset = list->offset;
+		pt1->offset = dma->sglist->offset;
 		pt2->offset = pt1->offset+o1;
 		pt3->offset = pt1->offset+o2;
 
@@ -834,13 +835,14 @@ static int video_end(struct saa7146_fh *fh, struct file *file)
  * copying is done already, arg is a kernel pointer.
  */
 
-int saa7146_video_do_ioctl(struct inode *inode, struct file *file, unsigned int cmd, void *arg)
+long saa7146_video_do_ioctl(struct file *file, unsigned int cmd, void *arg)
 {
 	struct saa7146_fh *fh  = file->private_data;
 	struct saa7146_dev *dev = fh->dev;
 	struct saa7146_vv *vv = dev->vv_data;
 
-	int err = 0, result = 0, ee = 0;
+	long err = 0;
+	int result = 0, ee = 0;
 
 	struct saa7146_use_ops *ops;
 	struct videobuf_queue *q;
@@ -958,21 +960,18 @@ int saa7146_video_do_ioctl(struct inode *inode, struct file *file, unsigned int 
 	case VIDIOC_ENUM_FMT:
 	{
 		struct v4l2_fmtdesc *f = arg;
-		int index;
 
 		switch (f->type) {
 		case V4L2_BUF_TYPE_VIDEO_CAPTURE:
-		case V4L2_BUF_TYPE_VIDEO_OVERLAY: {
-			index = f->index;
-			if (index < 0 || index >= NUM_FORMATS) {
+		case V4L2_BUF_TYPE_VIDEO_OVERLAY:
+			if (f->index >= NUM_FORMATS)
 				return -EINVAL;
-			}
-			memset(f,0,sizeof(*f));
-			f->index = index;
-			strlcpy((char *)f->description,formats[index].name,sizeof(f->description));
-			f->pixelformat = formats[index].pixelformat;
+			strlcpy((char *)f->description, formats[f->index].name,
+					sizeof(f->description));
+			f->pixelformat = formats[f->index].pixelformat;
+			f->flags = 0;
+			memset(f->reserved, 0, sizeof(f->reserved));
 			break;
-		}
 		default:
 			return -EINVAL;
 		}
@@ -1071,7 +1070,7 @@ int saa7146_video_do_ioctl(struct inode *inode, struct file *file, unsigned int 
 	{
 		v4l2_std_id *id = arg;
 		int found = 0;
-		int i, err;
+		int i;
 
 		DEB_EE(("VIDIOC_S_STD\n"));
 
@@ -1119,7 +1118,6 @@ int saa7146_video_do_ioctl(struct inode *inode, struct file *file, unsigned int 
 	case VIDIOC_OVERLAY:
 	{
 		int on = *(int *)arg;
-		int err = 0;
 
 		DEB_D(("VIDIOC_OVERLAY on:%d\n",on));
 		if (on != 0) {
@@ -1195,7 +1193,6 @@ int saa7146_video_do_ioctl(struct inode *inode, struct file *file, unsigned int 
 	case VIDIOCGMBUF:
 	{
 		struct video_mbuf *mbuf = arg;
-		struct videobuf_queue *q;
 		int i;
 
 		/* fixme: number of capture buffers and sizes for v4l apps */
@@ -1220,7 +1217,7 @@ int saa7146_video_do_ioctl(struct inode *inode, struct file *file, unsigned int 
 	}
 #endif
 	default:
-		return v4l_compat_translate_ioctl(inode,file,cmd,arg,
+		return v4l_compat_translate_ioctl(file, cmd, arg,
 						  saa7146_video_do_ioctl);
 	}
 	return 0;
@@ -1235,7 +1232,7 @@ static int buffer_activate (struct saa7146_dev *dev,
 {
 	struct saa7146_vv *vv = dev->vv_data;
 
-	buf->vb.state = STATE_ACTIVE;
+	buf->vb.state = VIDEOBUF_ACTIVE;
 	saa7146_set_capture(dev,buf,next);
 
 	mod_timer(&vv->video_q.timeout, jiffies+BUFFER_TIMEOUT);
@@ -1281,7 +1278,7 @@ static int buffer_prepare(struct videobuf_queue *q,
 		saa7146_dma_free(dev,q,buf);
 	}
 
-	if (STATE_NEEDS_INIT == buf->vb.state) {
+	if (VIDEOBUF_NEEDS_INIT == buf->vb.state) {
 		struct saa7146_format *sfmt;
 
 		buf->vb.bytesperline  = fh->video_fmt.bytesperline;
@@ -1314,7 +1311,7 @@ static int buffer_prepare(struct videobuf_queue *q,
 		if (err)
 			goto oops;
 	}
-	buf->vb.state = STATE_PREPARED;
+	buf->vb.state = VIDEOBUF_PREPARED;
 	buf->activate = buffer_activate;
 
 	return 0;
@@ -1410,14 +1407,12 @@ static int video_open(struct saa7146_dev *dev, struct file *file)
 	sfmt = format_by_fourcc(dev,fh->video_fmt.pixelformat);
 	fh->video_fmt.sizeimage = (fh->video_fmt.width * fh->video_fmt.height * sfmt->depth)/8;
 
-	videobuf_queue_pci_init(&fh->video_q, &video_qops,
-			    dev->pci, &dev->slock,
+	videobuf_queue_sg_init(&fh->video_q, &video_qops,
+			    &dev->pci->dev, &dev->slock,
 			    V4L2_BUF_TYPE_VIDEO_CAPTURE,
 			    V4L2_FIELD_INTERLACED,
 			    sizeof(struct saa7146_buf),
 			    file);
-
-	mutex_init(&fh->video_q.lock);
 
 	return 0;
 }
@@ -1453,7 +1448,7 @@ static void video_irq_done(struct saa7146_dev *dev, unsigned long st)
 
 	/* only finish the buffer if we have one... */
 	if( NULL != q->curr ) {
-		saa7146_buffer_finish(dev,q,STATE_DONE);
+		saa7146_buffer_finish(dev,q,VIDEOBUF_DONE);
 	}
 	saa7146_buffer_next(dev,q,0);
 

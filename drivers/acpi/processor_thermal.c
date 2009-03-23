@@ -32,6 +32,7 @@
 #include <linux/cpufreq.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/sysdev.h>
 
 #include <asm/uaccess.h>
 
@@ -39,7 +40,6 @@
 #include <acpi/processor.h>
 #include <acpi/acpi_drivers.h>
 
-#define ACPI_PROCESSOR_COMPONENT        0x01000000
 #define ACPI_PROCESSOR_CLASS            "processor"
 #define _COMPONENT              ACPI_PROCESSOR_COMPONENT
 ACPI_MODULE_NAME("processor_thermal");
@@ -93,7 +93,10 @@ static int acpi_processor_apply_limit(struct acpi_processor *pr)
  * _any_ cpufreq driver and not only the acpi-cpufreq driver.
  */
 
-static unsigned int cpufreq_thermal_reduction_pctg[NR_CPUS];
+#define CPUFREQ_THERMAL_MIN_STEP 0
+#define CPUFREQ_THERMAL_MAX_STEP 3
+
+static DEFINE_PER_CPU(unsigned int, cpufreq_thermal_reduction_pctg);
 static unsigned int acpi_thermal_cpufreq_is_init = 0;
 
 static int cpu_has_cpufreq(unsigned int cpu)
@@ -109,8 +112,9 @@ static int acpi_thermal_cpufreq_increase(unsigned int cpu)
 	if (!cpu_has_cpufreq(cpu))
 		return -ENODEV;
 
-	if (cpufreq_thermal_reduction_pctg[cpu] < 60) {
-		cpufreq_thermal_reduction_pctg[cpu] += 20;
+	if (per_cpu(cpufreq_thermal_reduction_pctg, cpu) <
+		CPUFREQ_THERMAL_MAX_STEP) {
+		per_cpu(cpufreq_thermal_reduction_pctg, cpu)++;
 		cpufreq_update_policy(cpu);
 		return 0;
 	}
@@ -123,13 +127,14 @@ static int acpi_thermal_cpufreq_decrease(unsigned int cpu)
 	if (!cpu_has_cpufreq(cpu))
 		return -ENODEV;
 
-	if (cpufreq_thermal_reduction_pctg[cpu] > 20)
-		cpufreq_thermal_reduction_pctg[cpu] -= 20;
+	if (per_cpu(cpufreq_thermal_reduction_pctg, cpu) >
+		(CPUFREQ_THERMAL_MIN_STEP + 1))
+		per_cpu(cpufreq_thermal_reduction_pctg, cpu)--;
 	else
-		cpufreq_thermal_reduction_pctg[cpu] = 0;
+		per_cpu(cpufreq_thermal_reduction_pctg, cpu) = 0;
 	cpufreq_update_policy(cpu);
 	/* We reached max freq again and can leave passive mode */
-	return !cpufreq_thermal_reduction_pctg[cpu];
+	return !per_cpu(cpufreq_thermal_reduction_pctg, cpu);
 }
 
 static int acpi_thermal_cpufreq_notifier(struct notifier_block *nb,
@@ -141,9 +146,10 @@ static int acpi_thermal_cpufreq_notifier(struct notifier_block *nb,
 	if (event != CPUFREQ_ADJUST)
 		goto out;
 
-	max_freq =
-	    (policy->cpuinfo.max_freq *
-	     (100 - cpufreq_thermal_reduction_pctg[policy->cpu])) / 100;
+	max_freq = (
+	    policy->cpuinfo.max_freq *
+	    (100 - per_cpu(cpufreq_thermal_reduction_pctg, policy->cpu) * 20)
+	) / 100;
 
 	cpufreq_verify_within_limits(policy, 0, max_freq);
 
@@ -155,12 +161,39 @@ static struct notifier_block acpi_thermal_cpufreq_notifier_block = {
 	.notifier_call = acpi_thermal_cpufreq_notifier,
 };
 
+static int cpufreq_get_max_state(unsigned int cpu)
+{
+	if (!cpu_has_cpufreq(cpu))
+		return 0;
+
+	return CPUFREQ_THERMAL_MAX_STEP;
+}
+
+static int cpufreq_get_cur_state(unsigned int cpu)
+{
+	if (!cpu_has_cpufreq(cpu))
+		return 0;
+
+	return per_cpu(cpufreq_thermal_reduction_pctg, cpu);
+}
+
+static int cpufreq_set_cur_state(unsigned int cpu, int state)
+{
+	if (!cpu_has_cpufreq(cpu))
+		return 0;
+
+	per_cpu(cpufreq_thermal_reduction_pctg, cpu) = state;
+	cpufreq_update_policy(cpu);
+	return 0;
+}
+
 void acpi_thermal_cpufreq_init(void)
 {
 	int i;
 
-	for (i = 0; i < NR_CPUS; i++)
-		cpufreq_thermal_reduction_pctg[i] = 0;
+	for (i = 0; i < nr_cpu_ids; i++)
+		if (cpu_present(i))
+			per_cpu(cpufreq_thermal_reduction_pctg, i) = 0;
 
 	i = cpufreq_register_notifier(&acpi_thermal_cpufreq_notifier_block,
 				      CPUFREQ_POLICY_NOTIFIER);
@@ -179,6 +212,20 @@ void acpi_thermal_cpufreq_exit(void)
 }
 
 #else				/* ! CONFIG_CPU_FREQ */
+static int cpufreq_get_max_state(unsigned int cpu)
+{
+	return 0;
+}
+
+static int cpufreq_get_cur_state(unsigned int cpu)
+{
+	return 0;
+}
+
+static int cpufreq_set_cur_state(unsigned int cpu, int state)
+{
+	return 0;
+}
 
 static int acpi_thermal_cpufreq_increase(unsigned int cpu)
 {
@@ -310,6 +357,84 @@ int acpi_processor_get_limit_info(struct acpi_processor *pr)
 	return 0;
 }
 
+/* thermal coolign device callbacks */
+static int acpi_processor_max_state(struct acpi_processor *pr)
+{
+	int max_state = 0;
+
+	/*
+	 * There exists four states according to
+	 * cpufreq_thermal_reduction_ptg. 0, 1, 2, 3
+	 */
+	max_state += cpufreq_get_max_state(pr->id);
+	if (pr->flags.throttling)
+		max_state += (pr->throttling.state_count -1);
+
+	return max_state;
+}
+static int
+processor_get_max_state(struct thermal_cooling_device *cdev, char *buf)
+{
+	struct acpi_device *device = cdev->devdata;
+	struct acpi_processor *pr = acpi_driver_data(device);
+
+	if (!device || !pr)
+		return -EINVAL;
+
+	return sprintf(buf, "%d\n", acpi_processor_max_state(pr));
+}
+
+static int
+processor_get_cur_state(struct thermal_cooling_device *cdev, char *buf)
+{
+	struct acpi_device *device = cdev->devdata;
+	struct acpi_processor *pr = acpi_driver_data(device);
+	int cur_state;
+
+	if (!device || !pr)
+		return -EINVAL;
+
+	cur_state = cpufreq_get_cur_state(pr->id);
+	if (pr->flags.throttling)
+		cur_state += pr->throttling.state;
+
+	return sprintf(buf, "%d\n", cur_state);
+}
+
+static int
+processor_set_cur_state(struct thermal_cooling_device *cdev, unsigned int state)
+{
+	struct acpi_device *device = cdev->devdata;
+	struct acpi_processor *pr = acpi_driver_data(device);
+	int result = 0;
+	int max_pstate;
+
+	if (!device || !pr)
+		return -EINVAL;
+
+	max_pstate = cpufreq_get_max_state(pr->id);
+
+	if (state > acpi_processor_max_state(pr))
+		return -EINVAL;
+
+	if (state <= max_pstate) {
+		if (pr->flags.throttling && pr->throttling.state)
+			result = acpi_processor_set_throttling(pr, 0);
+		cpufreq_set_cur_state(pr->id, state);
+	} else {
+		cpufreq_set_cur_state(pr->id, max_pstate);
+		result = acpi_processor_set_throttling(pr,
+				state - max_pstate);
+	}
+	return result;
+}
+
+struct thermal_cooling_device_ops processor_cooling_ops = {
+	.get_max_state = processor_get_max_state,
+	.get_cur_state = processor_get_cur_state,
+	.set_cur_state = processor_set_cur_state,
+};
+
 /* /proc interface */
 
 static int acpi_processor_limit_seq_show(struct seq_file *seq, void *offset)
@@ -383,6 +508,7 @@ static ssize_t acpi_processor_write_limit(struct file * file,
 }
 
 struct file_operations acpi_processor_limit_fops = {
+	.owner = THIS_MODULE,
 	.open = acpi_processor_limit_open_fs,
 	.read = seq_read,
 	.write = acpi_processor_write_limit,

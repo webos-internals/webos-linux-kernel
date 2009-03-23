@@ -18,6 +18,28 @@
 #error "This file is PCI bus glue.  CONFIG_PCI must be defined."
 #endif
 
+#include <linux/pci.h>
+#include <linux/io.h>
+
+
+/* constants used to work around PM-related transfer
+ * glitches in some AMD 700 series southbridges
+ */
+#define AB_REG_BAR	0xf0
+#define AB_INDX(addr)	((addr) + 0x00)
+#define AB_DATA(addr)	((addr) + 0x04)
+#define AX_INDXC	0X30
+#define AX_DATAC	0x34
+
+#define NB_PCIE_INDX_ADDR	0xe0
+#define NB_PCIE_INDX_DATA	0xe4
+#define PCIE_P_CNTL		0x10040
+#define BIF_NB			0x10002
+
+static struct pci_dev *amd_smbus_dev;
+static struct pci_dev *amd_hb_dev;
+static int amd_ohci_iso_count;
+
 /*-------------------------------------------------------------------------*/
 
 static int broken_suspend(struct usb_hcd *hcd)
@@ -143,6 +165,103 @@ static int ohci_quirk_nec(struct usb_hcd *hcd)
 	return 0;
 }
 
+static int ohci_quirk_amd700(struct usb_hcd *hcd)
+{
+	struct ohci_hcd *ohci = hcd_to_ohci(hcd);
+	u8 rev = 0;
+
+	if (!amd_smbus_dev)
+		amd_smbus_dev = pci_get_device(PCI_VENDOR_ID_ATI,
+				PCI_DEVICE_ID_ATI_SBX00_SMBUS, NULL);
+	if (!amd_smbus_dev)
+		return 0;
+
+	pci_read_config_byte(amd_smbus_dev, PCI_REVISION_ID, &rev);
+	if ((rev > 0x3b) || (rev < 0x30)) {
+		pci_dev_put(amd_smbus_dev);
+		amd_smbus_dev = NULL;
+		return 0;
+	}
+
+	amd_ohci_iso_count++;
+
+	if (!amd_hb_dev)
+		amd_hb_dev = pci_get_device(PCI_VENDOR_ID_AMD, 0x9600, NULL);
+
+	ohci->flags |= OHCI_QUIRK_AMD_ISO;
+	ohci_dbg(ohci, "enabled AMD ISO transfers quirk\n");
+
+	return 0;
+}
+
+/*
+ * The hardware normally enables the A-link power management feature, which
+ * lets the system lower the power consumption in idle states.
+ *
+ * Assume the system is configured to have USB 1.1 ISO transfers going
+ * to or from a USB device.  Without this quirk, that stream may stutter
+ * or have breaks occasionally.  For transfers going to speakers, this
+ * makes a very audible mess...
+ *
+ * That audio playback corruption is due to the audio stream getting
+ * interrupted occasionally when the link goes in lower power state
+ * This USB quirk prevents the link going into that lower power state
+ * during audio playback or other ISO operations.
+ */
+static void quirk_amd_pll(int on)
+{
+	u32 addr;
+	u32 val;
+	u32 bit = (on > 0) ? 1 : 0;
+
+	pci_read_config_dword(amd_smbus_dev, AB_REG_BAR, &addr);
+
+	/* BIT names/meanings are NDA-protected, sorry ... */
+
+	outl(AX_INDXC, AB_INDX(addr));
+	outl(0x40, AB_DATA(addr));
+	outl(AX_DATAC, AB_INDX(addr));
+	val = inl(AB_DATA(addr));
+	val &= ~((1 << 3) | (1 << 4) | (1 << 9));
+	val |= (bit << 3) | ((!bit) << 4) | ((!bit) << 9);
+	outl(val, AB_DATA(addr));
+
+	if (amd_hb_dev) {
+		addr = PCIE_P_CNTL;
+		pci_write_config_dword(amd_hb_dev, NB_PCIE_INDX_ADDR, addr);
+
+		pci_read_config_dword(amd_hb_dev, NB_PCIE_INDX_DATA, &val);
+		val &= ~(1 | (1 << 3) | (1 << 4) | (1 << 9) | (1 << 12));
+		val |= bit | (bit << 3) | (bit << 12);
+		val |= ((!bit) << 4) | ((!bit) << 9);
+		pci_write_config_dword(amd_hb_dev, NB_PCIE_INDX_DATA, val);
+
+		addr = BIF_NB;
+		pci_write_config_dword(amd_hb_dev, NB_PCIE_INDX_ADDR, addr);
+
+		pci_read_config_dword(amd_hb_dev, NB_PCIE_INDX_DATA, &val);
+		val &= ~(1 << 8);
+		val |= bit << 8;
+		pci_write_config_dword(amd_hb_dev, NB_PCIE_INDX_DATA, val);
+	}
+}
+
+static void amd_iso_dev_put(void)
+{
+	amd_ohci_iso_count--;
+	if (amd_ohci_iso_count == 0) {
+		if (amd_smbus_dev) {
+			pci_dev_put(amd_smbus_dev);
+			amd_smbus_dev = NULL;
+		}
+		if (amd_hb_dev) {
+			pci_dev_put(amd_hb_dev);
+			amd_hb_dev = NULL;
+		}
+	}
+
+}
+
 /* List of quirks for OHCI */
 static const struct pci_device_id ohci_pci_quirks[] = {
 	{
@@ -181,6 +300,19 @@ static const struct pci_device_id ohci_pci_quirks[] = {
 		PCI_DEVICE(PCI_VENDOR_ID_ITE, 0x8152),
 		.driver_data = (unsigned long) broken_suspend,
 	},
+	{
+		PCI_DEVICE(PCI_VENDOR_ID_ATI, 0x4397),
+		.driver_data = (unsigned long)ohci_quirk_amd700,
+	},
+	{
+		PCI_DEVICE(PCI_VENDOR_ID_ATI, 0x4398),
+		.driver_data = (unsigned long)ohci_quirk_amd700,
+	},
+	{
+		PCI_DEVICE(PCI_VENDOR_ID_ATI, 0x4399),
+		.driver_data = (unsigned long)ohci_quirk_amd700,
+	},
+
 	/* FIXME for some of the early AMD 760 southbridges, OHCI
 	 * won't work at all.  blacklist them.
 	 */
@@ -223,9 +355,9 @@ static int __devinit ohci_pci_start (struct usb_hcd *hcd)
 
 		/* RWC may not be set for add-in PCI cards, since boot
 		 * firmware probably ignored them.  This transfers PCI
-		 * PM wakeup capabilities (once the PCI layer is fixed).
+		 * PM wakeup capabilities.
 		 */
-		if (device_may_wakeup(&pdev->dev))
+		if (device_can_wakeup(&pdev->dev))
 			ohci->hc_control |= OHCI_CTRL_RWC;
 	}
 #endif /* CONFIG_PM */
@@ -237,42 +369,6 @@ static int __devinit ohci_pci_start (struct usb_hcd *hcd)
 	}
 	return ret;
 }
-
-#if	defined(CONFIG_USB_PERSIST) && (defined(CONFIG_USB_EHCI_HCD) || \
-		defined(CONFIG_USB_EHCI_HCD_MODULE))
-
-/* Following a power loss, we must prepare to regain control of the ports
- * we used to own.  This means turning on the port power before ehci-hcd
- * tries to switch ownership.
- *
- * This isn't a 100% perfect solution.  On most systems the OHCI controllers
- * lie at lower PCI addresses than the EHCI controller, so they will be
- * discovered (and hence resumed) first.  But there is no guarantee things
- * will always work this way.  If the EHCI controller is resumed first and
- * the OHCI ports are unpowered, then the handover will fail.
- */
-static void prepare_for_handover(struct usb_hcd *hcd)
-{
-	struct ohci_hcd	*ohci = hcd_to_ohci(hcd);
-	int		port;
-
-	/* Here we "know" root ports should always stay powered */
-	ohci_dbg(ohci, "powerup ports\n");
-	for (port = 0; port < ohci->num_ports; port++)
-		ohci_writel(ohci, RH_PS_PPS,
-				&ohci->regs->roothub.portstatus[port]);
-
-	/* Flush those writes */
-	ohci_readl(ohci, &ohci->regs->control);
-	msleep(20);
-}
-
-#else
-
-static inline void prepare_for_handover(struct usb_hcd *hcd)
-{ }
-
-#endif	/* CONFIG_USB_PERSIST etc. */
 
 #ifdef	CONFIG_PM
 
@@ -313,10 +409,7 @@ static int ohci_pci_suspend (struct usb_hcd *hcd, pm_message_t message)
 static int ohci_pci_resume (struct usb_hcd *hcd)
 {
 	set_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
-
-	/* FIXME: we should try to detect loss of VBUS power here */
-	prepare_for_handover(hcd);
-
+	ohci_finish_controller_resume(hcd);
 	return 0;
 }
 
@@ -345,9 +438,8 @@ static const struct hc_driver ohci_pci_hc_driver = {
 	.shutdown =		ohci_shutdown,
 
 #ifdef	CONFIG_PM
-	/* these suspend/resume entries are for upstream PCI glue ONLY */
-	.suspend =		ohci_pci_suspend,
-	.resume =		ohci_pci_resume,
+	.pci_suspend =		ohci_pci_suspend,
+	.pci_resume =		ohci_pci_resume,
 #endif
 
 	/*
@@ -367,7 +459,6 @@ static const struct hc_driver ohci_pci_hc_driver = {
 	 */
 	.hub_status_data =	ohci_hub_status_data,
 	.hub_control =		ohci_hub_control,
-	.hub_irq_enable =	ohci_rhsc_enable,
 #ifdef	CONFIG_PM
 	.bus_suspend =		ohci_bus_suspend,
 	.bus_resume =		ohci_bus_resume,

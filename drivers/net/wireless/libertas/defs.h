@@ -2,8 +2,8 @@
   * This header file contains global constant/enum definitions,
   * global variable declaration.
   */
-#ifndef _WLAN_DEFS_H_
-#define _WLAN_DEFS_H_
+#ifndef _LBS_DEFS_H_
+#define _LBS_DEFS_H_
 
 #include <linux/spinlock.h>
 
@@ -40,12 +40,13 @@
 #define LBS_DEB_THREAD	0x00100000
 #define LBS_DEB_HEX	0x00200000
 #define LBS_DEB_SDIO	0x00400000
+#define LBS_DEB_SYSFS	0x00800000
 
-extern unsigned int libertas_debug;
+extern unsigned int lbs_debug;
 
 #ifdef DEBUG
 #define LBS_DEB_LL(grp, grpnam, fmt, args...) \
-do { if ((libertas_debug & (grp)) == (grp)) \
+do { if ((lbs_debug & (grp)) == (grp)) \
   printk(KERN_DEBUG DRV_NAME grpnam "%s: " fmt, \
          in_interrupt() ? " (INT)" : "", ## args); } while (0)
 #else
@@ -53,14 +54,14 @@ do { if ((libertas_debug & (grp)) == (grp)) \
 #endif
 
 #define lbs_deb_enter(grp) \
-  LBS_DEB_LL(grp | LBS_DEB_ENTER, " enter", "%s():%d\n", __FUNCTION__, __LINE__);
+  LBS_DEB_LL(grp | LBS_DEB_ENTER, " enter", "%s()\n", __func__);
 #define lbs_deb_enter_args(grp, fmt, args...) \
-  LBS_DEB_LL(grp | LBS_DEB_ENTER, " enter", "%s(" fmt "):%d\n", __FUNCTION__, ## args, __LINE__);
+  LBS_DEB_LL(grp | LBS_DEB_ENTER, " enter", "%s(" fmt ")\n", __func__, ## args);
 #define lbs_deb_leave(grp) \
-  LBS_DEB_LL(grp | LBS_DEB_LEAVE, " leave", "%s():%d\n", __FUNCTION__, __LINE__);
+  LBS_DEB_LL(grp | LBS_DEB_LEAVE, " leave", "%s()\n", __func__);
 #define lbs_deb_leave_args(grp, fmt, args...) \
-  LBS_DEB_LL(grp | LBS_DEB_LEAVE, " leave", "%s():%d, " fmt "\n", \
-  __FUNCTION__, __LINE__, ##args);
+  LBS_DEB_LL(grp | LBS_DEB_LEAVE, " leave", "%s(), " fmt "\n", \
+  __func__, ##args);
 #define lbs_deb_main(fmt, args...)      LBS_DEB_LL(LBS_DEB_MAIN, " main", fmt, ##args)
 #define lbs_deb_net(fmt, args...)       LBS_DEB_LL(LBS_DEB_NET, " net", fmt, ##args)
 #define lbs_deb_mesh(fmt, args...)      LBS_DEB_LL(LBS_DEB_MESH, " mesh", fmt, ##args)
@@ -78,10 +79,11 @@ do { if ((libertas_debug & (grp)) == (grp)) \
 #define lbs_deb_tx(fmt, args...)        LBS_DEB_LL(LBS_DEB_TX, " tx", fmt, ##args)
 #define lbs_deb_fw(fmt, args...)        LBS_DEB_LL(LBS_DEB_FW, " fw", fmt, ##args)
 #define lbs_deb_usb(fmt, args...)       LBS_DEB_LL(LBS_DEB_USB, " usb", fmt, ##args)
-#define lbs_deb_usbd(dev, fmt, args...) LBS_DEB_LL(LBS_DEB_USB, " usbd", "%s:" fmt, (dev)->bus_id, ##args)
+#define lbs_deb_usbd(dev, fmt, args...) LBS_DEB_LL(LBS_DEB_USB, " usbd", "%s:" fmt, dev_name(dev), ##args)
 #define lbs_deb_cs(fmt, args...)        LBS_DEB_LL(LBS_DEB_CS, " cs", fmt, ##args)
 #define lbs_deb_thread(fmt, args...)    LBS_DEB_LL(LBS_DEB_THREAD, " thread", fmt, ##args)
-#define lbs_deb_sdio(fmt, args...)      LBS_DEB_LL(LBS_DEB_SDIO, " thread", fmt, ##args)
+#define lbs_deb_sdio(fmt, args...)      LBS_DEB_LL(LBS_DEB_SDIO, " sdio", fmt, ##args)
+#define lbs_deb_sysfs(fmt, args...)     LBS_DEB_LL(LBS_DEB_SYSFS, " sysfs", fmt, ##args)
 
 #define lbs_pr_info(format, args...) \
 	printk(KERN_INFO DRV_NAME": " format, ## args)
@@ -96,8 +98,8 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 	int i = 0;
 
 	if (len &&
-	    (libertas_debug & LBS_DEB_HEX) &&
-	    (libertas_debug & grp))
+	    (lbs_debug & LBS_DEB_HEX) &&
+	    (lbs_debug & grp))
 	{
 		for (i = 1; i <= len; i++) {
 			if ((i & 0xf) == 1) {
@@ -132,14 +134,33 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 */
 
 #define MRVDRV_MAX_MULTICAST_LIST_SIZE	32
-#define MRVDRV_NUM_OF_CMD_BUFFER        10
-#define MRVDRV_SIZE_OF_CMD_BUFFER       (2 * 1024)
+#define LBS_NUM_CMD_BUFFERS             10
+#define LBS_CMD_BUFFER_SIZE             (2 * 1024)
 #define MRVDRV_MAX_CHANNEL_SIZE		14
 #define MRVDRV_ASSOCIATION_TIME_OUT	255
 #define MRVDRV_SNAP_HEADER_LEN          8
 
-#define	WLAN_UPLD_SIZE			2312
+#define	LBS_UPLD_SIZE			2312
 #define DEV_NAME_LEN			32
+
+/* Wake criteria for HOST_SLEEP_CFG command */
+#define EHS_WAKE_ON_BROADCAST_DATA	0x0001
+#define EHS_WAKE_ON_UNICAST_DATA	0x0002
+#define EHS_WAKE_ON_MAC_EVENT		0x0004
+#define EHS_WAKE_ON_MULTICAST_DATA	0x0008
+#define EHS_REMOVE_WAKEUP		0xFFFFFFFF
+/* Wake rules for Host_Sleep_CFG command */
+#define WOL_RULE_NET_TYPE_INFRA_OR_IBSS	0x00
+#define WOL_RULE_NET_TYPE_MESH		0x10
+#define WOL_RULE_ADDR_TYPE_BCAST	0x01
+#define WOL_RULE_ADDR_TYPE_MCAST	0x08
+#define WOL_RULE_ADDR_TYPE_UCAST	0x02
+#define WOL_RULE_OP_AND			0x01
+#define WOL_RULE_OP_OR			0x02
+#define WOL_RULE_OP_INVALID		0xFF
+#define WOL_RESULT_VALID_CMD		0
+#define WOL_RESULT_NOSPC_ERR		1
+#define WOL_RESULT_EEXIST_ERR		2
 
 /** Misc constants */
 /* This section defines 802.11 specific contants */
@@ -163,6 +184,16 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 
 #define MARVELL_MESH_IE_LENGTH		9
 
+/* Values used to populate the struct mrvl_mesh_ie.  The only time you need this
+ * is when enabling the mesh using CMD_MESH_CONFIG.
+ */
+#define MARVELL_MESH_IE_TYPE		4
+#define MARVELL_MESH_IE_SUBTYPE		0
+#define MARVELL_MESH_IE_VERSION		0
+#define MARVELL_MESH_PROTO_ID_HWMP	0
+#define MARVELL_MESH_METRIC_ID		0
+#define MARVELL_MESH_CAPABILITY		0
+
 /** INT status Bit Definition*/
 #define MRVDRV_TX_DNLD_RDY		0x0001
 #define MRVDRV_RX_UPLD_RDY		0x0002
@@ -170,7 +201,13 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 #define MRVDRV_CMD_UPLD_RDY		0x0008
 #define MRVDRV_CARDEVENT		0x0010
 
-#define SBI_EVENT_CAUSE_SHIFT		3
+/* Automatic TX control default levels */
+#define POW_ADAPT_DEFAULT_P0 13
+#define POW_ADAPT_DEFAULT_P1 15
+#define POW_ADAPT_DEFAULT_P2 18
+#define TPC_DEFAULT_P0 5
+#define TPC_DEFAULT_P1 10
+#define TPC_DEFAULT_P2 13
 
 /** TxPD status */
 
@@ -226,6 +263,9 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 
 #define	CMD_F_HOSTCMD		(1 << 0)
 #define FW_CAPINFO_WPA  	(1 << 0)
+#define FW_CAPINFO_FIRMWARE_UPGRADE	(1 << 13)
+#define FW_CAPINFO_BOOT2_UPGRADE	(1<<14)
+#define FW_CAPINFO_PERSISTENT_CONFIG	(1<<15)
 
 #define KEY_LEN_WPA_AES			16
 #define KEY_LEN_WPA_TKIP		32
@@ -257,17 +297,11 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 
 #define	MAX_LEDS			8
 
-#define IS_MESH_FRAME(x) (x->cb[6])
-#define SET_MESH_FRAME(x) (x->cb[6]=1)
-#define UNSET_MESH_FRAME(x) (x->cb[6]=0)
-
 /** Global Variable Declaration */
-typedef struct _wlan_private wlan_private;
-typedef struct _wlan_adapter wlan_adapter;
-extern const char libertas_driver_version[];
-extern u16 libertas_region_code_to_index[MRVDRV_MAX_REGION_CODE];
+extern const char lbs_driver_version[];
+extern u16 lbs_region_code_to_index[MRVDRV_MAX_REGION_CODE];
 
-extern u8 libertas_bg_rates[MAX_RATES];
+extern u8 lbs_bg_rates[MAX_RATES];
 
 /** ENUM definition*/
 /** SNRNF_TYPE */
@@ -284,13 +318,13 @@ enum SNRNF_DATA {
 	MAX_TYPE_AVG
 };
 
-/** WLAN_802_11_POWER_MODE */
-enum WLAN_802_11_POWER_MODE {
-	WLAN802_11POWERMODECAM,
-	WLAN802_11POWERMODEMAX_PSP,
-	WLAN802_11POWERMODEFAST_PSP,
+/** LBS_802_11_POWER_MODE */
+enum LBS_802_11_POWER_MODE {
+	LBS802_11POWERMODECAM,
+	LBS802_11POWERMODEMAX_PSP,
+	LBS802_11POWERMODEFAST_PSP,
 	/*not a real mode, defined as an upper bound */
-	WLAN802_11POWEMODEMAX
+	LBS802_11POWEMODEMAX
 };
 
 /** PS_STATE */
@@ -305,19 +339,20 @@ enum PS_STATE {
 enum DNLD_STATE {
 	DNLD_RES_RECEIVED,
 	DNLD_DATA_SENT,
-	DNLD_CMD_SENT
+	DNLD_CMD_SENT,
+	DNLD_BOOTCMD_SENT,
 };
 
-/** WLAN_MEDIA_STATE */
-enum WLAN_MEDIA_STATE {
-	LIBERTAS_CONNECTED,
-	LIBERTAS_DISCONNECTED
+/** LBS_MEDIA_STATE */
+enum LBS_MEDIA_STATE {
+	LBS_CONNECTED,
+	LBS_DISCONNECTED
 };
 
-/** WLAN_802_11_PRIVACY_FILTER */
-enum WLAN_802_11_PRIVACY_FILTER {
-	WLAN802_11PRIVFILTERACCEPTALL,
-	WLAN802_11PRIVFILTER8021XWEP
+/** LBS_802_11_PRIVACY_FILTER */
+enum LBS_802_11_PRIVACY_FILTER {
+	LBS802_11PRIVFILTERACCEPTALL,
+	LBS802_11PRIVFILTER8021XWEP
 };
 
 /** mv_ms_type */
@@ -326,27 +361,6 @@ enum mv_ms_type {
 	MVMS_CMD = 1,
 	MVMS_TXDONE = 2,
 	MVMS_EVENT
-};
-
-/** SNMP_MIB_INDEX_e */
-enum SNMP_MIB_INDEX_e {
-	DESIRED_BSSTYPE_I = 0,
-	OP_RATESET_I,
-	BCNPERIOD_I,
-	DTIMPERIOD_I,
-	ASSOCRSP_TIMEOUT_I,
-	RTSTHRESH_I,
-	SHORT_RETRYLIM_I,
-	LONG_RETRYLIM_I,
-	FRAGTHRESH_I,
-	DOT11D_I,
-	DOT11H_I,
-	MANUFID_I,
-	PRODID_I,
-	MANUF_OUI_I,
-	MANUF_NAME_I,
-	MANUF_PRODNAME_I,
-	MANUF_PRODVER_I,
 };
 
 /** KEY_TYPE_ID */
@@ -363,12 +377,6 @@ enum KEY_INFO_WPA {
 	KEY_INFO_WPA_ENABLED = 0x04
 };
 
-/** SNMP_MIB_VALUE_e */
-enum SNMP_MIB_VALUE_e {
-	SNMP_MIB_VALUE_INFRA = 1,
-	SNMP_MIB_VALUE_ADHOC
-};
-
 /* Default values for fwt commands. */
 #define FWT_DEFAULT_METRIC 0
 #define FWT_DEFAULT_DIR 1
@@ -382,4 +390,4 @@ enum SNMP_MIB_VALUE_e {
 #define FWT_DEFAULT_SLEEPMODE 0
 #define FWT_DEFAULT_SNR 0
 
-#endif				/* _WLAN_DEFS_H_ */
+#endif

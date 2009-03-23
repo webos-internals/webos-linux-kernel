@@ -128,31 +128,6 @@ static void of_bus_pci_count_cells(struct device_node *np,
 		*sizec = 2;
 }
 
-static u64 of_bus_pci_map(u32 *addr, const u32 *range, int na, int ns, int pna)
-{
-	u64 cp, s, da;
-
-	/* Check address type match */
-	if ((addr[0] ^ range[0]) & 0x03000000)
-		return OF_BAD_ADDR;
-
-	/* Read address values, skipping high cell */
-	cp = of_read_number(range + 1, na - 1);
-	s  = of_read_number(range + na + pna, ns);
-	da = of_read_number(addr + 1, na - 1);
-
-	DBG("OF: PCI map, cp="PRu64", s="PRu64", da="PRu64"\n", cp, s, da);
-
-	if (da < cp || da >= (cp + s))
-		return OF_BAD_ADDR;
-	return da - cp;
-}
-
-static int of_bus_pci_translate(u32 *addr, u64 offset, int na)
-{
-	return of_bus_default_translate(addr + 1, offset, na - 1);
-}
-
 static unsigned int of_bus_pci_get_flags(const u32 *addr)
 {
 	unsigned int flags = 0;
@@ -170,6 +145,35 @@ static unsigned int of_bus_pci_get_flags(const u32 *addr)
 	if (w & 0x40000000)
 		flags |= IORESOURCE_PREFETCH;
 	return flags;
+}
+
+static u64 of_bus_pci_map(u32 *addr, const u32 *range, int na, int ns, int pna)
+{
+	u64 cp, s, da;
+	unsigned int af, rf;
+
+	af = of_bus_pci_get_flags(addr);
+	rf = of_bus_pci_get_flags(range);
+
+	/* Check address type match */
+	if ((af ^ rf) & (IORESOURCE_MEM | IORESOURCE_IO))
+		return OF_BAD_ADDR;
+
+	/* Read address values, skipping high cell */
+	cp = of_read_number(range + 1, na - 1);
+	s  = of_read_number(range + na + pna, ns);
+	da = of_read_number(addr + 1, na - 1);
+
+	DBG("OF: PCI map, cp="PRu64", s="PRu64", da="PRu64"\n", cp, s, da);
+
+	if (da < cp || da >= (cp + s))
+		return OF_BAD_ADDR;
+	return da - cp;
+}
+
+static int of_bus_pci_translate(u32 *addr, u64 offset, int na)
+{
+	return of_bus_default_translate(addr + 1, offset, na - 1);
 }
 
 const u32 *of_get_pci_address(struct device_node *dev, int bar_no, u64 *size,
@@ -228,11 +232,6 @@ int of_pci_address_to_resource(struct device_node *dev, int bar,
 }
 EXPORT_SYMBOL_GPL(of_pci_address_to_resource);
 
-static u8 of_irq_pci_swizzle(u8 slot, u8 pin)
-{
-	return (((pin - 1) + slot) % 4) + 1;
-}
-
 int of_irq_map_pci(struct pci_dev *pdev, struct of_irq *out_irq)
 {
 	struct device_node *dn, *ppnode;
@@ -246,8 +245,11 @@ int of_irq_map_pci(struct pci_dev *pdev, struct of_irq *out_irq)
 	 * parsing
 	 */
 	dn = pci_device_to_OF_node(pdev);
-	if (dn)
-		return of_irq_map_one(dn, 0, out_irq);
+	if (dn) {
+		rc = of_irq_map_one(dn, 0, out_irq);
+		if (!rc)
+			return rc;
+	}
 
 	/* Ok, we don't, time to have fun. Let's start by building up an
 	 * interrupt spec.  we assume #interrupt-cells is 1, which is standard
@@ -273,7 +275,7 @@ int of_irq_map_pci(struct pci_dev *pdev, struct of_irq *out_irq)
 #else
 			struct pci_controller *host;
 			host = pci_bus_to_host(pdev->bus);
-			ppnode = host ? host->arch_data : NULL;
+			ppnode = host ? host->dn : NULL;
 #endif
 			/* No node for host bridge ? give up */
 			if (ppnode == NULL)
@@ -299,7 +301,7 @@ int of_irq_map_pci(struct pci_dev *pdev, struct of_irq *out_irq)
 		/* We can only get here if we hit a P2P bridge with no node,
 		 * let's do standard swizzling and try again
 		 */
-		lspec = of_irq_pci_swizzle(PCI_SLOT(pdev->devfn), lspec);
+		lspec = pci_swizzle_interrupt_pin(pdev, lspec);
 		pdev = ppdev;
 	}
 
@@ -419,7 +421,7 @@ static struct of_bus *of_match_bus(struct device_node *np)
 
 static int of_translate_one(struct device_node *parent, struct of_bus *bus,
 			    struct of_bus *pbus, u32 *addr,
-			    int na, int ns, int pna)
+			    int na, int ns, int pna, const char *rprop)
 {
 	const u32 *ranges;
 	unsigned int rlen;
@@ -438,7 +440,7 @@ static int of_translate_one(struct device_node *parent, struct of_bus *bus,
 	 * to translate addresses that aren't supposed to be translated in
 	 * the first place. --BenH.
 	 */
-	ranges = of_get_property(parent, "ranges", &rlen);
+	ranges = of_get_property(parent, rprop, &rlen);
 	if (ranges == NULL || rlen == 0) {
 		offset = of_read_number(addr, na);
 		memset(addr, 0, pna * 4);
@@ -481,7 +483,8 @@ static int of_translate_one(struct device_node *parent, struct of_bus *bus,
  * that can be mapped to a cpu physical address). This is not really specified
  * that way, but this is traditionally the way IBM at least do things
  */
-u64 of_translate_address(struct device_node *dev, const u32 *in_addr)
+u64 __of_translate_address(struct device_node *dev, const u32 *in_addr,
+			   const char *rprop)
 {
 	struct device_node *parent = NULL;
 	struct of_bus *bus, *pbus;
@@ -540,7 +543,7 @@ u64 of_translate_address(struct device_node *dev, const u32 *in_addr)
 		    pbus->name, pna, pns, parent->full_name);
 
 		/* Apply bus translation */
-		if (of_translate_one(dev, bus, pbus, addr, na, ns, pna))
+		if (of_translate_one(dev, bus, pbus, addr, na, ns, pna, rprop))
 			break;
 
 		/* Complete the move up one level */
@@ -556,7 +559,18 @@ u64 of_translate_address(struct device_node *dev, const u32 *in_addr)
 
 	return result;
 }
+
+u64 of_translate_address(struct device_node *dev, const u32 *in_addr)
+{
+	return __of_translate_address(dev, in_addr, "ranges");
+}
 EXPORT_SYMBOL(of_translate_address);
+
+u64 of_translate_dma_address(struct device_node *dev, const u32 *in_addr)
+{
+	return __of_translate_address(dev, in_addr, "dma-ranges");
+}
+EXPORT_SYMBOL(of_translate_dma_address);
 
 const u32 *of_get_address(struct device_node *dev, int index, u64 *size,
 		    unsigned int *flags)
@@ -715,10 +729,7 @@ void of_irq_map_init(unsigned int flags)
 	if (flags & OF_IMAP_NO_PHANDLE) {
 		struct device_node *np;
 
-		for(np = NULL; (np = of_find_all_nodes(np)) != NULL;) {
-			if (of_get_property(np, "interrupt-controller", NULL)
-			    == NULL)
-				continue;
+		for_each_node_with_property(np, "interrupt-controller") {
 			/* Skip /chosen/interrupt-controller */
 			if (strcmp(np->name, "chosen") == 0)
 				continue;

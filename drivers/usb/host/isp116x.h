@@ -270,7 +270,6 @@ struct isp116x {
 	u32 rhdesca;
 	u32 rhdescb;
 	u32 rhstatus;
-	u32 rhport[2];
 
 	/* async schedule: control, bulk */
 	struct list_head async;
@@ -339,7 +338,7 @@ struct isp116x_ep {
 #endif
 
 #define ERR(stuff...)		printk(KERN_ERR "116x: " stuff)
-#define WARN(stuff...)		printk(KERN_WARNING "116x: " stuff)
+#define WARNING(stuff...)	printk(KERN_WARNING "116x: " stuff)
 #define INFO(stuff...)		printk(KERN_INFO "116x: " stuff)
 
 /* ------------------------------------------------- */

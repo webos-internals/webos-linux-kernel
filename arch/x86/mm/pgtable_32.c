@@ -1,7 +1,3 @@
-/*
- *  linux/arch/i386/mm/pgtable.c
- */
-
 #include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -24,59 +20,11 @@
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 
-void show_mem(void)
-{
-	int total = 0, reserved = 0;
-	int shared = 0, cached = 0;
-	int highmem = 0;
-	struct page *page;
-	pg_data_t *pgdat;
-	unsigned long i;
-	unsigned long flags;
-
-	printk(KERN_INFO "Mem-info:\n");
-	show_free_areas();
-	printk(KERN_INFO "Free swap:       %6ldkB\n", nr_swap_pages<<(PAGE_SHIFT-10));
-	for_each_online_pgdat(pgdat) {
-		pgdat_resize_lock(pgdat, &flags);
-		for (i = 0; i < pgdat->node_spanned_pages; ++i) {
-			if (unlikely(i % MAX_ORDER_NR_PAGES == 0))
-				touch_nmi_watchdog();
-			page = pgdat_page_nr(pgdat, i);
-			total++;
-			if (PageHighMem(page))
-				highmem++;
-			if (PageReserved(page))
-				reserved++;
-			else if (PageSwapCache(page))
-				cached++;
-			else if (page_count(page))
-				shared += page_count(page) - 1;
-		}
-		pgdat_resize_unlock(pgdat, &flags);
-	}
-	printk(KERN_INFO "%d pages of RAM\n", total);
-	printk(KERN_INFO "%d pages of HIGHMEM\n", highmem);
-	printk(KERN_INFO "%d reserved pages\n", reserved);
-	printk(KERN_INFO "%d pages shared\n", shared);
-	printk(KERN_INFO "%d pages swap cached\n", cached);
-
-	printk(KERN_INFO "%lu pages dirty\n", global_page_state(NR_FILE_DIRTY));
-	printk(KERN_INFO "%lu pages writeback\n",
-					global_page_state(NR_WRITEBACK));
-	printk(KERN_INFO "%lu pages mapped\n", global_page_state(NR_FILE_MAPPED));
-	printk(KERN_INFO "%lu pages slab\n",
-		global_page_state(NR_SLAB_RECLAIMABLE) +
-		global_page_state(NR_SLAB_UNRECLAIMABLE));
-	printk(KERN_INFO "%lu pages pagetables\n",
-					global_page_state(NR_PAGETABLE));
-}
-
 /*
  * Associate a virtual page frame with a given physical page frame 
  * and protection flags for that frame.
  */ 
-static void set_pte_pfn(unsigned long vaddr, unsigned long pfn, pgprot_t flags)
+void set_pte_vaddr(unsigned long vaddr, pte_t pteval)
 {
 	pgd_t *pgd;
 	pud_t *pud;
@@ -99,8 +47,8 @@ static void set_pte_pfn(unsigned long vaddr, unsigned long pfn, pgprot_t flags)
 		return;
 	}
 	pte = pte_offset_kernel(pmd, vaddr);
-	if (pgprot_val(flags))
-		set_pte_present(&init_mm, vaddr, pte, pfn_pte(pfn, flags));
+	if (pte_val(pteval))
+		set_pte_present(&init_mm, vaddr, pte, pteval);
 	else
 		pte_clear(&init_mm, vaddr, pte);
 
@@ -146,21 +94,8 @@ void set_pmd_pfn(unsigned long vaddr, unsigned long pfn, pgprot_t flags)
 	__flush_tlb_one(vaddr);
 }
 
-static int fixmaps;
 unsigned long __FIXADDR_TOP = 0xfffff000;
 EXPORT_SYMBOL(__FIXADDR_TOP);
-
-void __set_fixmap (enum fixed_addresses idx, unsigned long phys, pgprot_t flags)
-{
-	unsigned long address = __fix_to_virt(idx);
-
-	if (idx >= __end_of_fixed_addresses) {
-		BUG();
-		return;
-	}
-	set_pte_pfn(address, phys >> PAGE_SHIFT, flags);
-	fixmaps++;
-}
 
 /**
  * reserve_top_address - reserves a hole in the top of kernel address space
@@ -169,207 +104,45 @@ void __set_fixmap (enum fixed_addresses idx, unsigned long phys, pgprot_t flags)
  * Can be used to relocate the fixmap area and poke a hole in the top
  * of kernel address space to make room for a hypervisor.
  */
-void reserve_top_address(unsigned long reserve)
+void __init reserve_top_address(unsigned long reserve)
 {
-	BUG_ON(fixmaps > 0);
+	BUG_ON(fixmaps_set > 0);
 	printk(KERN_INFO "Reserving virtual address space above 0x%08x\n",
 	       (int)-reserve);
 	__FIXADDR_TOP = -reserve - PAGE_SIZE;
 	__VMALLOC_RESERVE += reserve;
 }
 
-pte_t *pte_alloc_one_kernel(struct mm_struct *mm, unsigned long address)
+/*
+ * vmalloc=size forces the vmalloc area to be exactly 'size'
+ * bytes. This can be used to increase (or decrease) the
+ * vmalloc area - the default is 128m.
+ */
+static int __init parse_vmalloc(char *arg)
 {
-	return (pte_t *)__get_free_page(GFP_KERNEL|__GFP_REPEAT|__GFP_ZERO);
-}
+	if (!arg)
+		return -EINVAL;
 
-struct page *pte_alloc_one(struct mm_struct *mm, unsigned long address)
-{
-	struct page *pte;
-
-#ifdef CONFIG_HIGHPTE
-	pte = alloc_pages(GFP_KERNEL|__GFP_HIGHMEM|__GFP_REPEAT|__GFP_ZERO, 0);
-#else
-	pte = alloc_pages(GFP_KERNEL|__GFP_REPEAT|__GFP_ZERO, 0);
-#endif
-	return pte;
+	/* Add VMALLOC_OFFSET to the parsed value due to vm area guard hole*/
+	__VMALLOC_RESERVE = memparse(arg, &arg) + VMALLOC_OFFSET;
+	return 0;
 }
-
-void pmd_ctor(struct kmem_cache *cache, void *pmd)
-{
-	memset(pmd, 0, PTRS_PER_PMD*sizeof(pmd_t));
-}
+early_param("vmalloc", parse_vmalloc);
 
 /*
- * List of all pgd's needed for non-PAE so it can invalidate entries
- * in both cached and uncached pgd's; not needed for PAE since the
- * kernel pmd is shared. If PAE were not to share the pmd a similar
- * tactic would be needed. This is essentially codepath-based locking
- * against pageattr.c; it is the unique case in which a valid change
- * of kernel pagetables can't be lazily synchronized by vmalloc faults.
- * vmalloc faults work because attached pagetables are never freed.
- * -- wli
+ * reservetop=size reserves a hole at the top of the kernel address space which
+ * a hypervisor can load into later.  Needed for dynamically loaded hypervisors,
+ * so relocating the fixmap can be done before paging initialization.
  */
-DEFINE_SPINLOCK(pgd_lock);
-struct page *pgd_list;
-
-static inline void pgd_list_add(pgd_t *pgd)
+static int __init parse_reservetop(char *arg)
 {
-	struct page *page = virt_to_page(pgd);
-	page->index = (unsigned long)pgd_list;
-	if (pgd_list)
-		set_page_private(pgd_list, (unsigned long)&page->index);
-	pgd_list = page;
-	set_page_private(page, (unsigned long)&pgd_list);
+	unsigned long address;
+
+	if (!arg)
+		return -EINVAL;
+
+	address = memparse(arg, &arg);
+	reserve_top_address(address);
+	return 0;
 }
-
-static inline void pgd_list_del(pgd_t *pgd)
-{
-	struct page *next, **pprev, *page = virt_to_page(pgd);
-	next = (struct page *)page->index;
-	pprev = (struct page **)page_private(page);
-	*pprev = next;
-	if (next)
-		set_page_private(next, (unsigned long)pprev);
-}
-
-
-
-#if (PTRS_PER_PMD == 1)
-/* Non-PAE pgd constructor */
-static void pgd_ctor(void *pgd)
-{
-	unsigned long flags;
-
-	/* !PAE, no pagetable sharing */
-	memset(pgd, 0, USER_PTRS_PER_PGD*sizeof(pgd_t));
-
-	spin_lock_irqsave(&pgd_lock, flags);
-
-	/* must happen under lock */
-	clone_pgd_range((pgd_t *)pgd + USER_PTRS_PER_PGD,
-			swapper_pg_dir + USER_PTRS_PER_PGD,
-			KERNEL_PGD_PTRS);
-	paravirt_alloc_pd_clone(__pa(pgd) >> PAGE_SHIFT,
-				__pa(swapper_pg_dir) >> PAGE_SHIFT,
-				USER_PTRS_PER_PGD,
-				KERNEL_PGD_PTRS);
-	pgd_list_add(pgd);
-	spin_unlock_irqrestore(&pgd_lock, flags);
-}
-#else  /* PTRS_PER_PMD > 1 */
-/* PAE pgd constructor */
-static void pgd_ctor(void *pgd)
-{
-	/* PAE, kernel PMD may be shared */
-
-	if (SHARED_KERNEL_PMD) {
-		clone_pgd_range((pgd_t *)pgd + USER_PTRS_PER_PGD,
-				swapper_pg_dir + USER_PTRS_PER_PGD,
-				KERNEL_PGD_PTRS);
-	} else {
-		unsigned long flags;
-
-		memset(pgd, 0, USER_PTRS_PER_PGD*sizeof(pgd_t));
-		spin_lock_irqsave(&pgd_lock, flags);
-		pgd_list_add(pgd);
-		spin_unlock_irqrestore(&pgd_lock, flags);
-	}
-}
-#endif	/* PTRS_PER_PMD */
-
-static void pgd_dtor(void *pgd)
-{
-	unsigned long flags; /* can be called from interrupt context */
-
-	if (SHARED_KERNEL_PMD)
-		return;
-
-	paravirt_release_pd(__pa(pgd) >> PAGE_SHIFT);
-	spin_lock_irqsave(&pgd_lock, flags);
-	pgd_list_del(pgd);
-	spin_unlock_irqrestore(&pgd_lock, flags);
-}
-
-#define UNSHARED_PTRS_PER_PGD				\
-	(SHARED_KERNEL_PMD ? USER_PTRS_PER_PGD : PTRS_PER_PGD)
-
-/* If we allocate a pmd for part of the kernel address space, then
-   make sure its initialized with the appropriate kernel mappings.
-   Otherwise use a cached zeroed pmd.  */
-static pmd_t *pmd_cache_alloc(int idx)
-{
-	pmd_t *pmd;
-
-	if (idx >= USER_PTRS_PER_PGD) {
-		pmd = (pmd_t *)__get_free_page(GFP_KERNEL);
-
-		if (pmd)
-			memcpy(pmd,
-			       (void *)pgd_page_vaddr(swapper_pg_dir[idx]),
-			       sizeof(pmd_t) * PTRS_PER_PMD);
-	} else
-		pmd = kmem_cache_alloc(pmd_cache, GFP_KERNEL);
-
-	return pmd;
-}
-
-static void pmd_cache_free(pmd_t *pmd, int idx)
-{
-	if (idx >= USER_PTRS_PER_PGD)
-		free_page((unsigned long)pmd);
-	else
-		kmem_cache_free(pmd_cache, pmd);
-}
-
-pgd_t *pgd_alloc(struct mm_struct *mm)
-{
-	int i;
-	pgd_t *pgd = quicklist_alloc(0, GFP_KERNEL, pgd_ctor);
-
-	if (PTRS_PER_PMD == 1 || !pgd)
-		return pgd;
-
- 	for (i = 0; i < UNSHARED_PTRS_PER_PGD; ++i) {
-		pmd_t *pmd = pmd_cache_alloc(i);
-
-		if (!pmd)
-			goto out_oom;
-
-		paravirt_alloc_pd(__pa(pmd) >> PAGE_SHIFT);
-		set_pgd(&pgd[i], __pgd(1 + __pa(pmd)));
-	}
-	return pgd;
-
-out_oom:
-	for (i--; i >= 0; i--) {
-		pgd_t pgdent = pgd[i];
-		void* pmd = (void *)__va(pgd_val(pgdent)-1);
-		paravirt_release_pd(__pa(pmd) >> PAGE_SHIFT);
-		pmd_cache_free(pmd, i);
-	}
-	quicklist_free(0, pgd_dtor, pgd);
-	return NULL;
-}
-
-void pgd_free(pgd_t *pgd)
-{
-	int i;
-
-	/* in the PAE case user pgd entries are overwritten before usage */
-	if (PTRS_PER_PMD > 1)
-		for (i = 0; i < UNSHARED_PTRS_PER_PGD; ++i) {
-			pgd_t pgdent = pgd[i];
-			void* pmd = (void *)__va(pgd_val(pgdent)-1);
-			paravirt_release_pd(__pa(pmd) >> PAGE_SHIFT);
-			pmd_cache_free(pmd, i);
-		}
-	/* in the non-PAE case, free_pgtables() clears user pgd entries */
-	quicklist_free(0, pgd_dtor, pgd);
-}
-
-void check_pgt_cache(void)
-{
-	quicklist_trim(0, pgd_dtor, 25, 16);
-}
-
+early_param("reservetop", parse_reservetop);

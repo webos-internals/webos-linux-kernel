@@ -42,33 +42,28 @@ static int bufsize = 64 * 1024;
 
 static const char procname[] = "dccpprobe";
 
-struct {
+static struct {
 	struct kfifo	  *fifo;
 	spinlock_t	  lock;
 	wait_queue_head_t wait;
-	struct timeval	  tstart;
+	struct timespec	  tstart;
 } dccpw;
 
 static void printl(const char *fmt, ...)
 {
 	va_list args;
 	int len;
-	struct timeval now;
+	struct timespec now;
 	char tbuf[256];
 
 	va_start(args, fmt);
-	do_gettimeofday(&now);
+	getnstimeofday(&now);
 
-	now.tv_sec -= dccpw.tstart.tv_sec;
-	now.tv_usec -= dccpw.tstart.tv_usec;
-	if (now.tv_usec < 0) {
-		--now.tv_sec;
-		now.tv_usec += 1000000;
-	}
+	now = timespec_sub(now, dccpw.tstart);
 
 	len = sprintf(tbuf, "%lu.%06lu ",
 		      (unsigned long) now.tv_sec,
-		      (unsigned long) now.tv_usec);
+		      (unsigned long) now.tv_nsec / NSEC_PER_USEC);
 	len += vscnprintf(tbuf+len, sizeof(tbuf)-len, fmt, args);
 	va_end(args);
 
@@ -79,30 +74,27 @@ static void printl(const char *fmt, ...)
 static int jdccp_sendmsg(struct kiocb *iocb, struct sock *sk,
 			 struct msghdr *msg, size_t size)
 {
-	const struct dccp_minisock *dmsk = dccp_msk(sk);
 	const struct inet_sock *inet = inet_sk(sk);
-	const struct ccid3_hc_tx_sock *hctx;
+	struct ccid3_hc_tx_sock *hctx = NULL;
 
-	if (dmsk->dccpms_tx_ccid == DCCPC_CCID3)
+	if (ccid_get_current_tx_ccid(dccp_sk(sk)) == DCCPC_CCID3)
 		hctx = ccid3_hc_tx_sk(sk);
-	else
-		hctx = NULL;
 
 	if (port == 0 || ntohs(inet->dport) == port ||
 	    ntohs(inet->sport) == port) {
 		if (hctx)
-			printl("%d.%d.%d.%d:%u %d.%d.%d.%d:%u %d %d %d %d %u "
+			printl("%pI4:%u %pI4:%u %d %d %d %d %u "
 			       "%llu %llu %d\n",
-			       NIPQUAD(inet->saddr), ntohs(inet->sport),
-			       NIPQUAD(inet->daddr), ntohs(inet->dport), size,
+			       &inet->saddr, ntohs(inet->sport),
+			       &inet->daddr, ntohs(inet->dport), size,
 			       hctx->ccid3hctx_s, hctx->ccid3hctx_rtt,
 			       hctx->ccid3hctx_p, hctx->ccid3hctx_x_calc,
 			       hctx->ccid3hctx_x_recv >> 6,
 			       hctx->ccid3hctx_x >> 6, hctx->ccid3hctx_t_ipi);
 		else
-			printl("%d.%d.%d.%d:%u %d.%d.%d.%d:%u %d\n",
-			       NIPQUAD(inet->saddr), ntohs(inet->sport),
-			       NIPQUAD(inet->daddr), ntohs(inet->dport), size);
+			printl("%pI4:%u %pI4:%u %d\n",
+			       &inet->saddr, ntohs(inet->sport),
+			       &inet->daddr, ntohs(inet->dport), size);
 	}
 
 	jprobe_return();
@@ -119,7 +111,7 @@ static struct jprobe dccp_send_probe = {
 static int dccpprobe_open(struct inode *inode, struct file *file)
 {
 	kfifo_reset(dccpw.fifo);
-	do_gettimeofday(&dccpw.tstart);
+	getnstimeofday(&dccpw.tstart);
 	return 0;
 }
 
@@ -145,7 +137,7 @@ static ssize_t dccpprobe_read(struct file *file, char __user *buf,
 		goto out_free;
 
 	cnt = kfifo_get(dccpw.fifo, tbuf, len);
-	error = copy_to_user(buf, tbuf, cnt);
+	error = copy_to_user(buf, tbuf, cnt) ? -EFAULT : 0;
 
 out_free:
 	vfree(tbuf);

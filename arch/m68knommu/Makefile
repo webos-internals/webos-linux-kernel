@@ -8,6 +8,8 @@
 # (C) Copyright 2002, Greg Ungerer <gerg@snapgear.com>
 #
 
+KBUILD_DEFCONFIG := m5208evb_defconfig
+
 platform-$(CONFIG_M68328)	:= 68328
 platform-$(CONFIG_M68EZ328)	:= 68EZ328
 platform-$(CONFIG_M68VZ328)	:= 68VZ328
@@ -39,7 +41,6 @@ board-$(CONFIG_M5271EVB)	:= M5271EVB
 board-$(CONFIG_M5275EVB)	:= M5275EVB
 board-$(CONFIG_M5282EVB)	:= M5282EVB
 board-$(CONFIG_ELITE)		:= eLITE
-board-$(CONFIG_eLIA)		:= eLIA
 board-$(CONFIG_NETtel)		:= NETtel
 board-$(CONFIG_SECUREEDGEMP3)	:= MP3
 board-$(CONFIG_CLEOPATRA)	:= CLEOPATRA
@@ -61,17 +62,17 @@ MODEL := $(model-y)
 # for the selected cpu. ONLY need to define this for the non-base member
 # of the family.
 #
-cpuclass-$(CONFIG_M5206)	:= 5307
-cpuclass-$(CONFIG_M5206e)	:= 5307
-cpuclass-$(CONFIG_M520x)	:= 5307
-cpuclass-$(CONFIG_M523x)	:= 5307
-cpuclass-$(CONFIG_M5249)	:= 5307
-cpuclass-$(CONFIG_M527x)	:= 5307
-cpuclass-$(CONFIG_M5272)	:= 5307
-cpuclass-$(CONFIG_M528x)	:= 5307
-cpuclass-$(CONFIG_M5307)	:= 5307
-cpuclass-$(CONFIG_M532x)	:= 5307
-cpuclass-$(CONFIG_M5407)	:= 5307
+cpuclass-$(CONFIG_M5206)	:= coldfire
+cpuclass-$(CONFIG_M5206e)	:= coldfire
+cpuclass-$(CONFIG_M520x)	:= coldfire
+cpuclass-$(CONFIG_M523x)	:= coldfire
+cpuclass-$(CONFIG_M5249)	:= coldfire
+cpuclass-$(CONFIG_M527x)	:= coldfire
+cpuclass-$(CONFIG_M5272)	:= coldfire
+cpuclass-$(CONFIG_M528x)	:= coldfire
+cpuclass-$(CONFIG_M5307)	:= coldfire
+cpuclass-$(CONFIG_M532x)	:= coldfire
+cpuclass-$(CONFIG_M5407)	:= coldfire
 cpuclass-$(CONFIG_M68328)	:= 68328
 cpuclass-$(CONFIG_M68EZ328)	:= 68328
 cpuclass-$(CONFIG_M68VZ328)	:= 68328
@@ -90,13 +91,14 @@ export PLATFORM BOARD MODEL CPUCLASS
 cflags-$(CONFIG_M5206)		:= -m5200
 cflags-$(CONFIG_M5206e)		:= -m5200
 cflags-$(CONFIG_M520x)		:= -m5307
-cflags-$(CONFIG_M523x)		:= -m5307
+cflags-$(CONFIG_M523x)		:= $(call cc-option,-mcpu=523x,-m5307)
 cflags-$(CONFIG_M5249)		:= -m5200
-cflags-$(CONFIG_M527x)		:= -m5307
+cflags-$(CONFIG_M5271)		:= $(call cc-option,-mcpu=5271,-m5307)
 cflags-$(CONFIG_M5272)		:= -m5307
-cflags-$(CONFIG_M528x)		:= -m5307
+cflags-$(CONFIG_M5275)		:= $(call cc-option,-mcpu=5275,-m5307)
+cflags-$(CONFIG_M528x)		:= $(call cc-option,-m528x,-m5307)
 cflags-$(CONFIG_M5307)		:= -m5307
-cflags-$(CONFIG_M532x)		:= -m5307
+cflags-$(CONFIG_M532x)		:= $(call cc-option,-mcpu=532x,-m5307)
 cflags-$(CONFIG_M5407)		:= -m5200
 cflags-$(CONFIG_M68328)		:= -m68000
 cflags-$(CONFIG_M68EZ328)	:= -m68000

@@ -27,11 +27,9 @@
 #include <asm/system.h>
 #include <asm/irq.h>
 
-#define IN_CARD_SERVICES
 #include <pcmcia/cs_types.h>
 #include <pcmcia/ss.h>
 #include <pcmcia/cs.h>
-#include <pcmcia/bulkmem.h>
 #include <pcmcia/cistpl.h>
 #include <pcmcia/cisreg.h>
 #include <pcmcia/ds.h>
@@ -293,7 +291,7 @@ static ssize_t pccard_show_cis(struct kobject *kobj,
 		count = 0;
 	else {
 		struct pcmcia_socket *s;
-		cisinfo_t cisinfo;
+		unsigned int chains;
 
 		if (off + count > size)
 			count = size - off;
@@ -302,9 +300,9 @@ static ssize_t pccard_show_cis(struct kobject *kobj,
 
 		if (!(s->state & SOCKET_PRESENT))
 			return -ENODEV;
-		if (pccard_validate_cis(s, BIND_FN_ALL, &cisinfo))
+		if (pccard_validate_cis(s, BIND_FN_ALL, &chains))
 			return -EIO;
-		if (!cisinfo.Chains)
+		if (!chains)
 			return -ENODATA;
 
 		count = pccard_extract_cis(s, buf, off, count);
@@ -318,27 +316,18 @@ static ssize_t pccard_store_cis(struct kobject *kobj,
 				char *buf, loff_t off, size_t count)
 {
 	struct pcmcia_socket *s = to_socket(container_of(kobj, struct device, kobj));
-	cisdump_t *cis;
 	int error;
 
 	if (off)
 		return -EINVAL;
 
-	if (count >= 0x200)
+	if (count >= CISTPL_MAX_CIS_SIZE)
 		return -EINVAL;
 
 	if (!(s->state & SOCKET_PRESENT))
 		return -ENODEV;
 
-	cis = kzalloc(sizeof(cisdump_t), GFP_KERNEL);
-	if (!cis)
-		return -ENOMEM;
-
-	cis->Length = count + 1;
-	memcpy(cis->Data, buf, count);
-
-	error = pcmcia_replace_cis(s, cis);
-	kfree(cis);
+	error = pcmcia_replace_cis(s, buf, count);
 	if (error)
 		return -EIO;
 
@@ -356,17 +345,21 @@ static ssize_t pccard_store_cis(struct kobject *kobj,
 }
 
 
-static struct device_attribute *pccard_socket_attributes[] = {
-	&dev_attr_card_type,
-	&dev_attr_card_voltage,
-	&dev_attr_card_vpp,
-	&dev_attr_card_vcc,
-	&dev_attr_card_insert,
-	&dev_attr_card_pm_state,
-	&dev_attr_card_eject,
-	&dev_attr_card_irq_mask,
-	&dev_attr_available_resources_setup_done,
+static struct attribute *pccard_socket_attributes[] = {
+	&dev_attr_card_type.attr,
+	&dev_attr_card_voltage.attr,
+	&dev_attr_card_vpp.attr,
+	&dev_attr_card_vcc.attr,
+	&dev_attr_card_insert.attr,
+	&dev_attr_card_pm_state.attr,
+	&dev_attr_card_eject.attr,
+	&dev_attr_card_irq_mask.attr,
+	&dev_attr_available_resources_setup_done.attr,
 	NULL,
+};
+
+static const struct attribute_group socket_attrs = {
+	.attrs = pccard_socket_attributes,
 };
 
 static struct bin_attribute pccard_cis_attr = {
@@ -376,35 +369,21 @@ static struct bin_attribute pccard_cis_attr = {
 	.write = pccard_store_cis,
 };
 
-static int __devinit pccard_sysfs_add_socket(struct device *dev,
-					     struct class_interface *class_intf)
+int pccard_sysfs_add_socket(struct device *dev)
 {
-	struct device_attribute **attr;
 	int ret = 0;
 
-	for (attr = pccard_socket_attributes; *attr; attr++) {
-		ret = device_create_file(dev, *attr);
-		if (ret)
-			break;
-	}
-	if (!ret)
+	ret = sysfs_create_group(&dev->kobj, &socket_attrs);
+	if (!ret) {
 		ret = sysfs_create_bin_file(&dev->kobj, &pccard_cis_attr);
-
+		if (ret)
+			sysfs_remove_group(&dev->kobj, &socket_attrs);
+	}
 	return ret;
 }
 
-static void __devexit pccard_sysfs_remove_socket(struct device *dev,
-						 struct class_interface *class_intf)
+void pccard_sysfs_remove_socket(struct device *dev)
 {
-	struct device_attribute **attr;
-
 	sysfs_remove_bin_file(&dev->kobj, &pccard_cis_attr);
-	for (attr = pccard_socket_attributes; *attr; attr++)
-		device_remove_file(dev, *attr);
+	sysfs_remove_group(&dev->kobj, &socket_attrs);
 }
-
-struct class_interface pccard_sysfs_interface = {
-	.class = &pcmcia_socket_class,
-	.add_dev = &pccard_sysfs_add_socket,
-	.remove_dev = __devexit_p(&pccard_sysfs_remove_socket),
-};

@@ -51,6 +51,8 @@
 
 #define _BLOCKABLE (~(sigmask(SIGKILL) | sigmask(SIGSTOP)))
 
+void ret_from_user_signal(void);
+void ret_from_user_rt_signal(void);
 asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs);
 
 /*
@@ -277,6 +279,9 @@ restore_sigcontext(struct pt_regs *regs, struct sigcontext *usc, void *fp,
 	struct sigcontext context;
 	int err = 0;
 
+	/* Always make any pending restarted system calls return -EINTR */
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
+
 	/* get previous context */
 	if (copy_from_user(&context, usc, sizeof(context)))
 		goto badframe;
@@ -313,6 +318,9 @@ rt_restore_ucontext(struct pt_regs *regs, struct switch_stack *sw,
 	greg_t *gregs = uc->uc_mcontext.gregs;
 	unsigned long usp;
 	int err;
+
+	/* Always make any pending restarted system calls return -EINTR */
+	current_thread_info()->restart_block.fn = do_no_restart_syscall;
 
 	err = __get_user(temp, &uc->uc_mcontext.version);
 	if (temp != MCONTEXT_VERSION)
@@ -539,10 +547,6 @@ static inline int rt_setup_ucontext(struct ucontext *uc, struct pt_regs *regs)
 	return err;
 }
 
-static inline void push_cache (unsigned long vaddr)
-{
-}
-
 static inline void *
 get_sigframe(struct k_sigaction *ka, struct pt_regs *regs, size_t frame_size)
 {
@@ -586,15 +590,10 @@ static void setup_frame (int sig, struct k_sigaction *ka,
 	err |= copy_to_user (&frame->sc, &context, sizeof(context));
 
 	/* Set up to return from userspace.  */
-	err |= __put_user(frame->retcode, &frame->pretcode);
-	/* moveq #,d0; trap #0 */
-	err |= __put_user(0x70004e40 + (__NR_sigreturn << 16),
-			  (long *)(frame->retcode));
+	err |= __put_user((void *) ret_from_user_signal, &frame->pretcode);
 
 	if (err)
 		goto give_sigsegv;
-
-	push_cache ((unsigned long) &frame->retcode);
 
 	/* Set up registers for signal handler */
 	wrusp ((unsigned long) frame);
@@ -655,16 +654,10 @@ static void setup_rt_frame (int sig, struct k_sigaction *ka, siginfo_t *info,
 	err |= copy_to_user (&frame->uc.uc_sigmask, set, sizeof(*set));
 
 	/* Set up to return from userspace.  */
-	err |= __put_user(frame->retcode, &frame->pretcode);
-	/* moveq #,d0; notb d0; trap #0 */
-	err |= __put_user(0x70004600 + ((__NR_rt_sigreturn ^ 0xff) << 16),
-			  (long *)(frame->retcode + 0));
-	err |= __put_user(0x4e40, (short *)(frame->retcode + 4));
+	err |= __put_user((void *) ret_from_user_rt_signal, &frame->pretcode);
 
 	if (err)
 		goto give_sigsegv;
-
-	push_cache ((unsigned long) &frame->retcode);
 
 	/* Set up registers for signal handler */
 	wrusp ((unsigned long) frame);
@@ -702,6 +695,15 @@ handle_restart(struct pt_regs *regs, struct k_sigaction *ka, int has_handler)
 	case -ERESTARTNOHAND:
 		if (!has_handler)
 			goto do_restart;
+		regs->d0 = -EINTR;
+		break;
+
+	case -ERESTART_RESTARTBLOCK:
+		if (!has_handler) {
+			regs->d0 = __NR_restart_syscall;
+			regs->pc -= 2;
+			break;
+		}
 		regs->d0 = -EINTR;
 		break;
 

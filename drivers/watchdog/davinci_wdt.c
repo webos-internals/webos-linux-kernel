@@ -22,10 +22,9 @@
 #include <linux/bitops.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
-
-#include <asm/hardware.h>
-#include <asm/uaccess.h>
-#include <asm/io.h>
+#include <linux/uaccess.h>
+#include <linux/io.h>
+#include <mach/hardware.h>
 
 #define MODULE_NAME "DAVINCI-WDT: "
 
@@ -143,9 +142,8 @@ static struct watchdog_info ident = {
 	.identity = "DaVinci Watchdog",
 };
 
-static int
-davinci_wdt_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
-		  unsigned long arg)
+static long davinci_wdt_ioctl(struct file *file,
+					unsigned int cmd, unsigned long arg)
 {
 	int ret = -ENOTTY;
 
@@ -160,13 +158,13 @@ davinci_wdt_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
 		ret = put_user(0, (int *)arg);
 		break;
 
-	case WDIOC_GETTIMEOUT:
-		ret = put_user(heartbeat, (int *)arg);
-		break;
-
 	case WDIOC_KEEPALIVE:
 		wdt_service();
 		ret = 0;
+		break;
+
+	case WDIOC_GETTIMEOUT:
+		ret = put_user(heartbeat, (int *)arg);
 		break;
 	}
 	return ret;
@@ -184,7 +182,7 @@ static const struct file_operations davinci_wdt_fops = {
 	.owner = THIS_MODULE,
 	.llseek = no_llseek,
 	.write = davinci_wdt_write,
-	.ioctl = davinci_wdt_ioctl,
+	.unlocked_ioctl = davinci_wdt_ioctl,
 	.open = davinci_wdt_open,
 	.release = davinci_wdt_release,
 };
@@ -248,6 +246,7 @@ static int davinci_wdt_remove(struct platform_device *pdev)
 static struct platform_driver platform_wdt_driver = {
 	.driver = {
 		.name = "watchdog",
+		.owner	= THIS_MODULE,
 	},
 	.probe = davinci_wdt_probe,
 	.remove = davinci_wdt_remove,
@@ -277,3 +276,4 @@ MODULE_PARM_DESC(heartbeat,
 
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
+MODULE_ALIAS("platform:watchdog");

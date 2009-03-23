@@ -28,7 +28,9 @@
 #include <asm/segment.h>
 #include <asm/pgtable.h>
 #include <asm/page.h>
+#include <asm/boot.h>
 #include <asm/msr.h>
+#include <asm/processor-flags.h>
 #include <asm/asm-offsets.h>
 
 .section ".text.head"
@@ -62,7 +64,7 @@ startup_32:
 	subl	$1b, %ebp
 
 /* setup a stack and make sure cpu supports long mode. */
-	movl	$user_stack_end, %eax
+	movl	$boot_stack_end, %eax
 	addl	%ebp, %eax
 	movl	%eax, %esp
 
@@ -80,8 +82,8 @@ startup_32:
 
 #ifdef CONFIG_RELOCATABLE
 	movl	%ebp, %ebx
-	addl	$(LARGE_PAGE_SIZE -1), %ebx
-	andl	$LARGE_PAGE_MASK, %ebx
+	addl	$(PMD_PAGE_SIZE -1), %ebx
+	andl	$PMD_PAGE_MASK, %ebx
 #else
 	movl	$CONFIG_PHYSICAL_START, %ebx
 #endif
@@ -108,7 +110,7 @@ startup_32:
 
 	/* Enable PAE mode */
 	xorl	%eax, %eax
-	orl	$(1 << 5), %eax
+	orl	$(X86_CR4_PAE), %eax
 	movl	%eax, %cr4
 
  /*
@@ -169,7 +171,7 @@ startup_32:
 	pushl	%eax
 
 	/* Enter paged protected Mode, activating Long Mode */
-	movl	$0x80000001, %eax /* Enable Paging and Protected mode */
+	movl	$(X86_CR0_PG | X86_CR0_PE), %eax /* Enable Paging and Protected mode */
 	movl	%eax, %cr0
 
 	/* Jump from 32bit compatibility mode into 64bit mode. */
@@ -220,8 +222,8 @@ ENTRY(startup_64)
 	/* Start with the delta to where the kernel will run at. */
 #ifdef CONFIG_RELOCATABLE
 	leaq	startup_32(%rip) /* - $startup_32 */, %rbp
-	addq	$(LARGE_PAGE_SIZE - 1), %rbp
-	andq	$LARGE_PAGE_MASK, %rbp
+	addq	$(PMD_PAGE_SIZE - 1), %rbp
+	andq	$PMD_PAGE_MASK, %rbp
 	movq	%rbp, %rbx
 #else
 	movq	$CONFIG_PHYSICAL_START, %rbp
@@ -243,9 +245,9 @@ ENTRY(startup_64)
 /* Copy the compressed kernel to the end of our buffer
  * where decompression in place becomes safe.
  */
-	leaq	_end(%rip), %r8
-	leaq	_end(%rbx), %r9
-	movq	$_end /* - $startup_32 */, %rcx
+	leaq	_end_before_pgt(%rip), %r8
+	leaq	_end_before_pgt(%rbx), %r9
+	movq	$_end_before_pgt /* - $startup_32 */, %rcx
 1:	subq	$8, %r8
 	subq	$8, %r9
 	movq	0(%r8), %rax
@@ -267,14 +269,14 @@ relocated:
  */
 	xorq	%rax, %rax
 	leaq    _edata(%rbx), %rdi
-	leaq    _end(%rbx), %rcx
+	leaq    _end_before_pgt(%rbx), %rcx
 	subq	%rdi, %rcx
 	cld
 	rep
 	stosb
 
 	/* Setup the stack */
-	leaq	user_stack_end(%rip), %rsp
+	leaq	boot_stack_end(%rip), %rsp
 
 	/* zero EFLAGS after setting rsp */
 	pushq	$0
@@ -285,7 +287,7 @@ relocated:
  */
 	pushq	%rsi			# Save the real mode argument
 	movq	%rsi, %rdi		# real mode address
-	leaq	_heap(%rip), %rsi	# _heap
+	leaq	boot_heap(%rip), %rsi	# malloc area for uncompression
 	leaq	input_data(%rip), %rdx  # input_data
 	movl	input_len(%rip), %eax
 	movq	%rax, %rcx		# input_len
@@ -310,9 +312,12 @@ gdt:
 	.quad	0x0080890000000000	/* TS descriptor */
 	.quad   0x0000000000000000	/* TS continued */
 gdt_end:
-	.bss
-/* Stack for uncompression */
-	.balign 4
-user_stack:
-	.fill 4096,4,0
-user_stack_end:
+
+.bss
+/* Stack and heap for uncompression */
+.balign 4
+boot_heap:
+	.fill BOOT_HEAP_SIZE, 1, 0
+boot_stack:
+	.fill BOOT_STACK_SIZE, 1, 0
+boot_stack_end:

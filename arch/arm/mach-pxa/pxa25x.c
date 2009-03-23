@@ -21,12 +21,16 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/suspend.h>
+#include <linux/sysdev.h>
 
-#include <asm/hardware.h>
-#include <asm/arch/irqs.h>
-#include <asm/arch/pxa-regs.h>
-#include <asm/arch/pm.h>
-#include <asm/arch/dma.h>
+#include <mach/hardware.h>
+#include <mach/irqs.h>
+#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-regs.h>
+#include <mach/mfp-pxa25x.h>
+#include <mach/reset.h>
+#include <mach/pm.h>
+#include <mach/dma.h>
 
 #include "generic.h"
 #include "devices.h"
@@ -106,28 +110,102 @@ static const struct clkops clk_pxa25x_lcd_ops = {
 	.getrate	= clk_pxa25x_lcd_getrate,
 };
 
+static unsigned long gpio12_config_32k[] = {
+	GPIO12_32KHz,
+};
+
+static unsigned long gpio12_config_gpio[] = {
+	GPIO12_GPIO,
+};
+
+static void clk_gpio12_enable(struct clk *clk)
+{
+	pxa2xx_mfp_config(gpio12_config_32k, 1);
+}
+
+static void clk_gpio12_disable(struct clk *clk)
+{
+	pxa2xx_mfp_config(gpio12_config_gpio, 1);
+}
+
+static const struct clkops clk_pxa25x_gpio12_ops = {
+	.enable         = clk_gpio12_enable,
+	.disable        = clk_gpio12_disable,
+};
+
+static unsigned long gpio11_config_3m6[] = {
+	GPIO11_3_6MHz,
+};
+
+static unsigned long gpio11_config_gpio[] = {
+	GPIO11_GPIO,
+};
+
+static void clk_gpio11_enable(struct clk *clk)
+{
+	pxa2xx_mfp_config(gpio11_config_3m6, 1);
+}
+
+static void clk_gpio11_disable(struct clk *clk)
+{
+	pxa2xx_mfp_config(gpio11_config_gpio, 1);
+}
+
+static const struct clkops clk_pxa25x_gpio11_ops = {
+	.enable         = clk_gpio11_enable,
+	.disable        = clk_gpio11_disable,
+};
+
 /*
  * 3.6864MHz -> OST, GPIO, SSP, PWM, PLLs (95.842MHz, 147.456MHz)
  * 95.842MHz -> MMC 19.169MHz, I2C 31.949MHz, FICP 47.923MHz, USB 47.923MHz
  * 147.456MHz -> UART 14.7456MHz, AC97 12.288MHz, I2S 5.672MHz (allegedly)
  */
-static struct clk pxa25x_clks[] = {
-	INIT_CK("LCDCLK", LCD, &clk_pxa25x_lcd_ops, &pxa_device_fb.dev),
-	INIT_CKEN("UARTCLK", FFUART, 14745600, 1, &pxa_device_ffuart.dev),
-	INIT_CKEN("UARTCLK", BTUART, 14745600, 1, &pxa_device_btuart.dev),
-	INIT_CKEN("UARTCLK", BTUART, 14745600, 1, &pxa_device_btuart.dev),
-	INIT_CKEN("UARTCLK", STUART, 14745600, 1, NULL),
-	INIT_CKEN("UDCCLK", USB, 47923000, 5, &pxa_device_udc.dev),
-	INIT_CKEN("MMCCLK", MMC, 19169000, 0, &pxa_device_mci.dev),
-	INIT_CKEN("I2CCLK", I2C, 31949000, 0, &pxa_device_i2c.dev),
-	/*
-	INIT_CKEN("PWMCLK",  PWM0, 3686400,  0, NULL),
-	INIT_CKEN("PWMCLK",  PWM0, 3686400,  0, NULL),
-	INIT_CKEN("SSPCLK",  SSP,  3686400,  0, NULL),
-	INIT_CKEN("I2SCLK",  I2S,  14745600, 0, NULL),
-	INIT_CKEN("NSSPCLK", NSSP, 3686400,  0, NULL),
-	*/
-	INIT_CKEN("FICPCLK", FICP, 47923000, 0, NULL),
+static DEFINE_CKEN(pxa25x_hwuart, HWUART, 14745600, 1);
+
+static struct clk_lookup pxa25x_hwuart_clkreg =
+	INIT_CLKREG(&clk_pxa25x_hwuart, "pxa2xx-uart.3", NULL);
+
+/*
+ * PXA 2xx clock declarations.
+ */
+static DEFINE_CK(pxa25x_lcd, LCD, &clk_pxa25x_lcd_ops);
+static DEFINE_CKEN(pxa25x_ffuart, FFUART, 14745600, 1);
+static DEFINE_CKEN(pxa25x_btuart, BTUART, 14745600, 1);
+static DEFINE_CKEN(pxa25x_stuart, STUART, 14745600, 1);
+static DEFINE_CKEN(pxa25x_usb, USB, 47923000, 5);
+static DEFINE_CLK(pxa25x_gpio11, &clk_pxa25x_gpio11_ops, 3686400, 0);
+static DEFINE_CLK(pxa25x_gpio12, &clk_pxa25x_gpio12_ops, 32768, 0);
+static DEFINE_CKEN(pxa25x_mmc, MMC, 19169000, 0);
+static DEFINE_CKEN(pxa25x_i2c, I2C, 31949000, 0);
+static DEFINE_CKEN(pxa25x_ssp, SSP, 3686400, 0);
+static DEFINE_CKEN(pxa25x_nssp, NSSP, 3686400, 0);
+static DEFINE_CKEN(pxa25x_assp, ASSP, 3686400, 0);
+static DEFINE_CKEN(pxa25x_pwm0, PWM0, 3686400, 0);
+static DEFINE_CKEN(pxa25x_pwm1, PWM1, 3686400, 0);
+static DEFINE_CKEN(pxa25x_ac97, AC97, 24576000, 0);
+static DEFINE_CKEN(pxa25x_i2s, I2S, 14745600, 0);
+static DEFINE_CKEN(pxa25x_ficp, FICP, 47923000, 0);
+
+static struct clk_lookup pxa25x_clkregs[] = {
+	INIT_CLKREG(&clk_pxa25x_lcd, "pxa2xx-fb", NULL),
+	INIT_CLKREG(&clk_pxa25x_ffuart, "pxa2xx-uart.0", NULL),
+	INIT_CLKREG(&clk_pxa25x_btuart, "pxa2xx-uart.1", NULL),
+	INIT_CLKREG(&clk_pxa25x_stuart, "pxa2xx-uart.2", NULL),
+	INIT_CLKREG(&clk_pxa25x_usb, "pxa25x-udc", NULL),
+	INIT_CLKREG(&clk_pxa25x_mmc, "pxa2xx-mci.0", NULL),
+	INIT_CLKREG(&clk_pxa25x_i2c, "pxa2xx-i2c.0", NULL),
+	INIT_CLKREG(&clk_pxa25x_ssp, "pxa25x-ssp.0", NULL),
+	INIT_CLKREG(&clk_pxa25x_nssp, "pxa25x-nssp.1", NULL),
+	INIT_CLKREG(&clk_pxa25x_assp, "pxa25x-nssp.2", NULL),
+	INIT_CLKREG(&clk_pxa25x_pwm0, "pxa25x-pwm.0", NULL),
+	INIT_CLKREG(&clk_pxa25x_pwm1, "pxa25x-pwm.1", NULL),
+	INIT_CLKREG(&clk_pxa25x_i2s, "pxa2xx-i2s", NULL),
+	INIT_CLKREG(&clk_pxa25x_stuart, "pxa2xx-ir", "UARTCLK"),
+	INIT_CLKREG(&clk_pxa25x_ficp, "pxa2xx-ir", "FICPCLK"),
+	INIT_CLKREG(&clk_pxa25x_ac97, NULL, "AC97CLK"),
+	INIT_CLKREG(&clk_pxa25x_gpio11, NULL, "GPIO11_CLK"),
+	INIT_CLKREG(&clk_pxa25x_gpio12, NULL, "GPIO12_CLK"),
 };
 
 #ifdef CONFIG_PM
@@ -135,107 +213,71 @@ static struct clk pxa25x_clks[] = {
 #define SAVE(x)		sleep_save[SLEEP_SAVE_##x] = x
 #define RESTORE(x)	x = sleep_save[SLEEP_SAVE_##x]
 
-#define RESTORE_GPLEVEL(n) do { \
-	GPSR##n = sleep_save[SLEEP_SAVE_GPLR##n]; \
-	GPCR##n = ~sleep_save[SLEEP_SAVE_GPLR##n]; \
-} while (0)
-
 /*
  * List of global PXA peripheral registers to preserve.
  * More ones like CP and general purpose register values are preserved
  * with the stack pointer in sleep.S.
  */
-enum {	SLEEP_SAVE_START = 0,
-
-	SLEEP_SAVE_GPLR0, SLEEP_SAVE_GPLR1, SLEEP_SAVE_GPLR2,
-	SLEEP_SAVE_GPDR0, SLEEP_SAVE_GPDR1, SLEEP_SAVE_GPDR2,
-	SLEEP_SAVE_GRER0, SLEEP_SAVE_GRER1, SLEEP_SAVE_GRER2,
-	SLEEP_SAVE_GFER0, SLEEP_SAVE_GFER1, SLEEP_SAVE_GFER2,
-	SLEEP_SAVE_PGSR0, SLEEP_SAVE_PGSR1, SLEEP_SAVE_PGSR2,
-
-	SLEEP_SAVE_GAFR0_L, SLEEP_SAVE_GAFR0_U,
-	SLEEP_SAVE_GAFR1_L, SLEEP_SAVE_GAFR1_U,
-	SLEEP_SAVE_GAFR2_L, SLEEP_SAVE_GAFR2_U,
-
+enum {
 	SLEEP_SAVE_PSTR,
-
-	SLEEP_SAVE_ICMR,
 	SLEEP_SAVE_CKEN,
-
-	SLEEP_SAVE_SIZE
+	SLEEP_SAVE_COUNT
 };
 
 
 static void pxa25x_cpu_pm_save(unsigned long *sleep_save)
 {
-	SAVE(GPLR0); SAVE(GPLR1); SAVE(GPLR2);
-	SAVE(GPDR0); SAVE(GPDR1); SAVE(GPDR2);
-	SAVE(GRER0); SAVE(GRER1); SAVE(GRER2);
-	SAVE(GFER0); SAVE(GFER1); SAVE(GFER2);
-	SAVE(PGSR0); SAVE(PGSR1); SAVE(PGSR2);
-
-	SAVE(GAFR0_L); SAVE(GAFR0_U);
-	SAVE(GAFR1_L); SAVE(GAFR1_U);
-	SAVE(GAFR2_L); SAVE(GAFR2_U);
-
-	SAVE(ICMR); ICMR = 0;
 	SAVE(CKEN);
 	SAVE(PSTR);
-
-	/* Clear GPIO transition detect bits */
-	GEDR0 = GEDR0; GEDR1 = GEDR1; GEDR2 = GEDR2;
 }
 
 static void pxa25x_cpu_pm_restore(unsigned long *sleep_save)
 {
-	/* ensure not to come back here if it wasn't intended */
-	PSPR = 0;
-
-	/* restore registers */
-	RESTORE_GPLEVEL(0); RESTORE_GPLEVEL(1); RESTORE_GPLEVEL(2);
-	RESTORE(GPDR0); RESTORE(GPDR1); RESTORE(GPDR2);
-	RESTORE(GAFR0_L); RESTORE(GAFR0_U);
-	RESTORE(GAFR1_L); RESTORE(GAFR1_U);
-	RESTORE(GAFR2_L); RESTORE(GAFR2_U);
-	RESTORE(GRER0); RESTORE(GRER1); RESTORE(GRER2);
-	RESTORE(GFER0); RESTORE(GFER1); RESTORE(GFER2);
-	RESTORE(PGSR0); RESTORE(PGSR1); RESTORE(PGSR2);
-
-	PSSR = PSSR_RDH | PSSR_PH;
-
 	RESTORE(CKEN);
-
-	ICLR = 0;
-	ICCR = 1;
-	RESTORE(ICMR);
 	RESTORE(PSTR);
 }
 
 static void pxa25x_cpu_pm_enter(suspend_state_t state)
 {
-	CKEN = 0;
+	/* Clear reset status */
+	RCSR = RCSR_HWR | RCSR_WDR | RCSR_SMR | RCSR_GPR;
 
 	switch (state) {
 	case PM_SUSPEND_MEM:
-		/* set resume return address */
-		PSPR = virt_to_phys(pxa_cpu_resume);
 		pxa25x_cpu_suspend(PWRMODE_SLEEP);
 		break;
 	}
 }
 
+static int pxa25x_cpu_pm_prepare(void)
+{
+	/* set resume return address */
+	PSPR = virt_to_phys(pxa_cpu_resume);
+	return 0;
+}
+
+static void pxa25x_cpu_pm_finish(void)
+{
+	/* ensure not to come back here if it wasn't intended */
+	PSPR = 0;
+}
+
 static struct pxa_cpu_pm_fns pxa25x_cpu_pm_fns = {
-	.save_size	= SLEEP_SAVE_SIZE,
+	.save_count	= SLEEP_SAVE_COUNT,
 	.valid		= suspend_valid_only_mem,
 	.save		= pxa25x_cpu_pm_save,
 	.restore	= pxa25x_cpu_pm_restore,
 	.enter		= pxa25x_cpu_pm_enter,
+	.prepare	= pxa25x_cpu_pm_prepare,
+	.finish		= pxa25x_cpu_pm_finish,
 };
 
 static void __init pxa25x_init_pm(void)
 {
 	pxa_cpu_pm_fns = &pxa25x_cpu_pm_fns;
 }
+#else
+static inline void pxa25x_init_pm(void) {}
 #endif
 
 /* PXA25x: supports wakeup from GPIO0..GPIO15 and RTC alarm
@@ -244,24 +286,10 @@ static void __init pxa25x_init_pm(void)
 static int pxa25x_set_wake(unsigned int irq, unsigned int on)
 {
 	int gpio = IRQ_TO_GPIO(irq);
-	uint32_t gpio_bit, mask = 0;
+	uint32_t mask = 0;
 
-	if (gpio >= 0 && gpio <= 15) {
-		gpio_bit = GPIO_bit(gpio);
-		mask = gpio_bit;
-		if (on) {
-			if (GRER(gpio) | gpio_bit)
-				PRER |= gpio_bit;
-			else
-				PRER &= ~gpio_bit;
-
-			if (GFER(gpio) | gpio_bit)
-				PFER |= gpio_bit;
-			else
-				PFER &= ~gpio_bit;
-		}
-		goto set_pwer;
-	}
+	if (gpio >= 0 && gpio < 85)
+		return gpio_set_wake(gpio, on);
 
 	if (irq == IRQ_RTCAlrm) {
 		mask = PWER_RTC;
@@ -281,44 +309,76 @@ set_pwer:
 
 void __init pxa25x_init_irq(void)
 {
-	pxa_init_irq_low();
-	pxa_init_irq_gpio(85);
-	pxa_init_irq_set_wake(pxa25x_set_wake);
+	pxa_init_irq(32, pxa25x_set_wake);
+	pxa_init_gpio(85, pxa25x_set_wake);
 }
 
+#ifdef CONFIG_CPU_PXA26x
+void __init pxa26x_init_irq(void)
+{
+	pxa_init_irq(32, pxa25x_set_wake);
+	pxa_init_gpio(90, pxa25x_set_wake);
+}
+#endif
+
 static struct platform_device *pxa25x_devices[] __initdata = {
-	&pxa_device_mci,
-	&pxa_device_udc,
-	&pxa_device_fb,
+	&pxa25x_device_udc,
 	&pxa_device_ffuart,
 	&pxa_device_btuart,
 	&pxa_device_stuart,
-	&pxa_device_i2c,
 	&pxa_device_i2s,
-	&pxa_device_ficp,
-	&pxa_device_rtc,
+	&sa1100_device_rtc,
+	&pxa25x_device_ssp,
+	&pxa25x_device_nssp,
+	&pxa25x_device_assp,
+	&pxa25x_device_pwm0,
+	&pxa25x_device_pwm1,
+};
+
+static struct sys_device pxa25x_sysdev[] = {
+	{
+		.cls	= &pxa_irq_sysclass,
+	}, {
+		.cls	= &pxa2xx_mfp_sysclass,
+	}, {
+		.cls	= &pxa_gpio_sysclass,
+	},
 };
 
 static int __init pxa25x_init(void)
 {
-	int ret = 0;
+	int i, ret = 0;
 
-	if (cpu_is_pxa21x() || cpu_is_pxa25x()) {
-		clks_register(pxa25x_clks, ARRAY_SIZE(pxa25x_clks));
+	if (cpu_is_pxa25x()) {
+
+		reset_status = RCSR;
+
+		clks_register(pxa25x_clkregs, ARRAY_SIZE(pxa25x_clkregs));
 
 		if ((ret = pxa_init_dma(16)))
 			return ret;
-#ifdef CONFIG_PM
+
 		pxa25x_init_pm();
-#endif
+
+		for (i = 0; i < ARRAY_SIZE(pxa25x_sysdev); i++) {
+			ret = sysdev_register(&pxa25x_sysdev[i]);
+			if (ret)
+				pr_err("failed to register sysdev[%d]\n", i);
+		}
+
 		ret = platform_add_devices(pxa25x_devices,
 					   ARRAY_SIZE(pxa25x_devices));
+		if (ret)
+			return ret;
 	}
-	/* Only add HWUART for PXA255/26x; PXA210/250/27x do not have it. */
-	if (cpu_is_pxa25x())
+
+	/* Only add HWUART for PXA255/26x; PXA210/250 do not have it. */
+	if (cpu_is_pxa255()) {
+		clks_register(&pxa25x_hwuart_clkreg, 1);
 		ret = platform_device_register(&pxa_device_hwuart);
+	}
 
 	return ret;
 }
 
-subsys_initcall(pxa25x_init);
+postcore_initcall(pxa25x_init);

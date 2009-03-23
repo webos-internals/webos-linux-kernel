@@ -34,7 +34,12 @@
 #define MTU2_TIER_1	0xfffe4384
 #define MTU2_TSR_1	0xfffe4385
 #define MTU2_TCNT_1	0xfffe4386	/* 16-bit counter */
+
+#if defined(CONFIG_CPU_SUBTYPE_SH7201)
+#define MTU2_TGRA_1	0xfffe4388
+#else
 #define MTU2_TGRA_1	0xfffe438a
+#endif
 
 #define STBCR3		0xfffe0408
 
@@ -76,7 +81,7 @@ static unsigned long mtu2_timer_get_offset(void)
 				count -= LATCH;
 			} else {
 				printk("%s (): hardware timer problem?\n",
-				       __FUNCTION__);
+				       __func__);
 			}
 		}
 	} else
@@ -100,9 +105,7 @@ static irqreturn_t mtu2_timer_interrupt(int irq, void *dev_id)
 	ctrl_outb(timer_status, MTU2_TSR_1);
 
 	/* Do timer tick */
-	write_seqlock(&xtime_lock);
 	handle_timer_tick();
-	write_sequnlock(&xtime_lock);
 
 	return IRQ_HANDLED;
 }
@@ -156,7 +159,6 @@ static int mtu2_timer_stop(void)
 
 static int mtu2_timer_init(void)
 {
-	u8 tmp;
 	unsigned long interval;
 
 	setup_irq(CONFIG_SH_TIMER_IRQ, &mtu2_irq);

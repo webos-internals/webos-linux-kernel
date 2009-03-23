@@ -20,9 +20,10 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
-#include <asm/arch/corgi.h>
-#include <asm/arch/hardware.h>
-#include <asm/arch/pxa-regs.h>
+#include <mach/corgi.h>
+#include <mach/hardware.h>
+#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-gpio.h>
 #include <asm/hardware/scoop.h>
 
 #define KB_ROWS				8
@@ -79,9 +80,9 @@ struct corgikbd {
 #define KB_ACTIVATE_DELAY	10
 
 /* Helper functions for reading the keyboard matrix
- * Note: We should really be using pxa_gpio_mode to alter GPDR but it
- *       requires a function call per GPIO bit which is excessive
- *       when we need to access 12 bits at once multiple times.
+ * Note: We should really be using the generic gpio functions to alter
+ *       GPDR but it requires a function call per GPIO bit which is
+ *       excessive when we need to access 12 bits at once, multiple times.
  * These functions must be called within local_irq_save()/local_irq_restore()
  * or similar.
  */
@@ -287,7 +288,7 @@ static int corgikbd_resume(struct platform_device *dev)
 #define corgikbd_resume		NULL
 #endif
 
-static int __init corgikbd_probe(struct platform_device *pdev)
+static int __devinit corgikbd_probe(struct platform_device *pdev)
 {
 	struct corgikbd *corgikbd;
 	struct input_dev *input_dev;
@@ -367,7 +368,7 @@ static int __init corgikbd_probe(struct platform_device *pdev)
 	return err;
 }
 
-static int corgikbd_remove(struct platform_device *pdev)
+static int __devexit corgikbd_remove(struct platform_device *pdev)
 {
 	int i;
 	struct corgikbd *corgikbd = platform_get_drvdata(pdev);
@@ -387,15 +388,16 @@ static int corgikbd_remove(struct platform_device *pdev)
 
 static struct platform_driver corgikbd_driver = {
 	.probe		= corgikbd_probe,
-	.remove		= corgikbd_remove,
+	.remove		= __devexit_p(corgikbd_remove),
 	.suspend	= corgikbd_suspend,
 	.resume		= corgikbd_resume,
 	.driver		= {
 		.name	= "corgi-keyboard",
+		.owner	= THIS_MODULE,
 	},
 };
 
-static int __devinit corgikbd_init(void)
+static int __init corgikbd_init(void)
 {
 	return platform_driver_register(&corgikbd_driver);
 }
@@ -410,4 +412,5 @@ module_exit(corgikbd_exit);
 
 MODULE_AUTHOR("Richard Purdie <rpurdie@rpsys.net>");
 MODULE_DESCRIPTION("Corgi Keyboard Driver");
-MODULE_LICENSE("GPLv2");
+MODULE_LICENSE("GPL v2");
+MODULE_ALIAS("platform:corgi-keyboard");

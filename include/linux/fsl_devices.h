@@ -14,7 +14,6 @@
  * option) any later version.
  */
 
-#ifdef __KERNEL__
 #ifndef _FSL_DEVICE_H_
 #define _FSL_DEVICE_H_
 
@@ -48,11 +47,7 @@
 struct gianfar_platform_data {
 	/* device specific information */
 	u32	device_flags;
-	/* board specific information */
-	u32	board_flags;
-	u32	bus_id;
-	u32	phy_id;
-	u8	mac_addr[6];
+	char	bus_id[BUS_ID_SIZE];
 	phy_interface_t interface;
 };
 
@@ -60,16 +55,6 @@ struct gianfar_mdio_data {
 	/* board specific information */
 	int	irq[32];
 };
-
-/* Flags related to gianfar device features */
-#define FSL_GIANFAR_DEV_HAS_GIGABIT		0x00000001
-#define FSL_GIANFAR_DEV_HAS_COALESCE		0x00000002
-#define FSL_GIANFAR_DEV_HAS_RMON		0x00000004
-#define FSL_GIANFAR_DEV_HAS_MULTI_INTR		0x00000008
-#define FSL_GIANFAR_DEV_HAS_CSUM		0x00000010
-#define FSL_GIANFAR_DEV_HAS_VLAN		0x00000020
-#define FSL_GIANFAR_DEV_HAS_EXTENDED_HASH	0x00000040
-#define FSL_GIANFAR_DEV_HAS_PADDING		0x00000080
 
 /* Flags in gianfar_platform_data */
 #define FSL_GIANFAR_BRD_HAS_PHY_INTR	0x00000001 /* set or use a timer */
@@ -126,5 +111,10 @@ struct mpc8xx_pcmcia_ops {
 	int(*voltage_set)(int slot, int vcc, int vpp);
 };
 
+/* Returns non-zero if the current suspend operation would
+ * lead to a deep sleep (i.e. power removed from the core,
+ * instead of just the clock).
+ */
+int fsl_deep_sleep(void);
+
 #endif /* _FSL_DEVICE_H_ */
-#endif /* __KERNEL__ */

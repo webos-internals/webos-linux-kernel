@@ -22,6 +22,7 @@
 
 #include <linux/elf.h>
 #include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/fs.h>
 #include <linux/list.h>
 #include <linux/module.h>
@@ -41,7 +42,7 @@ static ssize_t do_coredump_read(int num, struct spu_context *ctx, void *buffer,
 		return spufs_coredump_read[num].read(ctx, buffer, size, off);
 
 	data = spufs_coredump_read[num].get(ctx);
-	ret = snprintf(buffer, size, "0x%.16lx", data);
+	ret = snprintf(buffer, size, "0x%.16llx", data);
 	if (ret >= size)
 		return size;
 	return ++ret; /* count trailing NULL */
@@ -133,8 +134,6 @@ static struct spu_context *coredump_next_context(int *fd)
 		if (ctx->flags & SPU_CREATE_NOSCHED)
 			continue;
 
-		/* start searching the next fd next time we're called */
-		(*fd)++;
 		break;
 	}
 
@@ -148,13 +147,18 @@ int spufs_coredump_extra_notes_size(void)
 
 	fd = 0;
 	while ((ctx = coredump_next_context(&fd)) != NULL) {
-		spu_acquire_saved(ctx);
+		rc = spu_acquire_saved(ctx);
+		if (rc)
+			break;
 		rc = spufs_ctx_note_size(ctx, fd);
 		spu_release_saved(ctx);
 		if (rc < 0)
 			break;
 
 		size += rc;
+
+		/* start searching the next fd next time */
+		fd++;
 	}
 
 	return size;
@@ -224,7 +228,9 @@ int spufs_coredump_extra_notes_write(struct file *file, loff_t *foffset)
 
 	fd = 0;
 	while ((ctx = coredump_next_context(&fd)) != NULL) {
-		spu_acquire_saved(ctx);
+		rc = spu_acquire_saved(ctx);
+		if (rc)
+			return rc;
 
 		for (j = 0; spufs_coredump_read[j].name != NULL; j++) {
 			rc = spufs_arch_write_note(ctx, j, file, fd, foffset);
@@ -235,6 +241,9 @@ int spufs_coredump_extra_notes_write(struct file *file, loff_t *foffset)
 		}
 
 		spu_release_saved(ctx);
+
+		/* start searching the next fd next time */
+		fd++;
 	}
 
 	return 0;

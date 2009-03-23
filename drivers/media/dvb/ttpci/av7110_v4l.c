@@ -316,7 +316,7 @@ static int av7110_dvb_c_switch(struct saa7146_fh *fh)
 	return 0;
 }
 
-static int av7110_ioctl(struct saa7146_fh *fh, unsigned int cmd, void *arg)
+static long av7110_ioctl(struct saa7146_fh *fh, unsigned int cmd, void *arg)
 {
 	struct saa7146_dev *dev = fh->dev;
 	struct av7110 *av7110 = (struct av7110*) dev->ext_priv;
@@ -567,13 +567,13 @@ static int av7110_ioctl(struct saa7146_fh *fh, unsigned int cmd, void *arg)
 	return 0;
 }
 
-static int av7110_vbi_reset(struct inode *inode, struct file *file)
+static int av7110_vbi_reset(struct file *file)
 {
 	struct saa7146_fh *fh = file->private_data;
 	struct saa7146_dev *dev = fh->dev;
 	struct av7110 *av7110 = (struct av7110*) dev->ext_priv;
 
-	dprintk(2, "%s\n", __FUNCTION__);
+	dprintk(2, "%s\n", __func__);
 	av7110->wssMode = 0;
 	av7110->wssData = 0;
 	if (FW_VERSION(av7110->arm_app) < 0x2623)
@@ -590,7 +590,7 @@ static ssize_t av7110_vbi_write(struct file *file, const char __user *data, size
 	struct v4l2_sliced_vbi_data d;
 	int rc;
 
-	dprintk(2, "%s\n", __FUNCTION__);
+	dprintk(2, "%s\n", __func__);
 	if (FW_VERSION(av7110->arm_app) < 0x2623 || !av7110->wssMode || count != sizeof d)
 		return -EINVAL;
 	if (copy_from_user(&d, data, count))
@@ -876,11 +876,11 @@ static int std_callback(struct saa7146_dev* dev, struct saa7146_standard *std)
 	struct av7110 *av7110 = (struct av7110*) dev->ext_priv;
 
 	if (std->id & V4L2_STD_PAL) {
-		av7110->vidmode = VIDEO_MODE_PAL;
+		av7110->vidmode = AV7110_VIDEO_MODE_PAL;
 		av7110_set_vidmode(av7110, av7110->vidmode);
 	}
 	else if (std->id & V4L2_STD_NTSC) {
-		av7110->vidmode = VIDEO_MODE_NTSC;
+		av7110->vidmode = AV7110_VIDEO_MODE_NTSC;
 		av7110_set_vidmode(av7110, av7110->vidmode);
 	}
 	else

@@ -3,10 +3,12 @@
 #
 
 obj-y := \
-	cache.o cacheinit.o cplbhdlr.o cplbmgr.o entry.o \
-	interrupt.o lock.o irqpanic.o arch_checks.o
+	cache.o cache-c.o entry.o head.o \
+	interrupt.o irqpanic.o arch_checks.o ints-priority.o
 
-obj-$(CONFIG_CPLB_INFO)          += cplbinfo.o
-obj-$(CONFIG_BFIN_SINGLE_CORE)   += ints-priority-sc.o
-obj-$(CONFIG_BFIN_DUAL_CORE)     += ints-priority-dc.o
-obj-$(CONFIG_PM)                 += pm.o dpmc.o
+obj-$(CONFIG_BFIN_ICACHE_LOCK) += lock.o
+obj-$(CONFIG_PM)          += pm.o dpmc_modes.o
+obj-$(CONFIG_CPU_FREQ)    += cpufreq.o
+obj-$(CONFIG_CPU_VOLTAGE) += dpmc.o
+obj-$(CONFIG_SMP)         += smp.o
+obj-$(CONFIG_BFIN_KERNEL_CLOCK) += clocks-init.o

@@ -95,8 +95,11 @@ static inline void localtime_2(struct xtm *r, time_t time)
 	 */
 	r->dse = time / 86400;
 
-	/* 1970-01-01 (w=0) was a Thursday (4). */
-	r->weekday = (4 + r->dse) % 7;
+	/*
+	 * 1970-01-01 (w=0) was a Thursday (4).
+	 * -1 and +1 map Sunday properly onto 7.
+	 */
+	r->weekday = (4 + r->dse - 1) % 7 + 1;
 }
 
 static void localtime_3(struct xtm *r, time_t time)
@@ -133,27 +136,26 @@ static void localtime_3(struct xtm *r, time_t time)
 	 * from w repeatedly while counting.)
 	 */
 	if (is_leap(year)) {
+		/* use days_since_leapyear[] in a leap year */
 		for (i = ARRAY_SIZE(days_since_leapyear) - 1;
-		    i > 0 && days_since_year[i] > w; --i)
+		    i > 0 && days_since_leapyear[i] > w; --i)
 			/* just loop */;
+		r->monthday = w - days_since_leapyear[i] + 1;
 	} else {
 		for (i = ARRAY_SIZE(days_since_year) - 1;
 		    i > 0 && days_since_year[i] > w; --i)
 			/* just loop */;
+		r->monthday = w - days_since_year[i] + 1;
 	}
 
 	r->month    = i + 1;
-	r->monthday = w - days_since_year[i] + 1;
 	return;
 }
 
-static bool xt_time_match(const struct sk_buff *skb,
-                          const struct net_device *in,
-                          const struct net_device *out,
-                          const struct xt_match *match, const void *matchinfo,
-                          int offset, unsigned int protoff, bool *hotdrop)
+static bool
+time_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 {
-	const struct xt_time_info *info = matchinfo;
+	const struct xt_time_info *info = par->matchinfo;
 	unsigned int packet_time;
 	struct xtm current_time;
 	s64 stamp;
@@ -171,7 +173,7 @@ static bool xt_time_match(const struct sk_buff *skb,
 		__net_timestamp((struct sk_buff *)skb);
 
 	stamp = ktime_to_ns(skb->tstamp);
-	do_div(stamp, NSEC_PER_SEC);
+	stamp = div_s64(stamp, NSEC_PER_SEC);
 
 	if (info->flags & XT_TIME_LOCAL_TZ)
 		/* Adjust for local timezone */
@@ -216,11 +218,9 @@ static bool xt_time_match(const struct sk_buff *skb,
 	return true;
 }
 
-static bool xt_time_check(const char *tablename, const void *ip,
-                          const struct xt_match *match, void *matchinfo,
-                          unsigned int hook_mask)
+static bool time_mt_check(const struct xt_mtchk_param *par)
 {
-	struct xt_time_info *info = matchinfo;
+	const struct xt_time_info *info = par->matchinfo;
 
 	if (info->daytime_start > XT_TIME_MAX_DAYTIME ||
 	    info->daytime_stop > XT_TIME_MAX_DAYTIME) {
@@ -232,39 +232,40 @@ static bool xt_time_check(const char *tablename, const void *ip,
 	return true;
 }
 
-static struct xt_match xt_time_reg[] __read_mostly = {
-	{
-		.name       = "time",
-		.family     = AF_INET,
-		.match      = xt_time_match,
-		.matchsize  = sizeof(struct xt_time_info),
-		.checkentry = xt_time_check,
-		.me         = THIS_MODULE,
-	},
-	{
-		.name       = "time",
-		.family     = AF_INET6,
-		.match      = xt_time_match,
-		.matchsize  = sizeof(struct xt_time_info),
-		.checkentry = xt_time_check,
-		.me         = THIS_MODULE,
-	},
+static struct xt_match xt_time_mt_reg __read_mostly = {
+	.name       = "time",
+	.family     = NFPROTO_UNSPEC,
+	.match      = time_mt,
+	.checkentry = time_mt_check,
+	.matchsize  = sizeof(struct xt_time_info),
+	.me         = THIS_MODULE,
 };
 
-static int __init xt_time_init(void)
+static int __init time_mt_init(void)
 {
-	return xt_register_matches(xt_time_reg, ARRAY_SIZE(xt_time_reg));
+	int minutes = sys_tz.tz_minuteswest;
+
+	if (minutes < 0) /* east of Greenwich */
+		printk(KERN_INFO KBUILD_MODNAME
+		       ": kernel timezone is +%02d%02d\n",
+		       -minutes / 60, -minutes % 60);
+	else /* west of Greenwich */
+		printk(KERN_INFO KBUILD_MODNAME
+		       ": kernel timezone is -%02d%02d\n",
+		       minutes / 60, minutes % 60);
+
+	return xt_register_match(&xt_time_mt_reg);
 }
 
-static void __exit xt_time_exit(void)
+static void __exit time_mt_exit(void)
 {
-	xt_unregister_matches(xt_time_reg, ARRAY_SIZE(xt_time_reg));
+	xt_unregister_match(&xt_time_mt_reg);
 }
 
-module_init(xt_time_init);
-module_exit(xt_time_exit);
+module_init(time_mt_init);
+module_exit(time_mt_exit);
 MODULE_AUTHOR("Jan Engelhardt <jengelh@computergmbh.de>");
-MODULE_DESCRIPTION("netfilter time match");
+MODULE_DESCRIPTION("Xtables: time-based matching");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("ipt_time");
 MODULE_ALIAS("ip6t_time");

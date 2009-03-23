@@ -63,11 +63,12 @@ void ap_control_flush_macs(struct mac_restrictions *mac_restrictions);
 int ap_control_kick_mac(struct ap_data *ap, struct net_device *dev, u8 *mac);
 void ap_control_kickall(struct ap_data *ap);
 void * ap_crypt_get_ptrs(struct ap_data *ap, u8 *addr, int permanent,
-			 struct ieee80211_crypt_data ***crypt);
+			 struct lib80211_crypt_data ***crypt);
 int prism2_ap_get_sta_qual(local_info_t *local, struct sockaddr addr[],
 			   struct iw_quality qual[], int buf_size,
 			   int aplist);
-int prism2_ap_translate_scan(struct net_device *dev, char *buffer);
+int prism2_ap_translate_scan(struct net_device *dev,
+			     struct iw_request_info *info, char *buffer);
 int prism2_hostapd(struct ap_data *ap, struct prism2_hostapd_param *param);
 
 

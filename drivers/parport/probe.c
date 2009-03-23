@@ -1,4 +1,4 @@
-/* $Id: parport_probe.c,v 1.1 1999/07/03 08:56:17 davem Exp $
+/*
  * Parallel port device probing code
  *
  * Authors:    Carsten Gross, carsten@sol.wohnheim.uni-ulm.de
@@ -163,7 +163,7 @@ static ssize_t parport_read_device_id (struct parport *port, char *buffer,
 	idlens[1] = idlens[0]+2;
 	if (belen != lelen) {
 		int off = 2;
-		/* Don't try lenghts of 0x100 and 0x200 as 1 and 2 */
+		/* Don't try lengths of 0x100 and 0x200 as 1 and 2 */
 		if (idlens[0] <= 2)
 			off = 0;
 		idlens[off] = max(belen, lelen);

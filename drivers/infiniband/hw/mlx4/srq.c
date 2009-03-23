@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2007 Cisco Systems, Inc. All rights reserved.
+ * Copyright (c) 2007, 2008 Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -38,13 +39,7 @@
 
 static void *get_wqe(struct mlx4_ib_srq *srq, int n)
 {
-	int offset = n << srq->msrq.wqe_shift;
-
-	if (srq->buf.nbufs == 1)
-		return srq->buf.u.direct.buf + offset;
-	else
-		return srq->buf.u.page_list[offset >> PAGE_SHIFT].buf +
-			(offset & (PAGE_SIZE - 1));
+	return mlx4_buf_offset(&srq->buf, n << srq->msrq.wqe_shift);
 }
 
 static void mlx4_ib_srq_event(struct mlx4_srq *srq, enum mlx4_event type)
@@ -115,7 +110,7 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 		}
 
 		srq->umem = ib_umem_get(pd->uobject->context, ucmd.buf_addr,
-					buf_size, 0);
+					buf_size, 0, 0);
 		if (IS_ERR(srq->umem)) {
 			err = PTR_ERR(srq->umem);
 			goto err_srq;
@@ -135,7 +130,7 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 		if (err)
 			goto err_mtt;
 	} else {
-		err = mlx4_ib_db_alloc(dev, &srq->db, 0);
+		err = mlx4_db_alloc(dev->dev, &srq->db, 0);
 		if (err)
 			goto err_srq;
 
@@ -206,7 +201,7 @@ err_buf:
 
 err_db:
 	if (!pd->uobject)
-		mlx4_ib_db_free(dev, &srq->db);
+		mlx4_db_free(dev->dev, &srq->db);
 
 err_srq:
 	kfree(srq);
@@ -273,7 +268,7 @@ int mlx4_ib_destroy_srq(struct ib_srq *srq)
 		kfree(msrq->wrid);
 		mlx4_buf_free(dev->dev, msrq->msrq.max << msrq->msrq.wqe_shift,
 			      &msrq->buf);
-		mlx4_ib_db_free(dev, &msrq->db);
+		mlx4_db_free(dev->dev, &msrq->db);
 	}
 
 	kfree(msrq);

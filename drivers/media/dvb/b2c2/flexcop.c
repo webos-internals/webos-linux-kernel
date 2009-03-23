@@ -49,6 +49,8 @@ module_param_named(debug, b2c2_flexcop_debug,  int, 0644);
 MODULE_PARM_DESC(debug, "set debug level (1=info,2=tuner,4=i2c,8=ts,16=sram,32=reg (|-able))." DEBSTATUS);
 #undef DEBSTATUS
 
+DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
+
 /* global zero for ibi values */
 flexcop_ibi_value ibi_zero;
 
@@ -66,8 +68,10 @@ static int flexcop_dvb_stop_feed(struct dvb_demux_feed *dvbdmxfeed)
 
 static int flexcop_dvb_init(struct flexcop_device *fc)
 {
-	int ret;
-	if ((ret = dvb_register_adapter(&fc->dvb_adapter,"FlexCop Digital TV device",fc->owner,fc->dev)) < 0) {
+	int ret = dvb_register_adapter(&fc->dvb_adapter,
+				       "FlexCop Digital TV device", fc->owner,
+				       fc->dev, adapter_nr);
+	if (ret < 0) {
 		err("error registering DVB adapter");
 		return ret;
 	}
@@ -208,11 +212,9 @@ void flexcop_reset_block_300(struct flexcop_device *fc)
 	v210.sw_reset_210.Block_reset_enable = 0xb2;
 
 	fc->write_ibi_reg(fc,sw_reset_210,v210);
-	msleep(1);
-
+	udelay(1000);
 	fc->write_ibi_reg(fc,ctrl_208,v208_save);
 }
-EXPORT_SYMBOL(flexcop_reset_block_300);
 
 struct flexcop_device *flexcop_device_kmalloc(size_t bus_specific_len)
 {
@@ -258,18 +260,20 @@ int flexcop_device_initialize(struct flexcop_device *fc)
 	if ((ret = flexcop_dvb_init(fc)))
 		goto error;
 
+	/* i2c has to be done before doing EEProm stuff -
+	 * because the EEProm is accessed via i2c */
+	ret = flexcop_i2c_init(fc);
+	if (ret)
+		goto error;
+
 	/* do the MAC address reading after initializing the dvb_adapter */
 	if (fc->get_mac_addr(fc, 0) == 0) {
 		u8 *b = fc->dvb_adapter.proposed_mac;
-		info("MAC address = %02x:%02x:%02x:%02x:%02x:%02x", b[0],b[1],b[2],b[3],b[4],b[5]);
+		info("MAC address = %pM", b);
 		flexcop_set_mac_filter(fc,b);
 		flexcop_mac_filter_ctrl(fc,1);
 	} else
 		warn("reading of MAC address failed.\n");
-
-
-	if ((ret = flexcop_i2c_init(fc)))
-		goto error;
 
 	if ((ret = flexcop_frontend_init(fc)))
 		goto error;

@@ -212,7 +212,7 @@ nla_put_failure:
 	return -ENOBUFS;
 }
 
-static u32 dn_fib_rule_default_pref(void)
+static u32 dn_fib_rule_default_pref(struct fib_rules_ops *ops)
 {
 	struct list_head *pos;
 	struct fib_rule *rule;
@@ -229,7 +229,7 @@ static u32 dn_fib_rule_default_pref(void)
 	return 0;
 }
 
-static void dn_fib_rule_flush_cache(void)
+static void dn_fib_rule_flush_cache(struct fib_rules_ops *ops)
 {
 	dn_rt_cache_flush(-1);
 }
@@ -249,6 +249,7 @@ static struct fib_rules_ops dn_fib_rules_ops = {
 	.policy		= dn_fib_rule_policy,
 	.rules_list	= LIST_HEAD_INIT(dn_fib_rules_ops.rules_list),
 	.owner		= THIS_MODULE,
+	.fro_net	= &init_net,
 };
 
 void __init dn_fib_rules_init(void)

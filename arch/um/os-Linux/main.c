@@ -73,7 +73,7 @@ static void install_fatal_handler(int sig)
 	action.sa_handler = last_ditch_exit;
 	if (sigaction(sig, &action, NULL) < 0) {
 		printf("failed to install handler for signal %d - errno = %d\n",
-		       errno);
+		       sig, errno);
 		exit(1);
 	}
 }
@@ -92,7 +92,8 @@ static void setup_env_path(void)
 	 * just use the default + /usr/lib/uml
 	 */
 	if (!old_path || (path_len = strlen(old_path)) == 0) {
-		putenv("PATH=:/bin:/usr/bin/" UML_LIB_PATH);
+		if (putenv("PATH=:/bin:/usr/bin/" UML_LIB_PATH))
+			perror("couldn't putenv");
 		return;
 	}
 
@@ -100,14 +101,15 @@ static void setup_env_path(void)
 	path_len += strlen("PATH=" UML_LIB_PATH) + 1;
 	new_path = malloc(path_len);
 	if (!new_path) {
-		perror("coudn't malloc to set a new PATH");
+		perror("couldn't malloc to set a new PATH");
 		return;
 	}
 	snprintf(new_path, path_len, "PATH=%s" UML_LIB_PATH, old_path);
-	putenv(new_path);
+	if (putenv(new_path)) {
+		perror("couldn't putenv to set a new PATH");
+		free(new_path);
+	}
 }
-
-extern int uml_exitcode;
 
 extern void scan_elf_aux( char **envp);
 
@@ -197,7 +199,7 @@ void *__wrap_malloc(int size)
 		return __real_malloc(size);
 	else if (size <= UM_KERN_PAGE_SIZE)
 		/* finding contiguous pages can be hard*/
-		ret = kmalloc(size, UM_GFP_KERNEL);
+		ret = uml_kmalloc(size, UM_GFP_KERNEL);
 	else ret = vmalloc(size);
 
 	/*

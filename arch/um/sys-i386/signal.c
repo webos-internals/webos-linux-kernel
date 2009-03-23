@@ -3,10 +3,10 @@
  * Licensed under the GPL
  */
 
-#include "linux/ptrace.h"
-#include "asm/unistd.h"
-#include "asm/uaccess.h"
-#include "asm/ucontext.h"
+#include <linux/ptrace.h>
+#include <asm/unistd.h>
+#include <asm/uaccess.h>
+#include <asm/ucontext.h>
 #include "frame_kern.h"
 #include "skas.h"
 
@@ -18,17 +18,17 @@ void copy_sc(struct uml_pt_regs *regs, void *from)
 	REGS_FS(regs->gp) = sc->fs;
 	REGS_ES(regs->gp) = sc->es;
 	REGS_DS(regs->gp) = sc->ds;
-	REGS_EDI(regs->gp) = sc->edi;
-	REGS_ESI(regs->gp) = sc->esi;
-	REGS_EBP(regs->gp) = sc->ebp;
-	REGS_SP(regs->gp) = sc->esp;
-	REGS_EBX(regs->gp) = sc->ebx;
-	REGS_EDX(regs->gp) = sc->edx;
-	REGS_ECX(regs->gp) = sc->ecx;
-	REGS_EAX(regs->gp) = sc->eax;
-	REGS_IP(regs->gp) = sc->eip;
+	REGS_EDI(regs->gp) = sc->di;
+	REGS_ESI(regs->gp) = sc->si;
+	REGS_EBP(regs->gp) = sc->bp;
+	REGS_SP(regs->gp) = sc->sp;
+	REGS_EBX(regs->gp) = sc->bx;
+	REGS_EDX(regs->gp) = sc->dx;
+	REGS_ECX(regs->gp) = sc->cx;
+	REGS_EAX(regs->gp) = sc->ax;
+	REGS_IP(regs->gp) = sc->ip;
 	REGS_CS(regs->gp) = sc->cs;
-	REGS_EFLAGS(regs->gp) = sc->eflags;
+	REGS_EFLAGS(regs->gp) = sc->flags;
 	REGS_SS(regs->gp) = sc->ss;
 }
 
@@ -168,17 +168,19 @@ static int copy_sc_from_user(struct pt_regs *regs,
 			     struct sigcontext __user *from)
 {
 	struct sigcontext sc;
-	int err;
+	int err, pid;
 
 	err = copy_from_user(&sc, from, sizeof(sc));
 	if (err)
 		return err;
 
+	pid = userspace_pid[current_thread_info()->cpu];
 	copy_sc(&regs->regs, &sc);
 	if (have_fpx_regs) {
 		struct user_fxsr_struct fpx;
 
-		err = copy_from_user(&fpx, &sc.fpstate->_fxsr_env[0],
+		err = copy_from_user(&fpx,
+			&((struct _fpstate __user *)sc.fpstate)->_fxsr_env[0],
 				     sizeof(struct user_fxsr_struct));
 		if (err)
 			return 1;
@@ -187,8 +189,7 @@ static int copy_sc_from_user(struct pt_regs *regs,
 		if (err)
 			return 1;
 
-		err = restore_fpx_registers(userspace_pid[current_thread->cpu],
-					    (unsigned long *) &fpx);
+		err = restore_fpx_registers(pid, (unsigned long *) &fpx);
 		if (err < 0) {
 			printk(KERN_ERR "copy_sc_from_user - "
 			       "restore_fpx_registers failed, errno = %d\n",
@@ -204,8 +205,7 @@ static int copy_sc_from_user(struct pt_regs *regs,
 		if (err)
 			return 1;
 
-		err = restore_fp_registers(userspace_pid[current_thread->cpu],
-					   (unsigned long *) &fp);
+		err = restore_fp_registers(pid, (unsigned long *) &fp);
 		if (err < 0) {
 			printk(KERN_ERR "copy_sc_from_user - "
 			       "restore_fp_registers failed, errno = %d\n",
@@ -223,24 +223,24 @@ static int copy_sc_to_user(struct sigcontext __user *to,
 {
 	struct sigcontext sc;
 	struct faultinfo * fi = &current->thread.arch.faultinfo;
-	int err;
+	int err, pid;
 
 	sc.gs = REGS_GS(regs->regs.gp);
 	sc.fs = REGS_FS(regs->regs.gp);
 	sc.es = REGS_ES(regs->regs.gp);
 	sc.ds = REGS_DS(regs->regs.gp);
-	sc.edi = REGS_EDI(regs->regs.gp);
-	sc.esi = REGS_ESI(regs->regs.gp);
-	sc.ebp = REGS_EBP(regs->regs.gp);
-	sc.esp = sp;
-	sc.ebx = REGS_EBX(regs->regs.gp);
-	sc.edx = REGS_EDX(regs->regs.gp);
-	sc.ecx = REGS_ECX(regs->regs.gp);
-	sc.eax = REGS_EAX(regs->regs.gp);
-	sc.eip = REGS_IP(regs->regs.gp);
+	sc.di = REGS_EDI(regs->regs.gp);
+	sc.si = REGS_ESI(regs->regs.gp);
+	sc.bp = REGS_EBP(regs->regs.gp);
+	sc.sp = sp;
+	sc.bx = REGS_EBX(regs->regs.gp);
+	sc.dx = REGS_EDX(regs->regs.gp);
+	sc.cx = REGS_ECX(regs->regs.gp);
+	sc.ax = REGS_EAX(regs->regs.gp);
+	sc.ip = REGS_IP(regs->regs.gp);
 	sc.cs = REGS_CS(regs->regs.gp);
-	sc.eflags = REGS_EFLAGS(regs->regs.gp);
-	sc.esp_at_signal = regs->regs.gp[UESP];
+	sc.flags = REGS_EFLAGS(regs->regs.gp);
+	sc.sp_at_signal = regs->regs.gp[UESP];
 	sc.ss = regs->regs.gp[SS];
 	sc.cr2 = fi->cr2;
 	sc.err = fi->error_code;
@@ -249,11 +249,11 @@ static int copy_sc_to_user(struct sigcontext __user *to,
 	to_fp = (to_fp ? to_fp : (struct _fpstate __user *) (to + 1));
 	sc.fpstate = to_fp;
 
+	pid = userspace_pid[current_thread_info()->cpu];
 	if (have_fpx_regs) {
 		struct user_fxsr_struct fpx;
 
-		err = save_fpx_registers(userspace_pid[current_thread->cpu],
-					 (unsigned long *) &fpx);
+		err = save_fpx_registers(pid, (unsigned long *) &fpx);
 		if (err < 0){
 			printk(KERN_ERR "copy_sc_to_user - save_fpx_registers "
 			       "failed, errno = %d\n", err);
@@ -276,8 +276,7 @@ static int copy_sc_to_user(struct sigcontext __user *to,
 	else {
 		struct user_i387_struct fp;
 
-		err = save_fp_registers(userspace_pid[current_thread->cpu],
-					(unsigned long *) &fp);
+		err = save_fp_registers(pid, (unsigned long *) &fp);
 		if (copy_to_user(to_fp, &fp, sizeof(struct user_i387_struct)))
 			return 1;
 	}

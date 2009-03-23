@@ -102,7 +102,6 @@ enum
 	KERN_NODENAME=7,
 	KERN_DOMAINNAME=8,
 
-	KERN_CAP_BSET=14,	/* int: capability bounding set */
 	KERN_PANIC=15,		/* int: panic timeout */
 	KERN_REALROOTDEV=16,	/* real root device to mount after initrd */
 
@@ -440,8 +439,8 @@ enum
 
 enum {
 	NET_IPV4_ROUTE_FLUSH=1,
-	NET_IPV4_ROUTE_MIN_DELAY=2,
-	NET_IPV4_ROUTE_MAX_DELAY=3,
+	NET_IPV4_ROUTE_MIN_DELAY=2, /* obsolete since 2.6.25 */
+	NET_IPV4_ROUTE_MAX_DELAY=3, /* obsolete since 2.6.25 */
 	NET_IPV4_ROUTE_GC_THRESH=4,
 	NET_IPV4_ROUTE_MAX_SIZE=5,
 	NET_IPV4_ROUTE_GC_MIN_INTERVAL=6,
@@ -945,13 +944,35 @@ enum
 
 /* For the /proc/sys support */
 struct ctl_table;
+struct nsproxy;
+struct ctl_table_root;
+
+struct ctl_table_set {
+	struct list_head list;
+	struct ctl_table_set *parent;
+	int (*is_seen)(struct ctl_table_set *);
+};
+
+extern void setup_sysctl_set(struct ctl_table_set *p,
+	struct ctl_table_set *parent,
+	int (*is_seen)(struct ctl_table_set *));
+
+struct ctl_table_header;
+
+extern void sysctl_head_get(struct ctl_table_header *);
+extern void sysctl_head_put(struct ctl_table_header *);
+extern int sysctl_is_seen(struct ctl_table_header *);
+extern struct ctl_table_header *sysctl_head_grab(struct ctl_table_header *);
 extern struct ctl_table_header *sysctl_head_next(struct ctl_table_header *prev);
+extern struct ctl_table_header *__sysctl_head_next(struct nsproxy *namespaces,
+						struct ctl_table_header *prev);
 extern void sysctl_head_finish(struct ctl_table_header *prev);
-extern int sysctl_perm(struct ctl_table *table, int op);
+extern int sysctl_perm(struct ctl_table_root *root,
+		struct ctl_table *table, int op);
 
 typedef struct ctl_table ctl_table;
 
-typedef int ctl_handler (struct ctl_table *table, int __user *name, int nlen,
+typedef int ctl_handler (struct ctl_table *table,
 			 void __user *oldval, size_t __user *oldlenp,
 			 void __user *newval, size_t newlen);
 
@@ -962,8 +983,6 @@ extern int proc_dostring(struct ctl_table *, int, struct file *,
 			 void __user *, size_t *, loff_t *);
 extern int proc_dointvec(struct ctl_table *, int, struct file *,
 			 void __user *, size_t *, loff_t *);
-extern int proc_dointvec_bset(struct ctl_table *, int, struct file *,
-			      void __user *, size_t *, loff_t *);
 extern int proc_dointvec_minmax(struct ctl_table *, int, struct file *,
 				void __user *, size_t *, loff_t *);
 extern int proc_dointvec_jiffies(struct ctl_table *, int, struct file *,
@@ -980,11 +999,6 @@ extern int proc_doulongvec_ms_jiffies_minmax(struct ctl_table *table, int,
 extern int do_sysctl (int __user *name, int nlen,
 		      void __user *oldval, size_t __user *oldlenp,
 		      void __user *newval, size_t newlen);
-
-extern int do_sysctl_strategy (struct ctl_table *table,
-			       int __user *name, int nlen,
-			       void __user *oldval, size_t __user *oldlenp,
-			       void __user *newval, size_t newlen);
 
 extern ctl_handler sysctl_data;
 extern ctl_handler sysctl_string;
@@ -1049,6 +1063,15 @@ struct ctl_table
 	void *extra2;
 };
 
+struct ctl_table_root {
+	struct list_head root_list;
+	struct ctl_table_set default_set;
+	struct ctl_table_set *(*lookup)(struct ctl_table_root *root,
+					   struct nsproxy *namespaces);
+	int (*permissions)(struct ctl_table_root *root,
+			struct nsproxy *namespaces, struct ctl_table *table);
+};
+
 /* struct ctl_table_header is used to maintain dynamic lists of
    struct ctl_table trees. */
 struct ctl_table_header
@@ -1056,15 +1079,32 @@ struct ctl_table_header
 	struct ctl_table *ctl_table;
 	struct list_head ctl_entry;
 	int used;
+	int count;
 	struct completion *unregistering;
+	struct ctl_table *ctl_table_arg;
+	struct ctl_table_root *root;
+	struct ctl_table_set *set;
+	struct ctl_table *attached_by;
+	struct ctl_table *attached_to;
+	struct ctl_table_header *parent;
 };
 
+/* struct ctl_path describes where in the hierarchy a table is added */
+struct ctl_path {
+	const char *procname;
+	int ctl_name;
+};
+
+void register_sysctl_root(struct ctl_table_root *root);
+struct ctl_table_header *__register_sysctl_paths(
+	struct ctl_table_root *root, struct nsproxy *namespaces,
+	const struct ctl_path *path, struct ctl_table *table);
 struct ctl_table_header *register_sysctl_table(struct ctl_table * table);
+struct ctl_table_header *register_sysctl_paths(const struct ctl_path *path,
+						struct ctl_table *table);
 
 void unregister_sysctl_table(struct ctl_table_header * table);
-int sysctl_check_table(struct ctl_table *table);
-
-#else /* __KERNEL__ */
+int sysctl_check_table(struct nsproxy *namespaces, struct ctl_table *table);
 
 #endif /* __KERNEL__ */
 

@@ -378,7 +378,7 @@ static int pcm_digital_in_open(struct snd_pcm_substream *substream)
 
 	DE_ACT(("pcm_digital_in_open\n"));
 	max_channels = num_digital_busses_in(chip) - substream->number;
-	down(&chip->mode_mutex);
+	mutex_lock(&chip->mode_mutex);
 	if (chip->digital_mode == DIGITAL_MODE_ADAT)
 		err = pcm_open(substream, max_channels);
 	else	/* If the card has ADAT, subtract the 6 channels
@@ -405,7 +405,7 @@ static int pcm_digital_in_open(struct snd_pcm_substream *substream)
 		chip->can_set_rate=0;
 
 din_exit:
-	up(&chip->mode_mutex);
+	mutex_unlock(&chip->mode_mutex);
 	return err;
 }
 
@@ -420,7 +420,7 @@ static int pcm_digital_out_open(struct snd_pcm_substream *substream)
 
 	DE_ACT(("pcm_digital_out_open\n"));
 	max_channels = num_digital_busses_out(chip) - substream->number;
-	down(&chip->mode_mutex);
+	mutex_lock(&chip->mode_mutex);
 	if (chip->digital_mode == DIGITAL_MODE_ADAT)
 		err = pcm_open(substream, max_channels);
 	else	/* If the card has ADAT, subtract the 6 channels
@@ -447,7 +447,7 @@ static int pcm_digital_out_open(struct snd_pcm_substream *substream)
 	if (atomic_read(&chip->opencount) > 1 && chip->rate_set)
 		chip->can_set_rate=0;
 dout_exit:
-	up(&chip->mode_mutex);
+	mutex_unlock(&chip->mode_mutex);
 	return err;
 }
 
@@ -490,7 +490,6 @@ static int init_engine(struct snd_pcm_substream *substream,
 {
 	struct echoaudio *chip;
 	int err, per, rest, page, edge, offs;
-	struct snd_sg_buf *sgbuf;
 	struct audiopipe *pipe;
 
 	chip = snd_pcm_substream_chip(substream);
@@ -503,7 +502,7 @@ static int init_engine(struct snd_pcm_substream *substream,
 	if (pipe->index >= 0) {
 		DE_HWP(("hwp_ie free(%d)\n", pipe->index));
 		err = free_pipes(chip, pipe);
-		snd_assert(!err);
+		snd_BUG_ON(err);
 		chip->substream[pipe->index] = NULL;
 	}
 
@@ -531,10 +530,6 @@ static int init_engine(struct snd_pcm_substream *substream,
 		return err;
 	}
 
-	sgbuf = snd_pcm_substream_sgbuf(substream);
-
-	DE_HWP(("pcm_hw_params table size=%d pages=%d\n",
-		sgbuf->size, sgbuf->pages));
 	sglist_init(chip, pipe);
 	edge = PAGE_SIZE;
 	for (offs = page = per = 0; offs < params_buffer_bytes(hw_params);
@@ -543,16 +538,15 @@ static int init_engine(struct snd_pcm_substream *substream,
 		if (offs + rest > params_buffer_bytes(hw_params))
 			rest = params_buffer_bytes(hw_params) - offs;
 		while (rest) {
+			dma_addr_t addr;
+			addr = snd_pcm_sgbuf_get_addr(substream, offs);
 			if (rest <= edge - offs) {
-				sglist_add_mapping(chip, pipe,
-						   snd_sgbuf_get_addr(sgbuf, offs),
-						   rest);
+				sglist_add_mapping(chip, pipe, addr, rest);
 				sglist_add_irq(chip, pipe);
 				offs += rest;
 				rest = 0;
 			} else {
-				sglist_add_mapping(chip, pipe,
-						   snd_sgbuf_get_addr(sgbuf, offs),
+				sglist_add_mapping(chip, pipe, addr,
 						   edge - offs);
 				rest -= edge - offs;
 				offs = edge;
@@ -690,8 +684,10 @@ static int pcm_prepare(struct snd_pcm_substream *substream)
 		return -EINVAL;
 	}
 
-	snd_assert(pipe_index < px_num(chip), return -EINVAL);
-	snd_assert(is_pipe_allocated(chip, pipe_index), return -EINVAL);
+	if (snd_BUG_ON(pipe_index >= px_num(chip)))
+		return -EINVAL;
+	if (snd_BUG_ON(!is_pipe_allocated(chip, pipe_index)))
+		return -EINVAL;
 	set_audio_format(chip, pipe_index, &format);
 	return 0;
 }
@@ -1420,7 +1416,7 @@ static int snd_echo_digital_mode_put(struct snd_kcontrol *kcontrol,
 	if (dmode != chip->digital_mode) {
 		/* mode_mutex is required to make this operation atomic wrt
 		pcm_digital_*_open() and set_input_clock() functions. */
-		down(&chip->mode_mutex);
+		mutex_lock(&chip->mode_mutex);
 
 		/* Do not allow the user to change the digital mode when a pcm
 		device is open because it also changes the number of channels
@@ -1439,7 +1435,7 @@ static int snd_echo_digital_mode_put(struct snd_kcontrol *kcontrol,
 			if (changed >= 0)
 				changed = 1;	/* No errors */
 		}
-		up(&chip->mode_mutex);
+		mutex_unlock(&chip->mode_mutex);
 	}
 	return changed;
 }
@@ -1566,12 +1562,12 @@ static int snd_echo_clock_source_put(struct snd_kcontrol *kcontrol,
 		return -EINVAL;
 	dclock = chip->clock_source_list[eclock];
 	if (chip->input_clock != dclock) {
-		down(&chip->mode_mutex);
+		mutex_lock(&chip->mode_mutex);
 		spin_lock_irq(&chip->lock);
 		if ((changed = set_input_clock(chip, dclock)) == 0)
 			changed = 1;	/* no errors */
 		spin_unlock_irq(&chip->lock);
-		up(&chip->mode_mutex);
+		mutex_unlock(&chip->mode_mutex);
 	}
 
 	if (changed < 0)
@@ -1852,14 +1848,15 @@ static irqreturn_t snd_echo_interrupt(int irq, void *dev_id)
 static int snd_echo_free(struct echoaudio *chip)
 {
 	DE_INIT(("Stop DSP...\n"));
-	if (chip->comm_page) {
+	if (chip->comm_page)
 		rest_in_peace(chip);
-		snd_dma_free_pages(&chip->commpage_dma_buf);
-	}
 	DE_INIT(("Stopped.\n"));
 
 	if (chip->irq >= 0)
 		free_irq(chip->irq, chip);
+
+	if (chip->comm_page)
+		snd_dma_free_pages(&chip->commpage_dma_buf);
 
 	if (chip->dsp_registers)
 		iounmap(chip->dsp_registers);
@@ -1972,7 +1969,7 @@ static __devinit int snd_echo_create(struct snd_card *card,
 		return err;
 	}
 	atomic_set(&chip->opencount, 0);
-	init_MUTEX(&chip->mode_mutex);
+	mutex_init(&chip->mode_mutex);
 	chip->can_set_rate = 1;
 	*rchip = chip;
 	/* Init done ! */

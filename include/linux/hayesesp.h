@@ -71,17 +71,15 @@ struct hayes_esp_config {
 #define ESP_STAT_NEVER_DMA      0x08
 #define ESP_STAT_USE_PIO        0x10
 
-#define ESP_EVENT_WRITE_WAKEUP	0
 #define ESP_MAGIC		0x53ee
 #define ESP_XMIT_SIZE		4096
 
 struct esp_struct {
 	int			magic;
+	struct tty_port		port;
 	spinlock_t		lock;
-	int			port;
+	int			io_port;
 	int			irq;
-	int			flags; 		/* defined in tty.h */
-	struct tty_struct 	*tty;
 	int			read_status_mask;
 	int			ignore_status_mask;
 	int			timeout;
@@ -92,19 +90,12 @@ struct esp_struct {
 	unsigned short		closing_wait2;
 	int			IER; 	/* Interrupt Enable Register */
 	int			MCR; 	/* Modem control register */
-	unsigned long		event;
 	unsigned long		last_active;
 	int			line;
-	int			count;	    /* # of fd on device */
-	int			blocked_open; /* # of blocked opens */
 	unsigned char 		*xmit_buf;
 	int			xmit_head;
 	int			xmit_tail;
 	int			xmit_cnt;
-	struct work_struct	tqueue;
-	struct work_struct	tqueue_hangup;
-	wait_queue_head_t	open_wait;
-	wait_queue_head_t	close_wait;
 	wait_queue_head_t	delta_msr_wait;
 	wait_queue_head_t	break_wait;
 	struct async_icount	icount;	/* kernel counters for the 4 input interrupts */

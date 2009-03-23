@@ -1,7 +1,6 @@
 /*
  * Common code to handle map devices which are simple ROM
  * (C) 2000 Red Hat. GPL'd.
- * $Id: map_rom.c,v 1.23 2005/01/05 18:05:12 dwmw2 Exp $
  */
 
 #include <linux/module.h>
@@ -20,6 +19,7 @@ static int maprom_read (struct mtd_info *, loff_t, size_t, size_t *, u_char *);
 static int maprom_write (struct mtd_info *, loff_t, size_t, size_t *, const u_char *);
 static void maprom_nop (struct mtd_info *);
 static struct mtd_info *map_rom_probe(struct map_info *map);
+static int maprom_erase (struct mtd_info *mtd, struct erase_info *info);
 
 static struct mtd_chip_driver maprom_chipdrv = {
 	.probe	= map_rom_probe,
@@ -43,6 +43,7 @@ static struct mtd_info *map_rom_probe(struct map_info *map)
 	mtd->read = maprom_read;
 	mtd->write = maprom_write;
 	mtd->sync = maprom_nop;
+	mtd->erase = maprom_erase;
 	mtd->flags = MTD_CAP_ROM;
 	mtd->erasesize = map->size;
 	mtd->writesize = 1;
@@ -70,6 +71,12 @@ static int maprom_write (struct mtd_info *mtd, loff_t to, size_t len, size_t *re
 {
 	printk(KERN_NOTICE "maprom_write called\n");
 	return -EIO;
+}
+
+static int maprom_erase (struct mtd_info *mtd, struct erase_info *info)
+{
+	/* We do our best 8) */
+	return -EROFS;
 }
 
 static int __init map_rom_init(void)

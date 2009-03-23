@@ -3,7 +3,7 @@
   Broadcom B43 wireless driver
 
   Copyright (c) 2005 Martin Langer <martin-langer@gmx.de>,
-  Copyright (c) 2005 Stefano Brivio <st3@riseup.net>
+  Copyright (c) 2005-2007 Stefano Brivio <stefano.brivio@polimi.it>
   Copyright (c) 2006, 2006 Michael Buesch <mb@bu3sch.de>
   Copyright (c) 2005 Danny van Dyk <kugelfang@gentoo.org>
   Copyright (c) 2005 Andreas Jaggi <andreas.jaggi@waterwave.ch>
@@ -27,7 +27,8 @@
 
 #include "b43.h"
 #include "tables.h"
-#include "phy.h"
+#include "phy_g.h"
+
 
 const u32 b43_tab_rotor[] = {
 	0xFEB93FFD, 0xFEC63FFD,	/* 0 */
@@ -229,7 +230,7 @@ const u16 b43_tab_noisea2[] = {
 };
 
 const u16 b43_tab_noisea3[] = {
-	0x4C4C, 0x4C4C, 0x4C4C, 0x2D36,
+	0x5E5E, 0x5E5E, 0x5E5E, 0x3F48,
 	0x4C4C, 0x4C4C, 0x4C4C, 0x2D36,
 };
 
@@ -243,6 +244,26 @@ const u16 b43_tab_noiseg2[] = {
 	0x0000, 0x0000, 0x0000, 0x0000,
 };
 
+const u16 b43_tab_noisescalea2[] = {
+	0x6767, 0x6767, 0x6767, 0x6767, /* 0 */
+	0x6767, 0x6767, 0x6767, 0x6767,
+	0x6767, 0x6767, 0x6767, 0x6767,
+	0x6767, 0x6700, 0x6767, 0x6767,
+	0x6767, 0x6767, 0x6767, 0x6767, /* 16 */
+	0x6767, 0x6767, 0x6767, 0x6767,
+	0x6767, 0x6767, 0x0067,
+};
+
+const u16 b43_tab_noisescalea3[] = {
+	0x2323, 0x2323, 0x2323, 0x2323, /* 0 */
+	0x2323, 0x2323, 0x2323, 0x2323,
+	0x2323, 0x2323, 0x2323, 0x2323,
+	0x2323, 0x2300, 0x2323, 0x2323,
+	0x2323, 0x2323, 0x2323, 0x2323, /* 16 */
+	0x2323, 0x2323, 0x2323, 0x2323,
+	0x2323, 0x2323, 0x0023,
+};
+
 const u16 b43_tab_noisescaleg1[] = {
 	0x6C77, 0x5162, 0x3B40, 0x3335,	/* 0 */
 	0x2F2D, 0x2A2A, 0x2527, 0x1F21,
@@ -254,7 +275,7 @@ const u16 b43_tab_noisescaleg1[] = {
 };
 
 const u16 b43_tab_noisescaleg2[] = {
-	0xD8DD, 0xCBD4, 0xBCC0, 0XB6B7,	/* 0 */
+	0xD8DD, 0xCBD4, 0xBCC0, 0xB6B7,	/* 0 */
 	0xB2B0, 0xADAD, 0xA7A9, 0x9FA1,
 	0x969B, 0x9195, 0x8F8F, 0x8A8A,
 	0x8A8A, 0x8A00, 0x8A8A, 0x8F8A,
@@ -307,6 +328,28 @@ const u16 b43_tab_sigmasqr2[] = {
 	0x00DE,
 };
 
+const u16 b43_tab_rssiagc1[] = {
+	0xFFF8, 0xFFF8, 0xFFF8, 0xFFF8, /* 0 */
+	0xFFF8, 0xFFF9, 0xFFFC, 0xFFFE,
+	0xFFF8, 0xFFF8, 0xFFF8, 0xFFF8,
+	0xFFF8, 0xFFF8, 0xFFF8, 0xFFF8,
+};
+
+const u16 b43_tab_rssiagc2[] = {
+	0x0820, 0x0820, 0x0920, 0x0C38, /* 0 */
+	0x0820, 0x0820, 0x0820, 0x0820,
+	0x0820, 0x0820, 0x0920, 0x0A38,
+	0x0820, 0x0820, 0x0820, 0x0820,
+	0x0820, 0x0820, 0x0920, 0x0A38, /* 16 */
+	0x0820, 0x0820, 0x0820, 0x0820,
+	0x0820, 0x0820, 0x0920, 0x0A38,
+	0x0820, 0x0820, 0x0820, 0x0820,
+	0x0820, 0x0820, 0x0920, 0x0A38, /* 32 */
+	0x0820, 0x0820, 0x0820, 0x0820,
+	0x0820, 0x0820, 0x0920, 0x0A38,
+	0x0820, 0x0820, 0x0820, 0x0820,
+};
+
 static inline void assert_sizes(void)
 {
 	BUILD_BUG_ON(B43_TAB_ROTOR_SIZE != ARRAY_SIZE(b43_tab_rotor));
@@ -317,36 +360,73 @@ static inline void assert_sizes(void)
 	BUILD_BUG_ON(B43_TAB_NOISEA3_SIZE != ARRAY_SIZE(b43_tab_noisea3));
 	BUILD_BUG_ON(B43_TAB_NOISEG1_SIZE != ARRAY_SIZE(b43_tab_noiseg1));
 	BUILD_BUG_ON(B43_TAB_NOISEG2_SIZE != ARRAY_SIZE(b43_tab_noiseg2));
-	BUILD_BUG_ON(B43_TAB_NOISESCALEG_SIZE !=
+	BUILD_BUG_ON(B43_TAB_NOISESCALE_SIZE !=
+		     ARRAY_SIZE(b43_tab_noisescalea2));
+	BUILD_BUG_ON(B43_TAB_NOISESCALE_SIZE !=
+		     ARRAY_SIZE(b43_tab_noisescalea3));
+	BUILD_BUG_ON(B43_TAB_NOISESCALE_SIZE !=
 		     ARRAY_SIZE(b43_tab_noisescaleg1));
-	BUILD_BUG_ON(B43_TAB_NOISESCALEG_SIZE !=
+	BUILD_BUG_ON(B43_TAB_NOISESCALE_SIZE !=
 		     ARRAY_SIZE(b43_tab_noisescaleg2));
-	BUILD_BUG_ON(B43_TAB_NOISESCALEG_SIZE !=
+	BUILD_BUG_ON(B43_TAB_NOISESCALE_SIZE !=
 		     ARRAY_SIZE(b43_tab_noisescaleg3));
 	BUILD_BUG_ON(B43_TAB_SIGMASQR_SIZE != ARRAY_SIZE(b43_tab_sigmasqr1));
 	BUILD_BUG_ON(B43_TAB_SIGMASQR_SIZE != ARRAY_SIZE(b43_tab_sigmasqr2));
+	BUILD_BUG_ON(B43_TAB_RSSIAGC1_SIZE != ARRAY_SIZE(b43_tab_rssiagc1));
+	BUILD_BUG_ON(B43_TAB_RSSIAGC2_SIZE != ARRAY_SIZE(b43_tab_rssiagc2));
 }
 
 u16 b43_ofdmtab_read16(struct b43_wldev *dev, u16 table, u16 offset)
 {
-	assert_sizes();
+	struct b43_phy_g *gphy = dev->phy.g;
+	u16 addr;
 
-	b43_phy_write(dev, B43_PHY_OTABLECTL, table + offset);
+	addr = table + offset;
+	if ((gphy->ofdmtab_addr_direction != B43_OFDMTAB_DIRECTION_READ) ||
+	    (addr - 1 != gphy->ofdmtab_addr)) {
+		/* The hardware has a different address in memory. Update it. */
+		b43_phy_write(dev, B43_PHY_OTABLECTL, addr);
+		gphy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_READ;
+	}
+	gphy->ofdmtab_addr = addr;
+
 	return b43_phy_read(dev, B43_PHY_OTABLEI);
+
+	/* Some compiletime assertions... */
+	assert_sizes();
 }
 
 void b43_ofdmtab_write16(struct b43_wldev *dev, u16 table,
 			 u16 offset, u16 value)
 {
-	b43_phy_write(dev, B43_PHY_OTABLECTL, table + offset);
+	struct b43_phy_g *gphy = dev->phy.g;
+	u16 addr;
+
+	addr = table + offset;
+	if ((gphy->ofdmtab_addr_direction != B43_OFDMTAB_DIRECTION_WRITE) ||
+	    (addr - 1 != gphy->ofdmtab_addr)) {
+		/* The hardware has a different address in memory. Update it. */
+		b43_phy_write(dev, B43_PHY_OTABLECTL, addr);
+		gphy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_WRITE;
+	}
+	gphy->ofdmtab_addr = addr;
 	b43_phy_write(dev, B43_PHY_OTABLEI, value);
 }
 
 u32 b43_ofdmtab_read32(struct b43_wldev *dev, u16 table, u16 offset)
 {
+	struct b43_phy_g *gphy = dev->phy.g;
 	u32 ret;
+	u16 addr;
 
-	b43_phy_write(dev, B43_PHY_OTABLECTL, table + offset);
+	addr = table + offset;
+	if ((gphy->ofdmtab_addr_direction != B43_OFDMTAB_DIRECTION_READ) ||
+	    (addr - 1 != gphy->ofdmtab_addr)) {
+		/* The hardware has a different address in memory. Update it. */
+		b43_phy_write(dev, B43_PHY_OTABLECTL, addr);
+		gphy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_READ;
+	}
+	gphy->ofdmtab_addr = addr;
 	ret = b43_phy_read(dev, B43_PHY_OTABLEQ);
 	ret <<= 16;
 	ret |= b43_phy_read(dev, B43_PHY_OTABLEI);
@@ -357,7 +437,18 @@ u32 b43_ofdmtab_read32(struct b43_wldev *dev, u16 table, u16 offset)
 void b43_ofdmtab_write32(struct b43_wldev *dev, u16 table,
 			 u16 offset, u32 value)
 {
-	b43_phy_write(dev, B43_PHY_OTABLECTL, table + offset);
+	struct b43_phy_g *gphy = dev->phy.g;
+	u16 addr;
+
+	addr = table + offset;
+	if ((gphy->ofdmtab_addr_direction != B43_OFDMTAB_DIRECTION_WRITE) ||
+	    (addr - 1 != gphy->ofdmtab_addr)) {
+		/* The hardware has a different address in memory. Update it. */
+		b43_phy_write(dev, B43_PHY_OTABLECTL, addr);
+		gphy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_WRITE;
+	}
+	gphy->ofdmtab_addr = addr;
+
 	b43_phy_write(dev, B43_PHY_OTABLEI, value);
 	b43_phy_write(dev, B43_PHY_OTABLEQ, (value >> 16));
 }

@@ -22,7 +22,6 @@
  * Access Control Lists
  */
 typedef __uint16_t	xfs_acl_perm_t;
-typedef __int32_t	xfs_acl_type_t;
 typedef __int32_t	xfs_acl_tag_t;
 typedef __int32_t	xfs_acl_id_t;
 
@@ -46,6 +45,8 @@ typedef struct xfs_acl {
 #define SGI_ACL_FILE_SIZE	(sizeof(SGI_ACL_FILE)-1)
 #define SGI_ACL_DEFAULT_SIZE	(sizeof(SGI_ACL_DEFAULT)-1)
 
+#define _ACL_TYPE_ACCESS	1
+#define _ACL_TYPE_DEFAULT	2
 
 #ifdef CONFIG_XFS_POSIX_ACL
 
@@ -57,17 +58,15 @@ extern struct kmem_zone *xfs_acl_zone;
 		(zone) = kmem_zone_init(sizeof(xfs_acl_t), (name))
 #define xfs_acl_zone_destroy(zone)	kmem_zone_destroy(zone)
 
-extern int xfs_acl_inherit(bhv_vnode_t *, mode_t mode, xfs_acl_t *);
+extern int xfs_acl_inherit(struct inode *, mode_t mode, xfs_acl_t *);
 extern int xfs_acl_iaccess(struct xfs_inode *, mode_t, cred_t *);
-extern int xfs_acl_vtoacl(bhv_vnode_t *, xfs_acl_t *, xfs_acl_t *);
-extern int xfs_acl_vhasacl_access(bhv_vnode_t *);
-extern int xfs_acl_vhasacl_default(bhv_vnode_t *);
-extern int xfs_acl_vset(bhv_vnode_t *, void *, size_t, int);
-extern int xfs_acl_vget(bhv_vnode_t *, void *, size_t, int);
-extern int xfs_acl_vremove(bhv_vnode_t *, int);
+extern int xfs_acl_vtoacl(struct inode *, xfs_acl_t *, xfs_acl_t *);
+extern int xfs_acl_vhasacl_access(struct inode *);
+extern int xfs_acl_vhasacl_default(struct inode *);
+extern int xfs_acl_vset(struct inode *, void *, size_t, int);
+extern int xfs_acl_vget(struct inode *, void *, size_t, int);
+extern int xfs_acl_vremove(struct inode *, int);
 
-#define _ACL_TYPE_ACCESS	1
-#define _ACL_TYPE_DEFAULT	2
 #define _ACL_PERM_INVALID(perm)	((perm) & ~(ACL_READ|ACL_WRITE|ACL_EXECUTE))
 
 #define _ACL_INHERIT(c,m,d)	(xfs_acl_inherit(c,m,d))
@@ -75,7 +74,6 @@ extern int xfs_acl_vremove(bhv_vnode_t *, int);
 #define _ACL_GET_DEFAULT(pv,pd)	(xfs_acl_vtoacl(pv,NULL,pd) == 0)
 #define _ACL_ACCESS_EXISTS	xfs_acl_vhasacl_access
 #define _ACL_DEFAULT_EXISTS	xfs_acl_vhasacl_default
-#define _ACL_XFS_IACCESS(i,m,c) (XFS_IFORK_Q(i) ? xfs_acl_iaccess(i,m,c) : -1)
 
 #define _ACL_ALLOC(a)		((a) = kmem_zone_alloc(xfs_acl_zone, KM_SLEEP))
 #define _ACL_FREE(a)		((a)? kmem_zone_free(xfs_acl_zone, (a)):(void)0)
@@ -95,7 +93,6 @@ extern int xfs_acl_vremove(bhv_vnode_t *, int);
 #define _ACL_GET_DEFAULT(pv,pd)	(0)
 #define _ACL_ACCESS_EXISTS	(NULL)
 #define _ACL_DEFAULT_EXISTS	(NULL)
-#define _ACL_XFS_IACCESS(i,m,c) (-1)
 #endif
 
 #endif	/* __XFS_ACL_H__ */

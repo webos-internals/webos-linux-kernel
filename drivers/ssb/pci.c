@@ -212,29 +212,29 @@ static inline u8 ssb_crc8(u8 crc, u8 data)
 	return t[crc ^ data];
 }
 
-static u8 ssb_sprom_crc(const u16 *sprom)
+static u8 ssb_sprom_crc(const u16 *sprom, u16 size)
 {
 	int word;
 	u8 crc = 0xFF;
 
-	for (word = 0; word < SSB_SPROMSIZE_WORDS - 1; word++) {
+	for (word = 0; word < size - 1; word++) {
 		crc = ssb_crc8(crc, sprom[word] & 0x00FF);
 		crc = ssb_crc8(crc, (sprom[word] & 0xFF00) >> 8);
 	}
-	crc = ssb_crc8(crc, sprom[SPOFF(SSB_SPROM_REVISION)] & 0x00FF);
+	crc = ssb_crc8(crc, sprom[size - 1] & 0x00FF);
 	crc ^= 0xFF;
 
 	return crc;
 }
 
-static int sprom_check_crc(const u16 *sprom)
+static int sprom_check_crc(const u16 *sprom, size_t size)
 {
 	u8 crc;
 	u8 expected_crc;
 	u16 tmp;
 
-	crc = ssb_sprom_crc(sprom);
-	tmp = sprom[SPOFF(SSB_SPROM_REVISION)] & SSB_SPROM_REVISION_CRC;
+	crc = ssb_sprom_crc(sprom, size);
+	tmp = sprom[size - 1] & SSB_SPROM_REVISION_CRC;
 	expected_crc = tmp >> SSB_SPROM_REVISION_CRC_SHIFT;
 	if (crc != expected_crc)
 		return -EPROTO;
@@ -242,12 +242,14 @@ static int sprom_check_crc(const u16 *sprom)
 	return 0;
 }
 
-static void sprom_do_read(struct ssb_bus *bus, u16 *sprom)
+static int sprom_do_read(struct ssb_bus *bus, u16 *sprom)
 {
 	int i;
 
-	for (i = 0; i < SSB_SPROMSIZE_WORDS; i++)
-		sprom[i] = readw(bus->mmio + SSB_SPROM_BASE + (i * 2));
+	for (i = 0; i < bus->sprom_size; i++)
+		sprom[i] = ioread16(bus->mmio + SSB_SPROM_BASE + (i * 2));
+
+	return 0;
 }
 
 static int sprom_do_write(struct ssb_bus *bus, const u16 *sprom)
@@ -255,6 +257,7 @@ static int sprom_do_write(struct ssb_bus *bus, const u16 *sprom)
 	struct pci_dev *pdev = bus->host_pci;
 	int i, err;
 	u32 spromctl;
+	u16 size = bus->sprom_size;
 
 	ssb_printk(KERN_NOTICE PFX "Writing SPROM. Do NOT turn off the power! Please stand by...\n");
 	err = pci_read_config_dword(pdev, SSB_SPROMCTL, &spromctl);
@@ -266,12 +269,12 @@ static int sprom_do_write(struct ssb_bus *bus, const u16 *sprom)
 		goto err_ctlreg;
 	ssb_printk(KERN_NOTICE PFX "[ 0%%");
 	msleep(500);
-	for (i = 0; i < SSB_SPROMSIZE_WORDS; i++) {
-		if (i == SSB_SPROMSIZE_WORDS / 4)
+	for (i = 0; i < size; i++) {
+		if (i == size / 4)
 			ssb_printk("25%%");
-		else if (i == SSB_SPROMSIZE_WORDS / 2)
+		else if (i == size / 2)
 			ssb_printk("50%%");
-		else if (i == (SSB_SPROMSIZE_WORDS / 4) * 3)
+		else if (i == (size * 3) / 4)
 			ssb_printk("75%%");
 		else if (i % 2)
 			ssb_printk(".");
@@ -296,25 +299,54 @@ err_ctlreg:
 	return err;
 }
 
-static void sprom_extract_r1(struct ssb_sprom_r1 *out, const u16 *in)
+static s8 r123_extract_antgain(u8 sprom_revision, const u16 *in,
+			       u16 mask, u16 shift)
+{
+	u16 v;
+	u8 gain;
+
+	v = in[SPOFF(SSB_SPROM1_AGAIN)];
+	gain = (v & mask) >> shift;
+	if (gain == 0xFF)
+		gain = 2; /* If unset use 2dBm */
+	if (sprom_revision == 1) {
+		/* Convert to Q5.2 */
+		gain <<= 2;
+	} else {
+		/* Q5.2 Fractional part is stored in 0xC0 */
+		gain = ((gain & 0xC0) >> 6) | ((gain & 0x3F) << 2);
+	}
+
+	return (s8)gain;
+}
+
+static void sprom_extract_r123(struct ssb_sprom *out, const u16 *in)
 {
 	int i;
 	u16 v;
+	s8 gain;
+	u16 loc[3];
 
-	SPEX(pci_spid, SSB_SPROM1_SPID, 0xFFFF, 0);
-	SPEX(pci_svid, SSB_SPROM1_SVID, 0xFFFF, 0);
-	SPEX(pci_pid, SSB_SPROM1_PID, 0xFFFF, 0);
+	if (out->revision == 3)			/* rev 3 moved MAC */
+		loc[0] = SSB_SPROM3_IL0MAC;
+	else {
+		loc[0] = SSB_SPROM1_IL0MAC;
+		loc[1] = SSB_SPROM1_ET0MAC;
+		loc[2] = SSB_SPROM1_ET1MAC;
+	}
 	for (i = 0; i < 3; i++) {
-		v = in[SPOFF(SSB_SPROM1_IL0MAC) + i];
+		v = in[SPOFF(loc[0]) + i];
 		*(((__be16 *)out->il0mac) + i) = cpu_to_be16(v);
 	}
-	for (i = 0; i < 3; i++) {
-		v = in[SPOFF(SSB_SPROM1_ET0MAC) + i];
-		*(((__be16 *)out->et0mac) + i) = cpu_to_be16(v);
-	}
-	for (i = 0; i < 3; i++) {
-		v = in[SPOFF(SSB_SPROM1_ET1MAC) + i];
-		*(((__be16 *)out->et1mac) + i) = cpu_to_be16(v);
+	if (out->revision < 3) { 	/* only rev 1-2 have et0, et1 */
+		for (i = 0; i < 3; i++) {
+			v = in[SPOFF(loc[1]) + i];
+			*(((__be16 *)out->et0mac) + i) = cpu_to_be16(v);
+		}
+		for (i = 0; i < 3; i++) {
+			v = in[SPOFF(loc[2]) + i];
+			*(((__be16 *)out->et1mac) + i) = cpu_to_be16(v);
+		}
 	}
 	SPEX(et0phyaddr, SSB_SPROM1_ETHPHY, SSB_SPROM1_ETHPHY_ET0A, 0);
 	SPEX(et1phyaddr, SSB_SPROM1_ETHPHY, SSB_SPROM1_ETHPHY_ET1A,
@@ -324,9 +356,9 @@ static void sprom_extract_r1(struct ssb_sprom_r1 *out, const u16 *in)
 	SPEX(board_rev, SSB_SPROM1_BINF, SSB_SPROM1_BINF_BREV, 0);
 	SPEX(country_code, SSB_SPROM1_BINF, SSB_SPROM1_BINF_CCODE,
 	     SSB_SPROM1_BINF_CCODE_SHIFT);
-	SPEX(antenna_a, SSB_SPROM1_BINF, SSB_SPROM1_BINF_ANTA,
+	SPEX(ant_available_a, SSB_SPROM1_BINF, SSB_SPROM1_BINF_ANTA,
 	     SSB_SPROM1_BINF_ANTA_SHIFT);
-	SPEX(antenna_bg, SSB_SPROM1_BINF, SSB_SPROM1_BINF_ANTBG,
+	SPEX(ant_available_bg, SSB_SPROM1_BINF, SSB_SPROM1_BINF_ANTBG,
 	     SSB_SPROM1_BINF_ANTBG_SHIFT);
 	SPEX(pa0b0, SSB_SPROM1_PA0B0, 0xFFFF, 0);
 	SPEX(pa0b1, SSB_SPROM1_PA0B1, 0xFFFF, 0);
@@ -347,108 +379,135 @@ static void sprom_extract_r1(struct ssb_sprom_r1 *out, const u16 *in)
 	     SSB_SPROM1_ITSSI_A_SHIFT);
 	SPEX(itssi_bg, SSB_SPROM1_ITSSI, SSB_SPROM1_ITSSI_BG, 0);
 	SPEX(boardflags_lo, SSB_SPROM1_BFLLO, 0xFFFF, 0);
-	SPEX(antenna_gain_a, SSB_SPROM1_AGAIN, SSB_SPROM1_AGAIN_A, 0);
-	SPEX(antenna_gain_bg, SSB_SPROM1_AGAIN, SSB_SPROM1_AGAIN_BG,
-	     SSB_SPROM1_AGAIN_BG_SHIFT);
-	for (i = 0; i < 4; i++) {
-		v = in[SPOFF(SSB_SPROM1_OEM) + i];
-		*(((__le16 *)out->oem) + i) = cpu_to_le16(v);
-	}
+	if (out->revision >= 2)
+		SPEX(boardflags_hi, SSB_SPROM2_BFLHI, 0xFFFF, 0);
+
+	/* Extract the antenna gain values. */
+	gain = r123_extract_antgain(out->revision, in,
+				    SSB_SPROM1_AGAIN_BG,
+				    SSB_SPROM1_AGAIN_BG_SHIFT);
+	out->antenna_gain.ghz24.a0 = gain;
+	out->antenna_gain.ghz24.a1 = gain;
+	out->antenna_gain.ghz24.a2 = gain;
+	out->antenna_gain.ghz24.a3 = gain;
+	gain = r123_extract_antgain(out->revision, in,
+				    SSB_SPROM1_AGAIN_A,
+				    SSB_SPROM1_AGAIN_A_SHIFT);
+	out->antenna_gain.ghz5.a0 = gain;
+	out->antenna_gain.ghz5.a1 = gain;
+	out->antenna_gain.ghz5.a2 = gain;
+	out->antenna_gain.ghz5.a3 = gain;
 }
 
-static void sprom_extract_r2(struct ssb_sprom_r2 *out, const u16 *in)
+static void sprom_extract_r45(struct ssb_sprom *out, const u16 *in)
 {
 	int i;
 	u16 v;
+	u16 il0mac_offset;
 
-	SPEX(boardflags_hi, SSB_SPROM2_BFLHI,  0xFFFF, 0);
-	SPEX(maxpwr_a_hi, SSB_SPROM2_MAXP_A, SSB_SPROM2_MAXP_A_HI, 0);
-	SPEX(maxpwr_a_lo, SSB_SPROM2_MAXP_A, SSB_SPROM2_MAXP_A_LO,
-	     SSB_SPROM2_MAXP_A_LO_SHIFT);
-	SPEX(pa1lob0, SSB_SPROM2_PA1LOB0, 0xFFFF, 0);
-	SPEX(pa1lob1, SSB_SPROM2_PA1LOB1, 0xFFFF, 0);
-	SPEX(pa1lob2, SSB_SPROM2_PA1LOB2, 0xFFFF, 0);
-	SPEX(pa1hib0, SSB_SPROM2_PA1HIB0, 0xFFFF, 0);
-	SPEX(pa1hib1, SSB_SPROM2_PA1HIB1, 0xFFFF, 0);
-	SPEX(pa1hib2, SSB_SPROM2_PA1HIB2, 0xFFFF, 0);
-	SPEX(ofdm_pwr_off, SSB_SPROM2_OPO, SSB_SPROM2_OPO_VALUE, 0);
-	for (i = 0; i < 4; i++) {
-		v = in[SPOFF(SSB_SPROM2_CCODE) + i];
-		*(((__le16 *)out->country_str) + i) = cpu_to_le16(v);
+	if (out->revision == 4)
+		il0mac_offset = SSB_SPROM4_IL0MAC;
+	else
+		il0mac_offset = SSB_SPROM5_IL0MAC;
+	/* extract the MAC address */
+	for (i = 0; i < 3; i++) {
+		v = in[SPOFF(il0mac_offset) + i];
+		*(((__be16 *)out->il0mac) + i) = cpu_to_be16(v);
 	}
+	SPEX(et0phyaddr, SSB_SPROM4_ETHPHY, SSB_SPROM4_ETHPHY_ET0A, 0);
+	SPEX(et1phyaddr, SSB_SPROM4_ETHPHY, SSB_SPROM4_ETHPHY_ET1A,
+	     SSB_SPROM4_ETHPHY_ET1A_SHIFT);
+	if (out->revision == 4) {
+		SPEX(country_code, SSB_SPROM4_CCODE, 0xFFFF, 0);
+		SPEX(boardflags_lo, SSB_SPROM4_BFLLO, 0xFFFF, 0);
+		SPEX(boardflags_hi, SSB_SPROM4_BFLHI, 0xFFFF, 0);
+	} else {
+		SPEX(country_code, SSB_SPROM5_CCODE, 0xFFFF, 0);
+		SPEX(boardflags_lo, SSB_SPROM5_BFLLO, 0xFFFF, 0);
+		SPEX(boardflags_hi, SSB_SPROM5_BFLHI, 0xFFFF, 0);
+	}
+	SPEX(ant_available_a, SSB_SPROM4_ANTAVAIL, SSB_SPROM4_ANTAVAIL_A,
+	     SSB_SPROM4_ANTAVAIL_A_SHIFT);
+	SPEX(ant_available_bg, SSB_SPROM4_ANTAVAIL, SSB_SPROM4_ANTAVAIL_BG,
+	     SSB_SPROM4_ANTAVAIL_BG_SHIFT);
+	SPEX(maxpwr_bg, SSB_SPROM4_MAXP_BG, SSB_SPROM4_MAXP_BG_MASK, 0);
+	SPEX(itssi_bg, SSB_SPROM4_MAXP_BG, SSB_SPROM4_ITSSI_BG,
+	     SSB_SPROM4_ITSSI_BG_SHIFT);
+	SPEX(maxpwr_a, SSB_SPROM4_MAXP_A, SSB_SPROM4_MAXP_A_MASK, 0);
+	SPEX(itssi_a, SSB_SPROM4_MAXP_A, SSB_SPROM4_ITSSI_A,
+	     SSB_SPROM4_ITSSI_A_SHIFT);
+	if (out->revision == 4) {
+		SPEX(gpio0, SSB_SPROM4_GPIOA, SSB_SPROM4_GPIOA_P0, 0);
+		SPEX(gpio1, SSB_SPROM4_GPIOA, SSB_SPROM4_GPIOA_P1,
+		     SSB_SPROM4_GPIOA_P1_SHIFT);
+		SPEX(gpio2, SSB_SPROM4_GPIOB, SSB_SPROM4_GPIOB_P2, 0);
+		SPEX(gpio3, SSB_SPROM4_GPIOB, SSB_SPROM4_GPIOB_P3,
+		     SSB_SPROM4_GPIOB_P3_SHIFT);
+	} else {
+		SPEX(gpio0, SSB_SPROM5_GPIOA, SSB_SPROM5_GPIOA_P0, 0);
+		SPEX(gpio1, SSB_SPROM5_GPIOA, SSB_SPROM5_GPIOA_P1,
+		     SSB_SPROM5_GPIOA_P1_SHIFT);
+		SPEX(gpio2, SSB_SPROM5_GPIOB, SSB_SPROM5_GPIOB_P2, 0);
+		SPEX(gpio3, SSB_SPROM5_GPIOB, SSB_SPROM5_GPIOB_P3,
+		     SSB_SPROM5_GPIOB_P3_SHIFT);
+	}
+
+	/* Extract the antenna gain values. */
+	SPEX(antenna_gain.ghz24.a0, SSB_SPROM4_AGAIN01,
+	     SSB_SPROM4_AGAIN0, SSB_SPROM4_AGAIN0_SHIFT);
+	SPEX(antenna_gain.ghz24.a1, SSB_SPROM4_AGAIN01,
+	     SSB_SPROM4_AGAIN1, SSB_SPROM4_AGAIN1_SHIFT);
+	SPEX(antenna_gain.ghz24.a2, SSB_SPROM4_AGAIN23,
+	     SSB_SPROM4_AGAIN2, SSB_SPROM4_AGAIN2_SHIFT);
+	SPEX(antenna_gain.ghz24.a3, SSB_SPROM4_AGAIN23,
+	     SSB_SPROM4_AGAIN3, SSB_SPROM4_AGAIN3_SHIFT);
+	memcpy(&out->antenna_gain.ghz5, &out->antenna_gain.ghz24,
+	       sizeof(out->antenna_gain.ghz5));
+
+	/* TODO - get remaining rev 4 stuff needed */
 }
 
-static void sprom_extract_r3(struct ssb_sprom_r3 *out, const u16 *in)
-{
-	out->ofdmapo  = (in[SPOFF(SSB_SPROM3_OFDMAPO) + 0] & 0xFF00) >> 8;
-	out->ofdmapo |= (in[SPOFF(SSB_SPROM3_OFDMAPO) + 0] & 0x00FF) << 8;
-	out->ofdmapo <<= 16;
-	out->ofdmapo |= (in[SPOFF(SSB_SPROM3_OFDMAPO) + 1] & 0xFF00) >> 8;
-	out->ofdmapo |= (in[SPOFF(SSB_SPROM3_OFDMAPO) + 1] & 0x00FF) << 8;
-
-	out->ofdmalpo  = (in[SPOFF(SSB_SPROM3_OFDMALPO) + 0] & 0xFF00) >> 8;
-	out->ofdmalpo |= (in[SPOFF(SSB_SPROM3_OFDMALPO) + 0] & 0x00FF) << 8;
-	out->ofdmalpo <<= 16;
-	out->ofdmalpo |= (in[SPOFF(SSB_SPROM3_OFDMALPO) + 1] & 0xFF00) >> 8;
-	out->ofdmalpo |= (in[SPOFF(SSB_SPROM3_OFDMALPO) + 1] & 0x00FF) << 8;
-
-	out->ofdmahpo  = (in[SPOFF(SSB_SPROM3_OFDMAHPO) + 0] & 0xFF00) >> 8;
-	out->ofdmahpo |= (in[SPOFF(SSB_SPROM3_OFDMAHPO) + 0] & 0x00FF) << 8;
-	out->ofdmahpo <<= 16;
-	out->ofdmahpo |= (in[SPOFF(SSB_SPROM3_OFDMAHPO) + 1] & 0xFF00) >> 8;
-	out->ofdmahpo |= (in[SPOFF(SSB_SPROM3_OFDMAHPO) + 1] & 0x00FF) << 8;
-
-	SPEX(gpioldc_on_cnt, SSB_SPROM3_GPIOLDC, SSB_SPROM3_GPIOLDC_ON,
-	     SSB_SPROM3_GPIOLDC_ON_SHIFT);
-	SPEX(gpioldc_off_cnt, SSB_SPROM3_GPIOLDC, SSB_SPROM3_GPIOLDC_OFF,
-	     SSB_SPROM3_GPIOLDC_OFF_SHIFT);
-	SPEX(cckpo_1M, SSB_SPROM3_CCKPO, SSB_SPROM3_CCKPO_1M, 0);
-	SPEX(cckpo_2M, SSB_SPROM3_CCKPO, SSB_SPROM3_CCKPO_2M,
-	     SSB_SPROM3_CCKPO_2M_SHIFT);
-	SPEX(cckpo_55M, SSB_SPROM3_CCKPO, SSB_SPROM3_CCKPO_55M,
-	     SSB_SPROM3_CCKPO_55M_SHIFT);
-	SPEX(cckpo_11M, SSB_SPROM3_CCKPO, SSB_SPROM3_CCKPO_11M,
-	     SSB_SPROM3_CCKPO_11M_SHIFT);
-
-	out->ofdmgpo  = (in[SPOFF(SSB_SPROM3_OFDMGPO) + 0] & 0xFF00) >> 8;
-	out->ofdmgpo |= (in[SPOFF(SSB_SPROM3_OFDMGPO) + 0] & 0x00FF) << 8;
-	out->ofdmgpo <<= 16;
-	out->ofdmgpo |= (in[SPOFF(SSB_SPROM3_OFDMGPO) + 1] & 0xFF00) >> 8;
-	out->ofdmgpo |= (in[SPOFF(SSB_SPROM3_OFDMGPO) + 1] & 0x00FF) << 8;
-}
-
-static int sprom_extract(struct ssb_bus *bus,
-			 struct ssb_sprom *out, const u16 *in)
+static int sprom_extract(struct ssb_bus *bus, struct ssb_sprom *out,
+			 const u16 *in, u16 size)
 {
 	memset(out, 0, sizeof(*out));
 
-	SPEX(revision, SSB_SPROM_REVISION, SSB_SPROM_REVISION_REV, 0);
-	SPEX(crc, SSB_SPROM_REVISION, SSB_SPROM_REVISION_CRC,
-	     SSB_SPROM_REVISION_CRC_SHIFT);
-
+	out->revision = in[size - 1] & 0x00FF;
+	ssb_dprintk(KERN_DEBUG PFX "SPROM revision %d detected.\n", out->revision);
+	memset(out->et0mac, 0xFF, 6);		/* preset et0 and et1 mac */
+	memset(out->et1mac, 0xFF, 6);
 	if ((bus->chip_id & 0xFF00) == 0x4400) {
 		/* Workaround: The BCM44XX chip has a stupid revision
 		 * number stored in the SPROM.
 		 * Always extract r1. */
-		sprom_extract_r1(&out->r1, in);
+		out->revision = 1;
+		sprom_extract_r123(out, in);
+	} else if (bus->chip_id == 0x4321) {
+		/* the BCM4328 has a chipid == 0x4321 and a rev 4 SPROM */
+		out->revision = 4;
+		sprom_extract_r45(out, in);
 	} else {
 		if (out->revision == 0)
 			goto unsupported;
-		if (out->revision >= 1 && out->revision <= 3)
-			sprom_extract_r1(&out->r1, in);
-		if (out->revision >= 2 && out->revision <= 3)
-			sprom_extract_r2(&out->r2, in);
-		if (out->revision == 3)
-			sprom_extract_r3(&out->r3, in);
-		if (out->revision >= 4)
+		if (out->revision >= 1 && out->revision <= 3) {
+			sprom_extract_r123(out, in);
+		}
+		if (out->revision == 4 || out->revision == 5)
+			sprom_extract_r45(out, in);
+		if (out->revision > 5)
 			goto unsupported;
 	}
+
+	if (out->boardflags_lo == 0xFFFF)
+		out->boardflags_lo = 0;  /* per specs */
+	if (out->boardflags_hi == 0xFFFF)
+		out->boardflags_hi = 0;  /* per specs */
 
 	return 0;
 unsupported:
 	ssb_printk(KERN_WARNING PFX "Unsupported SPROM revision %d "
 		   "detected. Will extract v1\n", out->revision);
-	sprom_extract_r1(&out->r1, in);
+	sprom_extract_r123(out, in);
 	return 0;
 }
 
@@ -458,16 +517,27 @@ static int ssb_pci_sprom_get(struct ssb_bus *bus,
 	int err = -ENOMEM;
 	u16 *buf;
 
-	buf = kcalloc(SSB_SPROMSIZE_WORDS, sizeof(u16), GFP_KERNEL);
+	buf = kcalloc(SSB_SPROMSIZE_WORDS_R123, sizeof(u16), GFP_KERNEL);
 	if (!buf)
 		goto out;
+	bus->sprom_size = SSB_SPROMSIZE_WORDS_R123;
 	sprom_do_read(bus, buf);
-	err = sprom_check_crc(buf);
+	err = sprom_check_crc(buf, bus->sprom_size);
 	if (err) {
-		ssb_printk(KERN_WARNING PFX
-			   "WARNING: Invalid SPROM CRC (corrupt SPROM)\n");
+		/* try for a 440 byte SPROM - revision 4 and higher */
+		kfree(buf);
+		buf = kcalloc(SSB_SPROMSIZE_WORDS_R4, sizeof(u16),
+			      GFP_KERNEL);
+		if (!buf)
+			goto out;
+		bus->sprom_size = SSB_SPROMSIZE_WORDS_R4;
+		sprom_do_read(bus, buf);
+		err = sprom_check_crc(buf, bus->sprom_size);
+		if (err)
+			ssb_printk(KERN_WARNING PFX "WARNING: Invalid"
+				   " SPROM CRC (corrupt SPROM)\n");
 	}
-	err = sprom_extract(bus, sprom, buf);
+	err = sprom_extract(bus, sprom, buf, bus->sprom_size);
 
 	kfree(buf);
 out:
@@ -521,6 +591,19 @@ static inline int ssb_pci_assert_buspower(struct ssb_bus *bus)
 }
 #endif /* DEBUG */
 
+static u8 ssb_pci_read8(struct ssb_device *dev, u16 offset)
+{
+	struct ssb_bus *bus = dev->bus;
+
+	if (unlikely(ssb_pci_assert_buspower(bus)))
+		return 0xFF;
+	if (unlikely(bus->mapped_device != dev)) {
+		if (unlikely(ssb_pci_switch_core(bus, dev)))
+			return 0xFF;
+	}
+	return ioread8(bus->mmio + offset);
+}
+
 static u16 ssb_pci_read16(struct ssb_device *dev, u16 offset)
 {
 	struct ssb_bus *bus = dev->bus;
@@ -545,6 +628,54 @@ static u32 ssb_pci_read32(struct ssb_device *dev, u16 offset)
 			return 0xFFFFFFFF;
 	}
 	return ioread32(bus->mmio + offset);
+}
+
+#ifdef CONFIG_SSB_BLOCKIO
+static void ssb_pci_block_read(struct ssb_device *dev, void *buffer,
+			       size_t count, u16 offset, u8 reg_width)
+{
+	struct ssb_bus *bus = dev->bus;
+	void __iomem *addr = bus->mmio + offset;
+
+	if (unlikely(ssb_pci_assert_buspower(bus)))
+		goto error;
+	if (unlikely(bus->mapped_device != dev)) {
+		if (unlikely(ssb_pci_switch_core(bus, dev)))
+			goto error;
+	}
+	switch (reg_width) {
+	case sizeof(u8):
+		ioread8_rep(addr, buffer, count);
+		break;
+	case sizeof(u16):
+		SSB_WARN_ON(count & 1);
+		ioread16_rep(addr, buffer, count >> 1);
+		break;
+	case sizeof(u32):
+		SSB_WARN_ON(count & 3);
+		ioread32_rep(addr, buffer, count >> 2);
+		break;
+	default:
+		SSB_WARN_ON(1);
+	}
+
+	return;
+error:
+	memset(buffer, 0xFF, count);
+}
+#endif /* CONFIG_SSB_BLOCKIO */
+
+static void ssb_pci_write8(struct ssb_device *dev, u16 offset, u8 value)
+{
+	struct ssb_bus *bus = dev->bus;
+
+	if (unlikely(ssb_pci_assert_buspower(bus)))
+		return;
+	if (unlikely(bus->mapped_device != dev)) {
+		if (unlikely(ssb_pci_switch_core(bus, dev)))
+			return;
+	}
+	iowrite8(value, bus->mmio + offset);
 }
 
 static void ssb_pci_write16(struct ssb_device *dev, u16 offset, u16 value)
@@ -573,45 +704,50 @@ static void ssb_pci_write32(struct ssb_device *dev, u16 offset, u32 value)
 	iowrite32(value, bus->mmio + offset);
 }
 
+#ifdef CONFIG_SSB_BLOCKIO
+static void ssb_pci_block_write(struct ssb_device *dev, const void *buffer,
+				size_t count, u16 offset, u8 reg_width)
+{
+	struct ssb_bus *bus = dev->bus;
+	void __iomem *addr = bus->mmio + offset;
+
+	if (unlikely(ssb_pci_assert_buspower(bus)))
+		return;
+	if (unlikely(bus->mapped_device != dev)) {
+		if (unlikely(ssb_pci_switch_core(bus, dev)))
+			return;
+	}
+	switch (reg_width) {
+	case sizeof(u8):
+		iowrite8_rep(addr, buffer, count);
+		break;
+	case sizeof(u16):
+		SSB_WARN_ON(count & 1);
+		iowrite16_rep(addr, buffer, count >> 1);
+		break;
+	case sizeof(u32):
+		SSB_WARN_ON(count & 3);
+		iowrite32_rep(addr, buffer, count >> 2);
+		break;
+	default:
+		SSB_WARN_ON(1);
+	}
+}
+#endif /* CONFIG_SSB_BLOCKIO */
+
 /* Not "static", as it's used in main.c */
 const struct ssb_bus_ops ssb_pci_ops = {
+	.read8		= ssb_pci_read8,
 	.read16		= ssb_pci_read16,
 	.read32		= ssb_pci_read32,
+	.write8		= ssb_pci_write8,
 	.write16	= ssb_pci_write16,
 	.write32	= ssb_pci_write32,
+#ifdef CONFIG_SSB_BLOCKIO
+	.block_read	= ssb_pci_block_read,
+	.block_write	= ssb_pci_block_write,
+#endif
 };
-
-static int sprom2hex(const u16 *sprom, char *buf, size_t buf_len)
-{
-	int i, pos = 0;
-
-	for (i = 0; i < SSB_SPROMSIZE_WORDS; i++) {
-		pos += snprintf(buf + pos, buf_len - pos - 1,
-				"%04X", swab16(sprom[i]) & 0xFFFF);
-	}
-	pos += snprintf(buf + pos, buf_len - pos - 1, "\n");
-
-	return pos + 1;
-}
-
-static int hex2sprom(u16 *sprom, const char *dump, size_t len)
-{
-	char tmp[5] = { 0 };
-	int cnt = 0;
-	unsigned long parsed;
-
-	if (len < SSB_SPROMSIZE_BYTES * 2)
-		return -EINVAL;
-
-	while (cnt < SSB_SPROMSIZE_WORDS) {
-		memcpy(tmp, dump, 4);
-		dump += 4;
-		parsed = simple_strtoul(tmp, NULL, 16);
-		sprom[cnt++] = swab16((u16)parsed);
-	}
-
-	return 0;
-}
 
 static ssize_t ssb_pci_attr_sprom_show(struct device *pcidev,
 				       struct device_attribute *attr,
@@ -619,34 +755,12 @@ static ssize_t ssb_pci_attr_sprom_show(struct device *pcidev,
 {
 	struct pci_dev *pdev = container_of(pcidev, struct pci_dev, dev);
 	struct ssb_bus *bus;
-	u16 *sprom;
-	int err = -ENODEV;
-	ssize_t count = 0;
 
 	bus = ssb_pci_dev_to_bus(pdev);
 	if (!bus)
-		goto out;
-	err = -ENOMEM;
-	sprom = kcalloc(SSB_SPROMSIZE_WORDS, sizeof(u16), GFP_KERNEL);
-	if (!sprom)
-		goto out;
+		return -ENODEV;
 
-	/* Use interruptible locking, as the SPROM write might
-	 * be holding the lock for several seconds. So allow userspace
-	 * to cancel operation. */
-	err = -ERESTARTSYS;
-	if (mutex_lock_interruptible(&bus->pci_sprom_mutex))
-		goto out_kfree;
-	sprom_do_read(bus, sprom);
-	mutex_unlock(&bus->pci_sprom_mutex);
-
-	count = sprom2hex(sprom, buf, PAGE_SIZE);
-	err = 0;
-
-out_kfree:
-	kfree(sprom);
-out:
-	return err ? err : count;
+	return ssb_attr_sprom_show(bus, buf, sprom_do_read);
 }
 
 static ssize_t ssb_pci_attr_sprom_store(struct device *pcidev,
@@ -655,55 +769,13 @@ static ssize_t ssb_pci_attr_sprom_store(struct device *pcidev,
 {
 	struct pci_dev *pdev = container_of(pcidev, struct pci_dev, dev);
 	struct ssb_bus *bus;
-	u16 *sprom;
-	int res = 0, err = -ENODEV;
 
 	bus = ssb_pci_dev_to_bus(pdev);
 	if (!bus)
-		goto out;
-	err = -ENOMEM;
-	sprom = kcalloc(SSB_SPROMSIZE_WORDS, sizeof(u16), GFP_KERNEL);
-	if (!sprom)
-		goto out;
-	err = hex2sprom(sprom, buf, count);
-	if (err) {
-		err = -EINVAL;
-		goto out_kfree;
-	}
-	err = sprom_check_crc(sprom);
-	if (err) {
-		err = -EINVAL;
-		goto out_kfree;
-	}
+		return -ENODEV;
 
-	/* Use interruptible locking, as the SPROM write might
-	 * be holding the lock for several seconds. So allow userspace
-	 * to cancel operation. */
-	err = -ERESTARTSYS;
-	if (mutex_lock_interruptible(&bus->pci_sprom_mutex))
-		goto out_kfree;
-	err = ssb_devices_freeze(bus);
-	if (err == -EOPNOTSUPP) {
-		ssb_printk(KERN_ERR PFX "SPROM write: Could not freeze devices. "
-			   "No suspend support. Is CONFIG_PM enabled?\n");
-		goto out_unlock;
-	}
-	if (err) {
-		ssb_printk(KERN_ERR PFX "SPROM write: Could not freeze all devices\n");
-		goto out_unlock;
-	}
-	res = sprom_do_write(bus, sprom);
-	err = ssb_devices_thaw(bus);
-	if (err)
-		ssb_printk(KERN_ERR PFX "SPROM write: Could not thaw all devices\n");
-out_unlock:
-	mutex_unlock(&bus->pci_sprom_mutex);
-out_kfree:
-	kfree(sprom);
-out:
-	if (res)
-		return res;
-	return err ? err : count;
+	return ssb_attr_sprom_store(bus, buf, count,
+				    sprom_check_crc, sprom_do_write);
 }
 
 static DEVICE_ATTR(ssb_sprom, 0600,
@@ -730,7 +802,7 @@ int ssb_pci_init(struct ssb_bus *bus)
 		return 0;
 
 	pdev = bus->host_pci;
-	mutex_init(&bus->pci_sprom_mutex);
+	mutex_init(&bus->sprom_mutex);
 	err = device_create_file(&pdev->dev, &dev_attr_ssb_sprom);
 	if (err)
 		goto out;

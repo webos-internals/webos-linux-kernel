@@ -48,6 +48,7 @@ struct aligninfo {
 #define HARD	0x80	/* string, stwcx. */
 #define E4	0x40	/* SPE endianness is word */
 #define E8	0x80	/* SPE endianness is double word */
+#define SPLT	0x80	/* VSX SPLAT load */
 
 /* DSISR bits reported for a DCBZ instruction: */
 #define DCBZ	0x5f	/* 8xx/82xx dcbz faults when cache not enabled */
@@ -363,30 +364,27 @@ static int emulate_multiple(struct pt_regs *regs, unsigned char __user *addr,
  * Only POWER6 has these instructions, and it does true little-endian,
  * so we don't need the address swizzling.
  */
-static int emulate_fp_pair(struct pt_regs *regs, unsigned char __user *addr,
-			   unsigned int reg, unsigned int flags)
+static int emulate_fp_pair(unsigned char __user *addr, unsigned int reg,
+			   unsigned int flags)
 {
-	char *ptr = (char *) &current->thread.fpr[reg];
-	int i, ret;
+	char *ptr0 = (char *) &current->thread.TS_FPR(reg);
+	char *ptr1 = (char *) &current->thread.TS_FPR(reg+1);
+	int i, ret, sw = 0;
 
 	if (!(flags & F))
 		return 0;
 	if (reg & 1)
 		return 0;	/* invalid form: FRS/FRT must be even */
-	if (!(flags & SW)) {
-		/* not byte-swapped - easy */
-		if (!(flags & ST))
-			ret = __copy_from_user(ptr, addr, 16);
-		else
-			ret = __copy_to_user(addr, ptr, 16);
-	} else {
-		/* each FPR value is byte-swapped separately */
-		ret = 0;
-		for (i = 0; i < 16; ++i) {
-			if (!(flags & ST))
-				ret |= __get_user(ptr[i^7], addr + i);
-			else
-				ret |= __put_user(ptr[i^7], addr + i);
+	if (flags & SW)
+		sw = 7;
+	ret = 0;
+	for (i = 0; i < 8; ++i) {
+		if (!(flags & ST)) {
+			ret |= __get_user(ptr0[i^sw], addr + i);
+			ret |= __get_user(ptr1[i^sw], addr + i + 8);
+		} else {
+			ret |= __put_user(ptr0[i^sw], addr + i);
+			ret |= __put_user(ptr1[i^sw], addr + i + 8);
 		}
 	}
 	if (ret)
@@ -637,6 +635,41 @@ static int emulate_spe(struct pt_regs *regs, unsigned int reg,
 }
 #endif /* CONFIG_SPE */
 
+#ifdef CONFIG_VSX
+/*
+ * Emulate VSX instructions...
+ */
+static int emulate_vsx(unsigned char __user *addr, unsigned int reg,
+		       unsigned int areg, struct pt_regs *regs,
+		       unsigned int flags, unsigned int length)
+{
+	char *ptr;
+	int ret = 0;
+
+	flush_vsx_to_thread(current);
+
+	if (reg < 32)
+		ptr = (char *) &current->thread.TS_FPR(reg);
+	else
+		ptr = (char *) &current->thread.vr[reg - 32];
+
+	if (flags & ST)
+		ret = __copy_to_user(addr, ptr, length);
+        else {
+		if (flags & SPLT){
+			ret = __copy_from_user(ptr, addr, length);
+			ptr += length;
+		}
+		ret |= __copy_from_user(ptr, addr, length);
+	}
+	if (flags & U)
+		regs->gpr[areg] = regs->dar;
+	if (ret)
+		return -EFAULT;
+	return 1;
+}
+#endif
+
 /*
  * Called on alignment exception. Attempts to fixup
  *
@@ -647,7 +680,7 @@ static int emulate_spe(struct pt_regs *regs, unsigned int reg,
 
 int fix_alignment(struct pt_regs *regs)
 {
-	unsigned int instr, nb, flags;
+	unsigned int instr, nb, flags, instruction = 0;
 	unsigned int reg, areg;
 	unsigned int dsisr;
 	unsigned char __user *addr;
@@ -689,6 +722,7 @@ int fix_alignment(struct pt_regs *regs)
 		if (cpu_has_feature(CPU_FTR_REAL_LE) && (regs->msr & MSR_LE))
 			instr = cpu_to_le32(instr);
 		dsisr = make_dsisr(instr);
+		instruction = instr;
 	}
 
 	/* extract the operation and registers from the dsisr */
@@ -728,6 +762,30 @@ int fix_alignment(struct pt_regs *regs)
 	/* DAR has the operand effective address */
 	addr = (unsigned char __user *)regs->dar;
 
+#ifdef CONFIG_VSX
+	if ((instruction & 0xfc00003e) == 0x7c000018) {
+		/* Additional register addressing bit (64 VSX vs 32 FPR/GPR */
+		reg |= (instruction & 0x1) << 5;
+		/* Simple inline decoder instead of a table */
+		if (instruction & 0x200)
+			nb = 16;
+		else if (instruction & 0x080)
+			nb = 8;
+		else
+			nb = 4;
+		flags = 0;
+		if (instruction & 0x100)
+			flags |= ST;
+		if (instruction & 0x040)
+			flags |= U;
+		/* splat load needs a special decoder */
+		if ((instruction & 0x400) == 0){
+			flags |= SPLT;
+			nb = 8;
+		}
+		return emulate_vsx(addr, reg, areg, regs, flags, nb);
+	}
+#endif
 	/* A size of 0 indicates an instruction we don't support, with
 	 * the exception of DCBZ which is handled as a special case here
 	 */
@@ -759,7 +817,7 @@ int fix_alignment(struct pt_regs *regs)
 
 	/* Special case for 16-byte FP loads and stores */
 	if (nb == 16)
-		return emulate_fp_pair(regs, addr, reg, flags);
+		return emulate_fp_pair(addr, reg, flags);
 
 	/* If we are loading, get the data from user space, else
 	 * get it from register values
@@ -784,7 +842,7 @@ int fix_alignment(struct pt_regs *regs)
 				return -EFAULT;
 		}
 	} else if (flags & F) {
-		data.dd = current->thread.fpr[reg];
+		data.dd = current->thread.TS_FPR(reg);
 		if (flags & S) {
 			/* Single-precision FP store requires conversion... */
 #ifdef CONFIG_PPC_FPU
@@ -862,7 +920,7 @@ int fix_alignment(struct pt_regs *regs)
 		if (unlikely(ret))
 			return -EFAULT;
 	} else if (flags & F)
-		current->thread.fpr[reg] = data.dd;
+		current->thread.TS_FPR(reg) = data.dd;
 	else
 		regs->gpr[reg] = data.ll;
 

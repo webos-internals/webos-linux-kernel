@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2003, Axis Communications AB.
+ * Copyright (C) 2000-2007, Axis Communications AB.
  */
 
 #include <linux/kernel.h>
@@ -17,7 +17,7 @@
 #include <asm/pgtable.h>
 #include <asm/system.h>
 #include <asm/processor.h>
-#include <asm/arch/hwregs/supp_reg.h>
+#include <arch/hwregs/supp_reg.h>
 
 /*
  * Determines which bits in CCS the user has access to.
@@ -149,7 +149,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 			ret = generic_ptrace_pokedata(child, addr, data);
 			break;
 
- 		/* Write the word at location address in the USER area. */
+		/* Write the word at location address in the USER area. */
 		case PTRACE_POKEUSR:
 			ret = -EIO;
 			if ((addr & 3) || addr < 0 || addr > PT_MAX << 2)
@@ -201,7 +201,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 
 			break;
 
- 		/* Make the child exit by sending it a sigkill. */
+		/* Make the child exit by sending it a sigkill. */
 		case PTRACE_KILL:
 			ret = 0;
 
@@ -245,9 +245,10 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 			break;
 
 		}
+
 		/* Get all GP registers from the child. */
 		case PTRACE_GETREGS: {
-		  	int i;
+			int i;
 			unsigned long tmp;
 
 			for (i = 0; i <= PT_MAX; i++) {
@@ -294,6 +295,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 			break;
 	}
 
+out_tsk:
 	return ret;
 }
 

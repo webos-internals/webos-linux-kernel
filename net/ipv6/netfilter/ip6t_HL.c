@@ -15,18 +15,14 @@
 #include <linux/netfilter_ipv6/ip6t_HL.h>
 
 MODULE_AUTHOR("Maciej Soltysiak <solt@dns.toxicfilms.tv>");
-MODULE_DESCRIPTION("IP6 tables Hop Limit modification module");
+MODULE_DESCRIPTION("Xtables: IPv6 Hop Limit field modification target");
 MODULE_LICENSE("GPL");
 
-static unsigned int ip6t_hl_target(struct sk_buff *skb,
-				   const struct net_device *in,
-				   const struct net_device *out,
-				   unsigned int hooknum,
-				   const struct xt_target *target,
-				   const void *targinfo)
+static unsigned int
+hl_tg6(struct sk_buff *skb, const struct xt_target_param *par)
 {
 	struct ipv6hdr *ip6h;
-	const struct ip6t_HL_info *info = targinfo;
+	const struct ip6t_HL_info *info = par->targinfo;
 	int new_hl;
 
 	if (!skb_make_writable(skb, skb->len))
@@ -58,13 +54,9 @@ static unsigned int ip6t_hl_target(struct sk_buff *skb,
 	return XT_CONTINUE;
 }
 
-static bool ip6t_hl_checkentry(const char *tablename,
-		const void *entry,
-		const struct xt_target *target,
-		void *targinfo,
-		unsigned int hook_mask)
+static bool hl_tg6_check(const struct xt_tgchk_param *par)
 {
-	const struct ip6t_HL_info *info = targinfo;
+	const struct ip6t_HL_info *info = par->targinfo;
 
 	if (info->mode > IP6T_HL_MAXMODE) {
 		printk(KERN_WARNING "ip6t_HL: invalid or unknown Mode %u\n",
@@ -79,25 +71,25 @@ static bool ip6t_hl_checkentry(const char *tablename,
 	return true;
 }
 
-static struct xt_target ip6t_HL __read_mostly = {
+static struct xt_target hl_tg6_reg __read_mostly = {
 	.name 		= "HL",
-	.family		= AF_INET6,
-	.target		= ip6t_hl_target,
+	.family		= NFPROTO_IPV6,
+	.target		= hl_tg6,
 	.targetsize	= sizeof(struct ip6t_HL_info),
 	.table		= "mangle",
-	.checkentry	= ip6t_hl_checkentry,
+	.checkentry	= hl_tg6_check,
 	.me		= THIS_MODULE
 };
 
-static int __init ip6t_hl_init(void)
+static int __init hl_tg6_init(void)
 {
-	return xt_register_target(&ip6t_HL);
+	return xt_register_target(&hl_tg6_reg);
 }
 
-static void __exit ip6t_hl_fini(void)
+static void __exit hl_tg6_exit(void)
 {
-	xt_unregister_target(&ip6t_HL);
+	xt_unregister_target(&hl_tg6_reg);
 }
 
-module_init(ip6t_hl_init);
-module_exit(ip6t_hl_fini);
+module_init(hl_tg6_init);
+module_exit(hl_tg6_exit);

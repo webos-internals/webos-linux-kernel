@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2007 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -28,13 +28,26 @@
 
 struct rt2x00_dev;
 
+/**
+ * enum rt2x00debugfs_entry_flags: Flags for debugfs registry entry
+ *
+ * @RT2X00DEBUGFS_OFFSET: rt2x00lib should pass the register offset
+ *	as argument when using the callback function read()/write()
+ */
+enum rt2x00debugfs_entry_flags {
+	RT2X00DEBUGFS_OFFSET	= (1 << 0),
+};
+
 #define RT2X00DEBUGFS_REGISTER_ENTRY(__name, __type)		\
 struct reg##__name {						\
-	void (*read)(const struct rt2x00_dev *rt2x00dev,	\
+	void (*read)(struct rt2x00_dev *rt2x00dev,		\
 		     const unsigned int word, __type *data);	\
-	void (*write)(const struct rt2x00_dev *rt2x00dev,	\
+	void (*write)(struct rt2x00_dev *rt2x00dev,		\
 		      const unsigned int word, __type data);	\
 								\
+	unsigned int flags;					\
+								\
+	unsigned int word_base;					\
 	unsigned int word_size;					\
 	unsigned int word_count;				\
 } __name

@@ -9,11 +9,13 @@ struct gpio_keys_button {
 	char *desc;
 	int type;		/* input event type (EV_KEY, EV_SW) */
 	int wakeup;		/* configure the button as a wake-up source */
+	int debounce_interval;	/* debounce ticks interval in msecs */
 };
 
 struct gpio_keys_platform_data {
 	struct gpio_keys_button *buttons;
 	int nbuttons;
+	unsigned int rep:1;		/* enable input subsystem auto repeat */
 };
 
 #endif

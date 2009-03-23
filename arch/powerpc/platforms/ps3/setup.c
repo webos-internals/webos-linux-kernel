@@ -23,7 +23,6 @@
 #include <linux/fs.h>
 #include <linux/root_dev.h>
 #include <linux/console.h>
-#include <linux/kexec.h>
 #include <linux/bootmem.h>
 
 #include <asm/machdep.h>
@@ -41,6 +40,10 @@
 #else
 #define DBG pr_debug
 #endif
+
+/* mutex synchronizing GPU accesses and video mode changes */
+DEFINE_MUTEX(ps3_gpu_mutex);
+EXPORT_SYMBOL_GPL(ps3_gpu_mutex);
 
 #if !defined(CONFIG_SMP)
 static void smp_send_stop(void) {}
@@ -95,6 +98,14 @@ static void ps3_power_off(void)
 	ps3_sys_manager_power_off(); /* never returns */
 }
 
+static void ps3_halt(void)
+{
+	DBG("%s:%d\n", __func__, __LINE__);
+
+	smp_send_stop();
+	ps3_sys_manager_halt(); /* never returns */
+}
+
 static void ps3_panic(char *str)
 {
 	DBG("%s:%d %s\n", __func__, __LINE__, str);
@@ -105,7 +116,8 @@ static void ps3_panic(char *str)
 	printk("   Please press POWER button.\n");
 	printk("\n");
 
-	while(1);
+	while(1)
+		lv1_pause(1);
 }
 
 #if defined(CONFIG_FB_PS3) || defined(CONFIG_FB_PS3_MODULE) || \
@@ -117,7 +129,7 @@ static void __init prealloc(struct ps3_prealloc *p)
 
 	p->address = __alloc_bootmem(p->size, p->align, __pa(MAX_DMA_ADDRESS));
 	if (!p->address) {
-		printk(KERN_ERR "%s: Cannot allocate %s\n", __FUNCTION__,
+		printk(KERN_ERR "%s: Cannot allocate %s\n", __func__,
 		       p->name);
 		return;
 	}
@@ -174,7 +186,7 @@ early_param("ps3flash", early_parse_ps3flash);
 #define prealloc_ps3flash_bounce_buffer()	do { } while (0)
 #endif
 
-static int ps3_set_dabr(u64 dabr)
+static int ps3_set_dabr(unsigned long dabr)
 {
 	enum {DABR_USER = 1, DABR_KERNEL = 2,};
 
@@ -192,7 +204,6 @@ static void __init ps3_setup_arch(void)
 	       ps3_firmware_version.rev);
 
 	ps3_spu_set_platform();
-	ps3_map_htab();
 
 #ifdef CONFIG_SMP
 	smp_init_ps3();
@@ -266,10 +277,8 @@ define_machine(ps3) {
 	.progress			= ps3_progress,
 	.restart			= ps3_restart,
 	.power_off			= ps3_power_off,
+	.halt				= ps3_halt,
 #if defined(CONFIG_KEXEC)
 	.kexec_cpu_down			= ps3_kexec_cpu_down,
-	.machine_kexec			= default_machine_kexec,
-	.machine_kexec_prepare		= default_machine_kexec_prepare,
-	.machine_crash_shutdown		= default_machine_crash_shutdown,
 #endif
 };

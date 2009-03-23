@@ -249,9 +249,9 @@ static int efficeon_insert_memory(struct agp_memory * mem, off_t pg_start, int t
 	if (type != 0 || mem->type != 0)
 		return -EINVAL;
 
-	if (mem->is_flushed == FALSE) {
+	if (!mem->is_flushed) {
 		global_cache_flush();
-		mem->is_flushed = TRUE;
+		mem->is_flushed = true;
 	}
 
 	last_page = NULL;
@@ -329,13 +329,15 @@ static const struct agp_bridge_driver efficeon_driver = {
 	.free_gatt_table	= efficeon_free_gatt_table,
 	.insert_memory		= efficeon_insert_memory,
 	.remove_memory		= efficeon_remove_memory,
-	.cant_use_aperture	= 0,	// 1 might be faster?
+	.cant_use_aperture	= false,	// true might be faster?
 
 	// Generic
 	.alloc_by_type		= agp_generic_alloc_by_type,
 	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
+	.agp_alloc_pages	= agp_generic_alloc_pages,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_destroy_pages	= agp_generic_destroy_pages,
 	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 

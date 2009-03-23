@@ -1,7 +1,7 @@
 /*
  *  Driver for the Conexant CX23885 PCIe bridge
  *
- *  Copyright (c) 2006 Steven Toth <stoth@hauppauge.com>
+ *  Copyright (c) 2006 Steven Toth <stoth@linuxtv.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -29,16 +29,18 @@
 
 #include <media/v4l2-common.h>
 
-static unsigned int i2c_debug = 0;
+static unsigned int i2c_debug;
 module_param(i2c_debug, int, 0644);
 MODULE_PARM_DESC(i2c_debug, "enable debug messages [i2c]");
 
-static unsigned int i2c_scan = 0;
+static unsigned int i2c_scan;
 module_param(i2c_scan, int, 0444);
 MODULE_PARM_DESC(i2c_scan, "scan i2c bus at insmod time");
 
-#define dprintk(level,fmt, arg...)	if (i2c_debug >= level) \
-	printk(KERN_DEBUG "%s: " fmt, dev->name , ## arg)
+#define dprintk(level, fmt, arg...)\
+	do { if (i2c_debug >= level)\
+		printk(KERN_DEBUG "%s/0: " fmt, dev->name, ## arg);\
+	} while (0)
 
 #define I2C_WAIT_DELAY 32
 #define I2C_WAIT_RETRY 64
@@ -77,14 +79,19 @@ static int i2c_wait_done(struct i2c_adapter *i2c_adap)
 }
 
 static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
-			 const struct i2c_msg *msg, int last)
+			 const struct i2c_msg *msg, int joined_rlen)
 {
 	struct cx23885_i2c *bus = i2c_adap->algo_data;
 	struct cx23885_dev *dev = bus->dev;
 	u32 wdata, addr, ctrl;
 	int retval, cnt;
 
-	dprintk(1, "%s()\n", __FUNCTION__);
+	if (joined_rlen)
+		dprintk(1, "%s(msg->wlen=%d, nextmsg->rlen=%d)\n", __func__,
+			msg->len, joined_rlen);
+	else
+		dprintk(1, "%s(msg->len=%d)\n", __func__, msg->len);
+
 	/* Deal with i2c probe functions with zero payload */
 	if (msg->len == 0) {
 		cx_write(bus->reg_addr, msg->addr << 25);
@@ -94,7 +101,7 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
 		if (!i2c_slave_did_ack(i2c_adap))
 			return -EIO;
 
-		dprintk(1, "%s() returns 0\n", __FUNCTION__);
+		dprintk(1, "%s() returns 0\n", __func__);
 		return 0;
 	}
 
@@ -106,6 +113,8 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
 
 	if (msg->len > 1)
 		ctrl |= I2C_NOSTOP | I2C_EXTEND;
+	else if (joined_rlen)
+		ctrl |= I2C_NOSTOP;
 
 	cx_write(bus->reg_addr, addr);
 	cx_write(bus->reg_wdata, wdata);
@@ -122,13 +131,15 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
 			printk(" >\n");
 	}
 
-	for (cnt = 1; cnt < msg->len; cnt++ ) {
+	for (cnt = 1; cnt < msg->len; cnt++) {
 		/* following bytes */
 		wdata = msg->buf[cnt];
 		ctrl = bus->i2c_period | (1 << 12) | (1 << 2);
 
-		if (cnt < msg->len-1 || !last)
+		if (cnt < msg->len - 1)
 			ctrl |= I2C_NOSTOP | I2C_EXTEND;
+		else if (joined_rlen)
+			ctrl |= I2C_NOSTOP;
 
 		cx_write(bus->reg_addr, addr);
 		cx_write(bus->reg_wdata, wdata);
@@ -140,9 +151,9 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
 		if (retval == 0)
 			goto eio;
 		if (i2c_debug) {
-			printk(" %02x", msg->buf[cnt]);
+			dprintk(1, " %02x", msg->buf[cnt]);
 			if (!(ctrl & I2C_NOSTOP))
-				printk(" >\n");
+				dprintk(1, " >\n");
 		}
 	}
 	return msg->len;
@@ -150,19 +161,22 @@ static int i2c_sendbytes(struct i2c_adapter *i2c_adap,
  eio:
 	retval = -EIO;
  err:
-	printk(" ERR: %d\n", retval);
+	if (i2c_debug)
+		printk(KERN_ERR " ERR: %d\n", retval);
 	return retval;
 }
 
 static int i2c_readbytes(struct i2c_adapter *i2c_adap,
-			 const struct i2c_msg *msg, int last)
+			 const struct i2c_msg *msg, int joined)
 {
 	struct cx23885_i2c *bus = i2c_adap->algo_data;
 	struct cx23885_dev *dev = bus->dev;
 	u32 ctrl, cnt;
 	int retval;
 
-	dprintk(1, "%s()\n", __FUNCTION__);
+
+	if (i2c_debug && !joined)
+		dprintk(1, "%s(msg->len=%d)\n", __func__, msg->len);
 
 	/* Deal with i2c probe functions with zero payload */
 	if (msg->len == 0) {
@@ -174,15 +188,22 @@ static int i2c_readbytes(struct i2c_adapter *i2c_adap,
 			return -EIO;
 
 
-		dprintk(1, "%s() returns 0\n", __FUNCTION__);
+		dprintk(1, "%s() returns 0\n", __func__);
 		return 0;
 	}
 
-	for(cnt = 0; cnt < msg->len; cnt++) {
+	if (i2c_debug) {
+		if (joined)
+			dprintk(1, " R");
+		else
+			dprintk(1, " <R %02x", (msg->addr << 1) + 1);
+	}
+
+	for (cnt = 0; cnt < msg->len; cnt++) {
 
 		ctrl = bus->i2c_period | (1 << 12) | (1 << 2) | 1;
 
-		if (cnt < msg->len-1 || !last)
+		if (cnt < msg->len - 1)
 			ctrl |= I2C_NOSTOP | I2C_EXTEND;
 
 		cx_write(bus->reg_addr, msg->addr << 25);
@@ -195,11 +216,9 @@ static int i2c_readbytes(struct i2c_adapter *i2c_adap,
 			goto eio;
 		msg->buf[cnt] = cx_read(bus->reg_rdata) & 0xff;
 		if (i2c_debug) {
+			dprintk(1, " %02x", msg->buf[cnt]);
 			if (!(ctrl & I2C_NOSTOP))
-				printk(" <R %02x", (msg->addr << 1) +1);
-			printk(" =%02x", msg->buf[cnt]);
-			if (!(ctrl & I2C_NOSTOP))
-				printk(" >\n");
+				dprintk(1, " >\n");
 		}
 	}
 	return msg->len;
@@ -207,7 +226,8 @@ static int i2c_readbytes(struct i2c_adapter *i2c_adap,
  eio:
 	retval = -EIO;
  err:
-	printk(" ERR: %d\n", retval);
+	if (i2c_debug)
+		printk(KERN_ERR " ERR: %d\n", retval);
 	return retval;
 }
 
@@ -218,22 +238,29 @@ static int i2c_xfer(struct i2c_adapter *i2c_adap,
 	struct cx23885_dev *dev = bus->dev;
 	int i, retval = 0;
 
-	dprintk(1, "%s(num = %d)\n", __FUNCTION__, num);
+	dprintk(1, "%s(num = %d)\n", __func__, num);
 
 	for (i = 0 ; i < num; i++) {
 		dprintk(1, "%s(num = %d) addr = 0x%02x  len = 0x%x\n",
-			__FUNCTION__, num, msgs[i].addr, msgs[i].len);
+			__func__, num, msgs[i].addr, msgs[i].len);
 		if (msgs[i].flags & I2C_M_RD) {
 			/* read */
-			retval = i2c_readbytes(i2c_adap, &msgs[i], i+1 == num);
+			retval = i2c_readbytes(i2c_adap, &msgs[i], 0);
+		} else if (i + 1 < num && (msgs[i + 1].flags & I2C_M_RD) &&
+			   msgs[i].addr == msgs[i + 1].addr) {
+			/* write then read from same address */
+			retval = i2c_sendbytes(i2c_adap, &msgs[i],
+					       msgs[i + 1].len);
 			if (retval < 0)
 				goto err;
+			i++;
+			retval = i2c_readbytes(i2c_adap, &msgs[i], 1);
 		} else {
 			/* write */
-			retval = i2c_sendbytes(i2c_adap, &msgs[i], i+1 == num);
-			if (retval < 0)
-				goto err;
+			retval = i2c_sendbytes(i2c_adap, &msgs[i], 0);
 		}
+		if (retval < 0)
+			goto err;
 	}
 	return num;
 
@@ -243,13 +270,40 @@ static int i2c_xfer(struct i2c_adapter *i2c_adap,
 
 static int attach_inform(struct i2c_client *client)
 {
-	struct cx23885_dev *dev = i2c_get_adapdata(client->adapter);
+	struct cx23885_i2c *bus = i2c_get_adapdata(client->adapter);
+	struct cx23885_dev *dev = bus->dev;
+	struct tuner_setup tun_setup;
 
 	dprintk(1, "%s i2c attach [addr=0x%x,client=%s]\n",
 		client->driver->driver.name, client->addr, client->name);
 
 	if (!client->driver->command)
 		return 0;
+
+	if (dev->tuner_type != UNSET) {
+
+		dprintk(1, "%s  (tuner) i2c attach [addr=0x%x,client=%s]\n",
+			client->driver->driver.name, client->addr,
+			client->name);
+
+		if ((dev->tuner_addr == ADDR_UNSET) ||
+			(dev->tuner_addr == client->addr)) {
+
+			dprintk(1, "%s (tuner || addr UNSET)\n",
+				client->driver->driver.name);
+
+			dprintk(1, "%s i2c attach [addr=0x%x,client=%s]\n",
+				client->driver->driver.name,
+				client->addr, client->name);
+
+			tun_setup.mode_mask = T_ANALOG_TV;
+			tun_setup.type = dev->tuner_type;
+			tun_setup.addr = dev->tuner_addr;
+
+			client->driver->command(client, TUNER_SET_TYPE_ADDR,
+				&tun_setup);
+		}
+	}
 
 	return 0;
 }
@@ -289,6 +343,7 @@ static struct i2c_adapter cx23885_i2c_adap_template = {
 	.owner             = THIS_MODULE,
 	.id                = I2C_HW_B_CX23885,
 	.algo              = &cx23885_i2c_algo_template,
+	.class             = I2C_CLASS_TV_ANALOG,
 	.client_register   = attach_inform,
 	.client_unregister = detach_inform,
 };
@@ -298,14 +353,17 @@ static struct i2c_client cx23885_i2c_client_template = {
 };
 
 static char *i2c_devs[128] = {
-	[ 0x1c >> 1 ] = "lgdt3303",
-	[ 0x86 >> 1 ] = "tda9887",
-	[ 0x32 >> 1 ] = "cx24227",
-	[ 0x88 >> 1 ] = "cx25837",
-	[ 0x84 >> 1 ] = "tda8295",
-	[ 0xa0 >> 1 ] = "eeprom",
-	[ 0xc0 >> 1 ] = "tuner/mt2131/tda8275",
-	[ 0xc2 >> 1 ] = "tuner/mt2131/tda8275",
+	[0x10 >> 1] = "tda10048",
+	[0x12 >> 1] = "dib7000pc",
+	[0x1c >> 1] = "lgdt3303",
+	[0x86 >> 1] = "tda9887",
+	[0x32 >> 1] = "cx24227",
+	[0x88 >> 1] = "cx25837",
+	[0x84 >> 1] = "tda8295",
+	[0xa0 >> 1] = "eeprom",
+	[0xc0 >> 1] = "tuner/mt2131/tda8275",
+	[0xc2 >> 1] = "tuner/mt2131/tda8275/xc5000/xc3028",
+	[0xc8 >> 1] = "tuner/xc3028L",
 };
 
 static void do_i2c_scan(char *name, struct i2c_client *c)
@@ -318,7 +376,7 @@ static void do_i2c_scan(char *name, struct i2c_client *c)
 		rc = i2c_master_recv(c, &buf, 0);
 		if (rc < 0)
 			continue;
-		printk("%s: i2c scan: found device @ 0x%x  [%s]\n",
+		printk(KERN_INFO "%s: i2c scan: found device @ 0x%x  [%s]\n",
 		       name, i << 1, i2c_devs[i] ? i2c_devs[i] : "???");
 	}
 }
@@ -328,7 +386,7 @@ int cx23885_i2c_register(struct cx23885_i2c *bus)
 {
 	struct cx23885_dev *dev = bus->dev;
 
-	dprintk(1, "%s(bus = %d)\n", __FUNCTION__, bus->nr);
+	dprintk(1, "%s(bus = %d)\n", __func__, bus->nr);
 
 	memcpy(&bus->i2c_adap, &cx23885_i2c_adap_template,
 	       sizeof(bus->i2c_adap));
@@ -344,16 +402,18 @@ int cx23885_i2c_register(struct cx23885_i2c *bus)
 
 	bus->i2c_algo.data = bus;
 	bus->i2c_adap.algo_data = bus;
+	i2c_set_adapdata(&bus->i2c_adap, bus);
 	i2c_add_adapter(&bus->i2c_adap);
 
 	bus->i2c_client.adapter = &bus->i2c_adap;
 
 	if (0 == bus->i2c_rc) {
-		printk("%s: i2c bus %d registered\n", dev->name, bus->nr);
+		dprintk(1, "%s: i2c bus %d registered\n", dev->name, bus->nr);
 		if (i2c_scan)
 			do_i2c_scan(dev->name, &bus->i2c_client);
 	} else
-		printk("%s: i2c bus %d register FAILED\n", dev->name, bus->nr);
+		printk(KERN_WARNING "%s: i2c bus %d register FAILED\n",
+			dev->name, bus->nr);
 
 	return bus->i2c_rc;
 }
@@ -364,9 +424,30 @@ int cx23885_i2c_unregister(struct cx23885_i2c *bus)
 	return 0;
 }
 
-/* ----------------------------------------------------------------------- */
+void cx23885_av_clk(struct cx23885_dev *dev, int enable)
+{
+	/* write 0 to bus 2 addr 0x144 via i2x_xfer() */
+	char buffer[3];
+	struct i2c_msg msg;
+	dprintk(1, "%s(enabled = %d)\n", __func__, enable);
 
-EXPORT_SYMBOL(cx23885_call_i2c_clients);
+	/* Register 0x144 */
+	buffer[0] = 0x01;
+	buffer[1] = 0x44;
+	if (enable == 1)
+		buffer[2] = 0x05;
+	else
+		buffer[2] = 0x00;
+
+	msg.addr = 0x44;
+	msg.flags = I2C_M_TEN;
+	msg.len = 3;
+	msg.buf = buffer;
+
+	i2c_xfer(&dev->i2c_bus[2].i2c_adap, &msg, 1);
+}
+
+/* ----------------------------------------------------------------------- */
 
 /*
  * Local variables:

@@ -146,7 +146,6 @@ out:
 static int __init ac_probe1(int ioaddr, struct net_device *dev)
 {
 	int i, retval;
-	DECLARE_MAC_BUF(mac);
 
 	if (!request_region(ioaddr, AC_IO_EXTENT, DRV_NAME))
 		return -EBUSY;
@@ -171,8 +170,8 @@ static int __init ac_probe1(int ioaddr, struct net_device *dev)
 	for (i = 0; i < 6; i++)
 		dev->dev_addr[i] = inb(ioaddr + AC_SA_PROM + i);
 
-	printk(KERN_DEBUG "AC3200 in EISA slot %d, node %s",
-	       ioaddr/0x1000, print_mac(mac, dev->dev_addr));
+	printk(KERN_DEBUG "AC3200 in EISA slot %d, node %pM",
+	       ioaddr/0x1000, dev->dev_addr);
 #if 0
 	/* Check the vendor ID/prefix. Redundant after checking the EISA ID */
 	if (inb(ioaddr + AC_SA_PROM + 0) != AC_ADDR0
@@ -369,7 +368,7 @@ MODULE_PARM_DESC(mem, "Memory base address(es)");
 MODULE_DESCRIPTION("Ansel AC3200 EISA ethernet driver");
 MODULE_LICENSE("GPL");
 
-int __init init_module(void)
+static int __init ac3200_module_init(void)
 {
 	struct net_device *dev;
 	int this_dev, found = 0;
@@ -404,8 +403,7 @@ static void cleanup_card(struct net_device *dev)
 	iounmap(ei_status.mem);
 }
 
-void __exit
-cleanup_module(void)
+static void __exit ac3200_module_exit(void)
 {
 	int this_dev;
 
@@ -418,4 +416,6 @@ cleanup_module(void)
 		}
 	}
 }
+module_init(ac3200_module_init);
+module_exit(ac3200_module_exit);
 #endif /* MODULE */

@@ -16,7 +16,6 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-#include <sound/driver.h>
 #include <asm/io.h>
 #include <linux/init.h>
 #include <linux/time.h>
@@ -181,11 +180,11 @@ snd_wavefront_fx_ioctl (struct snd_hwdep *sdev, struct file *file,
 	unsigned short *pd;
 	int err = 0;
 
-	snd_assert(sdev->card != NULL, return -ENODEV);
-	
 	card = sdev->card;
-
-	snd_assert(card->private_data != NULL, return -ENODEV);
+	if (snd_BUG_ON(!card))
+		return -ENODEV;
+	if (snd_BUG_ON(!card->private_data))
+		return -ENODEV;
 
 	acard = card->private_data;
 	dev = &acard->wavefront;

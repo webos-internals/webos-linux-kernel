@@ -2565,6 +2565,8 @@ static void __init probe_uninorth(void)
 
 	/* Locate core99 Uni-N */
 	uninorth_node = of_find_node_by_name(NULL, "uni-n");
+	uninorth_maj = 1;
+
 	/* Locate G5 u3 */
 	if (uninorth_node == NULL) {
 		uninorth_node = of_find_node_by_name(NULL, "u3");
@@ -2575,8 +2577,10 @@ static void __init probe_uninorth(void)
 		uninorth_node = of_find_node_by_name(NULL, "u4");
 		uninorth_maj = 4;
 	}
-	if (uninorth_node == NULL)
+	if (uninorth_node == NULL) {
+		uninorth_maj = 0;
 		return;
+	}
 
 	addrp = of_get_property(uninorth_node, "reg", NULL);
 	if (addrp == NULL)
@@ -2673,7 +2677,7 @@ static void __init probe_one_macio(const char *name, const char *compat, int typ
 	macio_chips[i].of_node	= node;
 	macio_chips[i].type	= type;
 	macio_chips[i].base	= base;
-	macio_chips[i].flags	= MACIO_FLAG_SCCB_ON | MACIO_FLAG_SCCB_ON;
+	macio_chips[i].flags	= MACIO_FLAG_SCCA_ON | MACIO_FLAG_SCCB_ON;
 	macio_chips[i].name	= macio_names[type];
 	revp = of_get_property(node, "revision-id", NULL);
 	if (revp)
@@ -3029,3 +3033,8 @@ void pmac_resume_agp_for_card(struct pci_dev *dev)
 	pmac_agp_resume(pmac_agp_bridge);
 }
 EXPORT_SYMBOL(pmac_resume_agp_for_card);
+
+int pmac_get_uninorth_variant(void)
+{
+	return uninorth_maj;
+}

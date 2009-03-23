@@ -12,32 +12,18 @@
 #include <linux/file.h>
 #include <linux/utsname.h>
 #include <linux/personality.h>
+#include <linux/random.h>
+#include <linux/uaccess.h>
 
-#include <asm/uaccess.h>
 #include <asm/ia32.h>
+#include <asm/syscalls.h>
 
-/*
- * sys_pipe() is the normal C calling standard for creating
- * a pipe. It's not the way Unix traditionally does this, though.
- */
-asmlinkage long sys_pipe(int __user *fildes)
-{
-	int fd[2];
-	int error;
-
-	error = do_pipe(fd);
-	if (!error) {
-		if (copy_to_user(fildes, fd, 2*sizeof(int)))
-			error = -EFAULT;
-	}
-	return error;
-}
-
-asmlinkage long sys_mmap(unsigned long addr, unsigned long len, unsigned long prot, unsigned long flags,
-	unsigned long fd, unsigned long off)
+asmlinkage long sys_mmap(unsigned long addr, unsigned long len,
+		unsigned long prot, unsigned long flags,
+		unsigned long fd, unsigned long off)
 {
 	long error;
-	struct file * file;
+	struct file *file;
 
 	error = -EINVAL;
 	if (off & ~PAGE_MASK)
@@ -65,20 +51,26 @@ static void find_start_end(unsigned long flags, unsigned long *begin,
 			   unsigned long *end)
 {
 	if (!test_thread_flag(TIF_IA32) && (flags & MAP_32BIT)) {
+		unsigned long new_begin;
 		/* This is usually used needed to map code in small
 		   model, so it needs to be in the first 31bit. Limit
 		   it to that.  This means we need to move the
 		   unmapped base down for this case. This can give
 		   conflicts with the heap, but we assume that glibc
 		   malloc knows how to fall back to mmap. Give it 1GB
-		   of playground for now. -AK */ 
-		*begin = 0x40000000; 
-		*end = 0x80000000;		
+		   of playground for now. -AK */
+		*begin = 0x40000000;
+		*end = 0x80000000;
+		if (current->flags & PF_RANDOMIZE) {
+			new_begin = randomize_range(*begin, *begin + 0x02000000, 0);
+			if (new_begin)
+				*begin = new_begin;
+		}
 	} else {
 		*begin = TASK_UNMAPPED_BASE;
-		*end = TASK_SIZE; 
+		*end = TASK_SIZE;
 	}
-} 
+}
 
 unsigned long
 arch_get_unmapped_area(struct file *filp, unsigned long addr,
@@ -88,11 +80,11 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 	struct vm_area_struct *vma;
 	unsigned long start_addr;
 	unsigned long begin, end;
-	
+
 	if (flags & MAP_FIXED)
 		return addr;
 
-	find_start_end(flags, &begin, &end); 
+	find_start_end(flags, &begin, &end);
 
 	if (len > end)
 		return -ENOMEM;
@@ -106,12 +98,12 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 	}
 	if (((flags & MAP_32BIT) || test_thread_flag(TIF_IA32))
 	    && len <= mm->cached_hole_size) {
-	        mm->cached_hole_size = 0;
+		mm->cached_hole_size = 0;
 		mm->free_area_cache = begin;
 	}
 	addr = mm->free_area_cache;
-	if (addr < begin) 
-		addr = begin; 
+	if (addr < begin)
+		addr = begin;
 	start_addr = addr;
 
 full_search:
@@ -137,19 +129,110 @@ full_search:
 			return addr;
 		}
 		if (addr + mm->cached_hole_size < vma->vm_start)
-		        mm->cached_hole_size = vma->vm_start - addr;
+			mm->cached_hole_size = vma->vm_start - addr;
 
 		addr = vma->vm_end;
 	}
 }
 
-asmlinkage long sys_uname(struct new_utsname __user * name)
+
+unsigned long
+arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
+			  const unsigned long len, const unsigned long pgoff,
+			  const unsigned long flags)
+{
+	struct vm_area_struct *vma;
+	struct mm_struct *mm = current->mm;
+	unsigned long addr = addr0;
+
+	/* requested length too big for entire address space */
+	if (len > TASK_SIZE)
+		return -ENOMEM;
+
+	if (flags & MAP_FIXED)
+		return addr;
+
+	/* for MAP_32BIT mappings we force the legact mmap base */
+	if (!test_thread_flag(TIF_IA32) && (flags & MAP_32BIT))
+		goto bottomup;
+
+	/* requesting a specific address */
+	if (addr) {
+		addr = PAGE_ALIGN(addr);
+		vma = find_vma(mm, addr);
+		if (TASK_SIZE - len >= addr &&
+				(!vma || addr + len <= vma->vm_start))
+			return addr;
+	}
+
+	/* check if free_area_cache is useful for us */
+	if (len <= mm->cached_hole_size) {
+		mm->cached_hole_size = 0;
+		mm->free_area_cache = mm->mmap_base;
+	}
+
+	/* either no address requested or can't fit in requested address hole */
+	addr = mm->free_area_cache;
+
+	/* make sure it can fit in the remaining address space */
+	if (addr > len) {
+		vma = find_vma(mm, addr-len);
+		if (!vma || addr <= vma->vm_start)
+			/* remember the address as a hint for next time */
+			return mm->free_area_cache = addr-len;
+	}
+
+	if (mm->mmap_base < len)
+		goto bottomup;
+
+	addr = mm->mmap_base-len;
+
+	do {
+		/*
+		 * Lookup failure means no vma is above this address,
+		 * else if new region fits below vma->vm_start,
+		 * return with success:
+		 */
+		vma = find_vma(mm, addr);
+		if (!vma || addr+len <= vma->vm_start)
+			/* remember the address as a hint for next time */
+			return mm->free_area_cache = addr;
+
+		/* remember the largest hole we saw so far */
+		if (addr + mm->cached_hole_size < vma->vm_start)
+			mm->cached_hole_size = vma->vm_start - addr;
+
+		/* try just below the current vma->vm_start */
+		addr = vma->vm_start-len;
+	} while (len < vma->vm_start);
+
+bottomup:
+	/*
+	 * A failed mmap() very likely causes application failure,
+	 * so fall back to the bottom-up function here. This scenario
+	 * can happen with large stack limits and large mmap()
+	 * allocations.
+	 */
+	mm->cached_hole_size = ~0UL;
+	mm->free_area_cache = TASK_UNMAPPED_BASE;
+	addr = arch_get_unmapped_area(filp, addr0, len, pgoff, flags);
+	/*
+	 * Restore the topdown base:
+	 */
+	mm->free_area_cache = mm->mmap_base;
+	mm->cached_hole_size = ~0UL;
+
+	return addr;
+}
+
+
+asmlinkage long sys_uname(struct new_utsname __user *name)
 {
 	int err;
 	down_read(&uts_sem);
-	err = copy_to_user(name, utsname(), sizeof (*name));
+	err = copy_to_user(name, utsname(), sizeof(*name));
 	up_read(&uts_sem);
-	if (personality(current->personality) == PER_LINUX32) 
-		err |= copy_to_user(&name->machine, "i686", 5); 		
+	if (personality(current->personality) == PER_LINUX32)
+		err |= copy_to_user(&name->machine, "i686", 5);
 	return err ? -EFAULT : 0;
 }

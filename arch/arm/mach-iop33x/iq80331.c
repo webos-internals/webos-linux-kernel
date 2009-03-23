@@ -22,8 +22,8 @@
 #include <linux/serial_8250.h>
 #include <linux/mtd/physmap.h>
 #include <linux/platform_device.h>
-#include <asm/hardware.h>
-#include <asm/io.h>
+#include <linux/io.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
@@ -32,7 +32,7 @@
 #include <asm/mach-types.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
-#include <asm/arch/time.h>
+#include <mach/time.h>
 
 /*
  * IQ80331 timer tick configuration.
@@ -89,7 +89,7 @@ static struct hw_pci iq80331_pci __initdata = {
 	.swizzle	= pci_std_swizzle,
 	.nr_controllers = 1,
 	.setup		= iop3xx_pci_setup,
-	.preinit	= iop3xx_pci_preinit,
+	.preinit	= iop3xx_pci_preinit_cond,
 	.scan		= iop3xx_pci_scan_bus,
 	.map_irq	= iq80331_pci_map_irq,
 };

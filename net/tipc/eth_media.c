@@ -82,7 +82,7 @@ static int send_msg(struct sk_buff *buf, struct tipc_bearer *tb_ptr,
 				 dev->dev_addr, clone->len);
 		dev_queue_xmit(clone);
 	}
-	return TIPC_OK;
+	return 0;
 }
 
 /**
@@ -101,7 +101,7 @@ static int recv_msg(struct sk_buff *buf, struct net_device *dev,
 	struct eth_bearer *eb_ptr = (struct eth_bearer *)pt->af_packet_priv;
 	u32 size;
 
-	if (dev->nd_net != &init_net) {
+	if (!net_eq(dev_net(dev), &init_net)) {
 		kfree_skb(buf);
 		return 0;
 	}
@@ -113,12 +113,12 @@ static int recv_msg(struct sk_buff *buf, struct net_device *dev,
 			if (likely(buf->len == size)) {
 				buf->next = NULL;
 				tipc_recv_msg(buf, eb_ptr->bearer);
-				return TIPC_OK;
+				return 0;
 			}
 		}
 	}
 	kfree_skb(buf);
-	return TIPC_OK;
+	return 0;
 }
 
 /**
@@ -198,7 +198,7 @@ static int recv_notification(struct notifier_block *nb, unsigned long evt,
 	struct eth_bearer *eb_ptr = &eth_bearers[0];
 	struct eth_bearer *stop = &eth_bearers[MAX_ETH_BEARERS];
 
-	if (dev->nd_net != &init_net)
+	if (!net_eq(dev_net(dev), &init_net))
 		return NOTIFY_DONE;
 
 	while ((eb_ptr->dev != dev)) {
@@ -243,12 +243,11 @@ static int recv_notification(struct notifier_block *nb, unsigned long evt,
 static char *eth_addr2str(struct tipc_media_addr *a, char *str_buf, int str_size)
 {
 	unchar *addr = (unchar *)&a->dev_addr;
-	DECLARE_MAC_BUF(mac);
 
 	if (str_size < 18)
 		*str_buf = '\0';
 	else
-		sprintf(str_buf, "%s", print_mac(mac, addr));
+		sprintf(str_buf, "%pM", addr);
 	return str_buf;
 }
 

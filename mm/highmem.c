@@ -40,6 +40,7 @@
 #ifdef CONFIG_HIGHMEM
 
 unsigned long totalhigh_pages __read_mostly;
+EXPORT_SYMBOL(totalhigh_pages);
 
 unsigned int nr_free_highpages (void)
 {
@@ -69,6 +70,7 @@ static DECLARE_WAIT_QUEUE_HEAD(pkmap_map_wait);
 static void flush_all_zero_pkmaps(void)
 {
 	int i;
+	int need_flush = 0;
 
 	flush_cache_kmaps();
 
@@ -100,12 +102,15 @@ static void flush_all_zero_pkmaps(void)
 			  &pkmap_page_table[i]);
 
 		set_page_address(page, NULL);
+		need_flush = 1;
 	}
-	flush_tlb_kernel_range(PKMAP_ADDR(0), PKMAP_ADDR(LAST_PKMAP));
+	if (need_flush)
+		flush_tlb_kernel_range(PKMAP_ADDR(0), PKMAP_ADDR(LAST_PKMAP));
 }
 
-/* Flush all unused kmap mappings in order to remove stray
-   mappings. */
+/**
+ * kmap_flush_unused - flush all unused kmap mappings in order to remove stray mappings
+ */
 void kmap_flush_unused(void)
 {
 	spin_lock(&kmap_lock);
@@ -163,15 +168,21 @@ start:
 	return vaddr;
 }
 
-void fastcall *kmap_high(struct page *page)
+/**
+ * kmap_high - map a highmem page into memory
+ * @page: &struct page to map
+ *
+ * Returns the page's virtual memory address.
+ *
+ * We cannot call this from interrupts, as it may block.
+ */
+void *kmap_high(struct page *page)
 {
 	unsigned long vaddr;
 
 	/*
 	 * For highmem pages, we can't trust "virtual" until
 	 * after we have the lock.
-	 *
-	 * We cannot call this from interrupts, as it may block
 	 */
 	spin_lock(&kmap_lock);
 	vaddr = (unsigned long)page_address(page);
@@ -185,7 +196,11 @@ void fastcall *kmap_high(struct page *page)
 
 EXPORT_SYMBOL(kmap_high);
 
-void fastcall kunmap_high(struct page *page)
+/**
+ * kunmap_high - map a highmem page into memory
+ * @page: &struct page to unmap
+ */
+void kunmap_high(struct page *page)
 {
 	unsigned long vaddr;
 	unsigned long nr;
@@ -259,6 +274,12 @@ static struct page_address_slot *page_slot(struct page *page)
 	return &page_address_htable[hash_ptr(page, PA_HASH_ORDER)];
 }
 
+/**
+ * page_address - get the mapped virtual address of a page
+ * @page: &struct page to get the virtual address of
+ *
+ * Returns the page's virtual address.
+ */
 void *page_address(struct page *page)
 {
 	unsigned long flags;
@@ -288,6 +309,11 @@ done:
 
 EXPORT_SYMBOL(page_address);
 
+/**
+ * set_page_address - set a page's virtual address
+ * @page: &struct page to set
+ * @virtual: virtual address to use
+ */
 void set_page_address(struct page *page, void *virtual)
 {
 	unsigned long flags;

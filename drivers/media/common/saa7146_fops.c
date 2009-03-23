@@ -61,7 +61,7 @@ void saa7146_dma_free(struct saa7146_dev *dev,struct videobuf_queue *q,
 	videobuf_waiton(&buf->vb,0,0);
 	videobuf_dma_unmap(q, dma);
 	videobuf_dma_free(dma);
-	buf->vb.state = STATE_NEEDS_INIT;
+	buf->vb.state = VIDEOBUF_NEEDS_INIT;
 }
 
 
@@ -83,7 +83,7 @@ int saa7146_buffer_queue(struct saa7146_dev *dev,
 		buf->activate(dev,buf,NULL);
 	} else {
 		list_add_tail(&buf->vb.queue,&q->queue);
-		buf->vb.state = STATE_QUEUED;
+		buf->vb.state = VIDEOBUF_QUEUED;
 		DEB_D(("adding buffer %p to queue. (active buffer present)\n", buf));
 	}
 	return 0;
@@ -174,7 +174,7 @@ void saa7146_buffer_timeout(unsigned long data)
 	spin_lock_irqsave(&dev->slock,flags);
 	if (q->curr) {
 		DEB_D(("timeout on %p\n", q->curr));
-		saa7146_buffer_finish(dev,q,STATE_ERROR);
+		saa7146_buffer_finish(dev,q,VIDEOBUF_ERROR);
 	}
 
 	/* we don't restart the transfer here like other drivers do. when
@@ -192,9 +192,9 @@ void saa7146_buffer_timeout(unsigned long data)
 /********************************************************************************/
 /* file operations */
 
-static int fops_open(struct inode *inode, struct file *file)
+static int fops_open(struct file *file)
 {
-	unsigned int minor = iminor(inode);
+	unsigned int minor = video_devdata(file)->minor;
 	struct saa7146_dev *h = NULL, *dev = NULL;
 	struct list_head *list;
 	struct saa7146_fh *fh = NULL;
@@ -202,7 +202,7 @@ static int fops_open(struct inode *inode, struct file *file)
 
 	enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-	DEB_EE(("inode:%p, file:%p, minor:%d\n",inode,file,minor));
+	DEB_EE(("file:%p, minor:%d\n", file, minor));
 
 	if (mutex_lock_interruptible(&saa7146_devices_lock))
 		return -ERESTARTSYS;
@@ -255,7 +255,7 @@ static int fops_open(struct inode *inode, struct file *file)
 		if (dev->ext_vv_data->capabilities & V4L2_CAP_VBI_CAPTURE)
 			result = saa7146_vbi_uops.open(dev,file);
 		if (dev->ext_vv_data->vbi_fops.open)
-			dev->ext_vv_data->vbi_fops.open(inode, file);
+			dev->ext_vv_data->vbi_fops.open(file);
 	} else {
 		DEB_S(("initializing video...\n"));
 		result = saa7146_video_uops.open(dev,file);
@@ -272,7 +272,7 @@ static int fops_open(struct inode *inode, struct file *file)
 
 	result = 0;
 out:
-	if( fh != 0 && result != 0 ) {
+	if (fh && result != 0) {
 		kfree(fh);
 		file->private_data = NULL;
 	}
@@ -280,12 +280,12 @@ out:
 	return result;
 }
 
-static int fops_release(struct inode *inode, struct file *file)
+static int fops_release(struct file *file)
 {
 	struct saa7146_fh  *fh  = file->private_data;
 	struct saa7146_dev *dev = fh->dev;
 
-	DEB_EE(("inode:%p, file:%p\n",inode,file));
+	DEB_EE(("file:%p\n", file));
 
 	if (mutex_lock_interruptible(&saa7146_devices_lock))
 		return -ERESTARTSYS;
@@ -294,7 +294,7 @@ static int fops_release(struct inode *inode, struct file *file)
 		if (dev->ext_vv_data->capabilities & V4L2_CAP_VBI_CAPTURE)
 			saa7146_vbi_uops.release(dev,file);
 		if (dev->ext_vv_data->vbi_fops.release)
-			dev->ext_vv_data->vbi_fops.release(inode, file);
+			dev->ext_vv_data->vbi_fops.release(file);
 	} else {
 		saa7146_video_uops.release(dev,file);
 	}
@@ -308,12 +308,12 @@ static int fops_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static int fops_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
+static long fops_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 /*
-	DEB_EE(("inode:%p, file:%p, cmd:%d, arg:%li\n",inode, file, cmd, arg));
+	DEB_EE(("file:%p, cmd:%d, arg:%li\n", file, cmd, arg));
 */
-	return video_usercopy(inode, file, cmd, arg, saa7146_video_do_ioctl);
+	return video_usercopy(file, cmd, arg, saa7146_video_do_ioctl);
 }
 
 static int fops_mmap(struct file *file, struct vm_area_struct * vma)
@@ -366,7 +366,7 @@ static unsigned int fops_poll(struct file *file, struct poll_table_struct *wait)
 	}
 
 	poll_wait(file, &buf->done, wait);
-	if (buf->state == STATE_DONE || buf->state == STATE_ERROR) {
+	if (buf->state == VIDEOBUF_DONE || buf->state == VIDEOBUF_ERROR) {
 		DEB_D(("poll succeeded!\n"));
 		return POLLIN|POLLRDNORM;
 	}
@@ -416,7 +416,7 @@ static ssize_t fops_write(struct file *file, const char __user *data, size_t cou
 	}
 }
 
-static const struct file_operations video_fops =
+static const struct v4l2_file_operations video_fops =
 {
 	.owner		= THIS_MODULE,
 	.open		= fops_open,
@@ -426,7 +426,6 @@ static const struct file_operations video_fops =
 	.poll		= fops_poll,
 	.mmap		= fops_mmap,
 	.ioctl		= fops_ioctl,
-	.llseek		= no_llseek,
 };
 
 static void vv_callback(struct saa7146_dev *dev, unsigned long status)
@@ -533,22 +532,23 @@ int saa7146_register_device(struct video_device **vid, struct saa7146_dev* dev,
 	memcpy(vfd, &device_template, sizeof(struct video_device));
 	strlcpy(vfd->name, name, sizeof(vfd->name));
 	vfd->release = video_device_release;
-	vfd->priv = dev;
+	video_set_drvdata(vfd, dev);
 
 	// fixme: -1 should be an insmod parameter *for the extension* (like "video_nr");
 	if (video_register_device(vfd, type, -1) < 0) {
 		ERR(("cannot register v4l2 device. skipping.\n"));
+		video_device_release(vfd);
 		return -1;
 	}
 
 	if( VFL_TYPE_GRABBER == type ) {
 		vv->video_minor = vfd->minor;
 		INFO(("%s: registered device video%d [v4l2]\n",
-			dev->name, vfd->minor & 0x1f));
+			dev->name, vfd->num));
 	} else {
 		vv->vbi_minor = vfd->minor;
 		INFO(("%s: registered device vbi%d [v4l2]\n",
-			dev->name, vfd->minor & 0x1f));
+			dev->name, vfd->num));
 	}
 
 	*vid = vfd;
@@ -562,7 +562,7 @@ int saa7146_unregister_device(struct video_device **vid, struct saa7146_dev* dev
 
 	DEB_EE(("dev:%p\n",dev));
 
-	if( VFL_TYPE_GRABBER == (*vid)->type ) {
+	if ((*vid)->vfl_type == VFL_TYPE_GRABBER) {
 		vv->video_minor = -1;
 	} else {
 		vv->vbi_minor = -1;

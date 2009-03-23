@@ -26,7 +26,6 @@
 #include <linux/acpi.h>
 #include <asm/sn/sn2/sn_hwperf.h>
 #include <asm/sn/acpi.h>
-#include "acpi/acglobal.h"
 
 extern void sn_init_cpei_timer(void);
 extern void register_sn_procfs(void);
@@ -364,7 +363,7 @@ void sn_bus_store_sysdata(struct pci_dev *dev)
 
 	element = kzalloc(sizeof(struct sysdata_el), GFP_KERNEL);
 	if (!element) {
-		dev_dbg(&dev->dev, "%s: out of memory!\n", __FUNCTION__);
+		dev_dbg(&dev->dev, "%s: out of memory!\n", __func__);
 		return;
 	}
 	element->sysdata = SN_PCIDEV_INFO(dev);
@@ -473,7 +472,7 @@ sn_io_early_init(void)
 	{
 		struct acpi_table_header *header = NULL;
 
-		acpi_get_table_by_index(ACPI_TABLE_INDEX_DSDT, &header);
+		acpi_get_table(ACPI_SIG_DSDT, 1, &header);
 		BUG_ON(header == NULL);
 		sn_acpi_rev = header->oem_revision;
 	}
@@ -505,7 +504,7 @@ sn_io_early_init(void)
 
 	{
 		struct acpi_table_header *header;
-		(void)acpi_get_table_by_index(ACPI_TABLE_INDEX_DSDT, &header);
+		(void)acpi_get_table(ACPI_SIG_DSDT, 1, &header);
 		printk(KERN_INFO "ACPI  DSDT OEM Rev 0x%x\n",
 			header->oem_revision);
 	}

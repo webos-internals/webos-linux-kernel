@@ -54,27 +54,18 @@
 #include "ivtv-vbi.h"
 #include "ivtv-routing.h"
 #include "ivtv-gpio.h"
-#include "ivtv-yuv.h"
 
 #include <media/tveeprom.h>
 #include <media/saa7115.h>
 #include <media/v4l2-chip-ident.h>
-
-/* var to keep track of the number of array elements in use */
-int ivtv_cards_active = 0;
+#include "tuner-xc2028.h"
 
 /* If you have already X v4l cards, then set this to X. This way
    the device numbers stay matched. Example: you have a WinTV card
    without radio and a PVR-350 with. Normally this would give a
    video1 device together with a radio0 device for the PVR. By
    setting this to 1 you ensure that radio0 is now also radio1. */
-int ivtv_first_minor = 0;
-
-/* Master variable for all ivtv info */
-struct ivtv *ivtv_cards[IVTV_MAX_CARDS];
-
-/* Protects ivtv_cards_active */
-DEFINE_SPINLOCK(ivtv_cards_lock);
+int ivtv_first_minor;
 
 /* add your revision and whatnot here */
 static struct pci_device_id ivtv_pci_tbl[] __devinitdata = {
@@ -86,6 +77,9 @@ static struct pci_device_id ivtv_pci_tbl[] __devinitdata = {
 };
 
 MODULE_DEVICE_TABLE(pci,ivtv_pci_tbl);
+
+/* ivtv instance counter */
+static atomic_t ivtv_instance = ATOMIC_INIT(0);
 
 /* Parameter declarations */
 static int cardtype[IVTV_MAX_CARDS];
@@ -101,7 +95,7 @@ static int radio[IVTV_MAX_CARDS] = { -1, -1, -1, -1, -1, -1, -1, -1,
 static unsigned int cardtype_c = 1;
 static unsigned int tuner_c = 1;
 static unsigned int radio_c = 1;
-static char pal[] = "--";
+static char pal[] = "---";
 static char secam[] = "--";
 static char ntsc[] = "-";
 
@@ -126,12 +120,13 @@ static int dec_mpg_buffers = IVTV_DEFAULT_DEC_MPG_BUFFERS;
 static int dec_yuv_buffers = IVTV_DEFAULT_DEC_YUV_BUFFERS;
 static int dec_vbi_buffers = IVTV_DEFAULT_DEC_VBI_BUFFERS;
 
-static int ivtv_yuv_mode = 0;
-static int ivtv_yuv_threshold=-1;
+static int ivtv_yuv_mode;
+static int ivtv_yuv_threshold = -1;
 static int ivtv_pci_latency = 1;
 
-int ivtv_debug = 0;
+int ivtv_debug;
 
+static int tunertype = -1;
 static int newi2c = -1;
 
 module_param_array(tuner, int, &tuner_c, 0644);
@@ -154,6 +149,7 @@ module_param(dec_mpg_buffers, int, 0644);
 module_param(dec_yuv_buffers, int, 0644);
 module_param(dec_vbi_buffers, int, 0644);
 
+module_param(tunertype, int, 0644);
 module_param(newi2c, int, 0644);
 
 MODULE_PARM_DESC(tuner, "Tuner type selection,\n"
@@ -185,11 +181,21 @@ MODULE_PARM_DESC(cardtype,
 		 "\t\t\t19 = Yuan PG600V2/GotView PCI DVD Lite\n"
 		 "\t\t\t20 = Club3D ZAP-TV1x01\n"
 		 "\t\t\t21 = AverTV MCE 116 Plus\n"
+		 "\t\t\t22 = ASUS Falcon2\n"
+		 "\t\t\t23 = AverMedia PVR-150 Plus\n"
+		 "\t\t\t24 = AverMedia EZMaker PCI Deluxe\n"
+		 "\t\t\t25 = AverMedia M104 (not yet working)\n"
+		 "\t\t\t26 = Buffalo PC-MV5L/PCI\n"
 		 "\t\t\t 0 = Autodetect (default)\n"
 		 "\t\t\t-1 = Ignore this card\n\t\t");
-MODULE_PARM_DESC(pal, "Set PAL standard: B, G, H, D, K, I, M, N, Nc, 60");
-MODULE_PARM_DESC(secam, "Set SECAM standard: B, G, H, D, K, L, LC");
-MODULE_PARM_DESC(ntsc, "Set NTSC standard: M, J, K");
+MODULE_PARM_DESC(pal, "Set PAL standard: BGH, DK, I, M, N, Nc, 60");
+MODULE_PARM_DESC(secam, "Set SECAM standard: BGH, DK, L, LC");
+MODULE_PARM_DESC(ntsc, "Set NTSC standard: M, J (Japan), K (South Korea)");
+MODULE_PARM_DESC(tunertype,
+		"Specify tuner type:\n"
+		"\t\t\t 0 = tuner for PAL-B/G/H/D/K/I, SECAM-B/G/H/D/K/L/Lc\n"
+		"\t\t\t 1 = tuner for NTSC-M/J/K, PAL-M/N/Nc\n"
+		"\t\t\t-1 = Autodetect (default)\n");
 MODULE_PARM_DESC(debug,
 		 "Debug level (bitmask). Default: 0\n"
 		 "\t\t\t   1/0x0001: warning\n"
@@ -239,7 +245,7 @@ MODULE_PARM_DESC(newi2c,
 		 "\t\t\t-1 is autodetect, 0 is off, 1 is on\n"
 		 "\t\t\tDefault is autodetect");
 
-MODULE_PARM_DESC(ivtv_first_minor, "Set minor assigned to first card");
+MODULE_PARM_DESC(ivtv_first_minor, "Set kernel number assigned to first card");
 
 MODULE_AUTHOR("Kevin Thayer, Chris Kennedy, Hans Verkuil");
 MODULE_DESCRIPTION("CX23415/CX23416 driver");
@@ -397,6 +403,7 @@ static void ivtv_process_eeprom(struct ivtv *itv)
 
 	itv->v4l2_cap = itv->card->v4l2_capabilities;
 	itv->card_name = itv->card->name;
+	itv->card_i2c = itv->card->i2c;
 
 	/* If this is a PVR500 then it should be possible to detect whether it is the
 	   first or second unit by looking at the subsystem device ID: is bit 4 is
@@ -414,7 +421,14 @@ static void ivtv_process_eeprom(struct ivtv *itv)
 	   This detection is needed since the eeprom reports incorrectly that a radio is
 	   present on the second unit. */
 	if (tv.model / 1000 == 23) {
+		static const struct ivtv_card_tuner_i2c ivtv_i2c_radio = {
+			.radio = { 0x60, I2C_CLIENT_END },
+			.demod = { 0x43, I2C_CLIENT_END },
+			.tv = { 0x61, I2C_CLIENT_END },
+		};
+
 		itv->card_name = "WinTV PVR 500";
+		itv->card_i2c = &ivtv_i2c_radio;
 		if (pci_slot == 8 || pci_slot == 9) {
 			int is_first = (pci_slot & 1) == 0;
 
@@ -445,9 +459,8 @@ static void ivtv_process_eeprom(struct ivtv *itv)
 	if (itv->options.radio == -1)
 		itv->options.radio = (tv.has_radio != 0);
 	/* only enable newi2c if an IR blaster is present */
-	/* FIXME: for 2.6.20 the test against 2 should be removed */
-	if (itv->options.newi2c == -1 && tv.has_ir != -1 && tv.has_ir != 2) {
-		itv->options.newi2c = (tv.has_ir & 2) ? 1 : 0;
+	if (itv->options.newi2c == -1 && tv.has_ir) {
+		itv->options.newi2c = (tv.has_ir & 4) ? 1 : 0;
 		if (itv->options.newi2c) {
 		    IVTV_INFO("Reopen i2c bus for IR-blaster support\n");
 		    exit_ivtv_i2c(itv);
@@ -479,30 +492,35 @@ static v4l2_std_id ivtv_parse_std(struct ivtv *itv)
 {
 	switch (pal[0]) {
 		case '6':
+			tunertype = 0;
 			return V4L2_STD_PAL_60;
 		case 'b':
 		case 'B':
 		case 'g':
 		case 'G':
-			return V4L2_STD_PAL_BG;
 		case 'h':
 		case 'H':
-			return V4L2_STD_PAL_H;
+			tunertype = 0;
+			return V4L2_STD_PAL_BG | V4L2_STD_PAL_H;
 		case 'n':
 		case 'N':
+			tunertype = 1;
 			if (pal[1] == 'c' || pal[1] == 'C')
 				return V4L2_STD_PAL_Nc;
 			return V4L2_STD_PAL_N;
 		case 'i':
 		case 'I':
+			tunertype = 0;
 			return V4L2_STD_PAL_I;
 		case 'd':
 		case 'D':
 		case 'k':
 		case 'K':
+			tunertype = 0;
 			return V4L2_STD_PAL_DK;
 		case 'M':
 		case 'm':
+			tunertype = 1;
 			return V4L2_STD_PAL_M;
 		case '-':
 			break;
@@ -518,14 +536,17 @@ static v4l2_std_id ivtv_parse_std(struct ivtv *itv)
 		case 'G':
 		case 'h':
 		case 'H':
+			tunertype = 0;
 			return V4L2_STD_SECAM_B | V4L2_STD_SECAM_G | V4L2_STD_SECAM_H;
 		case 'd':
 		case 'D':
 		case 'k':
 		case 'K':
+			tunertype = 0;
 			return V4L2_STD_SECAM_DK;
 		case 'l':
 		case 'L':
+			tunertype = 0;
 			if (secam[1] == 'C' || secam[1] == 'c')
 				return V4L2_STD_SECAM_LC;
 			return V4L2_STD_SECAM_L;
@@ -539,12 +560,15 @@ static v4l2_std_id ivtv_parse_std(struct ivtv *itv)
 	switch (ntsc[0]) {
 		case 'm':
 		case 'M':
+			tunertype = 1;
 			return V4L2_STD_NTSC_M;
 		case 'j':
 		case 'J':
+			tunertype = 1;
 			return V4L2_STD_NTSC_M_JP;
 		case 'k':
 		case 'K':
+			tunertype = 1;
 			return V4L2_STD_NTSC_M_KR;
 		case '-':
 			break;
@@ -569,12 +593,17 @@ static void ivtv_process_options(struct ivtv *itv)
 	itv->options.kilobytes[IVTV_DEC_STREAM_TYPE_MPG] = dec_mpg_buffers * 1024;
 	itv->options.kilobytes[IVTV_DEC_STREAM_TYPE_YUV] = dec_yuv_buffers * 1024;
 	itv->options.kilobytes[IVTV_DEC_STREAM_TYPE_VBI] = dec_vbi_buffers;
-	itv->options.cardtype = cardtype[itv->num];
-	itv->options.tuner = tuner[itv->num];
-	itv->options.radio = radio[itv->num];
+	itv->options.cardtype = cardtype[itv->instance];
+	itv->options.tuner = tuner[itv->instance];
+	itv->options.radio = radio[itv->instance];
 	itv->options.newi2c = newi2c;
-
+	if (tunertype < -1 || tunertype > 1) {
+		IVTV_WARN("Invalid tunertype argument, will autodetect instead\n");
+		tunertype = -1;
+	}
 	itv->std = ivtv_parse_std(itv);
+	if (itv->std == 0 && tunertype >= 0)
+		itv->std = tunertype ? V4L2_STD_MN : (V4L2_STD_ALL & ~V4L2_STD_MN);
 	itv->has_cx23415 = (itv->dev->device == PCI_DEVICE_ID_IVTV15);
 	chipname = itv->has_cx23415 ? "cx23415" : "cx23416";
 	if (itv->options.cardtype == -1) {
@@ -620,18 +649,19 @@ done:
 
 	if (itv->card == NULL) {
 		itv->card = ivtv_get_card(IVTV_CARD_PVR_150);
-		IVTV_ERR("Unknown card: vendor/device: %04x/%04x\n",
+		IVTV_ERR("Unknown card: vendor/device: [%04x:%04x]\n",
 		     itv->dev->vendor, itv->dev->device);
-		IVTV_ERR("              subsystem vendor/device: %04x/%04x\n",
+		IVTV_ERR("              subsystem vendor/device: [%04x:%04x]\n",
 		     itv->dev->subsystem_vendor, itv->dev->subsystem_device);
 		IVTV_ERR("              %s based\n", chipname);
 		IVTV_ERR("Defaulting to %s card\n", itv->card->name);
 		IVTV_ERR("Please mail the vendor/device and subsystem vendor/device IDs and what kind of\n");
 		IVTV_ERR("card you have to the ivtv-devel mailinglist (www.ivtvdriver.org)\n");
-		IVTV_ERR("Prefix your subject line with [UNKNOWN CARD].\n");
+		IVTV_ERR("Prefix your subject line with [UNKNOWN IVTV CARD].\n");
 	}
 	itv->v4l2_cap = itv->card->v4l2_capabilities;
 	itv->card_name = itv->card->name;
+	itv->card_i2c = itv->card->i2c;
 }
 
 /* Precondition: the ivtv structure has been memset to 0. Only
@@ -652,7 +682,7 @@ static int __devinit ivtv_init_struct1(struct ivtv *itv)
 	spin_lock_init(&itv->lock);
 	spin_lock_init(&itv->dma_reg_lock);
 
-	itv->irq_work_queues = create_workqueue(itv->name);
+	itv->irq_work_queues = create_singlethread_workqueue(itv->device.name);
 	if (itv->irq_work_queues == NULL) {
 		IVTV_ERR("Could not create ivtv workqueue\n");
 		return -1;
@@ -684,8 +714,11 @@ static int __devinit ivtv_init_struct1(struct ivtv *itv)
 	itv->speed = 1000;
 
 	/* VBI */
-	itv->vbi.in.type = V4L2_BUF_TYPE_SLICED_VBI_CAPTURE;
+	itv->vbi.in.type = V4L2_BUF_TYPE_VBI_CAPTURE;
 	itv->vbi.sliced_in = &itv->vbi.in.fmt.sliced;
+
+	/* Init the sg table for osd/yuv output */
+	sg_init_table(itv->udma.SGlist, IVTV_DMA_SG_OSD_ENT);
 
 	/* OSD */
 	itv->osd_global_alpha_state = 1;
@@ -695,6 +728,8 @@ static int __devinit ivtv_init_struct1(struct ivtv *itv)
 	atomic_set(&itv->yuv_info.next_dma_frame, -1);
 	itv->yuv_info.lace_mode = ivtv_yuv_mode;
 	itv->yuv_info.lace_threshold = ivtv_yuv_threshold;
+	itv->yuv_info.max_frames_buffered = 3;
+	itv->yuv_info.track_osd = 1;
 	return 0;
 }
 
@@ -729,12 +764,6 @@ static void __devinit ivtv_init_struct2(struct ivtv *itv)
 		i = 0;
 	itv->active_input = i;
 	itv->audio_input = itv->card->video_inputs[i].audio_index;
-	if (itv->card->hw_all & IVTV_HW_CX25840)
-		itv->video_dec_func = ivtv_cx25840;
-	else if (itv->card->hw_all & IVTV_HW_SAA717X)
-		itv->video_dec_func = ivtv_saa717x;
-	else
-		itv->video_dec_func = ivtv_saa7115;
 }
 
 static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *dev,
@@ -747,21 +776,21 @@ static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *dev,
 	IVTV_DEBUG_INFO("Enabling pci device\n");
 
 	if (pci_enable_device(dev)) {
-		IVTV_ERR("Can't enable device %d!\n", itv->num);
+		IVTV_ERR("Can't enable device!\n");
 		return -EIO;
 	}
 	if (pci_set_dma_mask(dev, 0xffffffff)) {
-		IVTV_ERR("No suitable DMA available on card %d.\n", itv->num);
+		IVTV_ERR("No suitable DMA available.\n");
 		return -EIO;
 	}
 	if (!request_mem_region(itv->base_addr, IVTV_ENCODER_SIZE, "ivtv encoder")) {
-		IVTV_ERR("Cannot request encoder memory region on card %d.\n", itv->num);
+		IVTV_ERR("Cannot request encoder memory region.\n");
 		return -EIO;
 	}
 
 	if (!request_mem_region(itv->base_addr + IVTV_REG_OFFSET,
 				IVTV_REG_SIZE, "ivtv registers")) {
-		IVTV_ERR("Cannot request register memory region on card %d.\n", itv->num);
+		IVTV_ERR("Cannot request register memory region.\n");
 		release_mem_region(itv->base_addr, IVTV_ENCODER_SIZE);
 		return -EIO;
 	}
@@ -769,7 +798,7 @@ static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *dev,
 	if (itv->has_cx23415 &&
 	    !request_mem_region(itv->base_addr + IVTV_DECODER_OFFSET,
 				IVTV_DECODER_SIZE, "ivtv decoder")) {
-		IVTV_ERR("Cannot request decoder memory region on card %d.\n", itv->num);
+		IVTV_ERR("Cannot request decoder memory region.\n");
 		release_mem_region(itv->base_addr, IVTV_ENCODER_SIZE);
 		release_mem_region(itv->base_addr + IVTV_REG_OFFSET, IVTV_REG_SIZE);
 		return -EIO;
@@ -812,76 +841,10 @@ static int ivtv_setup_pci(struct ivtv *itv, struct pci_dev *dev,
 	return 0;
 }
 
-static void ivtv_request_module(struct ivtv *itv, const char *name)
-{
-	if (request_module(name) != 0) {
-		IVTV_ERR("Failed to load module %s\n", name);
-	} else {
-		IVTV_DEBUG_INFO("Loaded module %s\n", name);
-	}
-}
-
 static void ivtv_load_and_init_modules(struct ivtv *itv)
 {
 	u32 hw = itv->card->hw_all;
-	int i;
-
-	/* load modules */
-#ifndef CONFIG_VIDEO_TUNER
-	if (hw & IVTV_HW_TUNER) {
-		if (itv->options.tuner == TUNER_XCEIVE_XC3028) {
-			IVTV_INFO("Xceive tuner not yet supported, only composite and S-Video inputs will be available\n");
-			itv->tunerid = 1;
-		}
-		else {
-			ivtv_request_module(itv, "tuner");
-		}
-	}
-#endif
-#ifndef CONFIG_VIDEO_CX25840
-	if (hw & IVTV_HW_CX25840)
-		ivtv_request_module(itv, "cx25840");
-#endif
-#ifndef CONFIG_VIDEO_SAA711X
-	if (hw & IVTV_HW_SAA711X)
-		ivtv_request_module(itv, "saa7115");
-#endif
-#ifndef CONFIG_VIDEO_SAA7127
-	if (hw & IVTV_HW_SAA7127)
-		ivtv_request_module(itv, "saa7127");
-#endif
-	if (hw & IVTV_HW_SAA717X)
-		ivtv_request_module(itv, "saa717x");
-#ifndef CONFIG_VIDEO_UPD64031A
-	if (hw & IVTV_HW_UPD64031A)
-		ivtv_request_module(itv, "upd64031a");
-#endif
-#ifndef CONFIG_VIDEO_UPD64083
-	if (hw & IVTV_HW_UPD6408X)
-		ivtv_request_module(itv, "upd64083");
-#endif
-#ifndef CONFIG_VIDEO_MSP3400
-	if (hw & IVTV_HW_MSP34XX)
-		ivtv_request_module(itv, "msp3400");
-#endif
-#ifndef CONFIG_VIDEO_VP27SMPX
-	if (hw & IVTV_HW_VP27SMPX)
-		ivtv_request_module(itv, "vp27smpx");
-#endif
-	if (hw & IVTV_HW_TVAUDIO)
-		ivtv_request_module(itv, "tvaudio");
-#ifndef CONFIG_VIDEO_WM8775
-	if (hw & IVTV_HW_WM8775)
-		ivtv_request_module(itv, "wm8775");
-#endif
-#ifndef CONFIG_VIDEO_WM8739
-	if (hw & IVTV_HW_WM8739)
-		ivtv_request_module(itv, "wm8739");
-#endif
-#ifndef CONFIG_VIDEO_CS53L32A
-	if (hw & IVTV_HW_CS53L32A)
-		ivtv_request_module(itv, "cs53l32a");
-#endif
+	unsigned i;
 
 	/* check which i2c devices are actually found */
 	for (i = 0; i < 32; i++) {
@@ -889,14 +852,25 @@ static void ivtv_load_and_init_modules(struct ivtv *itv)
 
 		if (!(device & hw))
 			continue;
-		if (device == IVTV_HW_GPIO) {
-			/* GPIO is always available */
-			itv->hw_flags |= IVTV_HW_GPIO;
+		if (device == IVTV_HW_GPIO || device == IVTV_HW_TVEEPROM) {
+			/* GPIO and TVEEPROM do not use i2c probing */
+			itv->hw_flags |= device;
 			continue;
 		}
-		if (ivtv_i2c_hw_addr(itv, device) > 0)
+		if (ivtv_i2c_register(itv, i) == 0)
 			itv->hw_flags |= device;
 	}
+
+	if (itv->card->hw_all & IVTV_HW_CX25840)
+		itv->sd_video = ivtv_find_hw(itv, IVTV_HW_CX25840);
+	else if (itv->card->hw_all & IVTV_HW_SAA717X)
+		itv->sd_video = ivtv_find_hw(itv, IVTV_HW_SAA717X);
+	else if (itv->card->hw_all & IVTV_HW_SAA7114)
+		itv->sd_video = ivtv_find_hw(itv, IVTV_HW_SAA7114);
+	else
+		itv->sd_video = ivtv_find_hw(itv, IVTV_HW_SAA7115);
+	itv->sd_audio = ivtv_find_hw(itv, itv->card->hw_audio_ctrl);
+	itv->sd_muxer = ivtv_find_hw(itv, itv->card->hw_muxer);
 
 	hw = itv->hw_flags;
 
@@ -915,7 +889,7 @@ static void ivtv_load_and_init_modules(struct ivtv *itv)
 		/* The crystal frequency of GVMVPRX is 24.576MHz */
 		crystal_freq.freq = SAA7115_FREQ_24_576_MHZ;
 		crystal_freq.flags = SAA7115_FREQ_FL_UCGC;
-		itv->video_dec_func(itv, VIDIOC_INT_S_CRYSTAL_FREQ, &crystal_freq);
+		v4l2_subdev_call(itv->sd_video, video, s_crystal_freq, &crystal_freq);
 	}
 
 	if (hw & IVTV_HW_CX25840) {
@@ -928,18 +902,19 @@ static void ivtv_load_and_init_modules(struct ivtv *itv)
 	}
 
 	if (hw & IVTV_HW_SAA711X) {
-		struct v4l2_chip_ident v = { V4L2_CHIP_MATCH_I2C_DRIVER, I2C_DRIVERID_SAA711X };
+		struct v4l2_dbg_chip_ident v;
 
 		/* determine the exact saa711x model */
 		itv->hw_flags &= ~IVTV_HW_SAA711X;
 
-		ivtv_saa7115(itv, VIDIOC_G_CHIP_IDENT, &v);
+		v.match.type = V4L2_CHIP_MATCH_I2C_DRIVER;
+		strlcpy(v.match.name, "saa7115", sizeof(v.match.name));
+		ivtv_call_hw(itv, IVTV_HW_SAA711X, core, g_chip_ident, &v);
 		if (v.ident == V4L2_IDENT_SAA7114) {
 			itv->hw_flags |= IVTV_HW_SAA7114;
 			/* VBI is not yet supported by the saa7114 driver. */
 			itv->v4l2_cap &= ~(V4L2_CAP_SLICED_VBI_CAPTURE|V4L2_CAP_VBI_CAPTURE);
-		}
-		else {
+		} else {
 			itv->hw_flags |= IVTV_HW_SAA7115;
 		}
 		itv->vbi.raw_decoder_line_size = 1443;
@@ -964,32 +939,25 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 				const struct pci_device_id *pci_id)
 {
 	int retval = 0;
-	int yuv_buf_size;
 	int vbi_buf_size;
 	struct ivtv *itv;
 
-	spin_lock(&ivtv_cards_lock);
-
-	/* Make sure we've got a place for this card */
-	if (ivtv_cards_active == IVTV_MAX_CARDS) {
-		printk(KERN_ERR "ivtv:  Maximum number of cards detected (%d)\n",
-			      ivtv_cards_active);
-		spin_unlock(&ivtv_cards_lock);
-		return -ENOMEM;
-	}
-
 	itv = kzalloc(sizeof(struct ivtv), GFP_ATOMIC);
-	if (itv == 0) {
-		spin_unlock(&ivtv_cards_lock);
+	if (itv == NULL)
 		return -ENOMEM;
-	}
-	ivtv_cards[ivtv_cards_active] = itv;
 	itv->dev = dev;
-	itv->num = ivtv_cards_active++;
-	snprintf(itv->name, sizeof(itv->name) - 1, "ivtv%d", itv->num);
-	IVTV_INFO("Initializing card #%d\n", itv->num);
+	itv->instance = atomic_inc_return(&ivtv_instance) - 1;
 
-	spin_unlock(&ivtv_cards_lock);
+	retval = v4l2_device_register(&dev->dev, &itv->device);
+	if (retval) {
+		kfree(itv);
+		return retval;
+	}
+	/* "ivtv + PCI ID" is a bit of a mouthful, so use
+	   "ivtv + instance" instead. */
+	snprintf(itv->device.name, sizeof(itv->device.name),
+			"ivtv%d", itv->instance);
+	IVTV_INFO("Initializing card %d\n", itv->instance);
 
 	ivtv_process_options(itv);
 	if (itv->options.cardtype == -1) {
@@ -1010,8 +978,6 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 		else if (retval == -ENXIO)
 			goto free_mem;
 	}
-	/* save itv in the pci struct for later use */
-	pci_set_drvdata(dev, itv);
 
 	/* map io memory */
 	IVTV_DEBUG_INFO("attempting ioremap at 0x%08x len 0x%08x\n",
@@ -1020,7 +986,7 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 				       IVTV_ENCODER_SIZE);
 	if (!itv->enc_mem) {
 		IVTV_ERR("ioremap failed, perhaps increasing __VMALLOC_RESERVE in page.h\n");
-		IVTV_ERR("or disabling CONFIG_HIMEM4G into the kernel would help\n");
+		IVTV_ERR("or disabling CONFIG_HIGHMEM4G into the kernel would help\n");
 		retval = -ENOMEM;
 		goto free_mem;
 	}
@@ -1032,7 +998,7 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 				IVTV_DECODER_SIZE);
 		if (!itv->dec_mem) {
 			IVTV_ERR("ioremap failed, perhaps increasing __VMALLOC_RESERVE in page.h\n");
-			IVTV_ERR("or disabling CONFIG_HIMEM4G into the kernel would help\n");
+			IVTV_ERR("or disabling CONFIG_HIGHMEM4G into the kernel would help\n");
 			retval = -ENOMEM;
 			goto free_mem;
 		}
@@ -1048,15 +1014,14 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 	    ioremap_nocache(itv->base_addr + IVTV_REG_OFFSET, IVTV_REG_SIZE);
 	if (!itv->reg_mem) {
 		IVTV_ERR("ioremap failed, perhaps increasing __VMALLOC_RESERVE in page.h\n");
-		IVTV_ERR("or disabling CONFIG_HIMEM4G into the kernel would help\n");
+		IVTV_ERR("or disabling CONFIG_HIGHMEM4G into the kernel would help\n");
 		retval = -ENOMEM;
 		goto free_io;
 	}
 
-	/* Check yuv output filter table */
-	if (itv->has_cx23415) ivtv_yuv_filter_check(itv);
-
-	ivtv_gpio_init(itv);
+	retval = ivtv_gpio_init(itv);
+	if (retval)
+		goto free_io;
 
 	/* active i2c  */
 	IVTV_DEBUG_INFO("activating i2c...\n");
@@ -1065,15 +1030,17 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 		goto free_io;
 	}
 
-	IVTV_DEBUG_INFO("Active card count: %d.\n", ivtv_cards_active);
-
 	if (itv->card->hw_all & IVTV_HW_TVEEPROM) {
-#ifdef CONFIG_VIDEO_TVEEPROM_MODULE
-		ivtv_request_module(itv, "tveeprom");
-#endif
 		/* Based on the model number the cardtype may be changed.
 		   The PCI IDs are not always reliable. */
 		ivtv_process_eeprom(itv);
+	}
+	if (itv->card->comment)
+		IVTV_INFO("%s", itv->card->comment);
+	if (itv->card->v4l2_capabilities == 0) {
+		/* card was detected but is not supported */
+		retval = -ENODEV;
+		goto free_i2c;
 	}
 
 	if (itv->std == 0) {
@@ -1093,6 +1060,12 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 	/* if no tuner was found, then pick the first tuner in the card list */
 	if (itv->options.tuner == -1 && itv->card->tuners[0].std) {
 		itv->std = itv->card->tuners[0].std;
+		if (itv->std & V4L2_STD_PAL)
+			itv->std = V4L2_STD_PAL_BG | V4L2_STD_PAL_H;
+		else if (itv->std & V4L2_STD_NTSC)
+			itv->std = V4L2_STD_NTSC_M;
+		else if (itv->std & V4L2_STD_SECAM)
+			itv->std = V4L2_STD_SECAM_L;
 		itv->options.tuner = itv->card->tuners[0].tuner;
 	}
 	if (itv->options.radio == -1)
@@ -1111,16 +1084,19 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 		itv->is_50hz = 1;
 		itv->is_out_50hz = 1;
 	}
+
+	itv->yuv_info.osd_full_w = 720;
+	itv->yuv_info.osd_full_h = itv->is_out_50hz ? 576 : 480;
+	itv->yuv_info.v4l2_src_w = itv->yuv_info.osd_full_w;
+	itv->yuv_info.v4l2_src_h = itv->yuv_info.osd_full_h;
+
 	itv->params.video_gop_size = itv->is_60hz ? 15 : 12;
 
 	itv->stream_buf_size[IVTV_ENC_STREAM_TYPE_MPG] = 0x08000;
 	itv->stream_buf_size[IVTV_ENC_STREAM_TYPE_PCM] = 0x01200;
 	itv->stream_buf_size[IVTV_DEC_STREAM_TYPE_MPG] = 0x10000;
-
-	/* 0x15180 == 720 * 480 / 4, 0x19500 == 720 * 576 / 4 */
-	yuv_buf_size = itv->is_60hz ? 0x15180 : 0x19500;
-	itv->stream_buf_size[IVTV_DEC_STREAM_TYPE_YUV] = yuv_buf_size / 2;
-	itv->stream_buf_size[IVTV_ENC_STREAM_TYPE_YUV] = yuv_buf_size / 8;
+	itv->stream_buf_size[IVTV_DEC_STREAM_TYPE_YUV] = 0x10000;
+	itv->stream_buf_size[IVTV_ENC_STREAM_TYPE_YUV] = 0x08000;
 
 	/* Setup VBI Raw Size. Should be big enough to hold PAL.
 	   It is possible to switch between PAL and NTSC, so we need to
@@ -1140,13 +1116,26 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 	if (itv->options.radio > 0)
 		itv->v4l2_cap |= V4L2_CAP_RADIO;
 
-	if (itv->options.tuner > -1 && itv->tunerid == 0) {
+	if (itv->options.tuner > -1) {
 		struct tuner_setup setup;
 
 		setup.addr = ADDR_UNSET;
 		setup.type = itv->options.tuner;
 		setup.mode_mask = T_ANALOG_TV;  /* matches TV tuners */
-		ivtv_call_i2c_clients(itv, TUNER_SET_TYPE_ADDR, &setup);
+		setup.tuner_callback = (setup.type == TUNER_XC2028) ?
+			ivtv_reset_tuner_gpio : NULL;
+		ivtv_call_all(itv, tuner, s_type_addr, &setup);
+		if (setup.type == TUNER_XC2028) {
+			static struct xc2028_ctrl ctrl = {
+				.fname = XC2028_DEFAULT_FIRMWARE,
+				.max_len = 64,
+			};
+			struct v4l2_priv_tun_config cfg = {
+				.tuner = itv->options.tuner,
+				.priv = &ctrl,
+			};
+			ivtv_call_all(itv, tuner, s_config, &cfg);
+		}
 	}
 
 	/* The tuner is fixed to the standard. The other inputs (e.g. S-Video)
@@ -1154,66 +1143,71 @@ static int __devinit ivtv_probe(struct pci_dev *dev,
 	itv->tuner_std = itv->std;
 
 	if (itv->v4l2_cap & V4L2_CAP_VIDEO_OUTPUT) {
-		ivtv_call_i2c_clients(itv, VIDIOC_INT_S_STD_OUTPUT, &itv->std);
+		ivtv_call_all(itv, video, s_std_output, itv->std);
+		/* Turn off the output signal. The mpeg decoder is not yet
+		   active so without this you would get a green image until the
+		   mpeg decoder becomes active. */
+		ivtv_call_hw(itv, IVTV_HW_SAA7127, video, s_stream, 0);
 	}
 
-	retval = ivtv_streams_setup(itv);
-	if (retval) {
-		IVTV_ERR("Error %d setting up streams\n", retval);
-		goto free_i2c;
-	}
-
-	IVTV_DEBUG_IRQ("Masking interrupts\n");
 	/* clear interrupt mask, effectively disabling interrupts */
 	ivtv_set_irq_mask(itv, 0xffffffff);
 
 	/* Register IRQ */
 	retval = request_irq(itv->dev->irq, ivtv_irq_handler,
-			     IRQF_SHARED | IRQF_DISABLED, itv->name, (void *)itv);
+	     IRQF_SHARED | IRQF_DISABLED, itv->device.name, (void *)itv);
 	if (retval) {
 		IVTV_ERR("Failed to register irq %d\n", retval);
-		goto free_streams;
+		goto free_i2c;
+	}
+
+	retval = ivtv_streams_setup(itv);
+	if (retval) {
+		IVTV_ERR("Error %d setting up streams\n", retval);
+		goto free_irq;
 	}
 	retval = ivtv_streams_register(itv);
 	if (retval) {
 		IVTV_ERR("Error %d registering devices\n", retval);
-		goto free_irq;
+		goto free_streams;
 	}
-	IVTV_INFO("Initialized card #%d: %s\n", itv->num, itv->card_name);
+	IVTV_INFO("Initialized card: %s\n", itv->card_name);
 	return 0;
 
-      free_irq:
+free_streams:
+	ivtv_streams_cleanup(itv, 1);
+free_irq:
 	free_irq(itv->dev->irq, (void *)itv);
-      free_streams:
-	ivtv_streams_cleanup(itv);
-      free_i2c:
+free_i2c:
 	exit_ivtv_i2c(itv);
-      free_io:
+free_io:
 	ivtv_iounmap(itv);
-      free_mem:
+free_mem:
 	release_mem_region(itv->base_addr, IVTV_ENCODER_SIZE);
 	release_mem_region(itv->base_addr + IVTV_REG_OFFSET, IVTV_REG_SIZE);
 	if (itv->has_cx23415)
 		release_mem_region(itv->base_addr + IVTV_DECODER_OFFSET, IVTV_DECODER_SIZE);
-      free_workqueue:
+free_workqueue:
 	destroy_workqueue(itv->irq_work_queues);
-      err:
+err:
 	if (retval == 0)
 		retval = -ENODEV;
 	IVTV_ERR("Error %d on initialization\n", retval);
 
-	spin_lock(&ivtv_cards_lock);
-	kfree(ivtv_cards[ivtv_cards_active]);
-	ivtv_cards[ivtv_cards_active] = NULL;
-	spin_unlock(&ivtv_cards_lock);
+	v4l2_device_unregister(&itv->device);
+	kfree(itv);
 	return retval;
 }
 
 int ivtv_init_on_first_open(struct ivtv *itv)
 {
 	struct v4l2_frequency vf;
+	/* Needed to call ioctls later */
+	struct ivtv_open_id fh;
 	int fw_retry_count = 3;
 	int video_input;
+
+	fh.itv = itv;
 
 	if (test_bit(IVTV_F_I_FAILED, &itv->i_flags))
 		return -ENXIO;
@@ -1241,10 +1235,11 @@ int ivtv_init_on_first_open(struct ivtv *itv)
 	if (itv->card->hw_all & IVTV_HW_CX25840) {
 		struct v4l2_control ctrl;
 
+		v4l2_subdev_call(itv->sd_video, core, init, 0);
 		/* CX25840_CID_ENABLE_PVR150_WORKAROUND */
 		ctrl.id = V4L2_CID_PRIVATE_BASE;
 		ctrl.value = itv->pvr150_workaround;
-		itv->video_dec_func(itv, VIDIOC_S_CTRL, &ctrl);
+		v4l2_subdev_call(itv->sd_video, core, s_ctrl, &ctrl);
 	}
 
 	vf.tuner = 0;
@@ -1262,18 +1257,22 @@ int ivtv_init_on_first_open(struct ivtv *itv)
 
 	video_input = itv->active_input;
 	itv->active_input++;	/* Force update of input */
-	ivtv_v4l2_ioctls(itv, NULL, VIDIOC_S_INPUT, &video_input);
+	ivtv_s_input(NULL, &fh, video_input);
 
 	/* Let the VIDIOC_S_STD ioctl do all the work, keeps the code
 	   in one place. */
 	itv->std++;		/* Force full standard initialization */
 	itv->std_out = itv->std;
-	ivtv_v4l2_ioctls(itv, NULL, VIDIOC_S_FREQUENCY, &vf);
+	ivtv_s_frequency(NULL, &fh, &vf);
 
 	if (itv->card->v4l2_capabilities & V4L2_CAP_VIDEO_OUTPUT) {
+		/* Turn on the TV-out: ivtv_init_mpeg_decoder() initializes
+		   the mpeg decoder so now the saa7127 receives a proper
+		   signal. */
+		ivtv_call_hw(itv, IVTV_HW_SAA7127, video, s_stream, 1);
 		ivtv_init_mpeg_decoder(itv);
 	}
-	ivtv_v4l2_ioctls(itv, NULL, VIDIOC_S_STD, &itv->tuner_std);
+	ivtv_s_std(NULL, &fh, &itv->tuner_std);
 
 	/* On a cx23416 this seems to be able to enable DMA to the chip? */
 	if (!itv->has_cx23415)
@@ -1295,9 +1294,11 @@ int ivtv_init_on_first_open(struct ivtv *itv)
 
 static void ivtv_remove(struct pci_dev *pci_dev)
 {
-	struct ivtv *itv = pci_get_drvdata(pci_dev);
+	struct v4l2_device *dev = dev_get_drvdata(&pci_dev->dev);
+	struct ivtv *itv = to_ivtv(dev);
+	int i;
 
-	IVTV_DEBUG_INFO("Removing Card #%d\n", itv->num);
+	IVTV_DEBUG_INFO("Removing card\n");
 
 	if (test_bit(IVTV_F_I_INITED, &itv->i_flags)) {
 		/* Stop all captures */
@@ -1307,6 +1308,10 @@ static void ivtv_remove(struct pci_dev *pci_dev)
 
 		/* Stop all decoding */
 		IVTV_DEBUG_INFO("Stopping decoding\n");
+
+		/* Turn off the TV-out */
+		if (itv->v4l2_cap & V4L2_CAP_VIDEO_OUTPUT)
+			ivtv_call_hw(itv, IVTV_HW_SAA7127, video, s_stream, 0);
 		if (atomic_read(&itv->decoding) > 0) {
 			int type;
 
@@ -1328,8 +1333,10 @@ static void ivtv_remove(struct pci_dev *pci_dev)
 	flush_workqueue(itv->irq_work_queues);
 	destroy_workqueue(itv->irq_work_queues);
 
-	ivtv_streams_cleanup(itv);
+	ivtv_streams_cleanup(itv, 1);
 	ivtv_udma_free(itv);
+
+	v4l2_device_unregister(&itv->device);
 
 	exit_ivtv_i2c(itv);
 
@@ -1342,8 +1349,11 @@ static void ivtv_remove(struct pci_dev *pci_dev)
 		release_mem_region(itv->base_addr + IVTV_DECODER_OFFSET, IVTV_DECODER_SIZE);
 
 	pci_disable_device(itv->dev);
+	for (i = 0; i < IVTV_VBI_FRAMES; i++)
+		kfree(itv->vbi.sliced_mpeg_data[i]);
 
-	IVTV_INFO("Removed %s, card #%d\n", itv->card_name, itv->num);
+	printk(KERN_INFO "ivtv: Removed %s\n", itv->card_name);
+	kfree(itv);
 }
 
 /* define a pci_driver for card detection */
@@ -1356,54 +1366,36 @@ static struct pci_driver ivtv_pci_driver = {
 
 static int module_start(void)
 {
-	printk(KERN_INFO "ivtv:  Start initialization, version %s\n", IVTV_VERSION);
-
-	memset(ivtv_cards, 0, sizeof(ivtv_cards));
+	printk(KERN_INFO "ivtv: Start initialization, version %s\n", IVTV_VERSION);
 
 	/* Validate parameters */
 	if (ivtv_first_minor < 0 || ivtv_first_minor >= IVTV_MAX_CARDS) {
-		printk(KERN_ERR "ivtv:  Exiting, ivtv_first_minor must be between 0 and %d\n",
+		printk(KERN_ERR "ivtv: Exiting, ivtv_first_minor must be between 0 and %d\n",
 		     IVTV_MAX_CARDS - 1);
 		return -1;
 	}
 
 	if (ivtv_debug < 0 || ivtv_debug > 2047) {
 		ivtv_debug = 0;
-		printk(KERN_INFO "ivtv:  Debug value must be >= 0 and <= 2047\n");
+		printk(KERN_INFO "ivtv: Debug value must be >= 0 and <= 2047\n");
 	}
 
 	if (pci_register_driver(&ivtv_pci_driver)) {
-		printk(KERN_ERR "ivtv:  Error detecting PCI card\n");
+		printk(KERN_ERR "ivtv: Error detecting PCI card\n");
 		return -ENODEV;
 	}
-	printk(KERN_INFO "ivtv:  End initialization\n");
+	printk(KERN_INFO "ivtv: End initialization\n");
 	return 0;
 }
 
 static void module_cleanup(void)
 {
-	int i, j;
-
 	pci_unregister_driver(&ivtv_pci_driver);
-
-	spin_lock(&ivtv_cards_lock);
-	for (i = 0; i < ivtv_cards_active; i++) {
-		if (ivtv_cards[i] == NULL)
-			continue;
-		for (j = 0; j < IVTV_VBI_FRAMES; j++) {
-			kfree(ivtv_cards[i]->vbi.sliced_mpeg_data[j]);
-		}
-		kfree(ivtv_cards[i]);
-	}
-	spin_unlock(&ivtv_cards_lock);
 }
 
 /* Note: These symbols are exported because they are used by the ivtvfb
    framebuffer module and an infrared module for the IR-blaster. */
 EXPORT_SYMBOL(ivtv_set_irq_mask);
-EXPORT_SYMBOL(ivtv_cards_active);
-EXPORT_SYMBOL(ivtv_cards);
-EXPORT_SYMBOL(ivtv_cards_lock);
 EXPORT_SYMBOL(ivtv_api);
 EXPORT_SYMBOL(ivtv_vapi);
 EXPORT_SYMBOL(ivtv_vapi_result);

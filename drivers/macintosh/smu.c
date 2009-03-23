@@ -12,13 +12,14 @@
  *  - maybe add timeout to commands ?
  *  - blocking version of time functions
  *  - polling version of i2c commands (including timer that works with
- *    interrutps off)
+ *    interrupts off)
  *  - maybe avoid some data copies with i2c by directly using the smu cmd
  *    buffer and a lower level internal interface
  *  - understand SMU -> CPU events and implement reception of them via
  *    the userland interface
  */
 
+#include <linux/smp_lock.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
@@ -35,6 +36,8 @@
 #include <linux/sysdev.h>
 #include <linux/poll.h>
 #include <linux/mutex.h>
+#include <linux/of_device.h>
+#include <linux/of_platform.h>
 
 #include <asm/byteorder.h>
 #include <asm/io.h>
@@ -45,8 +48,6 @@
 #include <asm/sections.h>
 #include <asm/abs_addr.h>
 #include <asm/uaccess.h>
-#include <asm/of_device.h>
-#include <asm/of_platform.h>
 
 #define VERSION "0.7"
 #define AUTHOR  "(c) 2005 Benjamin Herrenschmidt, IBM Corp."
@@ -85,6 +86,7 @@ struct smu_device {
 	u32			cmd_buf_abs;	/* command buffer absolute */
 	struct list_head	cmd_list;
 	struct smu_cmd		*cmd_cur;	/* pending command */
+	int			broken_nap;
 	struct list_head	cmd_i2c_list;
 	struct smu_i2c_cmd	*cmd_i2c_cur;	/* pending i2c command */
 	struct timer_list	i2c_timer;
@@ -135,6 +137,19 @@ static void smu_start_cmd(void)
 	fend = faddr + smu->cmd_buf->length + 2;
 	flush_inval_dcache_range(faddr, fend);
 
+
+	/* We also disable NAP mode for the duration of the command
+	 * on U3 based machines.
+	 * This is slightly racy as it can be written back to 1 by a sysctl
+	 * but that never happens in practice. There seem to be an issue with
+	 * U3 based machines such as the iMac G5 where napping for the
+	 * whole duration of the command prevents the SMU from fetching it
+	 * from memory. This might be related to the strange i2c based
+	 * mechanism the SMU uses to access memory.
+	 */
+	if (smu->broken_nap)
+		powersave_nap = 0;
+
 	/* This isn't exactly a DMA mapping here, I suspect
 	 * the SMU is actually communicating with us via i2c to the
 	 * northbridge or the CPU to access RAM.
@@ -179,7 +194,7 @@ static irqreturn_t smu_db_intr(int irq, void *arg)
 		/* CPU might have brought back the cache line, so we need
 		 * to flush again before peeking at the SMU response. We
 		 * flush the entire buffer for now as we haven't read the
-		 * reply lenght (it's only 2 cache lines anyway)
+		 * reply length (it's only 2 cache lines anyway)
 		 */
 		faddr = (unsigned long)smu->cmd_buf;
 		flush_inval_dcache_range(faddr, faddr + 256);
@@ -211,6 +226,10 @@ static irqreturn_t smu_db_intr(int irq, void *arg)
 	misc = cmd->misc;
 	mb();
 	cmd->status = rc;
+
+	/* Re-enable NAP mode */
+	if (smu->broken_nap)
+		powersave_nap = 1;
  bail:
 	/* Start next command if any */
 	smu_start_cmd();
@@ -456,22 +475,21 @@ int __init smu_init (void)
 {
 	struct device_node *np;
 	const u32 *data;
+	int ret = 0;
 
         np = of_find_node_by_type(NULL, "smu");
         if (np == NULL)
 		return -ENODEV;
 
-	printk(KERN_INFO "SMU driver %s %s\n", VERSION, AUTHOR);
+	printk(KERN_INFO "SMU: Driver %s %s\n", VERSION, AUTHOR);
 
 	if (smu_cmdbuf_abs == 0) {
 		printk(KERN_ERR "SMU: Command buffer not allocated !\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto fail_np;
 	}
 
 	smu = alloc_bootmem(sizeof(struct smu_device));
-	if (smu == NULL)
-		return -ENOMEM;
-	memset(smu, 0, sizeof(*smu));
 
 	spin_lock_init(&smu->lock);
 	INIT_LIST_HEAD(&smu->cmd_list);
@@ -489,14 +507,14 @@ int __init smu_init (void)
 	smu->db_node = of_find_node_by_name(NULL, "smu-doorbell");
 	if (smu->db_node == NULL) {
 		printk(KERN_ERR "SMU: Can't find doorbell GPIO !\n");
-		goto fail;
+		ret = -ENXIO;
+		goto fail_bootmem;
 	}
 	data = of_get_property(smu->db_node, "reg", NULL);
 	if (data == NULL) {
-		of_node_put(smu->db_node);
-		smu->db_node = NULL;
 		printk(KERN_ERR "SMU: Can't find doorbell GPIO address !\n");
-		goto fail;
+		ret = -ENXIO;
+		goto fail_db_node;
 	}
 
 	/* Current setup has one doorbell GPIO that does both doorbell
@@ -530,16 +548,29 @@ int __init smu_init (void)
 	smu->db_buf = ioremap(0x8000860c, 0x1000);
 	if (smu->db_buf == NULL) {
 		printk(KERN_ERR "SMU: Can't map doorbell buffer pointer !\n");
-		goto fail;
+		ret = -ENXIO;
+		goto fail_msg_node;
 	}
+
+	/* U3 has an issue with NAP mode when issuing SMU commands */
+	smu->broken_nap = pmac_get_uninorth_variant() < 4;
+	if (smu->broken_nap)
+		printk(KERN_INFO "SMU: using NAP mode workaround\n");
 
 	sys_ctrler = SYS_CTRLER_SMU;
 	return 0;
 
- fail:
+fail_msg_node:
+	if (smu->msg_node)
+		of_node_put(smu->msg_node);
+fail_db_node:
+	of_node_put(smu->db_node);
+fail_bootmem:
+	free_bootmem((unsigned long)smu, sizeof(struct smu_device));
 	smu = NULL;
-	return -ENXIO;
-
+fail_np:
+	of_node_put(np);
+	return ret;
 }
 
 
@@ -1060,10 +1091,12 @@ static int smu_open(struct inode *inode, struct file *file)
 	pp->mode = smu_file_commands;
 	init_waitqueue_head(&pp->wait);
 
+	lock_kernel();
 	spin_lock_irqsave(&smu_clist_lock, flags);
 	list_add(&pp->list, &smu_clist);
 	spin_unlock_irqrestore(&smu_clist_lock, flags);
 	file->private_data = pp;
+	unlock_kernel();
 
 	return 0;
 }

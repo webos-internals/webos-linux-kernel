@@ -19,14 +19,6 @@
 static struct nf_ct_ext_type *nf_ct_ext_types[NF_CT_EXT_NUM];
 static DEFINE_MUTEX(nf_ct_ext_type_mutex);
 
-/* Horrible trick to figure out smallest amount worth kmallocing. */
-#define CACHE(x) (x) + 0 *
-enum {
-	NF_CT_EXT_MIN_SIZE =
-#include <linux/kmalloc_sizes.h>
-	1 };
-#undef CACHE
-
 void __nf_ct_ext_destroy(struct nf_conn *ct)
 {
 	unsigned int i;
@@ -53,7 +45,7 @@ EXPORT_SYMBOL(__nf_ct_ext_destroy);
 static void *
 nf_ct_ext_create(struct nf_ct_ext **ext, enum nf_ct_ext_id id, gfp_t gfp)
 {
-	unsigned int off, len, real_len;
+	unsigned int off, len;
 	struct nf_ct_ext_type *t;
 
 	rcu_read_lock();
@@ -61,18 +53,23 @@ nf_ct_ext_create(struct nf_ct_ext **ext, enum nf_ct_ext_id id, gfp_t gfp)
 	BUG_ON(t == NULL);
 	off = ALIGN(sizeof(struct nf_ct_ext), t->align);
 	len = off + t->len;
-	real_len = t->alloc_size;
 	rcu_read_unlock();
 
-	*ext = kzalloc(real_len, gfp);
+	*ext = kzalloc(t->alloc_size, gfp);
 	if (!*ext)
 		return NULL;
 
+	INIT_RCU_HEAD(&(*ext)->rcu);
 	(*ext)->offset[id] = off;
 	(*ext)->len = len;
-	(*ext)->real_len = real_len;
 
 	return (void *)(*ext) + off;
+}
+
+static void __nf_ct_ext_free_rcu(struct rcu_head *head)
+{
+	struct nf_ct_ext *ext = container_of(head, struct nf_ct_ext, rcu);
+	kfree(ext);
 }
 
 void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
@@ -80,6 +77,9 @@ void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
 	struct nf_ct_ext *new;
 	int i, newlen, newoff;
 	struct nf_ct_ext_type *t;
+
+	/* Conntrack must not be confirmed to avoid races on reallocation. */
+	NF_CT_ASSERT(!nf_ct_is_confirmed(ct));
 
 	if (!ct->ext)
 		return nf_ct_ext_create(&ct->ext, id, gfp);
@@ -95,13 +95,11 @@ void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
 	newlen = newoff + t->len;
 	rcu_read_unlock();
 
-	if (newlen >= ct->ext->real_len) {
-		new = kmalloc(newlen, gfp);
-		if (!new)
-			return NULL;
+	new = __krealloc(ct->ext, newlen, gfp);
+	if (!new)
+		return NULL;
 
-		memcpy(new, ct->ext, ct->ext->len);
-
+	if (new != ct->ext) {
 		for (i = 0; i < NF_CT_EXT_NUM; i++) {
 			if (!nf_ct_ext_exist(ct, i))
 				continue;
@@ -109,18 +107,18 @@ void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
 			rcu_read_lock();
 			t = rcu_dereference(nf_ct_ext_types[i]);
 			if (t && t->move)
-				t->move(ct, ct->ext + ct->ext->offset[i]);
+				t->move((void *)new + new->offset[i],
+					(void *)ct->ext + ct->ext->offset[i]);
 			rcu_read_unlock();
 		}
-		kfree(ct->ext);
-		new->real_len = newlen;
+		call_rcu(&ct->ext->rcu, __nf_ct_ext_free_rcu);
 		ct->ext = new;
 	}
 
-	ct->ext->offset[id] = newoff;
-	ct->ext->len = newlen;
-	memset((void *)ct->ext + newoff, 0, newlen - newoff);
-	return (void *)ct->ext + newoff;
+	new->offset[id] = newoff;
+	new->len = newlen;
+	memset((void *)new + newoff, 0, newlen - newoff);
+	return (void *)new + newoff;
 }
 EXPORT_SYMBOL(__nf_ct_ext_add);
 
@@ -155,8 +153,6 @@ static void update_alloc_size(struct nf_ct_ext_type *type)
 			t1->alloc_size = ALIGN(t1->alloc_size, t2->align)
 					 + t2->len;
 		}
-		if (t1->alloc_size < NF_CT_EXT_MIN_SIZE)
-			t1->alloc_size = NF_CT_EXT_MIN_SIZE;
 	}
 }
 

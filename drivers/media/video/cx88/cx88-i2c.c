@@ -35,11 +35,11 @@
 #include "cx88.h"
 #include <media/v4l2-common.h>
 
-static unsigned int i2c_debug = 0;
+static unsigned int i2c_debug;
 module_param(i2c_debug, int, 0644);
 MODULE_PARM_DESC(i2c_debug,"enable debug messages [i2c]");
 
-static unsigned int i2c_scan = 0;
+static unsigned int i2c_scan;
 module_param(i2c_scan, int, 0444);
 MODULE_PARM_DESC(i2c_scan,"scan i2c bus at insmod time");
 
@@ -99,36 +99,10 @@ static int cx8800_bit_getsda(void *data)
 
 static int attach_inform(struct i2c_client *client)
 {
-	struct tuner_setup tun_setup;
 	struct cx88_core *core = i2c_get_adapdata(client->adapter);
 
 	dprintk(1, "%s i2c attach [addr=0x%x,client=%s]\n",
 		client->driver->driver.name, client->addr, client->name);
-	if (!client->driver->command)
-		return 0;
-
-	if (core->board.radio_type != UNSET) {
-		if ((core->board.radio_addr==ADDR_UNSET)||(core->board.radio_addr==client->addr)) {
-			tun_setup.mode_mask = T_RADIO;
-			tun_setup.type = core->board.radio_type;
-			tun_setup.addr = core->board.radio_addr;
-
-			client->driver->command (client, TUNER_SET_TYPE_ADDR, &tun_setup);
-		}
-	}
-	if (core->board.tuner_type != UNSET) {
-		if ((core->board.tuner_addr==ADDR_UNSET)||(core->board.tuner_addr==client->addr)) {
-
-			tun_setup.mode_mask = T_ANALOG_TV;
-			tun_setup.type = core->board.tuner_type;
-			tun_setup.addr = core->board.tuner_addr;
-
-			client->driver->command (client,TUNER_SET_TYPE_ADDR, &tun_setup);
-		}
-	}
-
-	if (core->board.tda9887_conf)
-		client->driver->command(client, TDA9887_SET_CONFIG, &core->board.tda9887_conf);
 	return 0;
 }
 
@@ -145,18 +119,13 @@ void cx88_call_i2c_clients(struct cx88_core *core, unsigned int cmd, void *arg)
 	if (0 != core->i2c_rc)
 		return;
 
-#if defined(CONFIG_VIDEO_CX88_DVB) || defined(CONFIG_VIDEO_CX88_DVB_MODULE)
-	if ( (core->dvbdev) && (core->dvbdev->dvb.frontend) ) {
-		if (core->dvbdev->dvb.frontend->ops.i2c_gate_ctrl)
-			core->dvbdev->dvb.frontend->ops.i2c_gate_ctrl(core->dvbdev->dvb.frontend, 1);
+	if (core->gate_ctrl)
+		core->gate_ctrl(core, 1);
 
-		i2c_clients_command(&core->i2c_adap, cmd, arg);
+	i2c_clients_command(&core->i2c_adap, cmd, arg);
 
-		if (core->dvbdev->dvb.frontend->ops.i2c_gate_ctrl)
-			core->dvbdev->dvb.frontend->ops.i2c_gate_ctrl(core->dvbdev->dvb.frontend, 0);
-	} else
-#endif
-		i2c_clients_command(&core->i2c_adap, cmd, arg);
+	if (core->gate_ctrl)
+		core->gate_ctrl(core, 0);
 }
 
 static const struct i2c_algo_bit_data cx8800_i2c_algo_template = {
@@ -176,6 +145,7 @@ static char *i2c_devs[128] = {
 	[ 0xa0 >> 1 ] = "eeprom",
 	[ 0xc0 >> 1 ] = "tuner (analog)",
 	[ 0xc2 >> 1 ] = "tuner (analog/dvb)",
+	[ 0xc8 >> 1 ] = "xc5000",
 };
 
 static void do_i2c_scan(char *name, struct i2c_client *c)
@@ -226,7 +196,23 @@ int cx88_i2c_init(struct cx88_core *core, struct pci_dev *pci)
 
 	core->i2c_rc = i2c_bit_add_bus(&core->i2c_adap);
 	if (0 == core->i2c_rc) {
+		static u8 tuner_data[] =
+			{ 0x0b, 0xdc, 0x86, 0x52 };
+		static struct i2c_msg tuner_msg =
+			{ .flags = 0, .addr = 0xc2 >> 1, .buf = tuner_data, .len = 4 };
+
 		dprintk(1, "i2c register ok\n");
+		switch( core->boardnr ) {
+			case CX88_BOARD_HAUPPAUGE_HVR1300:
+			case CX88_BOARD_HAUPPAUGE_HVR3000:
+			case CX88_BOARD_HAUPPAUGE_HVR4000:
+				printk("%s: i2c init: enabling analog demod on HVR1300/3000/4000 tuner\n",
+					core->name);
+				i2c_transfer(core->i2c_client.adapter, &tuner_msg, 1);
+				break;
+			default:
+				break;
+		}
 		if (i2c_scan)
 			do_i2c_scan(core->name,&core->i2c_client);
 	} else

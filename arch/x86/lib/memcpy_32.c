@@ -25,7 +25,7 @@ void *memmove(void *dest, const void *src, size_t n)
 	int d0, d1, d2;
 
 	if (dest < src) {
-		memcpy(dest,src,n);
+		memcpy(dest, src, n);
 	} else {
 		__asm__ __volatile__(
 			"std\n\t"
@@ -34,8 +34,8 @@ void *memmove(void *dest, const void *src, size_t n)
 			"cld"
 			: "=&c" (d0), "=&S" (d1), "=&D" (d2)
 			:"0" (n),
-			 "1" (n-1+(const char *)src),
-			 "2" (n-1+(char *)dest)
+			 "1" (n-1+src),
+			 "2" (n-1+dest)
 			:"memory");
 	}
 	return dest;

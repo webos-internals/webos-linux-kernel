@@ -52,12 +52,13 @@ static int __init sh7780_pci_init(void)
 
 	pr_debug("PCI: Starting intialization.\n");
 
-	outl(0x00000001, SH7780_PCI_VCR2); /* Enable PCIC */
+	ctrl_outl(0x00000001, SH7780_PCI_VCR2); /* Enable PCIC */
 
 	/* check for SH7780/SH7780R hardware */
 	id = pci_read_reg(SH7780_PCIVID);
 	if ((id & 0xffff) == SH7780_VENDOR_ID) {
 		switch ((id >> 16) & 0xffff) {
+		case SH7763_DEVICE_ID:
 		case SH7780_DEVICE_ID:
 		case SH7781_DEVICE_ID:
 		case SH7785_DEVICE_ID:
@@ -122,16 +123,14 @@ int __init sh7780_pcic_init(struct sh4_pci_address_map *map)
 	 * Window0 = map->window0.size @ non-cached area base = SDRAM
 	 * Window1 = map->window1.size @ cached area base = SDRAM
 	 */
-	word = ((map->window0.size - 1) & 0x1ff00001) | 0x01;
-	pci_write_reg(0x07f00001, SH4_PCILSR0);
-	word = ((map->window1.size - 1) & 0x1ff00001) | 0x01;
+	word = (CONFIG_MEMORY_SIZE - 0x00100000) | 0x00000001;
+	pci_write_reg(word, SH4_PCILSR0);
 	pci_write_reg(0x00000001, SH4_PCILSR1);
 	/* Set the values on window 0 PCI config registers */
-	word = P2SEGADDR(map->window0.base);
-	pci_write_reg(0xa8000000, SH4_PCILAR0);
-	pci_write_reg(0x08000000, SH7780_PCIMBAR0);
+	word = (CONFIG_MEMORY_SIZE > 0x08000000) ? 0x10000000 : 0x08000000;
+	pci_write_reg(word | 0xa0000000, SH4_PCILAR0);
+	pci_write_reg(word, SH7780_PCIMBAR0);
 	/* Set the values on window 1 PCI config registers */
-	word = P2SEGADDR(map->window1.base);
 	pci_write_reg(0x00000000, SH4_PCILAR1);
 	pci_write_reg(0x00000000, SH7780_PCIMBAR1);
 

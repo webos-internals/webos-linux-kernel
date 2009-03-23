@@ -26,11 +26,11 @@
 #include <linux/mtd/partitions.h>
 #include <linux/timer.h>
 
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/mach-types.h>
 #include <asm/irq.h>
 #include <asm/setup.h>
-#include <asm/arch/collie.h>
+#include <mach/collie.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/flash.h>
@@ -40,7 +40,7 @@
 #include <asm/hardware/scoop.h>
 #include <asm/mach/sharpsl_param.h>
 #include <asm/hardware/locomo.h>
-#include <asm/arch/mcp.h>
+#include <mach/mcp.h>
 
 #include "generic.h"
 
@@ -68,23 +68,22 @@ struct platform_device colliescoop_device = {
 };
 
 static struct scoop_pcmcia_dev collie_pcmcia_scoop[] = {
-{
-       .dev        = &colliescoop_device.dev,
-       .irq        = COLLIE_IRQ_GPIO_CF_IRQ,
-       .cd_irq     = COLLIE_IRQ_GPIO_CF_CD,
-       .cd_irq_str = "PCMCIA0 CD",
-},
+	{
+	.dev		= &colliescoop_device.dev,
+	.irq		= COLLIE_IRQ_GPIO_CF_IRQ,
+	.cd_irq		= COLLIE_IRQ_GPIO_CF_CD,
+	.cd_irq_str	= "PCMCIA0 CD",
+	},
 };
 
 static struct scoop_pcmcia_config collie_pcmcia_config = {
-	.devs         = &collie_pcmcia_scoop[0],
-	.num_devs     = 1,
+	.devs		= &collie_pcmcia_scoop[0],
+	.num_devs	= 1,
 };
 
-
 static struct mcp_plat_data collie_mcp_data = {
-	.mccr0          = MCCR0_ADM | MCCR0_ExtClk,
-	.sclk_rate      = 9216000,
+	.mccr0		= MCCR0_ADM | MCCR0_ExtClk,
+	.sclk_rate	= 9216000,
 };
 
 #ifdef CONFIG_SHARP_LOCOMO
@@ -95,14 +94,14 @@ struct platform_device collie_locomo_device;
 
 static void collie_uart_set_mctrl(struct uart_port *port, u_int mctrl)
 {
- 	if (mctrl & TIOCM_RTS)
+	if (mctrl & TIOCM_RTS)
 		locomo_gpio_write(&collie_locomo_device.dev, LOCOMO_GPIO_RTS, 0);
- 	else
+	else
 		locomo_gpio_write(&collie_locomo_device.dev, LOCOMO_GPIO_RTS, 1);
 
- 	if (mctrl & TIOCM_DTR)
+	if (mctrl & TIOCM_DTR)
 		locomo_gpio_write(&collie_locomo_device.dev, LOCOMO_GPIO_DTR, 0);
- 	else
+	else
 		locomo_gpio_write(&collie_locomo_device.dev, LOCOMO_GPIO_DTR, 1);
 }
 
@@ -225,26 +224,28 @@ static void __init collie_init(void)
 	int ret = 0;
 
 	/* cpu initialize */
-	GAFR = ( GPIO_SSP_TXD | \
-		 GPIO_SSP_SCLK | GPIO_SSP_SFRM | GPIO_SSP_CLK | GPIO_TIC_ACK | \
-		 GPIO_32_768kHz );
+	GAFR = GPIO_SSP_TXD | GPIO_SSP_SCLK | GPIO_SSP_SFRM | GPIO_SSP_CLK |
+		GPIO_MCP_CLK | GPIO_32_768kHz;
 
-	GPDR = ( GPIO_LDD8 | GPIO_LDD9 | GPIO_LDD10 | GPIO_LDD11 | GPIO_LDD12 | \
-		 GPIO_LDD13 | GPIO_LDD14 | GPIO_LDD15 | GPIO_SSP_TXD | \
-		 GPIO_SSP_SCLK | GPIO_SSP_SFRM | GPIO_SDLC_SCLK | \
-		 GPIO_SDLC_AAF | GPIO_UART_SCLK1 | GPIO_32_768kHz );
-	GPLR = GPIO_GPIO18;
+	GPDR = GPIO_LDD8 | GPIO_LDD9 | GPIO_LDD10 | GPIO_LDD11 | GPIO_LDD12 |
+		GPIO_LDD13 | GPIO_LDD14 | GPIO_LDD15 | GPIO_SSP_TXD |
+		GPIO_SSP_SCLK | GPIO_SSP_SFRM | GPIO_SDLC_SCLK |
+		COLLIE_GPIO_UCB1x00_RESET | COLLIE_GPIO_nMIC_ON |
+		COLLIE_GPIO_nREMOCON_ON | GPIO_32_768kHz;
 
-	// PPC pin setting
-	PPDR = ( PPC_LDD0 | PPC_LDD1 | PPC_LDD2 | PPC_LDD3 | PPC_LDD4 | PPC_LDD5 | \
-		 PPC_LDD6 | PPC_LDD7 | PPC_L_PCLK | PPC_L_LCLK | PPC_L_FCLK | PPC_L_BIAS | \
-	 	 PPC_TXD1 | PPC_TXD2 | PPC_RXD2 | PPC_TXD3 | PPC_TXD4 | PPC_SCLK | PPC_SFRM );
+	PPDR = PPC_LDD0 | PPC_LDD1 | PPC_LDD2 | PPC_LDD3 | PPC_LDD4 | PPC_LDD5 |
+		PPC_LDD6 | PPC_LDD7 | PPC_L_PCLK | PPC_L_LCLK | PPC_L_FCLK | PPC_L_BIAS |
+		PPC_TXD1 | PPC_TXD2 | PPC_TXD3 | PPC_TXD4 | PPC_SCLK | PPC_SFRM;
 
-	PSDR = ( PPC_RXD1 | PPC_RXD2 | PPC_RXD3 | PPC_RXD4 );
+	PWER = COLLIE_GPIO_AC_IN | COLLIE_GPIO_CO | COLLIE_GPIO_ON_KEY |
+		COLLIE_GPIO_WAKEUP | COLLIE_GPIO_nREMOCON_INT | PWER_RTC;
 
-	GAFR |= GPIO_32_768kHz;
-	GPDR |= GPIO_32_768kHz;
-	TUCR  = TUCR_32_768kHz;
+	PGSR = COLLIE_GPIO_nREMOCON_ON;
+
+	PSDR = PPC_RXD1 | PPC_RXD2 | PPC_RXD3 | PPC_RXD4;
+
+	PCFR = PCFR_OPDE;
+
 
 	platform_scoop_config = &collie_pcmcia_config;
 

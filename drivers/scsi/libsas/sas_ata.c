@@ -74,7 +74,7 @@ static enum ata_completion_errors sas_to_ata_err(struct task_status_struct *ts)
 		case SAS_OPEN_TO:
 		case SAS_OPEN_REJECT:
 			SAS_DPRINTK("%s: Saw error %d.  What to do?\n",
-				    __FUNCTION__, ts->stat);
+				    __func__, ts->stat);
 			return AC_ERR_OTHER;
 
 		case SAS_ABORTED_TASK:
@@ -115,7 +115,7 @@ static void sas_ata_task_done(struct sas_task *task)
 	} else if (stat->stat != SAM_STAT_GOOD) {
 		ac = sas_to_ata_err(stat);
 		if (ac) {
-			SAS_DPRINTK("%s: SAS error %x\n", __FUNCTION__,
+			SAS_DPRINTK("%s: SAS error %x\n", __func__,
 				    stat->stat);
 			/* We saw a SAS error. Send a vague error. */
 			qc->err_mask = ac;
@@ -158,8 +158,8 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 	struct Scsi_Host *host = sas_ha->core.shost;
 	struct sas_internal *i = to_sas_internal(host->transportt);
 	struct scatterlist *sg;
-	unsigned int num = 0;
 	unsigned int xfer = 0;
+	unsigned int si;
 
 	task = sas_alloc_task(GFP_ATOMIC);
 	if (!task)
@@ -176,22 +176,20 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 
 	ata_tf_to_fis(&qc->tf, 1, 0, (u8*)&task->ata_task.fis);
 	task->uldd_task = qc;
-	if (is_atapi_taskfile(&qc->tf)) {
+	if (ata_is_atapi(qc->tf.protocol)) {
 		memcpy(task->ata_task.atapi_packet, qc->cdb, qc->dev->cdb_len);
-		task->total_xfer_len = qc->nbytes + qc->pad_len;
-		task->num_scatter = qc->pad_len ? qc->n_elem + 1 : qc->n_elem;
+		task->total_xfer_len = qc->nbytes;
+		task->num_scatter = qc->n_elem;
 	} else {
-		ata_for_each_sg(sg, qc) {
-			num++;
+		for_each_sg(qc->sg, sg, qc->n_elem, si)
 			xfer += sg->length;
-		}
 
 		task->total_xfer_len = xfer;
-		task->num_scatter = num;
+		task->num_scatter = si;
 	}
 
 	task->data_dir = qc->dma_dir;
-	task->scatter = qc->__sg;
+	task->scatter = qc->sg;
 	task->ata_task.retry_count = 1;
 	task->task_state_flags = SAS_TASK_STATE_PENDING;
 	qc->lldd_task = task;
@@ -200,7 +198,7 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 	case ATA_PROT_NCQ:
 		task->ata_task.use_ncq = 1;
 		/* fall through */
-	case ATA_PROT_ATAPI_DMA:
+	case ATAPI_PROT_DMA:
 	case ATA_PROT_DMA:
 		task->ata_task.dma_xfer = 1;
 		break;
@@ -227,10 +225,12 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 	return 0;
 }
 
-static u8 sas_ata_check_status(struct ata_port *ap)
+static bool sas_ata_qc_fill_rtf(struct ata_queued_cmd *qc)
 {
-	struct domain_device *dev = ap->private_data;
-	return dev->sata_dev.tf.command;
+	struct domain_device *dev = qc->ap->private_data;
+
+	memcpy(&qc->result_tf, &dev->sata_dev.tf, sizeof(qc->result_tf));
+	return true;
 }
 
 static void sas_ata_phy_reset(struct ata_port *ap)
@@ -238,26 +238,26 @@ static void sas_ata_phy_reset(struct ata_port *ap)
 	struct domain_device *dev = ap->private_data;
 	struct sas_internal *i =
 		to_sas_internal(dev->port->ha->core.shost->transportt);
-	int res = 0;
+	int res = TMF_RESP_FUNC_FAILED;
 
 	if (i->dft->lldd_I_T_nexus_reset)
 		res = i->dft->lldd_I_T_nexus_reset(dev);
 
-	if (res)
-		SAS_DPRINTK("%s: Unable to reset I T nexus?\n", __FUNCTION__);
+	if (res != TMF_RESP_FUNC_COMPLETE)
+		SAS_DPRINTK("%s: Unable to reset I T nexus?\n", __func__);
 
 	switch (dev->sata_dev.command_set) {
 		case ATA_COMMAND_SET:
-			SAS_DPRINTK("%s: Found ATA device.\n", __FUNCTION__);
+			SAS_DPRINTK("%s: Found ATA device.\n", __func__);
 			ap->link.device[0].class = ATA_DEV_ATA;
 			break;
 		case ATAPI_COMMAND_SET:
-			SAS_DPRINTK("%s: Found ATAPI device.\n", __FUNCTION__);
+			SAS_DPRINTK("%s: Found ATAPI device.\n", __func__);
 			ap->link.device[0].class = ATA_DEV_ATAPI;
 			break;
 		default:
 			SAS_DPRINTK("%s: Unknown SATA command set: %d.\n",
-				    __FUNCTION__,
+				    __func__,
 				    dev->sata_dev.command_set);
 			ap->link.device[0].class = ATA_DEV_UNKNOWN;
 			break;
@@ -294,18 +294,12 @@ static void sas_ata_post_internal(struct ata_queued_cmd *qc)
 	}
 }
 
-static void sas_ata_tf_read(struct ata_port *ap, struct ata_taskfile *tf)
-{
-	struct domain_device *dev = ap->private_data;
-	memcpy(tf, &dev->sata_dev.tf, sizeof (*tf));
-}
-
-static int sas_ata_scr_write(struct ata_port *ap, unsigned int sc_reg_in,
+static int sas_ata_scr_write(struct ata_link *link, unsigned int sc_reg_in,
 			      u32 val)
 {
-	struct domain_device *dev = ap->private_data;
+	struct domain_device *dev = link->ap->private_data;
 
-	SAS_DPRINTK("STUB %s\n", __FUNCTION__);
+	SAS_DPRINTK("STUB %s\n", __func__);
 	switch (sc_reg_in) {
 		case SCR_STATUS:
 			dev->sata_dev.sstatus = val;
@@ -325,12 +319,12 @@ static int sas_ata_scr_write(struct ata_port *ap, unsigned int sc_reg_in,
 	return 0;
 }
 
-static int sas_ata_scr_read(struct ata_port *ap, unsigned int sc_reg_in,
+static int sas_ata_scr_read(struct ata_link *link, unsigned int sc_reg_in,
 			    u32 *val)
 {
-	struct domain_device *dev = ap->private_data;
+	struct domain_device *dev = link->ap->private_data;
 
-	SAS_DPRINTK("STUB %s\n", __FUNCTION__);
+	SAS_DPRINTK("STUB %s\n", __func__);
 	switch (sc_reg_in) {
 		case SCR_STATUS:
 			*val = dev->sata_dev.sstatus;
@@ -350,14 +344,11 @@ static int sas_ata_scr_read(struct ata_port *ap, unsigned int sc_reg_in,
 }
 
 static struct ata_port_operations sas_sata_ops = {
-	.check_status		= sas_ata_check_status,
-	.check_altstatus	= sas_ata_check_status,
-	.dev_select		= ata_noop_dev_select,
 	.phy_reset		= sas_ata_phy_reset,
 	.post_internal_cmd	= sas_ata_post_internal,
-	.tf_read		= sas_ata_tf_read,
 	.qc_prep		= ata_noop_qc_prep,
 	.qc_issue		= sas_ata_qc_issue,
+	.qc_fill_rtf		= sas_ata_qc_fill_rtf,
 	.port_start		= ata_sas_port_start,
 	.port_stop		= ata_sas_port_stop,
 	.scr_read		= sas_ata_scr_read,
@@ -407,7 +398,7 @@ void sas_ata_task_abort(struct sas_task *task)
 
 	/* Bounce SCSI-initiated commands to the SCSI EH */
 	if (qc->scsicmd) {
-		scsi_req_abort_cmd(qc->scsicmd);
+		blk_abort_request(qc->scsicmd->request);
 		scsi_schedule_eh(qc->scsicmd->device->host);
 		return;
 	}
@@ -500,7 +491,7 @@ static int sas_execute_task(struct sas_task *task, void *buffer, int size,
 			goto ex_err;
 		}
 		wait_for_completion(&task->completion);
-		res = -ETASK;
+		res = -ECOMM;
 		if (task->task_state_flags & SAS_TASK_STATE_ABORTED) {
 			int res2;
 			SAS_DPRINTK("task aborted, flags:0x%x\n",
@@ -658,21 +649,6 @@ out:
 	return res;
 }
 
-static void sas_sata_propagate_sas_addr(struct domain_device *dev)
-{
-	unsigned long flags;
-	struct asd_sas_port *port = dev->port;
-	struct asd_sas_phy  *phy;
-
-	BUG_ON(dev->parent);
-
-	memcpy(port->attached_sas_addr, dev->sas_addr, SAS_ADDR_SIZE);
-	spin_lock_irqsave(&port->phy_list_lock, flags);
-	list_for_each_entry(phy, &port->phy_list, port_phy_el)
-		memcpy(phy->attached_sas_addr, dev->sas_addr, SAS_ADDR_SIZE);
-	spin_unlock_irqrestore(&port->phy_list_lock, flags);
-}
-
 #define ATA_IDENTIFY_DEV         0xEC
 #define ATA_IDENTIFY_PACKET_DEV  0xA1
 #define ATA_SET_FEATURES         0xEF
@@ -715,7 +691,7 @@ static int sas_discover_sata_dev(struct domain_device *dev)
 		/* incomplete response */
 		SAS_DPRINTK("sending SET FEATURE/PUP_STBY_SPIN_UP to "
 			    "dev %llx\n", SAS_ADDR(dev->sas_addr));
-		if (!le16_to_cpu(identify_x[83] & (1<<6)))
+		if (!(identify_x[83] & cpu_to_le16(1<<6)))
 			goto cont1;
 		res = sas_issue_ata_cmd(dev, ATA_SET_FEATURES,
 					ATA_FEATURE_PUP_STBY_SPIN_UP,
@@ -730,26 +706,6 @@ static int sas_discover_sata_dev(struct domain_device *dev)
 			goto out_err;
 	}
 cont1:
-	/* Get WWN */
-	if (dev->port->oob_mode != SATA_OOB_MODE) {
-		memcpy(dev->sas_addr, dev->sata_dev.rps_resp.rps.stp_sas_addr,
-		       SAS_ADDR_SIZE);
-	} else if (dev->sata_dev.command_set == ATA_COMMAND_SET &&
-		   (le16_to_cpu(dev->sata_dev.identify_device[108]) & 0xF000)
-		   == 0x5000) {
-		int i;
-
-		for (i = 0; i < 4; i++) {
-			dev->sas_addr[2*i] =
-	     (le16_to_cpu(dev->sata_dev.identify_device[108+i]) & 0xFF00) >> 8;
-			dev->sas_addr[2*i+1] =
-	      le16_to_cpu(dev->sata_dev.identify_device[108+i]) & 0x00FF;
-		}
-	}
-	sas_hash_addr(dev->hashed_sas_addr, dev->sas_addr);
-	if (!dev->parent)
-		sas_sata_propagate_sas_addr(dev);
-
 	/* XXX Hint: register this SATA device with SATL.
 	   When this returns, dev->sata_dev->lu is alive and
 	   present.

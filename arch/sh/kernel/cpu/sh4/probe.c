@@ -50,6 +50,9 @@ int __init detect_cpu_and_cache_system(void)
 	boot_cpu_data.dcache.ways		= 1;
 	boot_cpu_data.dcache.linesz		= L1_CACHE_BYTES;
 
+	/* We don't know the chip cut */
+	boot_cpu_data.cut_major = boot_cpu_data.cut_minor = -1;
+
 	/*
 	 * Setup some generic flags we can probe on SH-4A parts
 	 */
@@ -58,6 +61,7 @@ int __init detect_cpu_and_cache_system(void)
 			boot_cpu_data.flags |= CPU_HAS_DSP;
 
 		boot_cpu_data.flags |= CPU_HAS_LLSC;
+		boot_cpu_data.cut_major = pvr & 0x7f;
 	}
 
 	/* FPU detection works for everyone */
@@ -98,6 +102,8 @@ int __init detect_cpu_and_cache_system(void)
 	case 0x200A:
 		if (prr == 0x61)
 			boot_cpu_data.type = CPU_SH7781;
+		else if (prr == 0xa1)
+			boot_cpu_data.type = CPU_SH7763;
 		else
 			boot_cpu_data.type = CPU_SH7780;
 
@@ -124,11 +130,23 @@ int __init detect_cpu_and_cache_system(void)
 					  CPU_HAS_LLSC;
 		break;
 	case 0x3008:
-		if (prr == 0xa0) {
+		boot_cpu_data.icache.ways = 4;
+		boot_cpu_data.dcache.ways = 4;
+		boot_cpu_data.flags |= CPU_HAS_LLSC;
+
+		switch (prr) {
+		case 0x50:
+		case 0x51:
+			boot_cpu_data.type = CPU_SH7723;
+			boot_cpu_data.flags |= CPU_HAS_FPU | CPU_HAS_L2_CACHE;
+			break;
+		case 0x70:
+			boot_cpu_data.type = CPU_SH7366;
+			break;
+		case 0xa0:
+		case 0xa1:
 			boot_cpu_data.type = CPU_SH7722;
-			boot_cpu_data.icache.ways = 4;
-			boot_cpu_data.dcache.ways = 4;
-			boot_cpu_data.flags |= CPU_HAS_LLSC;
+			break;
 		}
 		break;
 	case 0x4000:	/* 1st cut */
@@ -207,6 +225,12 @@ int __init detect_cpu_and_cache_system(void)
 	 * SH-4A's have an optional PIPT L2.
 	 */
 	if (boot_cpu_data.flags & CPU_HAS_L2_CACHE) {
+		/* Bug if we can't decode the L2 info */
+		BUG_ON(!(cvr & 0xf));
+
+		/* Silicon and specifications have clearly never met.. */
+		cvr ^= 0xf;
+
 		/*
 		 * Size calculation is much more sensible
 		 * than it is for the L1.

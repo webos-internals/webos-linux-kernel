@@ -28,11 +28,12 @@
 #include <linux/interrupt.h>
 #include <linux/errno.h>
 
+#include <asm/scatterlist.h>
 #include <asm/system.h>
 #include <asm/irq.h>
-#include <asm/hardware.h>
-#include <asm/dma.h>
-#include <asm/arch/imx-dma.h>
+#include <mach/hardware.h>
+#include <mach/dma.h>
+#include <mach/imx-dma.h>
 
 struct imx_dma_channel imx_dma_channels[IMX_DMA_CHANNELS];
 
@@ -54,7 +55,7 @@ static inline int imx_dma_sg_next(imx_dmach_t dma_ch, unsigned int lastcount)
 
 	if (!imxdma->name) {
 		printk(KERN_CRIT "%s: called for  not allocated channel %d\n",
-		       __FUNCTION__, dma_ch);
+		       __func__, dma_ch);
 		return 0;
 	}
 
@@ -138,7 +139,7 @@ imx_dma_setup_sg_base(imx_dmach_t dma_ch,
 int
 imx_dma_setup_single(imx_dmach_t dma_ch, dma_addr_t dma_address,
 		     unsigned int dma_length, unsigned int dev_addr,
-		     dmamode_t dmamode)
+		     unsigned int dmamode)
 {
 	struct imx_dma_channel *imxdma = &imx_dma_channels[dma_ch];
 
@@ -223,7 +224,7 @@ imx_dma_setup_single(imx_dmach_t dma_ch, dma_addr_t dma_address,
 int
 imx_dma_setup_sg(imx_dmach_t dma_ch,
 		 struct scatterlist *sg, unsigned int sgcount, unsigned int dma_length,
-		 unsigned int dev_addr, dmamode_t dmamode)
+		 unsigned int dev_addr, unsigned int dmamode)
 {
 	int res;
 	struct imx_dma_channel *imxdma = &imx_dma_channels[dma_ch];
@@ -288,7 +289,7 @@ imx_dma_setup_handlers(imx_dmach_t dma_ch,
 
 	if (!imxdma->name) {
 		printk(KERN_CRIT "%s: called for  not allocated channel %d\n",
-		       __FUNCTION__, dma_ch);
+		       __func__, dma_ch);
 		return -ENODEV;
 	}
 
@@ -321,7 +322,7 @@ void imx_dma_enable(imx_dmach_t dma_ch)
 
 	if (!imxdma->name) {
 		printk(KERN_CRIT "%s: called for  not allocated channel %d\n",
-		       __FUNCTION__, dma_ch);
+		       __func__, dma_ch);
 		return;
 	}
 
@@ -365,7 +366,7 @@ int imx_dma_request(imx_dmach_t dma_ch, const char *name)
 
 	if (dma_ch >= IMX_DMA_CHANNELS) {
 		printk(KERN_CRIT "%s: called for  non-existed channel %d\n",
-		       __FUNCTION__, dma_ch);
+		       __func__, dma_ch);
 		return -EINVAL;
 	}
 
@@ -396,7 +397,7 @@ void imx_dma_free(imx_dmach_t dma_ch)
 	if (!imxdma->name) {
 		printk(KERN_CRIT
 		       "%s: trying to free channel %d which is already freed\n",
-		       __FUNCTION__, dma_ch);
+		       __func__, dma_ch);
 		return;
 	}
 
@@ -410,7 +411,6 @@ void imx_dma_free(imx_dmach_t dma_ch)
 
 /**
  * imx_dma_request_by_prio - find and request some of free channels best suiting requested priority
- * @dma_ch: i.MX DMA channel number
  * @name: the driver/caller own non-%NULL identification
  * @prio: one of the hardware distinguished priority level:
  *        %DMA_PRIO_HIGH, %DMA_PRIO_MEDIUM, %DMA_PRIO_LOW
@@ -420,11 +420,9 @@ void imx_dma_free(imx_dmach_t dma_ch)
  * in the higher and then even lower priority groups.
  *
  * Return value: If there is no free channel to allocate, -%ENODEV is returned.
- *               Zero value indicates successful channel allocation.
+ *               On successful allocation channel is returned.
  */
-int
-imx_dma_request_by_prio(imx_dmach_t * pdma_ch, const char *name,
-			imx_dma_prio prio)
+imx_dmach_t imx_dma_request_by_prio(const char *name, imx_dma_prio prio)
 {
 	int i;
 	int best;
@@ -444,19 +442,17 @@ imx_dma_request_by_prio(imx_dmach_t * pdma_ch, const char *name,
 
 	for (i = best; i < IMX_DMA_CHANNELS; i++) {
 		if (!imx_dma_request(i, name)) {
-			*pdma_ch = i;
-			return 0;
+			return i;
 		}
 	}
 
 	for (i = best - 1; i >= 0; i--) {
 		if (!imx_dma_request(i, name)) {
-			*pdma_ch = i;
-			return 0;
+			return i;
 		}
 	}
 
-	printk(KERN_ERR "%s: no free DMA channel found\n", __FUNCTION__);
+	printk(KERN_ERR "%s: no free DMA channel found\n", __func__);
 
 	return -ENODEV;
 }

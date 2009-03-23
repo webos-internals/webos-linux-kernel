@@ -44,7 +44,7 @@ static int hvc_beat_get_chars(uint32_t vtermno, char *buf, int cnt)
 	static unsigned char q[sizeof(unsigned long) * 2]
 		__attribute__((aligned(sizeof(unsigned long))));
 	static int qlen = 0;
-	unsigned long got;
+	u64 got;
 
 again:
 	if (qlen) {
@@ -63,7 +63,7 @@ again:
 		}
 	}
 	if (beat_get_term_char(vtermno, &got,
-		((unsigned long *)q), ((unsigned long *)q) + 1) == 0) {
+		((u64 *)q), ((u64 *)q) + 1) == 0) {
 		qlen = got;
 		goto again;
 	}
@@ -78,8 +78,8 @@ static int hvc_beat_put_chars(uint32_t vtermno, const char *buf, int cnt)
 	for (rest = cnt; rest > 0; rest -= nlen) {
 		nlen = (rest > 16) ? 16 : rest;
 		memcpy(kb, buf, nlen);
-		beat_put_term_char(vtermno, rest, kb[0], kb[1]);
-		rest -= nlen;
+		beat_put_term_char(vtermno, nlen, kb[0], kb[1]);
+		buf += nlen;
 	}
 	return cnt;
 }

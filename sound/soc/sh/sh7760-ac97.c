@@ -9,7 +9,6 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/platform_device.h>
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/soc.h>
@@ -21,12 +20,12 @@
 #define IPSEL 0xFE400034
 
 /* platform specific structs can be declared here */
-extern struct snd_soc_cpu_dai sh4_hac_dai[2];
+extern struct snd_soc_dai sh4_hac_dai[2];
 extern struct snd_soc_platform sh7760_soc_platform;
 
 static int machine_init(struct snd_soc_codec *codec)
 {
-	snd_soc_dapm_sync_endpoints(codec);
+	snd_soc_dapm_sync(codec);
 	return 0;
 }
 
@@ -39,15 +38,15 @@ static struct snd_soc_dai_link sh7760_ac97_dai = {
 	.ops = NULL,
 };
 
-static struct snd_soc_machine sh7760_ac97_soc_machine  = {
+static struct snd_soc_card sh7760_ac97_soc_machine  = {
 	.name = "SH7760 AC97",
+	.platform = &sh7760_soc_platform,
 	.dai_link = &sh7760_ac97_dai,
 	.num_links = 1,
 };
 
 static struct snd_soc_device sh7760_ac97_snd_devdata = {
-	.machine = &sh7760_ac97_soc_machine,
-	.platform = &sh7760_soc_platform,
+	.card = &sh7760_ac97_soc_machine,
 	.codec_dev = &soc_codec_dev_ac97,
 };
 

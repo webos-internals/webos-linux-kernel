@@ -1,41 +1,26 @@
 #
-# lx25/arch/cris/arch-v32/boot/compressed/Makefile
-#
-# create a compressed vmlinux image from the original vmlinux files and romfs
+# arch/cris/arch-v32/boot/compressed/Makefile
 #
 
-target = $(target_compressed_dir)
-src    = $(src_compressed_dir)
-
-CC = gcc-cris -mlinux -march=v32 -I $(TOPDIR)/include
-CFLAGS = -O2
-LD = gcc-cris -mlinux -march=v32 -nostdlib
-OBJCOPY = objcopy-cris
+asflags-y += -I $(srctree)/include/asm/mach/ -I $(srctree)/include/asm/arch
+ccflags-y += -O2 -I $(srctree)/include/asm/mach/ -I $(srctree)/include/asm/arch
+ldflags-y += -T $(srctree)/$(src)/decompress.lds
+OBJECTS = $(obj)/head.o $(obj)/misc.o
 OBJCOPYFLAGS = -O binary --remove-section=.bss
-OBJECTS = $(target)/head.o $(target)/misc.o
 
-# files to compress
-SYSTEM = $(objtree)/vmlinux.bin
+quiet_cmd_image = BUILD   $@
+cmd_image = cat $(obj)/decompress.bin $(obj)/piggy.gz > $@
 
-all: vmlinuz
+targets := vmlinux piggy.gz decompress.o decompress.bin
 
-$(target)/decompress.bin: $(OBJECTS)
-	$(LD) -T $(src)/decompress.ld -o $(target)/decompress.o $(OBJECTS)
-	$(OBJCOPY) $(OBJCOPYFLAGS) $(target)/decompress.o $(target)/decompress.bin
+$(obj)/decompress.o: $(OBJECTS) FORCE
+	$(call if_changed,ld)
 
-$(objtree)/vmlinuz: $(target) piggy.img $(target)/decompress.bin
-	cat $(target)/decompress.bin piggy.img > $(objtree)/vmlinuz
-	rm -f piggy.img
-	cp $(objtree)/vmlinuz $(src)
+$(obj)/decompress.bin: $(obj)/decompress.o FORCE
+	$(call if_changed,objcopy)
 
-$(target)/head.o: $(src)/head.S
-	$(CC) -D__ASSEMBLY__ -c $< -o $@
+$(obj)/vmlinux: $(obj)/piggy.gz $(obj)/decompress.bin FORCE
+	$(call if_changed,image)
 
-# gzip the kernel image
-
-piggy.img: $(SYSTEM)
-	cat $(SYSTEM) | gzip -f -9 > piggy.img
-
-clean:
-	rm -f piggy.img $(objtree)/vmlinuz vmlinuz.o decompress.o decompress.bin $(OBJECTS)
-
+$(obj)/piggy.gz: $(obj)/../Image FORCE
+	$(call if_changed,gzip)

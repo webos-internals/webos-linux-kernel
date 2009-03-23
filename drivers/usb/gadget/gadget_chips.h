@@ -11,6 +11,10 @@
  * Some are available on 2.4 kernels; several are available, but not
  * yet pushed in the 2.6 mainline tree.
  */
+
+#ifndef __GADGET_CHIPS_H
+#define __GADGET_CHIPS_H
+
 #ifdef CONFIG_USB_GADGET_NET2280
 #define	gadget_is_net2280(g)	!strcmp("net2280", (g)->name)
 #else
@@ -29,8 +33,8 @@
 #define	gadget_is_dummy(g)	0
 #endif
 
-#ifdef CONFIG_USB_GADGET_PXA2XX
-#define	gadget_is_pxa(g)	!strcmp("pxa2xx_udc", (g)->name)
+#ifdef CONFIG_USB_GADGET_PXA25X
+#define	gadget_is_pxa(g)	!strcmp("pxa25x_udc", (g)->name)
 #else
 #define	gadget_is_pxa(g)	0
 #endif
@@ -106,7 +110,6 @@
 #define gadget_is_at91(g)	0
 #endif
 
-/* status unclear */
 #ifdef CONFIG_USB_GADGET_IMX
 #define gadget_is_imx(g)	!strcmp("imx_udc", (g)->name)
 #else
@@ -147,6 +150,18 @@
 #define	gadget_is_m66592(g)	0
 #endif
 
+/* Freescale CPM/QE UDC SUPPORT */
+#ifdef CONFIG_USB_GADGET_FSL_QE
+#define gadget_is_fsl_qe(g)	!strcmp("fsl_qe_udc", (g)->name)
+#else
+#define gadget_is_fsl_qe(g)	0
+#endif
+
+#ifdef CONFIG_USB_GADGET_CI13XXX
+#define gadget_is_ci13xxx(g)	(!strcmp("ci13xxx_udc", (g)->name))
+#else
+#define gadget_is_ci13xxx(g)	0
+#endif
 
 // CONFIG_USB_GADGET_SX2
 // CONFIG_USB_GADGET_AU1X00
@@ -212,5 +227,34 @@ static inline int usb_gadget_controller_number(struct usb_gadget *gadget)
 		return 0x20;
 	else if (gadget_is_m66592(gadget))
 		return 0x21;
+	else if (gadget_is_fsl_qe(gadget))
+		return 0x22;
+	else if (gadget_is_ci13xxx(gadget))
+		return 0x23;
 	return -ENOENT;
 }
+
+
+/**
+ * gadget_supports_altsettings - return true if altsettings work
+ * @gadget: the gadget in question
+ */
+static inline bool gadget_supports_altsettings(struct usb_gadget *gadget)
+{
+	/* PXA 21x/25x/26x has no altsettings at all */
+	if (gadget_is_pxa(gadget))
+		return false;
+
+	/* PXA 27x and 3xx have *broken* altsetting support */
+	if (gadget_is_pxa27x(gadget))
+		return false;
+
+	/* SH3 hardware just doesn't do altsettings */
+	if (gadget_is_sh(gadget))
+		return false;
+
+	/* Everything else is *presumably* fine ... */
+	return true;
+}
+
+#endif /* __GADGET_CHIPS_H */

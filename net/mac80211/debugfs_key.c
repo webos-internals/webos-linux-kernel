@@ -10,7 +10,7 @@
 
 #include <linux/kobject.h>
 #include "ieee80211_i.h"
-#include "ieee80211_key.h"
+#include "key.h"
 #include "debugfs.h"
 #include "debugfs_key.h"
 
@@ -97,8 +97,8 @@ static ssize_t key_tx_spec_read(struct file *file, char __user *userbuf,
 		break;
 	case ALG_TKIP:
 		len = scnprintf(buf, sizeof(buf), "%08x %04x\n",
-				key->u.tkip.iv32,
-				key->u.tkip.iv16);
+				key->u.tkip.tx.iv32,
+				key->u.tkip.tx.iv16);
 		break;
 	case ALG_CCMP:
 		tpn = key->u.ccmp.tx_pn;
@@ -128,8 +128,8 @@ static ssize_t key_rx_spec_read(struct file *file, char __user *userbuf,
 		for (i = 0; i < NUM_RX_DATA_QUEUES; i++)
 			p += scnprintf(p, sizeof(buf)+buf-p,
 				       "%08x %04x\n",
-				       key->u.tkip.iv32_rx[i],
-				       key->u.tkip.iv16_rx[i]);
+				       key->u.tkip.rx[i].iv32,
+				       key->u.tkip.rx[i].iv16);
 		len = p - buf;
 		break;
 	case ALG_CCMP:
@@ -184,22 +184,34 @@ KEY_OPS(key);
 	key->debugfs.name = debugfs_create_file(#name, 0400,\
 				key->debugfs.dir, key, &key_##name##_ops);
 
-void ieee80211_debugfs_key_add(struct ieee80211_local *local,
-			       struct ieee80211_key *key)
-{
+void ieee80211_debugfs_key_add(struct ieee80211_key *key)
+  {
 	static int keycount;
-	char buf[20];
+	char buf[50];
+	struct sta_info *sta;
 
-	if (!local->debugfs.keys)
+	if (!key->local->debugfs.keys)
 		return;
 
 	sprintf(buf, "%d", keycount);
+	key->debugfs.cnt = keycount;
 	keycount++;
 	key->debugfs.dir = debugfs_create_dir(buf,
-					local->debugfs.keys);
+					key->local->debugfs.keys);
 
 	if (!key->debugfs.dir)
 		return;
+
+	rcu_read_lock();
+	sta = rcu_dereference(key->sta);
+	if (sta)
+		sprintf(buf, "../../stations/%pM", sta->sta.addr);
+	rcu_read_unlock();
+
+	/* using sta as a boolean is fine outside RCU lock */
+	if (sta)
+		key->debugfs.stalink =
+			debugfs_create_symlink("station", key->debugfs.dir, buf);
 
 	DEBUGFS_ADD(keylen);
 	DEBUGFS_ADD(flags);
@@ -242,34 +254,30 @@ void ieee80211_debugfs_key_remove(struct ieee80211_key *key)
 void ieee80211_debugfs_key_add_default(struct ieee80211_sub_if_data *sdata)
 {
 	char buf[50];
+	struct ieee80211_key *key;
 
 	if (!sdata->debugfsdir)
 		return;
 
-	sprintf(buf, "../keys/%d", sdata->default_key->conf.keyidx);
-	sdata->debugfs.default_key =
-		debugfs_create_symlink("default_key", sdata->debugfsdir, buf);
+	/* this is running under the key lock */
+
+	key = sdata->default_key;
+	if (key) {
+		sprintf(buf, "../keys/%d", key->debugfs.cnt);
+		sdata->common_debugfs.default_key =
+			debugfs_create_symlink("default_key",
+					       sdata->debugfsdir, buf);
+	} else
+		ieee80211_debugfs_key_remove_default(sdata);
 }
+
 void ieee80211_debugfs_key_remove_default(struct ieee80211_sub_if_data *sdata)
 {
 	if (!sdata)
 		return;
 
-	debugfs_remove(sdata->debugfs.default_key);
-	sdata->debugfs.default_key = NULL;
-}
-void ieee80211_debugfs_key_sta_link(struct ieee80211_key *key,
-				    struct sta_info *sta)
-{
-	char buf[50];
-	DECLARE_MAC_BUF(mac);
-
-	if (!key->debugfs.dir)
-		return;
-
-	sprintf(buf, "../../stations/%s", print_mac(mac, sta->addr));
-	key->debugfs.stalink =
-		debugfs_create_symlink("station", key->debugfs.dir, buf);
+	debugfs_remove(sdata->common_debugfs.default_key);
+	sdata->common_debugfs.default_key = NULL;
 }
 
 void ieee80211_debugfs_key_sta_del(struct ieee80211_key *key,

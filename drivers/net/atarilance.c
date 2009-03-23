@@ -243,7 +243,7 @@ struct lance_private {
 
 /* Possible memory/IO addresses for probing */
 
-struct lance_addr {
+static struct lance_addr {
 	unsigned long	memaddr;
 	unsigned long	ioaddr;
 	int				slow_flag;
@@ -336,8 +336,6 @@ struct lance_addr {
 
 /***************************** Prototypes *****************************/
 
-static int addr_accessible( volatile void *regp, int wordflag, int
-                            writeflag );
 static unsigned long lance_probe1( struct net_device *dev, struct lance_addr
                                    *init_rec );
 static int lance_open( struct net_device *dev );
@@ -406,7 +404,8 @@ struct net_device * __init atarilance_probe(int unit)
 
 /* Derived from hwreg_present() in atari/config.c: */
 
-static int __init addr_accessible( volatile void *regp, int wordflag, int writeflag )
+static noinline int __init addr_accessible(volatile void *regp, int wordflag,
+					   int writeflag)
 {
 	int		ret;
 	long	flags;
@@ -467,7 +466,6 @@ static unsigned long __init lance_probe1( struct net_device *dev,
 	int 					i;
 	static int 				did_version;
 	unsigned short			save1, save2;
-	DECLARE_MAC_BUF(mac);
 
 	PROBE_PRINT(( "Probing for Lance card at mem %#lx io %#lx\n",
 				  (long)memaddr, (long)ioaddr ));
@@ -522,7 +520,7 @@ static unsigned long __init lance_probe1( struct net_device *dev,
 	return( 0 );
 
   probe_ok:
-	lp = (struct lance_private *)dev->priv;
+	lp = netdev_priv(dev);
 	MEM = (struct lance_memory *)memaddr;
 	IO = lp->iobase = (struct lance_ioreg *)ioaddr;
 	dev->base_addr = (unsigned long)ioaddr; /* informational only */
@@ -596,7 +594,7 @@ static unsigned long __init lance_probe1( struct net_device *dev,
 		i = IO->mem;
 		break;
 	}
-	printk("%s\n", print_mac(mac, dev->dev_addr));
+	printk("%pM\n", dev->dev_addr);
 	if (lp->cardtype == OLD_RIEBL) {
 		printk( "%s: Warning: This is a default ethernet address!\n",
 				dev->name );
@@ -641,8 +639,8 @@ static unsigned long __init lance_probe1( struct net_device *dev,
 
 
 static int lance_open( struct net_device *dev )
-
-{	struct lance_private *lp = (struct lance_private *)dev->priv;
+{
+	struct lance_private *lp = netdev_priv(dev);
 	struct lance_ioreg	 *IO = lp->iobase;
 	int i;
 
@@ -682,8 +680,8 @@ static int lance_open( struct net_device *dev )
 /* Initialize the LANCE Rx and Tx rings. */
 
 static void lance_init_ring( struct net_device *dev )
-
-{	struct lance_private *lp = (struct lance_private *)dev->priv;
+{
+	struct lance_private *lp = netdev_priv(dev);
 	int i;
 	unsigned offset;
 
@@ -731,7 +729,7 @@ static void lance_init_ring( struct net_device *dev )
 
 static void lance_tx_timeout (struct net_device *dev)
 {
-	struct lance_private *lp = (struct lance_private *) dev->priv;
+	struct lance_private *lp = netdev_priv(dev);
 	struct lance_ioreg	 *IO = lp->iobase;
 
 	AREG = CSR0;
@@ -773,14 +771,12 @@ static void lance_tx_timeout (struct net_device *dev)
 /* XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX */
 
 static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev )
-
-{	struct lance_private *lp = (struct lance_private *)dev->priv;
+{
+	struct lance_private *lp = netdev_priv(dev);
 	struct lance_ioreg	 *IO = lp->iobase;
 	int entry, len;
 	struct lance_tx_head *head;
 	unsigned long flags;
-	DECLARE_MAC_BUF(mac);
-	DECLARE_MAC_BUF(mac2);
 
 	DPRINTK( 2, ( "%s: lance_start_xmit() called, csr0 %4.4x.\n",
 				  dev->name, DREG ));
@@ -803,12 +799,10 @@ static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev )
 
 	/* Fill in a Tx ring entry */
 	if (lance_debug >= 3) {
-		printk( "%s: TX pkt type 0x%04x from "
-				"%s to %s"
+		printk( "%s: TX pkt type 0x%04x from %pM to %pM"
 				" data at 0x%08x len %d\n",
 				dev->name, ((u_short *)skb->data)[6],
-				print_mac(mac, &skb->data[6]),
-				print_mac(mac2, skb->data),
+				&skb->data[6], skb->data,
 				(int)skb->data, (int)skb->len );
 	}
 
@@ -866,7 +860,7 @@ static irqreturn_t lance_interrupt( int irq, void *dev_id )
 		return IRQ_NONE;
 	}
 
-	lp = (struct lance_private *)dev->priv;
+	lp = netdev_priv(dev);
 	IO = lp->iobase;
 	spin_lock (&lp->devlock);
 
@@ -966,8 +960,8 @@ static irqreturn_t lance_interrupt( int irq, void *dev_id )
 
 
 static int lance_rx( struct net_device *dev )
-
-{	struct lance_private *lp = (struct lance_private *)dev->priv;
+{
+	struct lance_private *lp = netdev_priv(dev);
 	int entry = lp->cur_rx & RX_RING_MOD_MASK;
 	int i;
 
@@ -1020,14 +1014,12 @@ static int lance_rx( struct net_device *dev )
 
 				if (lance_debug >= 3) {
 					u_char *data = PKTBUF_ADDR(head);
-					DECLARE_MAC_BUF(mac);
-					DECLARE_MAC_BUF(mac2);
 
-					printk(KERN_DEBUG "%s: RX pkt type 0x%04x from %s to %s "
+					printk(KERN_DEBUG "%s: RX pkt type 0x%04x from %pM to %pM "
 						   "data %02x %02x %02x %02x %02x %02x %02x %02x "
 						   "len %d\n",
 						   dev->name, ((u_short *)data)[6],
-						   print_mac(mac, &data[6]), print_mac(mac2, data),
+						   &data[6], data,
 						   data[15], data[16], data[17], data[18],
 						   data[19], data[20], data[21], data[22],
 						   pkt_len);
@@ -1038,7 +1030,6 @@ static int lance_rx( struct net_device *dev )
 				lp->memcpy_f( skb->data, PKTBUF_ADDR(head), pkt_len );
 				skb->protocol = eth_type_trans( skb, dev );
 				netif_rx( skb );
-				dev->last_rx = jiffies;
 				dev->stats.rx_packets++;
 				dev->stats.rx_bytes += pkt_len;
 			}
@@ -1058,8 +1049,8 @@ static int lance_rx( struct net_device *dev )
 
 
 static int lance_close( struct net_device *dev )
-
-{	struct lance_private *lp = (struct lance_private *)dev->priv;
+{
+	struct lance_private *lp = netdev_priv(dev);
 	struct lance_ioreg	 *IO = lp->iobase;
 
 	netif_stop_queue (dev);
@@ -1085,8 +1076,8 @@ static int lance_close( struct net_device *dev )
  */
 
 static void set_multicast_list( struct net_device *dev )
-
-{	struct lance_private *lp = (struct lance_private *)dev->priv;
+{
+	struct lance_private *lp = netdev_priv(dev);
 	struct lance_ioreg	 *IO = lp->iobase;
 
 	if (netif_running(dev))
@@ -1127,8 +1118,8 @@ static void set_multicast_list( struct net_device *dev )
 /* This is needed for old RieblCards and possible for new RieblCards */
 
 static int lance_set_mac_address( struct net_device *dev, void *addr )
-
-{	struct lance_private *lp = (struct lance_private *)dev->priv;
+{
+	struct lance_private *lp = netdev_priv(dev);
 	struct sockaddr *saddr = addr;
 	int i;
 
@@ -1156,7 +1147,7 @@ static int lance_set_mac_address( struct net_device *dev, void *addr )
 #ifdef MODULE
 static struct net_device *atarilance_dev;
 
-int __init init_module(void)
+static int __init atarilance_module_init(void)
 {
 	atarilance_dev = atarilance_probe(-1);
 	if (IS_ERR(atarilance_dev))
@@ -1164,13 +1155,14 @@ int __init init_module(void)
 	return 0;
 }
 
-void __exit cleanup_module(void)
+static void __exit atarilance_module_exit(void)
 {
 	unregister_netdev(atarilance_dev);
 	free_irq(atarilance_dev->irq, atarilance_dev);
 	free_netdev(atarilance_dev);
 }
-
+module_init(atarilance_module_init);
+module_exit(atarilance_module_exit);
 #endif /* MODULE */
 
 

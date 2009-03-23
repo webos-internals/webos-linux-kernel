@@ -45,7 +45,7 @@
 #define CS4231_IFACE_CTRL	0x09	/* interface control - bits 7-2 MCE */
 #define CS4231_PIN_CTRL		0x0a	/* pin control */
 #define CS4231_TEST_INIT	0x0b	/* test and initialization */
-#define CS4231_MISC_INFO	0x0c	/* miscellaneaous information */
+#define CS4231_MISC_INFO	0x0c	/* miscellaneous information */
 #define CS4231_LOOPBACK		0x0d	/* loopback control */
 #define CS4231_PLY_UPR_CNT	0x0e	/* playback upper base count */
 #define CS4231_PLY_LWR_CNT	0x0f	/* playback lower base count */
@@ -176,5 +176,13 @@
 #define CS4236_LEFT_WAVE	0x0c	/* left wavetable serial port volume */
 #define CS4236_RIGHT_WAVE	0x1c	/* right wavetable serial port volume */
 #define CS4236_VERSION		0x9c	/* chip version and ID */
+
+/* definitions for extended registers - OPTI93X */
+#define OPTi931_AUX_LEFT_INPUT	0x10
+#define OPTi931_AUX_RIGHT_INPUT	0x11
+#define OPTi93X_MIC_LEFT_INPUT	0x14
+#define OPTi93X_MIC_RIGHT_INPUT	0x15
+#define OPTi93X_OUT_LEFT	0x16
+#define OPTi93X_OUT_RIGHT	0x17
 
 #endif /* __SOUND_CS4231_REGS_H */

@@ -59,7 +59,8 @@ static int vlan_validate(struct nlattr *tb[], struct nlattr *data[])
 	}
 	if (data[IFLA_VLAN_FLAGS]) {
 		flags = nla_data(data[IFLA_VLAN_FLAGS]);
-		if ((flags->flags & flags->mask) & ~VLAN_FLAG_REORDER_HDR)
+		if ((flags->flags & flags->mask) &
+		    ~(VLAN_FLAG_REORDER_HDR | VLAN_FLAG_GVRP))
 			return -EINVAL;
 	}
 
@@ -75,7 +76,6 @@ static int vlan_validate(struct nlattr *tb[], struct nlattr *data[])
 static int vlan_changelink(struct net_device *dev,
 			   struct nlattr *tb[], struct nlattr *data[])
 {
-	struct vlan_dev_info *vlan = VLAN_DEV_INFO(dev);
 	struct ifla_vlan_flags *flags;
 	struct ifla_vlan_qos_mapping *m;
 	struct nlattr *attr;
@@ -83,8 +83,7 @@ static int vlan_changelink(struct net_device *dev,
 
 	if (data[IFLA_VLAN_FLAGS]) {
 		flags = nla_data(data[IFLA_VLAN_FLAGS]);
-		vlan->flags = (vlan->flags & ~flags->mask) |
-			      (flags->flags & flags->mask);
+		vlan_dev_change_flags(dev, flags->flags, flags->mask);
 	}
 	if (data[IFLA_VLAN_INGRESS_QOS]) {
 		nla_for_each_nested(attr, data[IFLA_VLAN_INGRESS_QOS], rem) {
@@ -104,7 +103,7 @@ static int vlan_changelink(struct net_device *dev,
 static int vlan_newlink(struct net_device *dev,
 			struct nlattr *tb[], struct nlattr *data[])
 {
-	struct vlan_dev_info *vlan = VLAN_DEV_INFO(dev);
+	struct vlan_dev_info *vlan = vlan_dev_info(dev);
 	struct net_device *real_dev;
 	int err;
 
@@ -113,7 +112,7 @@ static int vlan_newlink(struct net_device *dev,
 
 	if (!tb[IFLA_LINK])
 		return -EINVAL;
-	real_dev = __dev_get_by_index(&init_net, nla_get_u32(tb[IFLA_LINK]));
+	real_dev = __dev_get_by_index(dev_net(dev), nla_get_u32(tb[IFLA_LINK]));
 	if (!real_dev)
 		return -ENODEV;
 
@@ -137,11 +136,6 @@ static int vlan_newlink(struct net_device *dev,
 	return register_vlan_dev(dev);
 }
 
-static void vlan_dellink(struct net_device *dev)
-{
-	unregister_vlan_device(dev);
-}
-
 static inline size_t vlan_qos_map_size(unsigned int n)
 {
 	if (n == 0)
@@ -153,7 +147,7 @@ static inline size_t vlan_qos_map_size(unsigned int n)
 
 static size_t vlan_get_size(const struct net_device *dev)
 {
-	struct vlan_dev_info *vlan = VLAN_DEV_INFO(dev);
+	struct vlan_dev_info *vlan = vlan_dev_info(dev);
 
 	return nla_total_size(2) +	/* IFLA_VLAN_ID */
 	       vlan_qos_map_size(vlan->nr_ingress_mappings) +
@@ -162,14 +156,14 @@ static size_t vlan_get_size(const struct net_device *dev)
 
 static int vlan_fill_info(struct sk_buff *skb, const struct net_device *dev)
 {
-	struct vlan_dev_info *vlan = VLAN_DEV_INFO(dev);
+	struct vlan_dev_info *vlan = vlan_dev_info(dev);
 	struct vlan_priority_tci_mapping *pm;
 	struct ifla_vlan_flags f;
 	struct ifla_vlan_qos_mapping m;
 	struct nlattr *nest;
 	unsigned int i;
 
-	NLA_PUT_U16(skb, IFLA_VLAN_ID, VLAN_DEV_INFO(dev)->vlan_id);
+	NLA_PUT_U16(skb, IFLA_VLAN_ID, vlan_dev_info(dev)->vlan_id);
 	if (vlan->flags) {
 		f.flags = vlan->flags;
 		f.mask  = ~0;
@@ -226,7 +220,7 @@ struct rtnl_link_ops vlan_link_ops __read_mostly = {
 	.validate	= vlan_validate,
 	.newlink	= vlan_newlink,
 	.changelink	= vlan_changelink,
-	.dellink	= vlan_dellink,
+	.dellink	= unregister_vlan_dev,
 	.get_size	= vlan_get_size,
 	.fill_info	= vlan_fill_info,
 };

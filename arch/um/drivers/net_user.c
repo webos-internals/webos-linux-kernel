@@ -201,7 +201,7 @@ static int change_tramp(char **argv, char *output, int output_len)
 	close(fds[1]);
 
 	if (pid > 0)
-		helper_wait(pid, 0, "change_tramp");
+		helper_wait(pid);
 	return pid;
 }
 
@@ -222,7 +222,7 @@ static void change(char *dev, char *what, unsigned char *addr,
 		netmask[2], netmask[3]);
 
 	output_len = UM_KERN_PAGE_SIZE;
-	output = kmalloc(output_len, UM_GFP_KERNEL);
+	output = uml_kmalloc(output_len, UM_GFP_KERNEL);
 	if (output == NULL)
 		printk(UM_KERN_ERR "change : failed to allocate output "
 		       "buffer\n");

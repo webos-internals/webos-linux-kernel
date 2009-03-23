@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2007 Cisco Systems, Inc. All rights reserved.
+ * Copyright (c) 2007, 2008 Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -69,7 +70,7 @@ static void poll_catas(unsigned long dev_ptr)
 	if (readl(priv->catas_err.map)) {
 		dump_err_buf(dev);
 
-		mlx4_dispatch_event(dev, MLX4_EVENT_TYPE_LOCAL_CATAS_ERROR, 0, 0);
+		mlx4_dispatch_event(dev, MLX4_DEV_EVENT_CATASTROPHIC_ERROR, 0);
 
 		if (internal_err_reset) {
 			spin_lock(&catas_lock);

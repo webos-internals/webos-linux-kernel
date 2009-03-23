@@ -31,8 +31,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_restart_request_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -42,8 +42,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_call_request_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -53,8 +53,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_reset_request_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -64,8 +64,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_clear_request_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -75,8 +75,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_no_activity_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_idle,
 		.extra2		= &max_idle
 	},
@@ -86,8 +86,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_ack_hold_back_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -97,8 +97,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_routing_control,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_route,
 		.extra2		= &max_route
 	},
@@ -108,8 +108,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_link_fail_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_ftimer,
 		.extra2		= &max_ftimer
 	},
@@ -119,8 +119,8 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_maximum_vcs,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_maxvcs,
 		.extra2		= &max_maxvcs
 	},
@@ -130,37 +130,23 @@ static ctl_table rose_table[] = {
 		.data		= &sysctl_rose_window_size,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
-		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
+		.strategy	= sysctl_intvec,
 		.extra1		= &min_window,
 		.extra2		= &max_window
 	},
 	{ .ctl_name = 0 }
 };
 
-static ctl_table rose_dir_table[] = {
-	{
-		.ctl_name	= NET_ROSE,
-		.procname	= "rose",
-		.mode		= 0555,
-		.child		= rose_table
-	},
-	{ .ctl_name = 0 }
-};
-
-static ctl_table rose_root_table[] = {
-	{
-		.ctl_name	= CTL_NET,
-		.procname	= "net",
-		.mode		= 0555,
-		.child		= rose_dir_table
-	},
-	{ .ctl_name = 0 }
+static struct ctl_path rose_path[] = {
+	{ .procname = "net", .ctl_name = CTL_NET, },
+	{ .procname = "rose", .ctl_name = NET_ROSE, },
+	{ }
 };
 
 void __init rose_register_sysctl(void)
 {
-	rose_table_header = register_sysctl_table(rose_root_table);
+	rose_table_header = register_sysctl_paths(rose_path, rose_table);
 }
 
 void rose_unregister_sysctl(void)

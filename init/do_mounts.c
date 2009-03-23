@@ -11,6 +11,9 @@
 #include <linux/mount.h>
 #include <linux/device.h>
 #include <linux/init.h>
+#include <linux/fs.h>
+#include <linux/initrd.h>
+#include <linux/async.h>
 
 #include <linux/nfs_fs.h>
 #include <linux/nfs_fs_sb.h>
@@ -18,12 +21,10 @@
 
 #include "do_mounts.h"
 
-extern int get_filesystem_list(char * buf);
-
 int __initdata rd_doload;	/* 1 = load RAM disk, 0 = don't load */
 
 int root_mountflags = MS_RDONLY | MS_SILENT;
-char * __initdata root_device_name;
+static char * __initdata root_device_name;
 static char __initdata saved_root_name[64];
 static int __initdata root_wait;
 
@@ -55,69 +56,6 @@ static int __init readwrite(char *str)
 __setup("ro", readonly);
 __setup("rw", readwrite);
 
-static dev_t try_name(char *name, int part)
-{
-	char path[64];
-	char buf[32];
-	int range;
-	dev_t res;
-	char *s;
-	int len;
-	int fd;
-	unsigned int maj, min;
-
-	/* read device number from .../dev */
-
-	sprintf(path, "/sys/block/%s/dev", name);
-	fd = sys_open(path, 0, 0);
-	if (fd < 0)
-		goto fail;
-	len = sys_read(fd, buf, 32);
-	sys_close(fd);
-	if (len <= 0 || len == 32 || buf[len - 1] != '\n')
-		goto fail;
-	buf[len - 1] = '\0';
-	if (sscanf(buf, "%u:%u", &maj, &min) == 2) {
-		/*
-		 * Try the %u:%u format -- see print_dev_t()
-		 */
-		res = MKDEV(maj, min);
-		if (maj != MAJOR(res) || min != MINOR(res))
-			goto fail;
-	} else {
-		/*
-		 * Nope.  Try old-style "0321"
-		 */
-		res = new_decode_dev(simple_strtoul(buf, &s, 16));
-		if (*s)
-			goto fail;
-	}
-
-	/* if it's there and we are not looking for a partition - that's it */
-	if (!part)
-		return res;
-
-	/* otherwise read range from .../range */
-	sprintf(path, "/sys/block/%s/range", name);
-	fd = sys_open(path, 0, 0);
-	if (fd < 0)
-		goto fail;
-	len = sys_read(fd, buf, 32);
-	sys_close(fd);
-	if (len <= 0 || len == 32 || buf[len - 1] != '\n')
-		goto fail;
-	buf[len - 1] = '\0';
-	range = simple_strtoul(buf, &s, 10);
-	if (*s)
-		goto fail;
-
-	/* if partition is within range - we got it */
-	if (part < range)
-		return res + part;
-fail:
-	return 0;
-}
-
 /*
  *	Convert a name into device number.  We accept the following variants:
  *
@@ -129,12 +67,10 @@ fail:
  *	5) /dev/<disk_name>p<decimal> - same as the above, that form is
  *	   used when disk name of partitioned disk ends on a digit.
  *
- *	If name doesn't have fall into the categories above, we return 0.
- *	Sysfs is used to check if something is a disk name - it has
- *	all known disks under bus/block/devices.  If the disk name
- *	contains slashes, name of sysfs node has them replaced with
- *	bangs.  try_name() does the actual checks, assuming that sysfs
- *	is mounted on rootfs /sys.
+ *	If name doesn't have fall into the categories above, we return (0,0).
+ *	block_class is used to check if something is a disk name. If the disk
+ *	name contains slashes, the device name has them replaced with
+ *	bangs.
  */
 
 dev_t name_to_dev_t(char *name)
@@ -143,12 +79,6 @@ dev_t name_to_dev_t(char *name)
 	char *p;
 	dev_t res = 0;
 	int part;
-
-#ifdef CONFIG_SYSFS
-	int mkdir_err = sys_mkdir("/sys", 0700);
-	if (sys_mount("sysfs", "/sys", "sysfs", 0, NULL) < 0)
-		goto out;
-#endif
 
 	if (strncmp(name, "/dev/", 5) != 0) {
 		unsigned maj, min;
@@ -164,6 +94,7 @@ dev_t name_to_dev_t(char *name)
 		}
 		goto done;
 	}
+
 	name += 5;
 	res = Root_NFS;
 	if (strcmp(name, "nfs") == 0)
@@ -178,35 +109,38 @@ dev_t name_to_dev_t(char *name)
 	for (p = s; *p; p++)
 		if (*p == '/')
 			*p = '!';
-	res = try_name(s, 0);
+	res = blk_lookup_devt(s, 0);
 	if (res)
 		goto done;
 
+	/*
+	 * try non-existant, but valid partition, which may only exist
+	 * after revalidating the disk, like partitioned md devices
+	 */
 	while (p > s && isdigit(p[-1]))
 		p--;
 	if (p == s || !*p || *p == '0')
 		goto fail;
+
+	/* try disk name without <part number> */
 	part = simple_strtoul(p, NULL, 10);
 	*p = '\0';
-	res = try_name(s, part);
+	res = blk_lookup_devt(s, part);
 	if (res)
 		goto done;
 
+	/* try disk name without p<part number> */
 	if (p < s + 2 || !isdigit(p[-2]) || p[-1] != 'p')
 		goto fail;
 	p[-1] = '\0';
-	res = try_name(s, part);
-done:
-#ifdef CONFIG_SYSFS
-	sys_umount("/sys", 0);
-out:
-	if (!mkdir_err)
-		sys_rmdir("/sys");
-#endif
-	return res;
+	res = blk_lookup_devt(s, part);
+	if (res)
+		goto done;
+
 fail:
-	res = 0;
-	goto done;
+	return 0;
+done:
+	return res;
 }
 
 static int __init root_dev_setup(char *line)
@@ -286,11 +220,11 @@ static int __init do_mount_root(char *name, char *fs, int flags, void *data)
 		return err;
 
 	sys_chdir("/root");
-	ROOT_DEV = current->fs->pwdmnt->mnt_sb->s_dev;
-	printk("VFS: Mounted root (%s filesystem)%s.\n",
-	       current->fs->pwdmnt->mnt_sb->s_type->name,
-	       current->fs->pwdmnt->mnt_sb->s_flags & MS_RDONLY ? 
-	       " readonly" : "");
+	ROOT_DEV = current->fs->pwd.mnt->mnt_sb->s_dev;
+	printk("VFS: Mounted root (%s filesystem)%s on device %u:%u.\n",
+	       current->fs->pwd.mnt->mnt_sb->s_type->name,
+	       current->fs->pwd.mnt->mnt_sb->s_flags & MS_RDONLY ?
+	       " readonly" : "", MAJOR(ROOT_DEV), MINOR(ROOT_DEV));
 	return 0;
 }
 
@@ -330,6 +264,10 @@ retry:
 		printk("Please append a correct \"root=\" boot option; here are the available partitions:\n");
 
 		printk_all_partitions();
+#ifdef CONFIG_DEBUG_BLOCK_EXT_DEVT
+		printk("DEBUG_BLOCK_EXT_DEVT is enabled, you need to specify "
+		       "explicit textual name for \"root=\" boot option.\n");
+#endif
 		panic("VFS: Unable to mount root fs on %s", b);
 	}
 
@@ -432,15 +370,21 @@ void __init prepare_namespace(void)
 		ssleep(root_delay);
 	}
 
-	/* wait for the known devices to complete their probing */
-	while (driver_probe_done() != 0)
-		msleep(100);
+	/*
+	 * wait for the known devices to complete their probing
+	 *
+	 * Note: this is a potential source of long boot delays.
+	 * For example, it is not atypical to wait 5 seconds here
+	 * for the touchpad of a laptop to initialize.
+	 */
+	wait_for_device_probe();
 
 	md_run_setup();
 
 	if (saved_root_name[0]) {
 		root_device_name = saved_root_name;
-		if (!strncmp(root_device_name, "mtd", 3)) {
+		if (!strncmp(root_device_name, "mtd", 3) ||
+		    !strncmp(root_device_name, "ubi", 3)) {
 			mount_block_root(root_device_name, root_mountflags);
 			goto out;
 		}
@@ -459,6 +403,7 @@ void __init prepare_namespace(void)
 		while (driver_probe_done() != 0 ||
 			(ROOT_DEV = name_to_dev_t(saved_root_name)) == 0)
 			msleep(100);
+		async_synchronize_full();
 	}
 
 	is_floppy = MAJOR(ROOT_DEV) == FLOPPY_MAJOR;
@@ -470,6 +415,5 @@ void __init prepare_namespace(void)
 out:
 	sys_mount(".", "/", NULL, MS_MOVE, NULL);
 	sys_chroot(".");
-	security_sb_post_mountroot();
 }
 

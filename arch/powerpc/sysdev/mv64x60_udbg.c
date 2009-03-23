@@ -85,16 +85,16 @@ static void mv64x60_udbg_init(void)
 	if (!stdout)
 		return;
 
-	for (np = NULL;
-	     (np = of_find_compatible_node(np, "serial", "marvell,mpsc")); )
+	for_each_compatible_node(np, "serial", "marvell,mv64360-mpsc") {
 		if (np == stdout)
 			break;
+	}
 
 	of_node_put(stdout);
 	if (!np)
 		return;
 
-	block_index = of_get_property(np, "block-index", NULL);
+	block_index = of_get_property(np, "cell-index", NULL);
 	if (!block_index)
 		goto error;
 

@@ -31,16 +31,15 @@
 #include <linux/smp_lock.h>
 #include <linux/unistd.h>
 #include <linux/user.h>
-#include <linux/a.out.h>
 #include <linux/uaccess.h>
+#include <linux/sched.h>
+#include <linux/tick.h>
 #include <linux/fs.h>
 #include <linux/err.h>
 
 #include <asm/blackfin.h>
 #include <asm/fixed_code.h>
-
-#define	LED_ON	0
-#define	LED_OFF	1
+#include <asm/mem_map.h>
 
 asmlinkage void ret_from_fork(void);
 
@@ -70,64 +69,50 @@ void (*pm_power_off)(void) = NULL;
 EXPORT_SYMBOL(pm_power_off);
 
 /*
- * We are using a different LED from the one used to indicate timer interrupt.
- */
-#if defined(CONFIG_BFIN_IDLE_LED)
-static inline void leds_switch(int flag)
-{
-	unsigned short tmp = 0;
-
-	tmp = bfin_read_CONFIG_BFIN_IDLE_LED_PORT();
-	SSYNC();
-
-	if (flag == LED_ON)
-		tmp &= ~CONFIG_BFIN_IDLE_LED_PIN;	/* light on */
-	else
-		tmp |= CONFIG_BFIN_IDLE_LED_PIN;	/* light off */
-
-	bfin_write_CONFIG_BFIN_IDLE_LED_PORT(tmp);
-	SSYNC();
-
-}
-#else
-static inline void leds_switch(int flag)
-{
-}
-#endif
-
-/*
  * The idle loop on BFIN
  */
 #ifdef CONFIG_IDLE_L1
-void default_idle(void)__attribute__((l1_text));
+static void default_idle(void)__attribute__((l1_text));
 void cpu_idle(void)__attribute__((l1_text));
 #endif
 
-void default_idle(void)
+/*
+ * This is our default idle handler.  We need to disable
+ * interrupts here to ensure we don't miss a wakeup call.
+ */
+static void default_idle(void)
 {
-	while (!need_resched()) {
-		leds_switch(LED_OFF);
-		local_irq_disable();
-		if (likely(!need_resched()))
-			idle_with_irq_disabled();
-		local_irq_enable();
-		leds_switch(LED_ON);
-	}
+#ifdef CONFIG_IPIPE
+	ipipe_suspend_domain();
+#endif
+	local_irq_disable_hw();
+	if (!need_resched())
+		idle_with_irq_disabled();
+
+	local_irq_enable_hw();
 }
 
-void (*idle)(void) = default_idle;
-
 /*
- * The idle thread. There's no useful work to be
- * done, so just try to conserve power and have a
- * low exit latency (ie sit in a loop waiting for
- * somebody to say that they'd like to reschedule)
+ * The idle thread.  We try to conserve power, while trying to keep
+ * overall latency low.  The architecture specific idle is passed
+ * a value to indicate the level of "idleness" of the system.
  */
 void cpu_idle(void)
 {
 	/* endless idle loop with no priority at all */
 	while (1) {
-		idle();
+		void (*idle)(void) = pm_idle;
+
+#ifdef CONFIG_HOTPLUG_CPU
+		if (cpu_is_offline(smp_processor_id()))
+			cpu_die();
+#endif
+		if (!idle)
+			idle = default_idle;
+		tick_nohz_stop_sched_tick(1);
+		while (!need_resched())
+			idle();
+		tick_nohz_restart_sched_tick();
 		preempt_enable_no_resched();
 		schedule();
 		preempt_disable();
@@ -173,6 +158,7 @@ pid_t kernel_thread(int (*fn) (void *), void *arg, unsigned long flags)
 	return do_fork(flags | CLONE_VM | CLONE_UNTRACED, 0, &regs, 0, NULL,
 		       NULL);
 }
+EXPORT_SYMBOL(kernel_thread);
 
 void flush_thread(void)
 {
@@ -188,6 +174,13 @@ asmlinkage int bfin_clone(struct pt_regs *regs)
 {
 	unsigned long clone_flags;
 	unsigned long newsp;
+
+#ifdef __ARCH_SYNC_CORE_DCACHE
+	if (current->rt.nr_cpus_allowed == num_possible_cpus()) {
+		current->cpus_allowed = cpumask_of_cpu(smp_processor_id());
+		current->rt.nr_cpus_allowed = 1;
+	}
+#endif
 
 	/* syscall2 puts clone_flags in r0 and usp in r1 */
 	clone_flags = regs->r0;
@@ -221,7 +214,7 @@ copy_thread(int nr, unsigned long clone_flags,
  * sys_execve() executes a new program.
  */
 
-asmlinkage int sys_execve(char *name, char **argv, char **envp)
+asmlinkage int sys_execve(char __user *name, char __user * __user *argv, char __user * __user *envp)
 {
 	int error;
 	char *filename;
@@ -264,23 +257,25 @@ unsigned long get_wchan(struct task_struct *p)
 
 void finish_atomic_sections (struct pt_regs *regs)
 {
+	int __user *up0 = (int __user *)regs->p0;
+
 	if (regs->pc < ATOMIC_SEQS_START || regs->pc >= ATOMIC_SEQS_END)
 		return;
 
 	switch (regs->pc) {
 	case ATOMIC_XCHG32 + 2:
-		put_user(regs->r1, (int *)regs->p0);
+		put_user(regs->r1, up0);
 		regs->pc += 2;
 		break;
 
 	case ATOMIC_CAS32 + 2:
 	case ATOMIC_CAS32 + 4:
 		if (regs->r0 == regs->r1)
-			put_user(regs->r2, (int *)regs->p0);
+			put_user(regs->r2, up0);
 		regs->pc = ATOMIC_CAS32 + 8;
 		break;
 	case ATOMIC_CAS32 + 6:
-		put_user(regs->r2, (int *)regs->p0);
+		put_user(regs->r2, up0);
 		regs->pc += 2;
 		break;
 
@@ -288,7 +283,7 @@ void finish_atomic_sections (struct pt_regs *regs)
 		regs->r0 = regs->r1 + regs->r0;
 		/* fall through */
 	case ATOMIC_ADD32 + 4:
-		put_user(regs->r0, (int *)regs->p0);
+		put_user(regs->r0, up0);
 		regs->pc = ATOMIC_ADD32 + 6;
 		break;
 
@@ -296,7 +291,7 @@ void finish_atomic_sections (struct pt_regs *regs)
 		regs->r0 = regs->r1 - regs->r0;
 		/* fall through */
 	case ATOMIC_SUB32 + 4:
-		put_user(regs->r0, (int *)regs->p0);
+		put_user(regs->r0, up0);
 		regs->pc = ATOMIC_SUB32 + 6;
 		break;
 
@@ -304,7 +299,7 @@ void finish_atomic_sections (struct pt_regs *regs)
 		regs->r0 = regs->r1 | regs->r0;
 		/* fall through */
 	case ATOMIC_IOR32 + 4:
-		put_user(regs->r0, (int *)regs->p0);
+		put_user(regs->r0, up0);
 		regs->pc = ATOMIC_IOR32 + 6;
 		break;
 
@@ -312,7 +307,7 @@ void finish_atomic_sections (struct pt_regs *regs)
 		regs->r0 = regs->r1 & regs->r0;
 		/* fall through */
 	case ATOMIC_AND32 + 4:
-		put_user(regs->r0, (int *)regs->p0);
+		put_user(regs->r0, up0);
 		regs->pc = ATOMIC_AND32 + 6;
 		break;
 
@@ -320,13 +315,14 @@ void finish_atomic_sections (struct pt_regs *regs)
 		regs->r0 = regs->r1 ^ regs->r0;
 		/* fall through */
 	case ATOMIC_XOR32 + 4:
-		put_user(regs->r0, (int *)regs->p0);
+		put_user(regs->r0, up0);
 		regs->pc = ATOMIC_XOR32 + 6;
 		break;
 	}
 }
 
 #if defined(CONFIG_ACCESS_CHECK)
+/* Return 1 if access to memory range is OK, 0 otherwise */
 int _access_ok(unsigned long addr, unsigned long size)
 {
 	if (size == 0)
@@ -340,6 +336,12 @@ int _access_ok(unsigned long addr, unsigned long size)
 		return 1;
 	if (addr >= memory_mtd_end && (addr + size) <= physical_mem_end)
 		return 1;
+
+#ifdef CONFIG_ROMFS_MTD_FS
+	/* For XIP, allow user space to use pointers within the ROMFS.  */
+	if (addr >= memory_mtd_start && (addr + size) <= memory_mtd_end)
+		return 1;
+#endif
 #else
 	if (addr >= memory_start && (addr + size) <= physical_mem_end)
 		return 1;
@@ -347,22 +349,27 @@ int _access_ok(unsigned long addr, unsigned long size)
 	if (addr >= (unsigned long)__init_begin &&
 	    addr + size <= (unsigned long)__init_end)
 		return 1;
-	if (addr >= L1_SCRATCH_START
-	    && addr + size <= L1_SCRATCH_START + L1_SCRATCH_LENGTH)
+	if (addr >= get_l1_scratch_start()
+	    && addr + size <= get_l1_scratch_start() + L1_SCRATCH_LENGTH)
 		return 1;
 #if L1_CODE_LENGTH != 0
-	if (addr >= L1_CODE_START + (_etext_l1 - _stext_l1)
-	    && addr + size <= L1_CODE_START + L1_CODE_LENGTH)
+	if (addr >= get_l1_code_start() + (_etext_l1 - _stext_l1)
+	    && addr + size <= get_l1_code_start() + L1_CODE_LENGTH)
 		return 1;
 #endif
 #if L1_DATA_A_LENGTH != 0
-	if (addr >= L1_DATA_A_START + (_ebss_l1 - _sdata_l1)
-	    && addr + size <= L1_DATA_A_START + L1_DATA_A_LENGTH)
+	if (addr >= get_l1_data_a_start() + (_ebss_l1 - _sdata_l1)
+	    && addr + size <= get_l1_data_a_start() + L1_DATA_A_LENGTH)
 		return 1;
 #endif
 #if L1_DATA_B_LENGTH != 0
-	if (addr >= L1_DATA_B_START
-	    && addr + size <= L1_DATA_B_START + L1_DATA_B_LENGTH)
+	if (addr >= get_l1_data_b_start() + (_ebss_b_l1 - _sdata_b_l1)
+	    && addr + size <= get_l1_data_b_start() + L1_DATA_B_LENGTH)
+		return 1;
+#endif
+#if L2_LENGTH != 0
+	if (addr >= L2_START + (_ebss_l2 - _stext_l2)
+	    && addr + size <= L2_START + L2_LENGTH)
 		return 1;
 #endif
 	return 0;

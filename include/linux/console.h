@@ -91,6 +91,7 @@ void give_up_console(const struct consw *sw);
 #define CON_ENABLED	(4)
 #define CON_BOOT	(8)
 #define CON_ANYTIME	(16) /* Safe to call when cpu is offline */
+#define CON_BRL		(32) /* Used for a braille device */
 
 struct console {
 	char	name[16];
@@ -107,6 +108,8 @@ struct console {
 	struct	 console *next;
 };
 
+extern int console_set_on_cmdline;
+
 extern int add_preferred_console(char *name, int idx, char *options);
 extern int update_console_cmdline(char *name, int idx, char *name_new, int idx_new, char *options);
 extern void register_console(struct console *);
@@ -121,6 +124,9 @@ extern struct tty_driver *console_device(int *);
 extern void console_stop(struct console *);
 extern void console_start(struct console *);
 extern int is_console_locked(void);
+extern int braille_register_console(struct console *, int index,
+		char *console_options, char *braille_options);
+extern int braille_unregister_console(struct console *);
 
 extern int console_suspend_enabled;
 
@@ -146,5 +152,9 @@ void vcs_remove_sysfs(struct tty_struct *tty);
 #define VESA_VSYNC_SUSPEND      1
 #define VESA_HSYNC_SUSPEND      2
 #define VESA_POWERDOWN          3
+
+#ifdef CONFIG_VGA_CONSOLE
+extern bool vgacon_text_force(void);
+#endif
 
 #endif /* _LINUX_CONSOLE_H */

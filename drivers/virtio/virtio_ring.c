@@ -18,6 +18,7 @@
  */
 #include <linux/virtio.h>
 #include <linux/virtio_ring.h>
+#include <linux/virtio_config.h>
 #include <linux/device.h>
 
 #ifdef DEBUG
@@ -87,6 +88,11 @@ static int vring_add_buf(struct virtqueue *_vq,
 	if (vq->num_free < out + in) {
 		pr_debug("Can't add buf len %i - avail = %i\n",
 			 out + in, vq->num_free);
+		/* FIXME: for historical reasons, we force a notify here if
+		 * there are outgoing parts to the buffer.  Presumably the
+		 * host should service the ring ASAP. */
+		if (out)
+			vq->notify(&vq->vq);
 		END_USE(vq);
 		return -ENOSPC;
 	}
@@ -97,16 +103,14 @@ static int vring_add_buf(struct virtqueue *_vq,
 	head = vq->free_head;
 	for (i = vq->free_head; out; i = vq->vring.desc[i].next, out--) {
 		vq->vring.desc[i].flags = VRING_DESC_F_NEXT;
-		vq->vring.desc[i].addr = (page_to_pfn(sg_page(sg))<<PAGE_SHIFT)
-			+ sg->offset;
+		vq->vring.desc[i].addr = sg_phys(sg);
 		vq->vring.desc[i].len = sg->length;
 		prev = i;
 		sg++;
 	}
 	for (; in; i = vq->vring.desc[i].next, in--) {
 		vq->vring.desc[i].flags = VRING_DESC_F_NEXT|VRING_DESC_F_WRITE;
-		vq->vring.desc[i].addr = (page_to_pfn(sg_page(sg))<<PAGE_SHIFT)
-			+ sg->offset;
+		vq->vring.desc[i].addr = sg_phys(sg);
 		vq->vring.desc[i].len = sg->length;
 		prev = i;
 		sg++;
@@ -171,16 +175,6 @@ static void detach_buf(struct vring_virtqueue *vq, unsigned int head)
 	vq->num_free++;
 }
 
-/* FIXME: We need to tell other side about removal, to synchronize. */
-static void vring_shutdown(struct virtqueue *_vq)
-{
-	struct vring_virtqueue *vq = to_vvq(_vq);
-	unsigned int i;
-
-	for (i = 0; i < vq->vring.num; i++)
-		detach_buf(vq, i);
-}
-
 static inline bool more_used(const struct vring_virtqueue *vq)
 {
 	return vq->last_used_idx != vq->vring.used->idx;
@@ -193,6 +187,11 @@ static void *vring_get_buf(struct virtqueue *_vq, unsigned int *len)
 	unsigned int i;
 
 	START_USE(vq);
+
+	if (unlikely(vq->broken)) {
+		END_USE(vq);
+		return NULL;
+	}
 
 	if (!more_used(vq)) {
 		pr_debug("No more buffers in queue\n");
@@ -220,19 +219,24 @@ static void *vring_get_buf(struct virtqueue *_vq, unsigned int *len)
 	return ret;
 }
 
-static bool vring_restart(struct virtqueue *_vq)
+static void vring_disable_cb(struct virtqueue *_vq)
+{
+	struct vring_virtqueue *vq = to_vvq(_vq);
+
+	vq->vring.avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
+}
+
+static bool vring_enable_cb(struct virtqueue *_vq)
 {
 	struct vring_virtqueue *vq = to_vvq(_vq);
 
 	START_USE(vq);
-	BUG_ON(!(vq->vring.avail->flags & VRING_AVAIL_F_NO_INTERRUPT));
 
 	/* We optimistically turn back on interrupts, then check if there was
 	 * more to do. */
 	vq->vring.avail->flags &= ~VRING_AVAIL_F_NO_INTERRUPT;
 	mb();
 	if (unlikely(more_used(vq))) {
-		vq->vring.avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
 		END_USE(vq);
 		return false;
 	}
@@ -254,25 +258,27 @@ irqreturn_t vring_interrupt(int irq, void *_vq)
 		return IRQ_HANDLED;
 
 	pr_debug("virtqueue callback for %p (%p)\n", vq, vq->vq.callback);
-	if (vq->vq.callback && !vq->vq.callback(&vq->vq))
-		vq->vring.avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
+	if (vq->vq.callback)
+		vq->vq.callback(&vq->vq);
 
 	return IRQ_HANDLED;
 }
+EXPORT_SYMBOL_GPL(vring_interrupt);
 
 static struct virtqueue_ops vring_vq_ops = {
 	.add_buf = vring_add_buf,
 	.get_buf = vring_get_buf,
 	.kick = vring_kick,
-	.restart = vring_restart,
-	.shutdown = vring_shutdown,
+	.disable_cb = vring_disable_cb,
+	.enable_cb = vring_enable_cb,
 };
 
 struct virtqueue *vring_new_virtqueue(unsigned int num,
+				      unsigned int vring_align,
 				      struct virtio_device *vdev,
 				      void *pages,
 				      void (*notify)(struct virtqueue *),
-				      bool (*callback)(struct virtqueue *))
+				      void (*callback)(struct virtqueue *))
 {
 	struct vring_virtqueue *vq;
 	unsigned int i;
@@ -287,7 +293,7 @@ struct virtqueue *vring_new_virtqueue(unsigned int num,
 	if (!vq)
 		return NULL;
 
-	vring_init(&vq->vring, num, pages, PAGE_SIZE);
+	vring_init(&vq->vring, num, pages, vring_align);
 	vq->vq.callback = callback;
 	vq->vq.vdev = vdev;
 	vq->vq.vq_ops = &vring_vq_ops;
@@ -311,9 +317,27 @@ struct virtqueue *vring_new_virtqueue(unsigned int num,
 
 	return &vq->vq;
 }
+EXPORT_SYMBOL_GPL(vring_new_virtqueue);
 
 void vring_del_virtqueue(struct virtqueue *vq)
 {
 	kfree(to_vvq(vq));
 }
+EXPORT_SYMBOL_GPL(vring_del_virtqueue);
 
+/* Manipulates transport-specific feature bits. */
+void vring_transport_features(struct virtio_device *vdev)
+{
+	unsigned int i;
+
+	for (i = VIRTIO_TRANSPORT_F_START; i < VIRTIO_TRANSPORT_F_END; i++) {
+		switch (i) {
+		default:
+			/* We don't understand this bit. */
+			clear_bit(i, vdev->features);
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(vring_transport_features);
+
+MODULE_LICENSE("GPL");

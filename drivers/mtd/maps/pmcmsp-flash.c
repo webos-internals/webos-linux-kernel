@@ -46,9 +46,9 @@ static struct mtd_partition **msp_parts;
 static struct map_info *msp_maps;
 static int fcnt;
 
-#define DEBUG_MARKER printk(KERN_NOTICE "%s[%d]\n",__FUNCTION__,__LINE__)
+#define DEBUG_MARKER printk(KERN_NOTICE "%s[%d]\n", __func__, __LINE__)
 
-int __init init_msp_flash(void)
+static int __init init_msp_flash(void)
 {
 	int i, j;
 	int offset, coff;

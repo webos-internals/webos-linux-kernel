@@ -24,7 +24,6 @@
 
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/async_tx.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/spinlock.h>
@@ -33,7 +32,7 @@
 #include <linux/memory.h>
 #include <linux/ioport.h>
 
-#include <asm/arch/adma.h>
+#include <mach/adma.h>
 
 #define to_iop_adma_chan(chan) container_of(chan, struct iop_adma_chan, common)
 #define to_iop_adma_device(dev) \
@@ -63,7 +62,6 @@ iop_adma_run_tx_complete_actions(struct iop_adma_desc_slot *desc,
 	struct iop_adma_chan *iop_chan, dma_cookie_t cookie)
 {
 	BUG_ON(desc->async_tx.cookie < 0);
-	spin_lock_bh(&desc->async_tx.lock);
 	if (desc->async_tx.cookie > 0) {
 		cookie = desc->async_tx.cookie;
 		desc->async_tx.cookie = 0;
@@ -83,25 +81,41 @@ iop_adma_run_tx_complete_actions(struct iop_adma_desc_slot *desc,
 			struct device *dev =
 				&iop_chan->device->pdev->dev;
 			u32 len = unmap->unmap_len;
-			u32 src_cnt = unmap->unmap_src_cnt;
-			dma_addr_t addr = iop_desc_get_dest_addr(unmap,
-				iop_chan);
+			enum dma_ctrl_flags flags = desc->async_tx.flags;
+			u32 src_cnt;
+			dma_addr_t addr;
+			dma_addr_t dest;
 
-			dma_unmap_page(dev, addr, len, DMA_FROM_DEVICE);
-			while (src_cnt--) {
-				addr = iop_desc_get_src_addr(unmap,
-							iop_chan,
-							src_cnt);
-				dma_unmap_page(dev, addr, len,
-					DMA_TO_DEVICE);
+			src_cnt = unmap->unmap_src_cnt;
+			dest = iop_desc_get_dest_addr(unmap, iop_chan);
+			if (!(flags & DMA_COMPL_SKIP_DEST_UNMAP)) {
+				enum dma_data_direction dir;
+
+				if (src_cnt > 1) /* is xor? */
+					dir = DMA_BIDIRECTIONAL;
+				else
+					dir = DMA_FROM_DEVICE;
+
+				dma_unmap_page(dev, dest, len, dir);
+			}
+
+			if (!(flags & DMA_COMPL_SKIP_SRC_UNMAP)) {
+				while (src_cnt--) {
+					addr = iop_desc_get_src_addr(unmap,
+								     iop_chan,
+								     src_cnt);
+					if (addr == dest)
+						continue;
+					dma_unmap_page(dev, addr, len,
+						       DMA_TO_DEVICE);
+				}
 			}
 			desc->group_head = NULL;
 		}
 	}
 
 	/* run dependent operations */
-	async_tx_run_dependencies(&desc->async_tx);
-	spin_unlock_bh(&desc->async_tx.lock);
+	dma_run_dependencies(&desc->async_tx);
 
 	return cookie;
 }
@@ -113,7 +127,7 @@ iop_adma_clean_slot(struct iop_adma_desc_slot *desc,
 	/* the client is allowed to attach dependent operations
 	 * until 'ack' is set
 	 */
-	if (!desc->async_tx.ack)
+	if (!async_tx_test_ack(&desc->async_tx))
 		return 0;
 
 	/* leave the last descriptor in the chain
@@ -140,7 +154,7 @@ static void __iop_adma_slot_cleanup(struct iop_adma_chan *iop_chan)
 	int busy = iop_chan_is_busy(iop_chan);
 	int seen_current = 0, slot_cnt = 0, slots_per_op = 0;
 
-	dev_dbg(iop_chan->device->common.dev, "%s\n", __FUNCTION__);
+	dev_dbg(iop_chan->device->common.dev, "%s\n", __func__);
 	/* free completed slots from the chain starting with
 	 * the oldest descriptor
 	 */
@@ -150,7 +164,7 @@ static void __iop_adma_slot_cleanup(struct iop_adma_chan *iop_chan)
 			"this_desc: %#x next_desc: %#x ack: %d\n",
 			iter->async_tx.cookie, iter->idx, busy,
 			iter->async_tx.phys, iop_desc_get_next_desc(iter),
-			iter->async_tx.ack);
+			async_tx_test_ack(&iter->async_tx));
 		prefetch(_iter);
 		prefetch(&_iter->async_tx);
 
@@ -255,10 +269,6 @@ static void __iop_adma_slot_cleanup(struct iop_adma_chan *iop_chan)
 			break;
 	}
 
-	BUG_ON(!seen_current);
-
-	iop_chan_idle(busy, iop_chan);
-
 	if (cookie > 0) {
 		iop_chan->completed_cookie = cookie;
 		pr_debug("\tcompleted cookie %d\n", cookie);
@@ -275,8 +285,11 @@ iop_adma_slot_cleanup(struct iop_adma_chan *iop_chan)
 
 static void iop_adma_tasklet(unsigned long data)
 {
-	struct iop_adma_chan *chan = (struct iop_adma_chan *) data;
-	__iop_adma_slot_cleanup(chan);
+	struct iop_adma_chan *iop_chan = (struct iop_adma_chan *) data;
+
+	spin_lock(&iop_chan->lock);
+	__iop_adma_slot_cleanup(iop_chan);
+	spin_unlock(&iop_chan->lock);
 }
 
 static struct iop_adma_desc_slot *
@@ -284,7 +297,7 @@ iop_adma_alloc_slots(struct iop_adma_chan *iop_chan, int num_slots,
 			int slots_per_op)
 {
 	struct iop_adma_desc_slot *iter, *_iter, *alloc_start = NULL;
-	struct list_head chain = LIST_HEAD_INIT(chain);
+	LIST_HEAD(chain);
 	int slots_found, retry = 0;
 
 	/* start search from the last allocated descrtiptor
@@ -339,9 +352,7 @@ retry:
 
 				/* pre-ack all but the last descriptor */
 				if (num_slots != slots_per_op)
-					iter->async_tx.ack = 1;
-				else
-					iter->async_tx.ack = 0;
+					async_tx_ack(&iter->async_tx);
 
 				list_add_tail(&iter->chain_node, &chain);
 				alloc_tail = iter;
@@ -369,8 +380,8 @@ retry:
 	if (!retry++)
 		goto retry;
 
-	/* try to free some slots if the allocation fails */
-	tasklet_schedule(&iop_chan->irq_tasklet);
+	/* perform direct reclaim if the allocation fails */
+	__iop_adma_slot_cleanup(iop_chan);
 
 	return NULL;
 }
@@ -407,6 +418,7 @@ iop_adma_tx_submit(struct dma_async_tx_descriptor *tx)
 	int slot_cnt;
 	int slots_per_op;
 	dma_cookie_t cookie;
+	dma_addr_t next_dma;
 
 	grp_start = sw_desc->group_head;
 	slot_cnt = grp_start->slot_cnt;
@@ -421,12 +433,12 @@ iop_adma_tx_submit(struct dma_async_tx_descriptor *tx)
 			 &old_chain_tail->chain_node);
 
 	/* fix up the hardware chain */
-	iop_desc_set_next_desc(old_chain_tail, grp_start->async_tx.phys);
+	next_dma = grp_start->async_tx.phys;
+	iop_desc_set_next_desc(old_chain_tail, next_dma);
+	BUG_ON(iop_desc_get_next_desc(old_chain_tail) != next_dma); /* flush */
 
-	/* 1/ don't add pre-chained descriptors
-	 * 2/ dummy read to flush next_desc write
-	 */
-	BUG_ON(iop_desc_get_next_desc(sw_desc));
+	/* check for pre-chained descriptors */
+	iop_paranoia(iop_desc_get_next_desc(sw_desc));
 
 	/* increment the pending count by the number of slots
 	 * memcpy operations have a 1:1 (slot:operation) relation
@@ -438,26 +450,24 @@ iop_adma_tx_submit(struct dma_async_tx_descriptor *tx)
 	spin_unlock_bh(&iop_chan->lock);
 
 	dev_dbg(iop_chan->device->common.dev, "%s cookie: %d slot: %d\n",
-		__FUNCTION__, sw_desc->async_tx.cookie, sw_desc->idx);
+		__func__, sw_desc->async_tx.cookie, sw_desc->idx);
 
 	return cookie;
-}
-
-static void
-iop_adma_set_dest(dma_addr_t addr, struct dma_async_tx_descriptor *tx,
-	int index)
-{
-	struct iop_adma_desc_slot *sw_desc = tx_to_iop_adma_slot(tx);
-	struct iop_adma_chan *iop_chan = to_iop_adma_chan(tx->chan);
-
-	/* to do: support transfers lengths > IOP_ADMA_MAX_BYTE_COUNT */
-	iop_desc_set_dest_addr(sw_desc->group_head, iop_chan, addr);
 }
 
 static void iop_chan_start_null_memcpy(struct iop_adma_chan *iop_chan);
 static void iop_chan_start_null_xor(struct iop_adma_chan *iop_chan);
 
-/* returns the number of allocated descriptors */
+/**
+ * iop_adma_alloc_chan_resources -  returns the number of allocated descriptors
+ * @chan - allocate descriptor resources for this channel
+ * @client - current client requesting the channel be ready for requests
+ *
+ * Note: We keep the slots for 1 operation on iop_chan->chain at all times.  To
+ * avoid deadlock, via async_xor, num_descs_in_pool must at a minimum be
+ * greater than 2x the number slots needed to satisfy a device->max_xor
+ * request.
+ * */
 static int iop_adma_alloc_chan_resources(struct dma_chan *chan)
 {
 	char *hw_desc;
@@ -486,7 +496,6 @@ static int iop_adma_alloc_chan_resources(struct dma_chan *chan)
 
 		dma_async_tx_descriptor_init(&slot->async_tx, chan);
 		slot->async_tx.tx_submit = iop_adma_tx_submit;
-		slot->async_tx.tx_set_dest = iop_adma_set_dest;
 		INIT_LIST_HEAD(&slot->chain_node);
 		INIT_LIST_HEAD(&slot->slot_node);
 		INIT_LIST_HEAD(&slot->async_tx.tx_list);
@@ -526,13 +535,13 @@ static int iop_adma_alloc_chan_resources(struct dma_chan *chan)
 }
 
 static struct dma_async_tx_descriptor *
-iop_adma_prep_dma_interrupt(struct dma_chan *chan)
+iop_adma_prep_dma_interrupt(struct dma_chan *chan, unsigned long flags)
 {
 	struct iop_adma_chan *iop_chan = to_iop_adma_chan(chan);
 	struct iop_adma_desc_slot *sw_desc, *grp_start;
 	int slot_cnt, slots_per_op;
 
-	dev_dbg(iop_chan->device->common.dev, "%s\n", __FUNCTION__);
+	dev_dbg(iop_chan->device->common.dev, "%s\n", __func__);
 
 	spin_lock_bh(&iop_chan->lock);
 	slot_cnt = iop_chan_interrupt_slot_count(&slots_per_op, iop_chan);
@@ -541,24 +550,16 @@ iop_adma_prep_dma_interrupt(struct dma_chan *chan)
 		grp_start = sw_desc->group_head;
 		iop_desc_init_interrupt(grp_start, iop_chan);
 		grp_start->unmap_len = 0;
+		sw_desc->async_tx.flags = flags;
 	}
 	spin_unlock_bh(&iop_chan->lock);
 
 	return sw_desc ? &sw_desc->async_tx : NULL;
 }
 
-static void
-iop_adma_memcpy_set_src(dma_addr_t addr, struct dma_async_tx_descriptor *tx,
-	int index)
-{
-	struct iop_adma_desc_slot *sw_desc = tx_to_iop_adma_slot(tx);
-	struct iop_adma_desc_slot *grp_start = sw_desc->group_head;
-
-	iop_desc_set_memcpy_src_addr(grp_start, addr);
-}
-
 static struct dma_async_tx_descriptor *
-iop_adma_prep_dma_memcpy(struct dma_chan *chan, size_t len, int int_en)
+iop_adma_prep_dma_memcpy(struct dma_chan *chan, dma_addr_t dma_dest,
+			 dma_addr_t dma_src, size_t len, unsigned long flags)
 {
 	struct iop_adma_chan *iop_chan = to_iop_adma_chan(chan);
 	struct iop_adma_desc_slot *sw_desc, *grp_start;
@@ -569,18 +570,20 @@ iop_adma_prep_dma_memcpy(struct dma_chan *chan, size_t len, int int_en)
 	BUG_ON(unlikely(len > IOP_ADMA_MAX_BYTE_COUNT));
 
 	dev_dbg(iop_chan->device->common.dev, "%s len: %u\n",
-		__FUNCTION__, len);
+		__func__, len);
 
 	spin_lock_bh(&iop_chan->lock);
 	slot_cnt = iop_chan_memcpy_slot_count(len, &slots_per_op);
 	sw_desc = iop_adma_alloc_slots(iop_chan, slot_cnt, slots_per_op);
 	if (sw_desc) {
 		grp_start = sw_desc->group_head;
-		iop_desc_init_memcpy(grp_start, int_en);
+		iop_desc_init_memcpy(grp_start, flags);
 		iop_desc_set_byte_count(grp_start, iop_chan, len);
+		iop_desc_set_dest_addr(grp_start, iop_chan, dma_dest);
+		iop_desc_set_memcpy_src_addr(grp_start, dma_src);
 		sw_desc->unmap_src_cnt = 1;
 		sw_desc->unmap_len = len;
-		sw_desc->async_tx.tx_set_src = iop_adma_memcpy_set_src;
+		sw_desc->async_tx.flags = flags;
 	}
 	spin_unlock_bh(&iop_chan->lock);
 
@@ -588,8 +591,8 @@ iop_adma_prep_dma_memcpy(struct dma_chan *chan, size_t len, int int_en)
 }
 
 static struct dma_async_tx_descriptor *
-iop_adma_prep_dma_memset(struct dma_chan *chan, int value, size_t len,
-	int int_en)
+iop_adma_prep_dma_memset(struct dma_chan *chan, dma_addr_t dma_dest,
+			 int value, size_t len, unsigned long flags)
 {
 	struct iop_adma_chan *iop_chan = to_iop_adma_chan(chan);
 	struct iop_adma_desc_slot *sw_desc, *grp_start;
@@ -600,37 +603,30 @@ iop_adma_prep_dma_memset(struct dma_chan *chan, int value, size_t len,
 	BUG_ON(unlikely(len > IOP_ADMA_MAX_BYTE_COUNT));
 
 	dev_dbg(iop_chan->device->common.dev, "%s len: %u\n",
-		__FUNCTION__, len);
+		__func__, len);
 
 	spin_lock_bh(&iop_chan->lock);
 	slot_cnt = iop_chan_memset_slot_count(len, &slots_per_op);
 	sw_desc = iop_adma_alloc_slots(iop_chan, slot_cnt, slots_per_op);
 	if (sw_desc) {
 		grp_start = sw_desc->group_head;
-		iop_desc_init_memset(grp_start, int_en);
+		iop_desc_init_memset(grp_start, flags);
 		iop_desc_set_byte_count(grp_start, iop_chan, len);
 		iop_desc_set_block_fill_val(grp_start, value);
+		iop_desc_set_dest_addr(grp_start, iop_chan, dma_dest);
 		sw_desc->unmap_src_cnt = 1;
 		sw_desc->unmap_len = len;
+		sw_desc->async_tx.flags = flags;
 	}
 	spin_unlock_bh(&iop_chan->lock);
 
 	return sw_desc ? &sw_desc->async_tx : NULL;
 }
 
-static void
-iop_adma_xor_set_src(dma_addr_t addr, struct dma_async_tx_descriptor *tx,
-	int index)
-{
-	struct iop_adma_desc_slot *sw_desc = tx_to_iop_adma_slot(tx);
-	struct iop_adma_desc_slot *grp_start = sw_desc->group_head;
-
-	iop_desc_set_xor_src_addr(grp_start, index, addr);
-}
-
 static struct dma_async_tx_descriptor *
-iop_adma_prep_dma_xor(struct dma_chan *chan, unsigned int src_cnt, size_t len,
-	int int_en)
+iop_adma_prep_dma_xor(struct dma_chan *chan, dma_addr_t dma_dest,
+		      dma_addr_t *dma_src, unsigned int src_cnt, size_t len,
+		      unsigned long flags)
 {
 	struct iop_adma_chan *iop_chan = to_iop_adma_chan(chan);
 	struct iop_adma_desc_slot *sw_desc, *grp_start;
@@ -641,39 +637,33 @@ iop_adma_prep_dma_xor(struct dma_chan *chan, unsigned int src_cnt, size_t len,
 	BUG_ON(unlikely(len > IOP_ADMA_XOR_MAX_BYTE_COUNT));
 
 	dev_dbg(iop_chan->device->common.dev,
-		"%s src_cnt: %d len: %u int_en: %d\n",
-		__FUNCTION__, src_cnt, len, int_en);
+		"%s src_cnt: %d len: %u flags: %lx\n",
+		__func__, src_cnt, len, flags);
 
 	spin_lock_bh(&iop_chan->lock);
 	slot_cnt = iop_chan_xor_slot_count(len, src_cnt, &slots_per_op);
 	sw_desc = iop_adma_alloc_slots(iop_chan, slot_cnt, slots_per_op);
 	if (sw_desc) {
 		grp_start = sw_desc->group_head;
-		iop_desc_init_xor(grp_start, src_cnt, int_en);
+		iop_desc_init_xor(grp_start, src_cnt, flags);
 		iop_desc_set_byte_count(grp_start, iop_chan, len);
+		iop_desc_set_dest_addr(grp_start, iop_chan, dma_dest);
 		sw_desc->unmap_src_cnt = src_cnt;
 		sw_desc->unmap_len = len;
-		sw_desc->async_tx.tx_set_src = iop_adma_xor_set_src;
+		sw_desc->async_tx.flags = flags;
+		while (src_cnt--)
+			iop_desc_set_xor_src_addr(grp_start, src_cnt,
+						  dma_src[src_cnt]);
 	}
 	spin_unlock_bh(&iop_chan->lock);
 
 	return sw_desc ? &sw_desc->async_tx : NULL;
 }
 
-static void
-iop_adma_xor_zero_sum_set_src(dma_addr_t addr,
-				struct dma_async_tx_descriptor *tx,
-				int index)
-{
-	struct iop_adma_desc_slot *sw_desc = tx_to_iop_adma_slot(tx);
-	struct iop_adma_desc_slot *grp_start = sw_desc->group_head;
-
-	iop_desc_set_zero_sum_src_addr(grp_start, index, addr);
-}
-
 static struct dma_async_tx_descriptor *
-iop_adma_prep_dma_zero_sum(struct dma_chan *chan, unsigned int src_cnt,
-	size_t len, u32 *result, int int_en)
+iop_adma_prep_dma_zero_sum(struct dma_chan *chan, dma_addr_t *dma_src,
+			   unsigned int src_cnt, size_t len, u32 *result,
+			   unsigned long flags)
 {
 	struct iop_adma_chan *iop_chan = to_iop_adma_chan(chan);
 	struct iop_adma_desc_slot *sw_desc, *grp_start;
@@ -683,31 +673,28 @@ iop_adma_prep_dma_zero_sum(struct dma_chan *chan, unsigned int src_cnt,
 		return NULL;
 
 	dev_dbg(iop_chan->device->common.dev, "%s src_cnt: %d len: %u\n",
-		__FUNCTION__, src_cnt, len);
+		__func__, src_cnt, len);
 
 	spin_lock_bh(&iop_chan->lock);
 	slot_cnt = iop_chan_zero_sum_slot_count(len, src_cnt, &slots_per_op);
 	sw_desc = iop_adma_alloc_slots(iop_chan, slot_cnt, slots_per_op);
 	if (sw_desc) {
 		grp_start = sw_desc->group_head;
-		iop_desc_init_zero_sum(grp_start, src_cnt, int_en);
+		iop_desc_init_zero_sum(grp_start, src_cnt, flags);
 		iop_desc_set_zero_sum_byte_count(grp_start, len);
 		grp_start->xor_check_result = result;
 		pr_debug("\t%s: grp_start->xor_check_result: %p\n",
-			__FUNCTION__, grp_start->xor_check_result);
+			__func__, grp_start->xor_check_result);
 		sw_desc->unmap_src_cnt = src_cnt;
 		sw_desc->unmap_len = len;
-		sw_desc->async_tx.tx_set_src = iop_adma_xor_zero_sum_set_src;
+		sw_desc->async_tx.flags = flags;
+		while (src_cnt--)
+			iop_desc_set_zero_sum_src_addr(grp_start, src_cnt,
+						       dma_src[src_cnt]);
 	}
 	spin_unlock_bh(&iop_chan->lock);
 
 	return sw_desc ? &sw_desc->async_tx : NULL;
-}
-
-static void iop_adma_dependency_added(struct dma_chan *chan)
-{
-	struct iop_adma_chan *iop_chan = to_iop_adma_chan(chan);
-	tasklet_schedule(&iop_chan->irq_tasklet);
 }
 
 static void iop_adma_free_chan_resources(struct dma_chan *chan)
@@ -733,7 +720,7 @@ static void iop_adma_free_chan_resources(struct dma_chan *chan)
 	iop_chan->last_used = NULL;
 
 	dev_dbg(iop_chan->device->common.dev, "%s slots_allocated %d\n",
-		__FUNCTION__, iop_chan->slots_allocated);
+		__func__, iop_chan->slots_allocated);
 	spin_unlock_bh(&iop_chan->lock);
 
 	/* one is ok since we left it on there on purpose */
@@ -786,7 +773,7 @@ static irqreturn_t iop_adma_eot_handler(int irq, void *data)
 {
 	struct iop_adma_chan *chan = data;
 
-	dev_dbg(chan->device->common.dev, "%s\n", __FUNCTION__);
+	dev_dbg(chan->device->common.dev, "%s\n", __func__);
 
 	tasklet_schedule(&chan->irq_tasklet);
 
@@ -799,7 +786,7 @@ static irqreturn_t iop_adma_eoc_handler(int irq, void *data)
 {
 	struct iop_adma_chan *chan = data;
 
-	dev_dbg(chan->device->common.dev, "%s\n", __FUNCTION__);
+	dev_dbg(chan->device->common.dev, "%s\n", __func__);
 
 	tasklet_schedule(&chan->irq_tasklet);
 
@@ -856,12 +843,12 @@ static int __devinit iop_adma_memcpy_self_test(struct iop_adma_device *device)
 	int err = 0;
 	struct iop_adma_chan *iop_chan;
 
-	dev_dbg(device->common.dev, "%s\n", __FUNCTION__);
+	dev_dbg(device->common.dev, "%s\n", __func__);
 
-	src = kzalloc(sizeof(u8) * IOP_ADMA_TEST_SIZE, GFP_KERNEL);
+	src = kmalloc(IOP_ADMA_TEST_SIZE, GFP_KERNEL);
 	if (!src)
 		return -ENOMEM;
-	dest = kzalloc(sizeof(u8) * IOP_ADMA_TEST_SIZE, GFP_KERNEL);
+	dest = kzalloc(IOP_ADMA_TEST_SIZE, GFP_KERNEL);
 	if (!dest) {
 		kfree(src);
 		return -ENOMEM;
@@ -870,8 +857,6 @@ static int __devinit iop_adma_memcpy_self_test(struct iop_adma_device *device)
 	/* Fill in src buffer */
 	for (i = 0; i < IOP_ADMA_TEST_SIZE; i++)
 		((u8 *) src)[i] = (u8)i;
-
-	memset(dest, 0, IOP_ADMA_TEST_SIZE);
 
 	/* Start copy, using first DMA channel */
 	dma_chan = container_of(device->common.channels.next,
@@ -882,17 +867,16 @@ static int __devinit iop_adma_memcpy_self_test(struct iop_adma_device *device)
 		goto out;
 	}
 
-	tx = iop_adma_prep_dma_memcpy(dma_chan, IOP_ADMA_TEST_SIZE, 1);
 	dest_dma = dma_map_single(dma_chan->device->dev, dest,
 				IOP_ADMA_TEST_SIZE, DMA_FROM_DEVICE);
-	iop_adma_set_dest(dest_dma, tx, 0);
 	src_dma = dma_map_single(dma_chan->device->dev, src,
 				IOP_ADMA_TEST_SIZE, DMA_TO_DEVICE);
-	iop_adma_memcpy_set_src(src_dma, tx, 0);
+	tx = iop_adma_prep_dma_memcpy(dma_chan, dest_dma, src_dma,
+				      IOP_ADMA_TEST_SIZE,
+				      DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 
 	cookie = iop_adma_tx_submit(tx);
 	iop_adma_issue_pending(dma_chan);
-	async_tx_ack(tx);
 	msleep(1);
 
 	if (iop_adma_is_complete(dma_chan, cookie, NULL, NULL) !=
@@ -929,6 +913,7 @@ iop_adma_xor_zero_sum_self_test(struct iop_adma_device *device)
 	struct page *dest;
 	struct page *xor_srcs[IOP_ADMA_NUM_SRC_TEST];
 	struct page *zero_sum_srcs[IOP_ADMA_NUM_SRC_TEST + 1];
+	dma_addr_t dma_srcs[IOP_ADMA_NUM_SRC_TEST + 1];
 	dma_addr_t dma_addr, dest_dma;
 	struct dma_async_tx_descriptor *tx;
 	struct dma_chan *dma_chan;
@@ -939,23 +924,23 @@ iop_adma_xor_zero_sum_self_test(struct iop_adma_device *device)
 	int err = 0;
 	struct iop_adma_chan *iop_chan;
 
-	dev_dbg(device->common.dev, "%s\n", __FUNCTION__);
+	dev_dbg(device->common.dev, "%s\n", __func__);
 
 	for (src_idx = 0; src_idx < IOP_ADMA_NUM_SRC_TEST; src_idx++) {
 		xor_srcs[src_idx] = alloc_page(GFP_KERNEL);
-		if (!xor_srcs[src_idx])
-			while (src_idx--) {
+		if (!xor_srcs[src_idx]) {
+			while (src_idx--)
 				__free_page(xor_srcs[src_idx]);
-				return -ENOMEM;
-			}
+			return -ENOMEM;
+		}
 	}
 
 	dest = alloc_page(GFP_KERNEL);
-	if (!dest)
-		while (src_idx--) {
+	if (!dest) {
+		while (src_idx--)
 			__free_page(xor_srcs[src_idx]);
-			return -ENOMEM;
-		}
+		return -ENOMEM;
+	}
 
 	/* Fill in src buffers */
 	for (src_idx = 0; src_idx < IOP_ADMA_NUM_SRC_TEST; src_idx++) {
@@ -981,21 +966,17 @@ iop_adma_xor_zero_sum_self_test(struct iop_adma_device *device)
 	}
 
 	/* test xor */
-	tx = iop_adma_prep_dma_xor(dma_chan, IOP_ADMA_NUM_SRC_TEST,
-				PAGE_SIZE, 1);
 	dest_dma = dma_map_page(dma_chan->device->dev, dest, 0,
 				PAGE_SIZE, DMA_FROM_DEVICE);
-	iop_adma_set_dest(dest_dma, tx, 0);
-
-	for (i = 0; i < IOP_ADMA_NUM_SRC_TEST; i++) {
-		dma_addr = dma_map_page(dma_chan->device->dev, xor_srcs[i], 0,
-			PAGE_SIZE, DMA_TO_DEVICE);
-		iop_adma_xor_set_src(dma_addr, tx, i);
-	}
+	for (i = 0; i < IOP_ADMA_NUM_SRC_TEST; i++)
+		dma_srcs[i] = dma_map_page(dma_chan->device->dev, xor_srcs[i],
+					   0, PAGE_SIZE, DMA_TO_DEVICE);
+	tx = iop_adma_prep_dma_xor(dma_chan, dest_dma, dma_srcs,
+				   IOP_ADMA_NUM_SRC_TEST, PAGE_SIZE,
+				   DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 
 	cookie = iop_adma_tx_submit(tx);
 	iop_adma_issue_pending(dma_chan);
-	async_tx_ack(tx);
 	msleep(8);
 
 	if (iop_adma_is_complete(dma_chan, cookie, NULL, NULL) !=
@@ -1032,17 +1013,17 @@ iop_adma_xor_zero_sum_self_test(struct iop_adma_device *device)
 
 	zero_sum_result = 1;
 
-	tx = iop_adma_prep_dma_zero_sum(dma_chan, IOP_ADMA_NUM_SRC_TEST + 1,
-		PAGE_SIZE, &zero_sum_result, 1);
-	for (i = 0; i < IOP_ADMA_NUM_SRC_TEST + 1; i++) {
-		dma_addr = dma_map_page(dma_chan->device->dev, zero_sum_srcs[i],
-			0, PAGE_SIZE, DMA_TO_DEVICE);
-		iop_adma_xor_zero_sum_set_src(dma_addr, tx, i);
-	}
+	for (i = 0; i < IOP_ADMA_NUM_SRC_TEST + 1; i++)
+		dma_srcs[i] = dma_map_page(dma_chan->device->dev,
+					   zero_sum_srcs[i], 0, PAGE_SIZE,
+					   DMA_TO_DEVICE);
+	tx = iop_adma_prep_dma_zero_sum(dma_chan, dma_srcs,
+					IOP_ADMA_NUM_SRC_TEST + 1, PAGE_SIZE,
+					&zero_sum_result,
+					DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 
 	cookie = iop_adma_tx_submit(tx);
 	iop_adma_issue_pending(dma_chan);
-	async_tx_ack(tx);
 	msleep(8);
 
 	if (iop_adma_is_complete(dma_chan, cookie, NULL, NULL) != DMA_SUCCESS) {
@@ -1060,14 +1041,13 @@ iop_adma_xor_zero_sum_self_test(struct iop_adma_device *device)
 	}
 
 	/* test memset */
-	tx = iop_adma_prep_dma_memset(dma_chan, 0, PAGE_SIZE, 1);
 	dma_addr = dma_map_page(dma_chan->device->dev, dest, 0,
 			PAGE_SIZE, DMA_FROM_DEVICE);
-	iop_adma_set_dest(dma_addr, tx, 0);
+	tx = iop_adma_prep_dma_memset(dma_chan, dma_addr, 0, PAGE_SIZE,
+				      DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 
 	cookie = iop_adma_tx_submit(tx);
 	iop_adma_issue_pending(dma_chan);
-	async_tx_ack(tx);
 	msleep(8);
 
 	if (iop_adma_is_complete(dma_chan, cookie, NULL, NULL) != DMA_SUCCESS) {
@@ -1089,17 +1069,17 @@ iop_adma_xor_zero_sum_self_test(struct iop_adma_device *device)
 
 	/* test for non-zero parity sum */
 	zero_sum_result = 0;
-	tx = iop_adma_prep_dma_zero_sum(dma_chan, IOP_ADMA_NUM_SRC_TEST + 1,
-		PAGE_SIZE, &zero_sum_result, 1);
-	for (i = 0; i < IOP_ADMA_NUM_SRC_TEST + 1; i++) {
-		dma_addr = dma_map_page(dma_chan->device->dev, zero_sum_srcs[i],
-			0, PAGE_SIZE, DMA_TO_DEVICE);
-		iop_adma_xor_zero_sum_set_src(dma_addr, tx, i);
-	}
+	for (i = 0; i < IOP_ADMA_NUM_SRC_TEST + 1; i++)
+		dma_srcs[i] = dma_map_page(dma_chan->device->dev,
+					   zero_sum_srcs[i], 0, PAGE_SIZE,
+					   DMA_TO_DEVICE);
+	tx = iop_adma_prep_dma_zero_sum(dma_chan, dma_srcs,
+					IOP_ADMA_NUM_SRC_TEST + 1, PAGE_SIZE,
+					&zero_sum_result,
+					DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 
 	cookie = iop_adma_tx_submit(tx);
 	iop_adma_issue_pending(dma_chan);
-	async_tx_ack(tx);
 	msleep(8);
 
 	if (iop_adma_is_complete(dma_chan, cookie, NULL, NULL) != DMA_SUCCESS) {
@@ -1131,25 +1111,12 @@ static int __devexit iop_adma_remove(struct platform_device *dev)
 	struct iop_adma_device *device = platform_get_drvdata(dev);
 	struct dma_chan *chan, *_chan;
 	struct iop_adma_chan *iop_chan;
-	int i;
 	struct iop_adma_platform_data *plat_data = dev->dev.platform_data;
 
 	dma_async_device_unregister(&device->common);
 
-	for (i = 0; i < 3; i++) {
-		unsigned int irq;
-		irq = platform_get_irq(dev, i);
-		free_irq(irq, device);
-	}
-
 	dma_free_coherent(&dev->dev, plat_data->pool_size,
 			device->dma_desc_pool_virt, device->dma_desc_pool);
-
-	do {
-		struct resource *res;
-		res = platform_get_resource(dev, IORESOURCE_MEM, 0);
-		release_mem_region(res->start, res->end - res->start);
-	} while (0);
 
 	list_for_each_entry_safe(chan, _chan, &device->common.channels,
 				device_node) {
@@ -1197,7 +1164,7 @@ static int __devinit iop_adma_probe(struct platform_device *pdev)
 	}
 
 	dev_dbg(&pdev->dev, "%s: allocted descriptor pool virt %p phys %p\n",
-		__FUNCTION__, adev->dma_desc_pool_virt,
+		__func__, adev->dma_desc_pool_virt,
 		(void *) adev->dma_desc_pool);
 
 	adev->id = plat_data->hw_id;
@@ -1215,7 +1182,6 @@ static int __devinit iop_adma_probe(struct platform_device *pdev)
 	dma_dev->device_free_chan_resources = iop_adma_free_chan_resources;
 	dma_dev->device_is_tx_complete = iop_adma_is_complete;
 	dma_dev->device_issue_pending = iop_adma_issue_pending;
-	dma_dev->device_dependency_added = iop_adma_dependency_added;
 	dma_dev->dev = &pdev->dev;
 
 	/* set prep routines based on capability */
@@ -1270,12 +1236,8 @@ static int __devinit iop_adma_probe(struct platform_device *pdev)
 	}
 
 	spin_lock_init(&iop_chan->lock);
-	init_timer(&iop_chan->cleanup_watchdog);
-	iop_chan->cleanup_watchdog.data = (unsigned long) iop_chan;
-	iop_chan->cleanup_watchdog.function = iop_adma_tasklet;
 	INIT_LIST_HEAD(&iop_chan->chain);
 	INIT_LIST_HEAD(&iop_chan->all_slots);
-	INIT_RCU_HEAD(&iop_chan->common.rcu);
 	iop_chan->common.device = dma_dev;
 	list_add_tail(&iop_chan->common.device_node, &dma_dev->channels);
 
@@ -1327,7 +1289,7 @@ static void iop_chan_start_null_memcpy(struct iop_adma_chan *iop_chan)
 	dma_cookie_t cookie;
 	int slot_cnt, slots_per_op;
 
-	dev_dbg(iop_chan->device->common.dev, "%s\n", __FUNCTION__);
+	dev_dbg(iop_chan->device->common.dev, "%s\n", __func__);
 
 	spin_lock_bh(&iop_chan->lock);
 	slot_cnt = iop_chan_memcpy_slot_count(0, &slots_per_op);
@@ -1336,7 +1298,7 @@ static void iop_chan_start_null_memcpy(struct iop_adma_chan *iop_chan)
 		grp_start = sw_desc->group_head;
 
 		list_splice_init(&sw_desc->async_tx.tx_list, &iop_chan->chain);
-		sw_desc->async_tx.ack = 1;
+		async_tx_ack(&sw_desc->async_tx);
 		iop_desc_init_memcpy(grp_start, 0);
 		iop_desc_set_byte_count(grp_start, iop_chan, 0);
 		iop_desc_set_dest_addr(grp_start, iop_chan, 0);
@@ -1384,7 +1346,7 @@ static void iop_chan_start_null_xor(struct iop_adma_chan *iop_chan)
 	dma_cookie_t cookie;
 	int slot_cnt, slots_per_op;
 
-	dev_dbg(iop_chan->device->common.dev, "%s\n", __FUNCTION__);
+	dev_dbg(iop_chan->device->common.dev, "%s\n", __func__);
 
 	spin_lock_bh(&iop_chan->lock);
 	slot_cnt = iop_chan_xor_slot_count(0, 2, &slots_per_op);
@@ -1392,7 +1354,7 @@ static void iop_chan_start_null_xor(struct iop_adma_chan *iop_chan)
 	if (sw_desc) {
 		grp_start = sw_desc->group_head;
 		list_splice_init(&sw_desc->async_tx.tx_list, &iop_chan->chain);
-		sw_desc->async_tx.ack = 1;
+		async_tx_ack(&sw_desc->async_tx);
 		iop_desc_init_null_xor(grp_start, 2, 0);
 		iop_desc_set_byte_count(grp_start, iop_chan, 0);
 		iop_desc_set_dest_addr(grp_start, iop_chan, 0);
@@ -1435,9 +1397,11 @@ static void iop_chan_start_null_xor(struct iop_adma_chan *iop_chan)
 	spin_unlock_bh(&iop_chan->lock);
 }
 
+MODULE_ALIAS("platform:iop-adma");
+
 static struct platform_driver iop_adma_driver = {
 	.probe		= iop_adma_probe,
-	.remove		= iop_adma_remove,
+	.remove		= __devexit_p(iop_adma_remove),
 	.driver		= {
 		.owner	= THIS_MODULE,
 		.name	= "iop-adma",
@@ -1449,16 +1413,12 @@ static int __init iop_adma_init (void)
 	return platform_driver_register(&iop_adma_driver);
 }
 
-/* it's currently unsafe to unload this module */
-#if 0
 static void __exit iop_adma_exit (void)
 {
 	platform_driver_unregister(&iop_adma_driver);
 	return;
 }
 module_exit(iop_adma_exit);
-#endif
-
 module_init(iop_adma_init);
 
 MODULE_AUTHOR("Intel Corporation");

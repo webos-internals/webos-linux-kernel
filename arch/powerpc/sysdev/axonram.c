@@ -42,8 +42,9 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
-#include <asm/of_device.h>
-#include <asm/of_platform.h>
+#include <linux/of_device.h>
+#include <linux/of_platform.h>
+
 #include <asm/page.h>
 #include <asm/prom.h>
 
@@ -55,6 +56,8 @@
 #define AXON_RAM_SECTOR_SHIFT		9
 #define AXON_RAM_SECTOR_SIZE		1 << AXON_RAM_SECTOR_SHIFT
 #define AXON_RAM_IRQ_FLAGS		IRQF_SHARED | IRQF_TRIGGER_RISING
+
+static int azfs_major, azfs_minor;
 
 struct axon_ram_bank {
 	struct of_device	*device;
@@ -142,18 +145,22 @@ axon_ram_make_request(struct request_queue *queue, struct bio *bio)
  */
 static int
 axon_ram_direct_access(struct block_device *device, sector_t sector,
-		       unsigned long *data)
+		       void **kaddr, unsigned long *pfn)
 {
 	struct axon_ram_bank *bank = device->bd_disk->private_data;
 	loff_t offset;
 
-	offset = sector << AXON_RAM_SECTOR_SHIFT;
+	offset = sector;
+	if (device->bd_part != NULL)
+		offset += device->bd_part->start_sect;
+	offset <<= AXON_RAM_SECTOR_SHIFT;
 	if (offset >= bank->size) {
 		dev_err(&bank->device->dev, "Access outside of address space\n");
 		return -ERANGE;
 	}
 
-	*data = bank->ph_addr + offset;
+	*kaddr = (void *)(bank->ph_addr + offset);
+	*pfn = virt_to_phys(kaddr) >> PAGE_SHIFT;
 
 	return 0;
 }
@@ -225,19 +232,14 @@ axon_ram_probe(struct of_device *device, const struct of_device_id *device_id)
 		goto failed;
 	}
 
-	bank->disk->first_minor = 0;
+	bank->disk->major = azfs_major;
+	bank->disk->first_minor = azfs_minor;
 	bank->disk->fops = &axon_ram_devops;
 	bank->disk->private_data = bank;
 	bank->disk->driverfs_dev = &device->dev;
 
 	sprintf(bank->disk->disk_name, "%s%d",
 			AXON_RAM_DEVICE_NAME, axon_ram_bank_id);
-	bank->disk->major = register_blkdev(0, bank->disk->disk_name);
-	if (bank->disk->major < 0) {
-		dev_err(&device->dev, "Cannot register block device\n");
-		rc = -EFAULT;
-		goto failed;
-	}
 
 	bank->disk->queue = blk_alloc_queue(GFP_KERNEL);
 	if (bank->disk->queue == NULL) {
@@ -274,6 +276,8 @@ axon_ram_probe(struct of_device *device, const struct of_device_id *device_id)
 		goto failed;
 	}
 
+	azfs_minor += bank->disk->minors;
+
 	return 0;
 
 failed:
@@ -308,7 +312,6 @@ axon_ram_remove(struct of_device *device)
 
 	device_remove_file(&device->dev, &dev_attr_ecc);
 	free_irq(bank->irq_id, device);
-	unregister_blkdev(bank->disk->major, bank->disk->disk_name);
 	del_gendisk(bank->disk);
 	iounmap((void __iomem *) bank->io_addr);
 	kfree(bank);
@@ -339,6 +342,14 @@ static struct of_platform_driver axon_ram_driver = {
 static int __init
 axon_ram_init(void)
 {
+	azfs_major = register_blkdev(azfs_major, AXON_RAM_DEVICE_NAME);
+	if (azfs_major < 0) {
+		printk(KERN_ERR "%s cannot become block device major number\n",
+				AXON_RAM_MODULE_NAME);
+		return -EFAULT;
+	}
+	azfs_minor = 0;
+
 	return of_register_platform_driver(&axon_ram_driver);
 }
 
@@ -349,6 +360,7 @@ static void __exit
 axon_ram_exit(void)
 {
 	of_unregister_platform_driver(&axon_ram_driver);
+	unregister_blkdev(azfs_major, AXON_RAM_DEVICE_NAME);
 }
 
 module_init(axon_ram_init);

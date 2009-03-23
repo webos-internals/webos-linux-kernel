@@ -1,7 +1,7 @@
 /*
  * helper functions for vmalloc capture buffers
  *
- * The functions expect the hardware being able to scatter gatter
+ * The functions expect the hardware being able to scatter gather
  * (i.e. the buffers are not linear in physical memory, but fragmented
  * into PAGE_SIZE chunks).  They also assume the driver does not need
  * to touch the video data.
@@ -12,12 +12,14 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2
  */
+#ifndef _VIDEOBUF_VMALLOC_H
+#define _VIDEOBUF_VMALLOC_H
 
 #include <media/videobuf-core.h>
 
 /* --------------------------------------------------------------------- */
 
-struct videbuf_vmalloc_memory
+struct videobuf_vmalloc_memory
 {
 	u32                 magic;
 
@@ -39,3 +41,5 @@ void videobuf_queue_vmalloc_init(struct videobuf_queue* q,
 void *videobuf_to_vmalloc (struct videobuf_buffer *buf);
 
 void videobuf_vmalloc_free (struct videobuf_buffer *buf);
+
+#endif

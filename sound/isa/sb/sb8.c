@@ -19,7 +19,6 @@
  *
  */
 
-#include <sound/driver.h>
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/isa.h>
@@ -86,11 +85,11 @@ static int __devinit snd_sb8_match(struct device *pdev, unsigned int dev)
 	if (!enable[dev])
 		return 0;
 	if (irq[dev] == SNDRV_AUTO_IRQ) {
-		snd_printk(KERN_ERR "%s: please specify irq\n", pdev->bus_id);
+		dev_err(pdev, "please specify irq\n");
 		return 0;
 	}
 	if (dma8[dev] == SNDRV_AUTO_DMA) {
-		snd_printk(KERN_ERR "%s: please specify dma8\n", pdev->bus_id);
+		dev_err(pdev, "please specify dma8\n");
 		return 0;
 	}
 	return 1;
@@ -141,8 +140,10 @@ static int __devinit snd_sb8_probe(struct device *pdev, unsigned int dev)
 				break;
 			}
 		}
-		if (i >= ARRAY_SIZE(possible_ports))
+		if (i >= ARRAY_SIZE(possible_ports)) {
+			err = -EINVAL;
 			goto _err;
+		}
 	}
 	acard->chip = chip;
 			

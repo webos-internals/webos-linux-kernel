@@ -123,7 +123,7 @@ static int create_packet(void *data, size_t length)
 	if (!newpacket) {
 		printk(KERN_WARNING
 			"dell_rbu:%s: failed to allocate new "
-			"packet\n", __FUNCTION__);
+			"packet\n", __func__);
 		retval = -ENOMEM;
 		spin_lock(&rbu_data.lock);
 		goto out_noalloc;
@@ -152,7 +152,7 @@ static int create_packet(void *data, size_t length)
 		printk(KERN_WARNING
 			"dell_rbu:%s: failed to allocate "
 			"invalid_addr_packet_array \n",
-			__FUNCTION__);
+			__func__);
 		retval = -ENOMEM;
 		spin_lock(&rbu_data.lock);
 		goto out_alloc_packet;
@@ -164,7 +164,7 @@ static int create_packet(void *data, size_t length)
 		if (!packet_data_temp_buf) {
 			printk(KERN_WARNING
 				"dell_rbu:%s: failed to allocate new "
-				"packet\n", __FUNCTION__);
+				"packet\n", __func__);
 			retval = -ENOMEM;
 			spin_lock(&rbu_data.lock);
 			goto out_alloc_packet_array;
@@ -220,7 +220,7 @@ out_noalloc:
 	return retval;
 }
 
-static int packetize_data(void *data, size_t length)
+static int packetize_data(const u8 *data, size_t length)
 {
 	int rc = 0;
 	int done = 0;
@@ -416,7 +416,7 @@ static int img_update_realloc(unsigned long size)
 		 */
 		if ((size != 0) && (rbu_data.image_update_buffer == NULL)) {
 			printk(KERN_ERR "dell_rbu:%s: corruption "
-				"check failed\n", __FUNCTION__);
+				"check failed\n", __func__);
 			return -EINVAL;
 		}
 		/*
@@ -507,11 +507,6 @@ static ssize_t read_packet_data(char *buffer, loff_t pos, size_t count)
 
 static ssize_t read_rbu_mono_data(char *buffer, loff_t pos, size_t count)
 {
-	unsigned char *ptemp = NULL;
-	size_t bytes_left = 0;
-	size_t data_length = 0;
-	ssize_t ret_count = 0;
-
 	/* check to see if we have something to return */
 	if ((rbu_data.image_update_buffer == NULL) ||
 		(rbu_data.bios_image_size == 0)) {
@@ -519,28 +514,11 @@ static ssize_t read_rbu_mono_data(char *buffer, loff_t pos, size_t count)
 			"bios_image_size %lu\n",
 			rbu_data.image_update_buffer,
 			rbu_data.bios_image_size);
-		ret_count = -ENOMEM;
-		goto read_rbu_data_exit;
+		return -ENOMEM;
 	}
 
-	if (pos > rbu_data.bios_image_size) {
-		ret_count = 0;
-		goto read_rbu_data_exit;
-	}
-
-	bytes_left = rbu_data.bios_image_size - pos;
-	data_length = min(bytes_left, count);
-
-	ptemp = rbu_data.image_update_buffer;
-	memcpy(buffer, (ptemp + pos), data_length);
-
-	if ((pos + count) > rbu_data.bios_image_size)
-		/* this was the last copy */
-		ret_count = bytes_left;
-	else
-		ret_count = count;
-      read_rbu_data_exit:
-	return ret_count;
+	return memory_read_from_buffer(buffer, count, &pos,
+			rbu_data.image_update_buffer, rbu_data.bios_image_size);
 }
 
 static ssize_t read_rbu_data(struct kobject *kobj,
@@ -598,7 +576,7 @@ static ssize_t read_rbu_image_type(struct kobject *kobj,
 {
 	int size = 0;
 	if (!pos)
-		size = sprintf(buffer, "%s\n", image_type);
+		size = scnprintf(buffer, count, "%s\n", image_type);
 	return size;
 }
 
@@ -642,7 +620,7 @@ static ssize_t write_rbu_image_type(struct kobject *kobj,
 			if (req_firm_rc) {
 				printk(KERN_ERR
 					"dell_rbu:%s request_firmware_nowait"
-					" failed %d\n", __FUNCTION__, rc);
+					" failed %d\n", __func__, rc);
 				rc = -EIO;
 			} else
 				rbu_data.entry_created = 1;
@@ -670,7 +648,7 @@ static ssize_t read_rbu_packet_size(struct kobject *kobj,
 	int size = 0;
 	if (!pos) {
 		spin_lock(&rbu_data.lock);
-		size = sprintf(buffer, "%lu\n", rbu_data.packetsize);
+		size = scnprintf(buffer, count, "%lu\n", rbu_data.packetsize);
 		spin_unlock(&rbu_data.lock);
 	}
 	return size;
@@ -718,7 +696,7 @@ static int __init dcdrbu_init(void)
 	if (IS_ERR(rbu_device)) {
 		printk(KERN_ERR
 			"dell_rbu:%s:platform_device_register_simple "
-			"failed\n", __FUNCTION__);
+			"failed\n", __func__);
 		return PTR_ERR(rbu_device);
 	}
 

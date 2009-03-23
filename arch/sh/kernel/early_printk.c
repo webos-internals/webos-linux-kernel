@@ -63,7 +63,8 @@ static struct console bios_console = {
 #include <linux/serial_core.h>
 #include "../../../drivers/serial/sh-sci.h"
 
-#if defined(CONFIG_CPU_SUBTYPE_SH7720)
+#if defined(CONFIG_CPU_SUBTYPE_SH7720) || \
+    defined(CONFIG_CPU_SUBTYPE_SH7721)
 #define EPK_SCSMR_VALUE 0x000
 #define EPK_SCBRR_VALUE 0x00C
 #define EPK_FIFO_SIZE 64
@@ -74,6 +75,7 @@ static struct console bios_console = {
 #endif
 
 static struct uart_port scif_port = {
+	.type		= PORT_SCIF,
 	.mapbase	= CONFIG_EARLY_SCIF_CONSOLE_PORT,
 	.membase	= (char __iomem *)CONFIG_EARLY_SCIF_CONSOLE_PORT,
 };
@@ -83,9 +85,9 @@ static void scif_sercon_putc(int c)
 	while (((sci_in(&scif_port, SCFDR) & EPK_FIFO_BITS) >= EPK_FIFO_SIZE))
 		;
 
-	sci_out(&scif_port, SCxTDR, c);
 	sci_in(&scif_port, SCxSR);
 	sci_out(&scif_port, SCxSR, 0xf3 & ~(0x20 | 0x40));
+	sci_out(&scif_port, SCxTDR, c);
 
 	while ((sci_in(&scif_port, SCxSR) & 0x40) == 0)
 		;
@@ -117,7 +119,8 @@ static struct console scif_console = {
 };
 
 #if !defined(CONFIG_SH_STANDARD_BIOS)
-#if defined(CONFIG_CPU_SUBTYPE_SH7720)
+#if defined(CONFIG_CPU_SUBTYPE_SH7720) || \
+    defined(CONFIG_CPU_SUBTYPE_SH7721)
 static void scif_sercon_init(char *s)
 {
 	sci_out(&scif_port, SCSCR, 0x0000);	/* clear TE and RE */
@@ -139,7 +142,9 @@ static void scif_sercon_init(char *s)
  */
 static void scif_sercon_init(char *s)
 {
+	struct uart_port *port = &scif_port;
 	unsigned baud = DEFAULT_BAUD;
+	unsigned int status;
 	char *e;
 
 	if (*s == ',')
@@ -158,19 +163,25 @@ static void scif_sercon_init(char *s)
 			baud = DEFAULT_BAUD;
 	}
 
-	ctrl_outw(0, scif_port.mapbase + 8);
-	ctrl_outw(0, scif_port.mapbase);
+	do {
+		status = sci_in(port, SCxSR);
+	} while (!(status & SCxSR_TEND(port)));
+
+	sci_out(port, SCSCR, 0);	 /* TE=0, RE=0 */
+	sci_out(port, SCFCR, SCFCR_RFRST | SCFCR_TFRST);
+	sci_out(port, SCSMR, 0);
 
 	/* Set baud rate */
-	ctrl_outb((CONFIG_SH_PCLK_FREQ + 16 * baud) /
-		  (32 * baud) - 1, scif_port.mapbase + 4);
+	sci_out(port, SCBRR, (CONFIG_SH_PCLK_FREQ + 16 * baud) /
+		(32 * baud) - 1);
+	udelay((1000000+(baud-1)) / baud); /* Wait one bit interval */
 
-	ctrl_outw(12, scif_port.mapbase + 24);
-	ctrl_outw(8, scif_port.mapbase + 24);
-	ctrl_outw(0, scif_port.mapbase + 32);
-	ctrl_outw(0x60, scif_port.mapbase + 16);
-	ctrl_outw(0, scif_port.mapbase + 36);
-	ctrl_outw(0x30, scif_port.mapbase + 8);
+	sci_out(port, SCSPTR, 0);
+	sci_out(port, SCxSR, 0x60);
+	sci_out(port, SCLSR, 0);
+
+	sci_out(port, SCFCR, 0);
+	sci_out(port, SCSCR, 0x30);	 /* TE=1, RE=1 */
 }
 #endif /* defined(CONFIG_CPU_SUBTYPE_SH7720) */
 #endif /* !defined(CONFIG_SH_STANDARD_BIOS) */
@@ -208,9 +219,11 @@ static int __init setup_early_printk(char *buf)
 	if (!strncmp(buf, "serial", 6)) {
 		early_console = &scif_console;
 
-#if (defined(CONFIG_CPU_SH4) || defined(CONFIG_CPU_SUBTYPE_SH7720)) && \
-    !defined(CONFIG_SH_STANDARD_BIOS)
+#if !defined(CONFIG_SH_STANDARD_BIOS)
+#if defined(CONFIG_CPU_SH4) || defined(CONFIG_CPU_SUBTYPE_SH7720) || \
+    defined(CONFIG_CPU_SUBTYPE_SH7721)
 		scif_sercon_init(buf + 6);
+#endif
 #endif
 	}
 #endif

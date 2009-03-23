@@ -51,6 +51,9 @@ struct krb5_ctx {
 
 extern spinlock_t krb5_seq_lock;
 
+/* The length of the Kerberos GSS token header */
+#define GSS_KRB5_TOK_HDR_LEN	(16)
+
 #define KG_TOK_MIC_MSG    0x0101
 #define KG_TOK_WRAP_MSG   0x0201
 
@@ -69,8 +72,6 @@ enum seal_alg {
 	SEAL_ALG_MICROSOFT_RC4 = 0x0010,/* microsoft w2k; no support */
 	SEAL_ALG_DES3KD = 0x0002
 };
-
-#define KRB5_CKSUM_LENGTH 8
 
 #define CKSUMTYPE_CRC32			0x0001
 #define CKSUMTYPE_RSA_MD4		0x0002
@@ -150,9 +151,9 @@ gss_decrypt_xdr_buf(struct crypto_blkcipher *tfm, struct xdr_buf *inbuf,
 s32
 krb5_make_seq_num(struct crypto_blkcipher *key,
 		int direction,
-		s32 seqnum, unsigned char *cksum, unsigned char *buf);
+		u32 seqnum, unsigned char *cksum, unsigned char *buf);
 
 s32
 krb5_get_seq_num(struct crypto_blkcipher *key,
 	       unsigned char *cksum,
-	       unsigned char *buf, int *direction, s32 * seqnum);
+	       unsigned char *buf, int *direction, u32 *seqnum);

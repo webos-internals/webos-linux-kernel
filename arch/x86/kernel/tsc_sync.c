@@ -46,7 +46,9 @@ static __cpuinit void check_tsc_warp(void)
 	cycles_t start, now, prev, end;
 	int i;
 
-	start = get_cycles_sync();
+	rdtsc_barrier();
+	start = get_cycles();
+	rdtsc_barrier();
 	/*
 	 * The measurement runs for 20 msecs:
 	 */
@@ -61,18 +63,20 @@ static __cpuinit void check_tsc_warp(void)
 		 */
 		__raw_spin_lock(&sync_lock);
 		prev = last_tsc;
-		now = get_cycles_sync();
+		rdtsc_barrier();
+		now = get_cycles();
+		rdtsc_barrier();
 		last_tsc = now;
 		__raw_spin_unlock(&sync_lock);
 
 		/*
 		 * Be nice every now and then (and also check whether
-		 * measurement is done [we also insert a 100 million
+		 * measurement is done [we also insert a 10 million
 		 * loops safety exit, so we dont lock up in case the
 		 * TSC readout is totally broken]):
 		 */
 		if (unlikely(!(i & 7))) {
-			if (now > end || i > 100000000)
+			if (now > end || i > 10000000)
 				break;
 			cpu_relax();
 			touch_nmi_watchdog();
@@ -87,8 +91,10 @@ static __cpuinit void check_tsc_warp(void)
 			nr_warps++;
 			__raw_spin_unlock(&sync_lock);
 		}
-
 	}
+	WARN(!(now-start),
+		"Warning: zero tsc calibration delta: %Ld [max: %Ld]\n",
+			now-start, end-start);
 }
 
 /*
@@ -105,6 +111,12 @@ void __cpuinit check_tsc_sync_source(int cpu)
 	 */
 	if (unsynchronized_tsc())
 		return;
+
+	if (boot_cpu_has(X86_FEATURE_TSC_RELIABLE)) {
+		printk(KERN_INFO
+		       "Skipping synchronization checks as TSC is reliable.\n");
+		return;
+	}
 
 	printk(KERN_INFO "checking TSC synchronization [CPU#%d -> CPU#%d]:",
 			  smp_processor_id(), cpu);
@@ -129,22 +141,22 @@ void __cpuinit check_tsc_sync_source(int cpu)
 	while (atomic_read(&stop_count) != cpus-1)
 		cpu_relax();
 
-	/*
-	 * Reset it - just in case we boot another CPU later:
-	 */
-	atomic_set(&start_count, 0);
-
 	if (nr_warps) {
 		printk("\n");
 		printk(KERN_WARNING "Measured %Ld cycles TSC warp between CPUs,"
 				    " turning off TSC clock.\n", max_warp);
 		mark_tsc_unstable("check_tsc_sync_source failed");
-		nr_warps = 0;
-		max_warp = 0;
-		last_tsc = 0;
 	} else {
 		printk(" passed.\n");
 	}
+
+	/*
+	 * Reset it - just in case we boot another CPU later:
+	 */
+	atomic_set(&start_count, 0);
+	nr_warps = 0;
+	max_warp = 0;
+	last_tsc = 0;
 
 	/*
 	 * Let the target continue with the bootup:
@@ -159,7 +171,7 @@ void __cpuinit check_tsc_sync_target(void)
 {
 	int cpus = 2;
 
-	if (unsynchronized_tsc())
+	if (unsynchronized_tsc() || boot_cpu_has(X86_FEATURE_TSC_RELIABLE))
 		return;
 
 	/*

@@ -8,6 +8,7 @@ config PPC_PS3
 	select USB_ARCH_HAS_EHCI
 	select USB_EHCI_BIG_ENDIAN_MMIO
 	select MEMORY_HOTPLUG
+	select PPC_PCI_CHOICE
 	help
 	  This option enables support for the Sony PS3 game console
 	  and other platforms using the PS3 hypervisor.  Enabling this
@@ -60,17 +61,6 @@ config PS3_DYNAMIC_DMA
 
 	  This support is mainly for Linux kernel development.  If unsure,
 	  say N.
-
-config PS3_USE_LPAR_ADDR
-	depends on PPC_PS3 && EXPERIMENTAL
-	bool "PS3 use lpar address space"
-	default y
-	help
-	  This option is solely for experimentation by experts.  Disables
-	  translation of lpar addresses.  SPE support currently won't work
-	  without this set to y.
-
-	  If you have any doubt, choose the default y.
 
 config PS3_VUART
 	depends on PPC_PS3
@@ -137,5 +127,25 @@ config PS3_FLASH
 	  As this driver needs a fixed buffer of 256 KiB of memory, it can
 	  be disabled on the kernel command line using "ps3flash=off", to
 	  not allocate this fixed buffer.
+
+config PS3_VRAM
+	tristate "PS3 Video RAM Storage Driver"
+	depends on FB_PS3=y && BLOCK && m
+	help
+	  This driver allows you to use excess PS3 video RAM as volatile
+	  storage or system swap.
+
+config PS3_LPM
+	tristate "PS3 Logical Performance Monitor support"
+	depends on PPC_PS3
+	help
+	  Include support for the PS3 Logical Performance Monitor.
+
+	  This support is required to use the logical performance monitor
+	  of the PS3's LV1 hypervisor.
+
+	  If you intend to use the advanced performance monitoring and
+	  profiling support of the Cell processor with programs like
+	  oprofile and perfmon2, then say Y or M, otherwise say N.
 
 endmenu

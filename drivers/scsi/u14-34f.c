@@ -451,7 +451,6 @@ static struct scsi_host_template driver_template = {
                 .this_id                 = 7,
                 .unchecked_isa_dma       = 1,
                 .use_clustering          = ENABLE_CLUSTERING,
-                .use_sg_chaining         = ENABLE_SG_CHAINING,
                 };
 
 #if !defined(__BIG_ENDIAN_BITFIELD) && !defined(__LITTLE_ENDIAN_BITFIELD)
@@ -745,7 +744,8 @@ static int wait_on_busy(unsigned long iobase, unsigned int loop) {
 static int board_inquiry(unsigned int j) {
    struct mscp *cpp;
    dma_addr_t id_dma_addr;
-   unsigned int time, limit = 0;
+   unsigned int limit = 0;
+   unsigned long time;
 
    id_dma_addr = pci_map_single(HD(j)->pdev, HD(j)->board_id,
                     sizeof(HD(j)->board_id), PCI_DMA_BIDIRECTIONAL);
@@ -1111,7 +1111,8 @@ static int u14_34f_detect(struct scsi_host_template *tpnt) {
 
 static void map_dma(unsigned int i, unsigned int j) {
    unsigned int data_len = 0;
-   unsigned int k, count, pci_dir;
+   unsigned int k, pci_dir;
+   int count;
    struct scatterlist *sg;
    struct mscp *cpp;
    struct scsi_cmnd *SCpnt;
@@ -1121,9 +1122,9 @@ static void map_dma(unsigned int i, unsigned int j) {
 
    if (SCpnt->sense_buffer)
       cpp->sense_addr = H2DEV(pci_map_single(HD(j)->pdev, SCpnt->sense_buffer,
-                           sizeof SCpnt->sense_buffer, PCI_DMA_FROMDEVICE));
+                           SCSI_SENSE_BUFFERSIZE, PCI_DMA_FROMDEVICE));
 
-   cpp->sense_len = sizeof SCpnt->sense_buffer;
+   cpp->sense_len = SCSI_SENSE_BUFFERSIZE;
 
    if (scsi_bufflen(SCpnt)) {
 	   count = scsi_dma_map(SCpnt);
@@ -1217,7 +1218,7 @@ static void scsi_to_dev_dir(unsigned int i, unsigned int j) {
       cpp->xdir = DTD_IN;
       return;
       }
-   else if (SCpnt->sc_data_direction == DMA_FROM_DEVICE) {
+   else if (SCpnt->sc_data_direction == DMA_TO_DEVICE) {
       cpp->xdir = DTD_OUT;
       return;
       }
@@ -1393,7 +1394,8 @@ static int u14_34f_eh_abort(struct scsi_cmnd *SCarg) {
 }
 
 static int u14_34f_eh_host_reset(struct scsi_cmnd *SCarg) {
-   unsigned int i, j, time, k, c, limit = 0;
+   unsigned int i, j, k, c, limit = 0;
+   unsigned long time;
    int arg_done = FALSE;
    struct scsi_cmnd *SCpnt;
 
@@ -1716,13 +1718,12 @@ static void flush_dev(struct scsi_device *dev, unsigned long cursec, unsigned in
 
 }
 
-static irqreturn_t ihdlr(int irq, unsigned int j) {
+static irqreturn_t ihdlr(unsigned int j)
+{
    struct scsi_cmnd *SCpnt;
    unsigned int i, k, c, status, tstatus, reg, ret;
    struct mscp *spp, *cpp;
-
-   if (sh[j]->irq != irq)
-       panic("%s: ihdlr, irq %d, sh[j]->irq %d.\n", BN(j), irq, sh[j]->irq);
+   int irq = sh[j]->irq;
 
    /* Check if this board need to be serviced */
    if (!((reg = inb(sh[j]->io_port + REG_SYS_INTR)) & IRQ_ASSERTED)) goto none;
@@ -1936,7 +1937,7 @@ static irqreturn_t do_interrupt_handler(int irq, void *shap) {
    if ((j = (unsigned int)((char *)shap - sha)) >= num_boards) return IRQ_NONE;
 
    spin_lock_irqsave(sh[j]->host_lock, spin_flags);
-   ret = ihdlr(irq, j);
+   ret = ihdlr(j);
    spin_unlock_irqrestore(sh[j]->host_lock, spin_flags);
    return ret;
 }

@@ -145,7 +145,7 @@ static void jsm_tty_send_xchar(struct uart_port *port, char ch)
 	struct ktermios *termios;
 
 	spin_lock_irqsave(&port->lock, lock_flags);
-	termios = port->info->tty->termios;
+	termios = port->info->port.tty->termios;
 	if (ch == termios->c_cc[VSTART])
 		channel->ch_bd->bd_ops->send_start_character(channel);
 
@@ -159,6 +159,11 @@ static void jsm_tty_stop_rx(struct uart_port *port)
 	struct jsm_channel *channel = (struct jsm_channel *)port;
 
 	channel->ch_bd->bd_ops->disable_receiver(channel);
+}
+
+static void jsm_tty_enable_ms(struct uart_port *port)
+{
+	/* Nothing needed */
 }
 
 static void jsm_tty_break(struct uart_port *port, int break_state)
@@ -239,7 +244,7 @@ static int jsm_tty_open(struct uart_port *port)
 	channel->ch_cached_lsr = 0;
 	channel->ch_stops_sent = 0;
 
-	termios = port->info->tty->termios;
+	termios = port->info->port.tty->termios;
 	channel->ch_c_cflag	= termios->c_cflag;
 	channel->ch_c_iflag	= termios->c_iflag;
 	channel->ch_c_oflag	= termios->c_oflag;
@@ -272,7 +277,7 @@ static void jsm_tty_close(struct uart_port *port)
 	jsm_printk(CLOSE, INFO, &channel->ch_bd->pci_dev, "start\n");
 
 	bd = channel->ch_bd;
-	ts = channel->uart_port.info->tty->termios;
+	ts = port->info->port.tty->termios;
 
 	channel->ch_flags &= ~(CH_STOPI);
 
@@ -345,6 +350,7 @@ static struct uart_ops jsm_ops = {
 	.start_tx	= jsm_tty_start_tx,
 	.send_xchar	= jsm_tty_send_xchar,
 	.stop_rx	= jsm_tty_stop_rx,
+	.enable_ms	= jsm_tty_enable_ms,
 	.break_ctl	= jsm_tty_break,
 	.startup	= jsm_tty_open,
 	.shutdown	= jsm_tty_close,
@@ -515,7 +521,7 @@ void jsm_input(struct jsm_channel *ch)
 	if (!ch)
 		return;
 
-	tp = ch->uart_port.info->tty;
+	tp = ch->uart_port.info->port.tty;
 
 	bd = ch->ch_bd;
 	if(!bd)

@@ -21,6 +21,7 @@
  */
 #include <linux/miscdevice.h>
 #include <linux/file.h>
+#include <linux/smp_lock.h>
 #include <net/tcp.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -112,7 +113,7 @@ int scsi_tgt_uspace_send_cmd(struct scsi_cmnd *cmd, u64 itn_id,
 	memset(&ev, 0, sizeof(ev));
 	ev.p.cmd_req.host_no = shost->host_no;
 	ev.p.cmd_req.itn_id = itn_id;
-	ev.p.cmd_req.data_len = cmd->request_bufflen;
+	ev.p.cmd_req.data_len = scsi_bufflen(cmd);
 	memcpy(ev.p.cmd_req.scb, cmd->cmnd, sizeof(ev.p.cmd_req.scb));
 	memcpy(ev.p.cmd_req.lun, lun, sizeof(ev.p.cmd_req.lun));
 	ev.p.cmd_req.attribute = cmd->tag;
@@ -321,6 +322,7 @@ static int tgt_open(struct inode *inode, struct file *file)
 {
 	tx_ring.tr_idx = rx_ring.tr_idx = 0;
 
+	cycle_kernel_lock();
 	return 0;
 }
 

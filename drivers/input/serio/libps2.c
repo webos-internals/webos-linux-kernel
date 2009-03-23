@@ -13,7 +13,6 @@
 
 #include <linux/delay.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/input.h>
@@ -26,15 +25,6 @@
 MODULE_AUTHOR("Dmitry Torokhov <dtor@mail.ru>");
 MODULE_DESCRIPTION("PS/2 driver library");
 MODULE_LICENSE("GPL");
-
-/* Work structure to schedule execution of a command */
-struct ps2work {
-	struct work_struct work;
-	struct ps2dev *ps2dev;
-	int command;
-	unsigned char param[0];
-};
-
 
 /*
  * ps2_sendbyte() sends a byte to the device and waits for acknowledge.
@@ -247,49 +237,6 @@ int ps2_command(struct ps2dev *ps2dev, unsigned char *param, int command)
 EXPORT_SYMBOL(ps2_command);
 
 /*
- * ps2_execute_scheduled_command() sends a command, previously scheduled by
- * ps2_schedule_command(), to a PS/2 device (keyboard, mouse, etc.)
- */
-
-static void ps2_execute_scheduled_command(struct work_struct *work)
-{
-	struct ps2work *ps2work = container_of(work, struct ps2work, work);
-
-	ps2_command(ps2work->ps2dev, ps2work->param, ps2work->command);
-	kfree(ps2work);
-}
-
-/*
- * ps2_schedule_command() allows to schedule delayed execution of a PS/2
- * command and can be used to issue a command from an interrupt or softirq
- * context.
- */
-
-int ps2_schedule_command(struct ps2dev *ps2dev, unsigned char *param, int command)
-{
-	struct ps2work *ps2work;
-	int send = (command >> 12) & 0xf;
-	int receive = (command >> 8) & 0xf;
-
-	if (!(ps2work = kmalloc(sizeof(struct ps2work) + max(send, receive), GFP_ATOMIC)))
-		return -1;
-
-	memset(ps2work, 0, sizeof(struct ps2work));
-	ps2work->ps2dev = ps2dev;
-	ps2work->command = command;
-	memcpy(ps2work->param, param, send);
-	INIT_WORK(&ps2work->work, ps2_execute_scheduled_command);
-
-	if (!schedule_work(&ps2work->work)) {
-		kfree(ps2work);
-		return -1;
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(ps2_schedule_command);
-
-/*
  * ps2_init() initializes ps2dev structure
  */
 
@@ -315,8 +262,16 @@ int ps2_handle_ack(struct ps2dev *ps2dev, unsigned char data)
 			break;
 
 		case PS2_RET_NAK:
-			ps2dev->nak = 1;
+			ps2dev->flags |= PS2_FLAG_NAK;
+			ps2dev->nak = PS2_RET_NAK;
 			break;
+
+		case PS2_RET_ERR:
+			if (ps2dev->flags & PS2_FLAG_NAK) {
+				ps2dev->flags &= ~PS2_FLAG_NAK;
+				ps2dev->nak = PS2_RET_ERR;
+				break;
+			}
 
 		/*
 		 * Workaround for mice which don't ACK the Get ID command.
@@ -335,8 +290,11 @@ int ps2_handle_ack(struct ps2dev *ps2dev, unsigned char data)
 	}
 
 
-	if (!ps2dev->nak && ps2dev->cmdcnt)
-		ps2dev->flags |= PS2_FLAG_CMD | PS2_FLAG_CMD1;
+	if (!ps2dev->nak) {
+		ps2dev->flags &= ~PS2_FLAG_NAK;
+		if (ps2dev->cmdcnt)
+			ps2dev->flags |= PS2_FLAG_CMD | PS2_FLAG_CMD1;
+	}
 
 	ps2dev->flags &= ~PS2_FLAG_ACK;
 	wake_up(&ps2dev->wait);
@@ -382,6 +340,7 @@ void ps2_cmd_aborted(struct ps2dev *ps2dev)
 	if (ps2dev->flags & (PS2_FLAG_ACK | PS2_FLAG_CMD))
 		wake_up(&ps2dev->wait);
 
-	ps2dev->flags = 0;
+	/* reset all flags except last nack */
+	ps2dev->flags &= PS2_FLAG_NAK;
 }
 EXPORT_SYMBOL(ps2_cmd_aborted);

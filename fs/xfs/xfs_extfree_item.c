@@ -41,8 +41,7 @@ xfs_efi_item_free(xfs_efi_log_item_t *efip)
 	int nexts = efip->efi_format.efi_nextents;
 
 	if (nexts > XFS_EFI_MAX_FAST_EXTENTS) {
-		kmem_free(efip, sizeof(xfs_efi_log_item_t) +
-				(nexts - 1) * sizeof(xfs_extent_t));
+		kmem_free(efip);
 	} else {
 		kmem_zone_free(xfs_efi_zone, efip);
 	}
@@ -109,20 +108,16 @@ xfs_efi_item_pin(xfs_efi_log_item_t *efip)
 STATIC void
 xfs_efi_item_unpin(xfs_efi_log_item_t *efip, int stale)
 {
-	xfs_mount_t	*mp;
-	SPLDECL(s);
+	struct xfs_ail		*ailp = efip->efi_item.li_ailp;
 
-	mp = efip->efi_item.li_mountp;
-	AIL_LOCK(mp, s);
+	spin_lock(&ailp->xa_lock);
 	if (efip->efi_flags & XFS_EFI_CANCELED) {
-		/*
-		 * xfs_trans_delete_ail() drops the AIL lock.
-		 */
-		xfs_trans_delete_ail(mp, (xfs_log_item_t *)efip, s);
+		/* xfs_trans_ail_delete() drops the AIL lock. */
+		xfs_trans_ail_delete(ailp, (xfs_log_item_t *)efip);
 		xfs_efi_item_free(efip);
 	} else {
 		efip->efi_flags |= XFS_EFI_COMMITTED;
-		AIL_UNLOCK(mp, s);
+		spin_unlock(&ailp->xa_lock);
 	}
 }
 
@@ -136,27 +131,23 @@ xfs_efi_item_unpin(xfs_efi_log_item_t *efip, int stale)
 STATIC void
 xfs_efi_item_unpin_remove(xfs_efi_log_item_t *efip, xfs_trans_t *tp)
 {
-	xfs_mount_t	*mp;
+	struct xfs_ail		*ailp = efip->efi_item.li_ailp;
 	xfs_log_item_desc_t	*lidp;
-	SPLDECL(s);
 
-	mp = efip->efi_item.li_mountp;
-	AIL_LOCK(mp, s);
+	spin_lock(&ailp->xa_lock);
 	if (efip->efi_flags & XFS_EFI_CANCELED) {
 		/*
 		 * free the xaction descriptor pointing to this item
 		 */
 		lidp = xfs_trans_find_item(tp, (xfs_log_item_t *) efip);
 		xfs_trans_free_item(tp, lidp);
-		/*
-		 * pull the item off the AIL.
-		 * xfs_trans_delete_ail() drops the AIL lock.
-		 */
-		xfs_trans_delete_ail(mp, (xfs_log_item_t *)efip, s);
+
+		/* xfs_trans_ail_delete() drops the AIL lock. */
+		xfs_trans_ail_delete(ailp, (xfs_log_item_t *)efip);
 		xfs_efi_item_free(efip);
 	} else {
 		efip->efi_flags |= XFS_EFI_COMMITTED;
-		AIL_UNLOCK(mp, s);
+		spin_unlock(&ailp->xa_lock);
 	}
 }
 
@@ -271,6 +262,7 @@ xfs_efi_init(xfs_mount_t	*mp,
 	efip->efi_item.li_type = XFS_LI_EFI;
 	efip->efi_item.li_ops = &xfs_efi_item_ops;
 	efip->efi_item.li_mountp = mp;
+	efip->efi_item.li_ailp = mp->m_ail;
 	efip->efi_format.efi_nextents = nextents;
 	efip->efi_format.efi_id = (__psint_t)(void*)efip;
 
@@ -348,26 +340,22 @@ void
 xfs_efi_release(xfs_efi_log_item_t	*efip,
 		uint			nextents)
 {
-	xfs_mount_t	*mp;
-	int		extents_left;
-	SPLDECL(s);
+	struct xfs_ail		*ailp = efip->efi_item.li_ailp;
+	int			extents_left;
 
-	mp = efip->efi_item.li_mountp;
 	ASSERT(efip->efi_next_extent > 0);
 	ASSERT(efip->efi_flags & XFS_EFI_COMMITTED);
 
-	AIL_LOCK(mp, s);
+	spin_lock(&ailp->xa_lock);
 	ASSERT(efip->efi_next_extent >= nextents);
 	efip->efi_next_extent -= nextents;
 	extents_left = efip->efi_next_extent;
 	if (extents_left == 0) {
-		/*
-		 * xfs_trans_delete_ail() drops the AIL lock.
-		 */
-		xfs_trans_delete_ail(mp, (xfs_log_item_t *)efip, s);
+		/* xfs_trans_ail_delete() drops the AIL lock. */
+		xfs_trans_ail_delete(ailp, (xfs_log_item_t *)efip);
 		xfs_efi_item_free(efip);
 	} else {
-		AIL_UNLOCK(mp, s);
+		spin_unlock(&ailp->xa_lock);
 	}
 }
 
@@ -377,8 +365,7 @@ xfs_efd_item_free(xfs_efd_log_item_t *efdp)
 	int nexts = efdp->efd_format.efd_nextents;
 
 	if (nexts > XFS_EFD_MAX_FAST_EXTENTS) {
-		kmem_free(efdp, sizeof(xfs_efd_log_item_t) +
-				(nexts - 1) * sizeof(xfs_extent_t));
+		kmem_free(efdp);
 	} else {
 		kmem_zone_free(xfs_efd_zone, efdp);
 	}
@@ -570,6 +557,7 @@ xfs_efd_init(xfs_mount_t	*mp,
 	efdp->efd_item.li_type = XFS_LI_EFD;
 	efdp->efd_item.li_ops = &xfs_efd_item_ops;
 	efdp->efd_item.li_mountp = mp;
+	efdp->efd_item.li_ailp = mp->m_ail;
 	efdp->efd_efip = efip;
 	efdp->efd_format.efd_nextents = nextents;
 	efdp->efd_format.efd_efi_id = efip->efi_format.efi_id;

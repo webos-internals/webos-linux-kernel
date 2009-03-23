@@ -1,5 +1,5 @@
-#ifndef _ASM_LINUX_DMA_MAPPING_H
-#define _ASM_LINUX_DMA_MAPPING_H
+#ifndef _LINUX_DMA_MAPPING_H
+#define _LINUX_DMA_MAPPING_H
 
 #include <linux/device.h>
 #include <linux/err.h>
@@ -48,6 +48,11 @@ static inline int is_device_dma_capable(struct device *dev)
 	return dev->dma_mask != NULL && *dev->dma_mask != DMA_MASK_NONE;
 }
 
+static inline int is_buffer_dma_capable(u64 mask, dma_addr_t addr, size_t size)
+{
+	return addr + size <= mask;
+}
+
 #ifdef CONFIG_HAS_DMA
 #include <asm/dma-mapping.h>
 #else
@@ -58,7 +63,44 @@ static inline int is_device_dma_capable(struct device *dev)
 #define dma_sync_single		dma_sync_single_for_cpu
 #define dma_sync_sg		dma_sync_sg_for_cpu
 
+static inline u64 dma_get_mask(struct device *dev)
+{
+	if (dev && dev->dma_mask && *dev->dma_mask)
+		return *dev->dma_mask;
+	return DMA_32BIT_MASK;
+}
+
 extern u64 dma_get_required_mask(struct device *dev);
+
+static inline unsigned int dma_get_max_seg_size(struct device *dev)
+{
+	return dev->dma_parms ? dev->dma_parms->max_segment_size : 65536;
+}
+
+static inline unsigned int dma_set_max_seg_size(struct device *dev,
+						unsigned int size)
+{
+	if (dev->dma_parms) {
+		dev->dma_parms->max_segment_size = size;
+		return 0;
+	} else
+		return -EIO;
+}
+
+static inline unsigned long dma_get_seg_boundary(struct device *dev)
+{
+	return dev->dma_parms ?
+		dev->dma_parms->segment_boundary_mask : 0xffffffff;
+}
+
+static inline int dma_set_seg_boundary(struct device *dev, unsigned long mask)
+{
+	if (dev->dma_parms) {
+		dev->dma_parms->segment_boundary_mask = mask;
+		return 0;
+	} else
+		return -EIO;
+}
 
 /* flags for the coherent memory api */
 #define	DMA_MEMORY_MAP			0x01
@@ -115,5 +157,22 @@ static inline void dmam_release_declared_memory(struct device *dev)
 {
 }
 #endif /* ARCH_HAS_DMA_DECLARE_COHERENT_MEMORY */
+
+#ifndef CONFIG_HAVE_DMA_ATTRS
+struct dma_attrs;
+
+#define dma_map_single_attrs(dev, cpu_addr, size, dir, attrs) \
+	dma_map_single(dev, cpu_addr, size, dir)
+
+#define dma_unmap_single_attrs(dev, dma_addr, size, dir, attrs) \
+	dma_unmap_single(dev, dma_addr, size, dir)
+
+#define dma_map_sg_attrs(dev, sgl, nents, dir, attrs) \
+	dma_map_sg(dev, sgl, nents, dir)
+
+#define dma_unmap_sg_attrs(dev, sgl, nents, dir, attrs) \
+	dma_unmap_sg(dev, sgl, nents, dir)
+
+#endif /* CONFIG_HAVE_DMA_ATTRS */
 
 #endif

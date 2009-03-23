@@ -10,7 +10,8 @@
 #include <linux/platform_device.h>
 #include <linux/init.h>
 #include <linux/serial.h>
-#include <asm/sci.h>
+#include <linux/serial_sci.h>
+#include <linux/io.h>
 
 enum {
 	UNUSED = 0,
@@ -92,15 +93,6 @@ static struct intc_group groups[] __initdata = {
 	INTC_GROUP(REF, REF_RCMI, REF_ROVI),
 };
 
-static struct intc_prio priorities[] __initdata = {
-	INTC_PRIO(SCIF0, 3),
-	INTC_PRIO(SCIF1, 3),
-	INTC_PRIO(SCIF2, 3),
-	INTC_PRIO(SIM, 3),
-	INTC_PRIO(DMAC, 7),
-	INTC_PRIO(DMABRG, 13),
-};
-
 static struct intc_mask_reg mask_registers[] __initdata = {
 	{ 0xfe080040, 0xfe080060, 32, /* INTMSK00 / INTMSKCLR00 */
 	  { IRQ4, IRQ5, IRQ6, IRQ7, 0, 0, HCAN20, HCAN21,
@@ -132,7 +124,7 @@ static struct intc_prio_reg prio_registers[] __initdata = {
 };
 
 static DECLARE_INTC_DESC(intc_desc, "sh7760", vectors, groups,
-			 priorities, mask_registers, prio_registers, NULL);
+			 mask_registers, prio_registers, NULL);
 
 static struct intc_vect vectors_irq[] __initdata = {
 	INTC_VECT(IRL0, 0x240), INTC_VECT(IRL1, 0x2a0),
@@ -140,7 +132,7 @@ static struct intc_vect vectors_irq[] __initdata = {
 };
 
 static DECLARE_INTC_DESC(intc_desc_irq, "sh7760-irq", vectors_irq, groups,
-			 priorities, mask_registers, prio_registers, NULL);
+			 mask_registers, prio_registers, NULL);
 
 static struct plat_sci_port sci_platform_data[] = {
 	{
@@ -187,10 +179,14 @@ static int __init sh7760_devices_setup(void)
 }
 __initcall(sh7760_devices_setup);
 
+#define INTC_ICR	0xffd00000UL
+#define INTC_ICR_IRLM	(1 << 7)
+
 void __init plat_irq_setup_pins(int mode)
 {
 	switch (mode) {
 	case IRQ_MODE_IRQ:
+		ctrl_outw(ctrl_inw(INTC_ICR) | INTC_ICR_IRLM, INTC_ICR);
 		register_intc_controller(&intc_desc_irq);
 		break;
 	default:

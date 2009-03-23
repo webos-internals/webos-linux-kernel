@@ -39,7 +39,8 @@
 				 SUPPORTED_1000baseT_Half | \
 				 SUPPORTED_1000baseT_Full)
 
-/* Set phydev->irq to PHY_POLL if interrupts are not supported,
+/*
+ * Set phydev->irq to PHY_POLL if interrupts are not supported,
  * or not desired for this PHY.  Set to PHY_IGNORE_INTERRUPT if
  * the attached driver handles the interrupt
  */
@@ -63,8 +64,6 @@ typedef enum {
 	PHY_INTERFACE_MODE_RTBI
 } phy_interface_t;
 
-#define MII_BUS_MAX 4
-
 
 #define PHY_INIT_TIMEOUT	100000
 #define PHY_STATE_TIME		1
@@ -74,23 +73,40 @@ typedef enum {
 #define PHY_MAX_ADDR	32
 
 /* Used when trying to connect to a specific phy (mii bus id:phy device id) */
-#define PHY_ID_FMT "%x:%02x"
+#define PHY_ID_FMT "%s:%02x"
 
-/* The Bus class for PHYs.  Devices which provide access to
- * PHYs should register using this structure */
+/*
+ * Need to be a little smaller than phydev->dev.bus_id to leave room
+ * for the ":%02x"
+ */
+#define MII_BUS_ID_SIZE	(BUS_ID_SIZE - 3)
+
+/*
+ * The Bus class for PHYs.  Devices which provide access to
+ * PHYs should register using this structure
+ */
 struct mii_bus {
 	const char *name;
-	int id;
+	char id[MII_BUS_ID_SIZE];
 	void *priv;
 	int (*read)(struct mii_bus *bus, int phy_id, int regnum);
 	int (*write)(struct mii_bus *bus, int phy_id, int regnum, u16 val);
 	int (*reset)(struct mii_bus *bus);
 
-	/* A lock to ensure that only one thing can read/write
-	 * the MDIO bus at a time */
-	spinlock_t mdio_lock;
+	/*
+	 * A lock to ensure that only one thing can read/write
+	 * the MDIO bus at a time
+	 */
+	struct mutex mdio_lock;
 
-	struct device *dev;
+	struct device *parent;
+	enum {
+		MDIOBUS_ALLOCATED = 1,
+		MDIOBUS_REGISTERED,
+		MDIOBUS_UNREGISTERED,
+		MDIOBUS_RELEASED,
+	} state;
+	struct device dev;
 
 	/* list of all PHYs on bus */
 	struct phy_device *phy_map[PHY_MAX_ADDR];
@@ -98,10 +114,22 @@ struct mii_bus {
 	/* Phy addresses to be ignored when probing */
 	u32 phy_mask;
 
-	/* Pointer to an array of interrupts, each PHY's
-	 * interrupt at the index matching its address */
+	/*
+	 * Pointer to an array of interrupts, each PHY's
+	 * interrupt at the index matching its address
+	 */
 	int *irq;
 };
+#define to_mii_bus(d) container_of(d, struct mii_bus, dev)
+
+struct mii_bus *mdiobus_alloc(void);
+int mdiobus_register(struct mii_bus *bus);
+void mdiobus_unregister(struct mii_bus *bus);
+void mdiobus_free(struct mii_bus *bus);
+struct phy_device *mdiobus_scan(struct mii_bus *bus, int addr);
+int mdiobus_read(struct mii_bus *bus, int addr, u16 regnum);
+int mdiobus_write(struct mii_bus *bus, int addr, u16 regnum, u16 val);
+
 
 #define PHY_INTERRUPT_DISABLED	0x0
 #define PHY_INTERRUPT_ENABLED	0x80000000
@@ -251,7 +279,8 @@ struct phy_device {
 	/* Bus address of the PHY (0-32) */
 	int addr;
 
-	/* forced speed & duplex (no autoneg)
+	/*
+	 * forced speed & duplex (no autoneg)
 	 * partner speed & duplex & pause (autoneg)
 	 */
 	int speed;
@@ -274,8 +303,10 @@ struct phy_device {
 
 	int link_timeout;
 
-	/* Interrupt number for this PHY
-	 * -1 means no interrupt */
+	/*
+	 * Interrupt number for this PHY
+	 * -1 means no interrupt
+	 */
 	int irq;
 
 	/* private data pointer */
@@ -284,10 +315,11 @@ struct phy_device {
 
 	/* Interrupt and Polling infrastructure */
 	struct work_struct phy_queue;
+	struct work_struct state_queue;
 	struct timer_list phy_timer;
 	atomic_t irq_disable;
 
-	spinlock_t lock;
+	struct mutex lock;
 
 	struct net_device *attached_dev;
 
@@ -324,22 +356,28 @@ struct phy_driver {
 	u32 features;
 	u32 flags;
 
-	/* Called to initialize the PHY,
-	 * including after a reset */
+	/*
+	 * Called to initialize the PHY,
+	 * including after a reset
+	 */
 	int (*config_init)(struct phy_device *phydev);
 
-	/* Called during discovery.  Used to set
-	 * up device-specific structures, if any */
+	/*
+	 * Called during discovery.  Used to set
+	 * up device-specific structures, if any
+	 */
 	int (*probe)(struct phy_device *phydev);
 
 	/* PHY Power Management */
 	int (*suspend)(struct phy_device *phydev);
 	int (*resume)(struct phy_device *phydev);
 
-	/* Configures the advertisement and resets
+	/*
+	 * Configures the advertisement and resets
 	 * autonegotiation if phydev->autoneg is on,
 	 * forces the speed to the current settings in phydev
-	 * if phydev->autoneg is off */
+	 * if phydev->autoneg is off
+	 */
 	int (*config_aneg)(struct phy_device *phydev);
 
 	/* Determines the negotiated speed and duplex */
@@ -358,14 +396,54 @@ struct phy_driver {
 };
 #define to_phy_driver(d) container_of(d, struct phy_driver, driver)
 
-int phy_read(struct phy_device *phydev, u16 regnum);
-int phy_write(struct phy_device *phydev, u16 regnum, u16 val);
+#define PHY_ANY_ID "MATCH ANY PHY"
+#define PHY_ANY_UID 0xffffffff
+
+/* A Structure for boards to register fixups with the PHY Lib */
+struct phy_fixup {
+	struct list_head list;
+	char bus_id[BUS_ID_SIZE];
+	u32 phy_uid;
+	u32 phy_uid_mask;
+	int (*run)(struct phy_device *phydev);
+};
+
+/**
+ * phy_read - Convenience function for reading a given PHY register
+ * @phydev: the phy_device struct
+ * @regnum: register number to read
+ *
+ * NOTE: MUST NOT be called from interrupt context,
+ * because the bus read/write functions may wait for an interrupt
+ * to conclude the operation.
+ */
+static inline int phy_read(struct phy_device *phydev, u16 regnum)
+{
+	return mdiobus_read(phydev->bus, phydev->addr, regnum);
+}
+
+/**
+ * phy_write - Convenience function for writing a given PHY register
+ * @phydev: the phy_device struct
+ * @regnum: register number to write
+ * @val: value to write to @regnum
+ *
+ * NOTE: MUST NOT be called from interrupt context,
+ * because the bus read/write functions may wait for an interrupt
+ * to conclude the operation.
+ */
+static inline int phy_write(struct phy_device *phydev, u16 regnum, u16 val)
+{
+	return mdiobus_write(phydev->bus, phydev->addr, regnum, val);
+}
+
+int get_phy_id(struct mii_bus *bus, int addr, u32 *phy_id);
 struct phy_device* get_phy_device(struct mii_bus *bus, int addr);
 int phy_clear_interrupt(struct phy_device *phydev);
 int phy_config_interrupt(struct phy_device *phydev, u32 interrupts);
 struct phy_device * phy_attach(struct net_device *dev,
-		const char *phy_id, u32 flags, phy_interface_t interface);
-struct phy_device * phy_connect(struct net_device *dev, const char *phy_id,
+		const char *bus_id, u32 flags, phy_interface_t interface);
+struct phy_device * phy_connect(struct net_device *dev, const char *bus_id,
 		void (*handler)(struct net_device *), u32 flags,
 		phy_interface_t interface);
 void phy_disconnect(struct phy_device *phydev);
@@ -374,10 +452,10 @@ void phy_start(struct phy_device *phydev);
 void phy_stop(struct phy_device *phydev);
 int phy_start_aneg(struct phy_device *phydev);
 
-int mdiobus_register(struct mii_bus *bus);
-void mdiobus_unregister(struct mii_bus *bus);
 void phy_sanitize_settings(struct phy_device *phydev);
 int phy_stop_interrupts(struct phy_device *phydev);
+int phy_enable_interrupts(struct phy_device *phydev);
+int phy_disable_interrupts(struct phy_device *phydev);
 
 static inline int phy_read_status(struct phy_device *phydev) {
 	return phydev->drv->read_status(phydev);
@@ -389,6 +467,8 @@ int genphy_restart_aneg(struct phy_device *phydev);
 int genphy_config_aneg(struct phy_device *phydev);
 int genphy_update_link(struct phy_device *phydev);
 int genphy_read_status(struct phy_device *phydev);
+int genphy_suspend(struct phy_device *phydev);
+int genphy_resume(struct phy_device *phydev);
 void phy_driver_unregister(struct phy_driver *drv);
 int phy_driver_register(struct phy_driver *new_driver);
 void phy_prepare_link(struct phy_device *phydev,
@@ -404,6 +484,17 @@ int phy_start_interrupts(struct phy_device *phydev);
 void phy_print_status(struct phy_device *phydev);
 struct phy_device* phy_device_create(struct mii_bus *bus, int addr, int phy_id);
 void phy_device_free(struct phy_device *phydev);
+
+int phy_register_fixup(const char *bus_id, u32 phy_uid, u32 phy_uid_mask,
+		int (*run)(struct phy_device *));
+int phy_register_fixup_for_id(const char *bus_id,
+		int (*run)(struct phy_device *));
+int phy_register_fixup_for_uid(u32 phy_uid, u32 phy_uid_mask,
+		int (*run)(struct phy_device *));
+int phy_scan_fixups(struct phy_device *phydev);
+
+int __init mdio_bus_init(void);
+void mdio_bus_exit(void);
 
 extern struct bus_type mdio_bus_type;
 #endif /* __PHY_H */

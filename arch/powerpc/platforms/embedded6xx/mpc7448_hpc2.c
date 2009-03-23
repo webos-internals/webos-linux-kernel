@@ -53,8 +53,6 @@
 
 #define MPC7448HPC2_PCI_CFG_PHYS 0xfb000000
 
-extern void _nmask_and_or_msr(unsigned long nmask, unsigned long or_val);
-
 int mpc7448_hpc2_exclude_device(struct pci_controller *hose,
 				u_char bus, u_char devfn)
 {
@@ -119,11 +117,11 @@ static void __init mpc7448_hpc2_init_IRQ(void)
 	}
 
 	if (mpic_paddr == 0) {
-		printk("%s: No tsi108 PIC found !\n", __FUNCTION__);
+		printk("%s: No tsi108 PIC found !\n", __func__);
 		return;
 	}
 
-	DBG("%s: tsi108 pic phys_addr = 0x%x\n", __FUNCTION__,
+	DBG("%s: tsi108 pic phys_addr = 0x%x\n", __func__,
 	    (u32) mpic_paddr);
 
 	mpic = mpic_alloc(tsi_pic, mpic_paddr,
@@ -142,17 +140,17 @@ static void __init mpc7448_hpc2_init_IRQ(void)
 #ifdef CONFIG_PCI
 	tsi_pci = of_find_node_by_type(NULL, "pci");
 	if (tsi_pci == NULL) {
-		printk("%s: No tsi108 pci node found !\n", __FUNCTION__);
+		printk("%s: No tsi108 pci node found !\n", __func__);
 		return;
 	}
 	cascade_node = of_find_node_by_type(NULL, "pic-router");
 	if (cascade_node == NULL) {
-		printk("%s: No tsi108 pci cascade node found !\n", __FUNCTION__);
+		printk("%s: No tsi108 pci cascade node found !\n", __func__);
 		return;
 	}
 
 	cascade_pci_irq = irq_of_parse_and_map(tsi_pci, 0);
-	DBG("%s: tsi108 cascade_pci_irq = 0x%x\n", __FUNCTION__,
+	DBG("%s: tsi108 cascade_pci_irq = 0x%x\n", __func__,
 	    (u32) cascade_pci_irq);
 	tsi108_pci_int_init(cascade_node);
 	set_irq_data(cascade_pci_irq, mpic);
@@ -166,7 +164,6 @@ static void __init mpc7448_hpc2_init_IRQ(void)
 void mpc7448_hpc2_show_cpuinfo(struct seq_file *m)
 {
 	seq_printf(m, "vendor\t\t: Freescale Semiconductor\n");
-	seq_printf(m, "machine\t\t: MPC7448hpc2\n");
 }
 
 void mpc7448_hpc2_restart(char *cmd)

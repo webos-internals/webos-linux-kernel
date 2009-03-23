@@ -2,6 +2,7 @@
  * Written by Martin Schwidefsky (schwidefsky@de.ibm.com)
  */
 
+#include <asm/thread_info.h>
 #include <asm/page.h>
 #include <asm-generic/vmlinux.lds.h>
 
@@ -17,6 +18,12 @@ ENTRY(_start)
 jiffies = jiffies_64;
 #endif
 
+PHDRS {
+	text PT_LOAD FLAGS(5);	/* R_E */
+	data PT_LOAD FLAGS(7);	/* RWE */
+	note PT_NOTE FLAGS(0);	/* ___ */
+}
+
 SECTIONS
 {
 	. = 0x00000000;
@@ -29,9 +36,11 @@ SECTIONS
 		KPROBES_TEXT
 		*(.fixup)
 		*(.gnu.warning)
-	} = 0x0700
+	} :text = 0x0700
 
 	_etext = .;		/* End of text section */
+
+	NOTES :text :note
 
 	RODATA
 
@@ -47,10 +56,7 @@ SECTIONS
 		__start___ex_table = .;
 		*(__ex_table)
 		__stop___ex_table = .;
-	}
-
-	NOTES
-	BUG_TABLE
+	} :data
 
 	.data : {		/* Data */
 		DATA_DATA
@@ -81,7 +87,7 @@ SECTIONS
 	}
 	_edata = .;		/* End of data section */
 
-	. = ALIGN(2 * PAGE_SIZE);	/* init_task */
+	. = ALIGN(THREAD_SIZE);	/* init_task */
 	.data.init_task : {
 		*(.data.init_task)
 	}
@@ -91,7 +97,7 @@ SECTIONS
 	__init_begin = .;
 	.init.text : {
 		_sinittext = .;
-		*(.init.text)
+		INIT_TEXT
 		_einittext = .;
 	}
 	/*
@@ -99,11 +105,11 @@ SECTIONS
 	 * to deal with references from __bug_table
 	*/
 	.exit.text : {
-		*(.exit.text)
+		EXIT_TEXT
 	}
 
 	.init.data : {
-		*(.init.data)
+		INIT_DATA
 	}
 	. = ALIGN(0x100);
 	.init.setup : {
@@ -150,7 +156,7 @@ SECTIONS
 
 	/* Sections to be discarded */
 	/DISCARD/ : {
-		*(.exit.data)
+		EXIT_DATA
 		*(.exitcall.exit)
 	}
 

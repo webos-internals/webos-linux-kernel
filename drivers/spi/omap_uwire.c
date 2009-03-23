@@ -47,19 +47,18 @@
 
 #include <asm/system.h>
 #include <asm/irq.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/io.h>
 #include <asm/mach-types.h>
 
-#include <asm/arch/mux.h>
-#include <asm/arch/omap730.h>	/* OMAP730_IO_CONF registers */
+#include <mach/mux.h>
+#include <mach/omap730.h>	/* OMAP730_IO_CONF registers */
 
 
 /* FIXME address is now a platform device resource,
  * and irqs should show there too...
  */
 #define UWIRE_BASE_PHYS		0xFFFB3000
-#define UWIRE_BASE		((void *__iomem)IO_ADDRESS(UWIRE_BASE_PHYS))
 
 /* uWire Registers: */
 #define UWIRE_IO_SIZE 0x20
@@ -103,16 +102,21 @@ struct uwire_state {
 };
 
 /* REVISIT compile time constant for idx_shift? */
+/*
+ * Or, put it in a structure which is used throughout the driver;
+ * that avoids having to issue two loads for each bit of static data.
+ */
 static unsigned int uwire_idx_shift;
+static void __iomem *uwire_base;
 
 static inline void uwire_write_reg(int idx, u16 val)
 {
-	__raw_writew(val, UWIRE_BASE + (idx << uwire_idx_shift));
+	__raw_writew(val, uwire_base + (idx << uwire_idx_shift));
 }
 
 static inline u16 uwire_read_reg(int idx)
 {
-	return __raw_readw(UWIRE_BASE + (idx << uwire_idx_shift));
+	return __raw_readw(uwire_base + (idx << uwire_idx_shift));
 }
 
 static inline void omap_uwire_configure_mode(u8 cs, unsigned long flags)
@@ -151,7 +155,7 @@ static int wait_uwire_csr_flag(u16 mask, u16 val, int might_not_catch)
 		if (time_after(jiffies, max_jiffies)) {
 			printk(KERN_ERR "%s: timeout. reg=%#06x "
 					"mask=%#06x val=%#06x\n",
-			       __FUNCTION__, w, mask, val);
+			       __func__, w, mask, val);
 			return -1;
 		}
 		c++;
@@ -437,7 +441,7 @@ static int uwire_setup_transfer(struct spi_device *spi, struct spi_transfer *t)
 	}
 	omap_uwire_configure_mode(spi->chip_select, flags);
 	pr_debug("%s: uwire flags %02x, armxor %lu KHz, SCK %lu KHz\n",
-			__FUNCTION__, flags,
+			__func__, flags,
 			clk_get_rate(uwire->ck) / 1000,
 			rate / 1000);
 	status = 0;
@@ -492,6 +496,14 @@ static int __init uwire_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	uwire = spi_master_get_devdata(master);
+
+	uwire_base = ioremap(UWIRE_BASE_PHYS, UWIRE_IO_SIZE);
+	if (!uwire_base) {
+		dev_dbg(&pdev->dev, "can't ioremap UWIRE\n");
+		spi_master_put(master);
+		return -ENOMEM;
+	}
+
 	dev_set_drvdata(&pdev->dev, uwire);
 
 	uwire->ck = clk_get(&pdev->dev, "armxor_ck");
@@ -520,8 +532,10 @@ static int __init uwire_probe(struct platform_device *pdev)
 	uwire->bitbang.txrx_bufs = uwire_txrx;
 
 	status = spi_bitbang_start(&uwire->bitbang);
-	if (status < 0)
+	if (status < 0) {
 		uwire_off(uwire);
+		iounmap(uwire_base);
+	}
 	return status;
 }
 
@@ -534,13 +548,16 @@ static int __exit uwire_remove(struct platform_device *pdev)
 
 	status = spi_bitbang_stop(&uwire->bitbang);
 	uwire_off(uwire);
+	iounmap(uwire_base);
 	return status;
 }
+
+/* work with hotplug and coldplug */
+MODULE_ALIAS("platform:omap_uwire");
 
 static struct platform_driver uwire_driver = {
 	.driver = {
 		.name		= "omap_uwire",
-		.bus		= &platform_bus_type,
 		.owner		= THIS_MODULE,
 	},
 	.remove		= __exit_p(uwire_remove),

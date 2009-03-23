@@ -109,7 +109,7 @@ static int pci_pic_host_map(struct irq_host *h, unsigned int virq,
 {
 	get_irq_desc(virq)->status |= IRQ_LEVEL;
 	set_irq_chip_data(virq, h->host_data);
-	set_irq_chip(virq, &pq2ads_pci_ic);
+	set_irq_chip_and_handler(virq, &pq2ads_pci_ic, handle_level_irq);
 	return 0;
 }
 
@@ -186,7 +186,7 @@ out_unmap_regs:
 	iounmap(priv->regs);
 out_free_bootmem:
 	free_bootmem((unsigned long)priv,
-	             sizeof(sizeof(struct pq2ads_pci_pic)));
+	             sizeof(struct pq2ads_pci_pic));
 	of_node_put(np);
 out_unmap_irq:
 	irq_dispose_mapping(irq);

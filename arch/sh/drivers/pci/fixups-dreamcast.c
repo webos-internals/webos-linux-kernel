@@ -22,10 +22,11 @@
 #include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/pci.h>
+#include <linux/dma-mapping.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/mach/pci.h>
+#include <mach/pci.h>
 
 static void __init gapspci_fixup_resources(struct pci_dev *dev)
 {
@@ -40,6 +41,15 @@ static void __init gapspci_fixup_resources(struct pci_dev *dev)
 		 */
 		dev->resource[1].start	= p->io_resource->start  + 0x100;
 		dev->resource[1].end	= dev->resource[1].start + 0x200 - 1;
+		/*
+		 * Redirect dma memory allocations to special memory window.
+		 */
+		BUG_ON(!dma_declare_coherent_memory(&dev->dev,
+						GAPSPCI_DMA_BASE,
+						GAPSPCI_DMA_BASE,
+						GAPSPCI_DMA_SIZE,
+						DMA_MEMORY_MAP |
+						DMA_MEMORY_EXCLUSIVE));
 		break;
 	default:
 		printk("PCI: Failed resource fixup\n");

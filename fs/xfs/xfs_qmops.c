@@ -28,7 +28,6 @@
 #include "xfs_mount.h"
 #include "xfs_quota.h"
 #include "xfs_error.h"
-#include "xfs_clnt.h"
 
 
 STATIC struct xfs_dquot *
@@ -49,18 +48,17 @@ xfs_mount_reset_sbqflags(xfs_mount_t *mp)
 {
 	int			error;
 	xfs_trans_t		*tp;
-	unsigned long		s;
 
 	mp->m_qflags = 0;
 	/*
 	 * It is OK to look at sb_qflags here in mount path,
-	 * without SB_LOCK.
+	 * without m_sb_lock.
 	 */
 	if (mp->m_sb.sb_qflags == 0)
 		return 0;
-	s = XFS_SB_LOCK(mp);
+	spin_lock(&mp->m_sb_lock);
 	mp->m_sb.sb_qflags = 0;
-	XFS_SB_UNLOCK(mp, s);
+	spin_unlock(&mp->m_sb_lock);
 
 	/*
 	 * if the fs is readonly, let the incore superblock run
@@ -132,9 +130,9 @@ static struct xfs_qmops xfs_qmcore_stub = {
 };
 
 int
-xfs_qmops_get(struct xfs_mount *mp, struct xfs_mount_args *args)
+xfs_qmops_get(struct xfs_mount *mp)
 {
-	if (args->flags & (XFSMNT_UQUOTA | XFSMNT_PQUOTA | XFSMNT_GQUOTA)) {
+	if (XFS_IS_QUOTA_RUNNING(mp)) {
 #ifdef CONFIG_XFS_QUOTA
 		mp->m_qm_ops = &xfs_qmcore_xfs;
 #else

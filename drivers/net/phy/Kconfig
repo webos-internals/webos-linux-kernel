@@ -5,7 +5,7 @@
 menuconfig PHYLIB
 	tristate "PHY Device support and infrastructure"
 	depends on !S390
-	depends on NET_ETHERNET && (BROKEN || !S390)
+	depends on NET_ETHERNET
 	help
 	  Ethernet controllers are usually attached to PHY
 	  devices.  This option provides infrastructure for
@@ -48,47 +48,48 @@ config VITESSE_PHY
 config SMSC_PHY
 	tristate "Drivers for SMSC PHYs"
 	---help---
-	  Currently supports the LAN83C185 PHY
+	  Currently supports the LAN83C185, LAN8187 and LAN8700 PHYs
 
 config BROADCOM_PHY
 	tristate "Drivers for Broadcom PHYs"
 	---help---
-	  Currently supports the BCM5411, BCM5421 and BCM5461 PHYs.
+	  Currently supports the BCM5411, BCM5421, BCM5461, BCM5464, BCM5481
+	  and BCM5482 PHYs.
 
 config ICPLUS_PHY
 	tristate "Drivers for ICPlus PHYs"
 	---help---
 	  Currently supports the IP175C PHY.
 
-config FIXED_PHY
-	tristate "Drivers for PHY emulation on fixed speed/link"
+config REALTEK_PHY
+	tristate "Drivers for Realtek PHYs"
 	---help---
-	  Adds the driver to PHY layer to cover the boards that do not have any PHY bound,
-	  but with the ability to manipulate the speed/link in software. The relevant MII
-	  speed/duplex parameters could be effectively handled in a user-specified function.
-	  Currently tested with mpc866ads.
+	  Supports the Realtek 821x PHY.
 
-config FIXED_MII_10_FDX
-	bool "Emulation for 10M Fdx fixed PHY behavior"
-	depends on FIXED_PHY
+config NATIONAL_PHY
+	tristate "Drivers for National Semiconductor PHYs"
+	---help---
+	  Currently supports the DP83865 PHY.
 
-config FIXED_MII_100_FDX
-	bool "Emulation for 100M Fdx fixed PHY behavior"
-	depends on FIXED_PHY
+config STE10XP
+	depends on PHYLIB
+	tristate "Driver for STMicroelectronics STe10Xp PHYs"
+	---help---
+	  This is the driver for the STe100p and STe101p PHYs.
 
-config FIXED_MII_1000_FDX
-	bool "Emulation for 1000M Fdx fixed PHY behavior"
-	depends on FIXED_PHY
+config LSI_ET1011C_PHY
+	tristate "Driver for LSI ET1011C PHY"
+	---help---
+	  Supports the LSI ET1011C PHY.
 
-config FIXED_MII_AMNT
-        int "Number of emulated PHYs to allocate "
-        depends on FIXED_PHY
-        default "1"
-        ---help---
-        Sometimes it is required to have several independent emulated
-        PHYs on the bus (in case of multi-eth but phy-less HW for instance).
-        This control will have specified number allocated for each fixed
-        PHY type enabled.
+config FIXED_PHY
+	bool "Driver for MDIO Bus/PHY emulation with fixed speed/link PHYs"
+	depends on PHYLIB=y
+	---help---
+	  Adds the platform "fixed" MDIO Bus to cover the boards that use
+	  PHYs that are not connected to the real MDIO bus.
+
+	  Currently tested with mpc866ads and mpc8349e-mitx.
 
 config MDIO_BITBANG
 	tristate "Support for bitbanged MDIO buses"
@@ -98,5 +99,14 @@ config MDIO_BITBANG
 	  drive the relevant pins.
 
 	  If in doubt, say N.
+
+config MDIO_GPIO
+	tristate "Support for GPIO lib-based bitbanged MDIO buses"
+	depends on MDIO_BITBANG && GENERIC_GPIO
+	---help---
+	  Supports GPIO lib-based MDIO busses.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mdio-gpio.
 
 endif # PHYLIB

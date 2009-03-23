@@ -31,8 +31,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_qp.c 1355 2004-12-17 15:23:43Z roland $
  */
 
 #include <linux/string.h>
@@ -437,29 +435,34 @@ int mthca_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *qp_attr, int qp_attr_m
 	int mthca_state;
 	u8 status;
 
+	mutex_lock(&qp->mutex);
+
 	if (qp->state == IB_QPS_RESET) {
 		qp_attr->qp_state = IB_QPS_RESET;
 		goto done;
 	}
 
 	mailbox = mthca_alloc_mailbox(dev, GFP_KERNEL);
-	if (IS_ERR(mailbox))
-		return PTR_ERR(mailbox);
+	if (IS_ERR(mailbox)) {
+		err = PTR_ERR(mailbox);
+		goto out;
+	}
 
 	err = mthca_QUERY_QP(dev, qp->qpn, 0, mailbox, &status);
 	if (err)
-		goto out;
+		goto out_mailbox;
 	if (status) {
 		mthca_warn(dev, "QUERY_QP returned status %02x\n", status);
 		err = -EINVAL;
-		goto out;
+		goto out_mailbox;
 	}
 
 	qp_param    = mailbox->buf;
 	context     = &qp_param->context;
 	mthca_state = be32_to_cpu(context->flags) >> 28;
 
-	qp_attr->qp_state 	     = to_ib_qp_state(mthca_state);
+	qp->state		     = to_ib_qp_state(mthca_state);
+	qp_attr->qp_state	     = qp->state;
 	qp_attr->path_mtu 	     = context->mtu_msgmax >> 5;
 	qp_attr->path_mig_state      =
 		to_ib_mig_state((be32_to_cpu(context->flags) >> 11) & 0x3);
@@ -506,8 +509,11 @@ done:
 
 	qp_init_attr->cap	     = qp_attr->cap;
 
-out:
+out_mailbox:
 	mthca_free_mailbox(dev, mailbox);
+
+out:
+	mutex_unlock(&qp->mutex);
 	return err;
 }
 
@@ -842,23 +848,6 @@ out:
 	return err;
 }
 
-static const struct ib_qp_attr dummy_init_attr = { .port_num = 1 };
-static const int dummy_init_attr_mask[] = {
-	[IB_QPT_UD]  = (IB_QP_PKEY_INDEX		|
-			IB_QP_PORT			|
-			IB_QP_QKEY),
-	[IB_QPT_UC]  = (IB_QP_PKEY_INDEX		|
-			IB_QP_PORT			|
-			IB_QP_ACCESS_FLAGS),
-	[IB_QPT_RC]  = (IB_QP_PKEY_INDEX		|
-			IB_QP_PORT			|
-			IB_QP_ACCESS_FLAGS),
-	[IB_QPT_SMI] = (IB_QP_PKEY_INDEX		|
-			IB_QP_QKEY),
-	[IB_QPT_GSI] = (IB_QP_PKEY_INDEX		|
-			IB_QP_QKEY),
-};
-
 int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
 		    struct ib_udata *udata)
 {
@@ -918,15 +907,6 @@ int mthca_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
 	if (cur_state == new_state && cur_state == IB_QPS_RESET) {
 		err = 0;
 		goto out;
-	}
-
-	if (cur_state == IB_QPS_RESET && new_state == IB_QPS_ERR) {
-		err = __mthca_modify_qp(ibqp, &dummy_init_attr,
-					dummy_init_attr_mask[ibqp->qp_type],
-					IB_QPS_RESET, IB_QPS_INIT);
-		if (err)
-			goto out;
-		cur_state = IB_QPS_INIT;
 	}
 
 	err = __mthca_modify_qp(ibqp, attr, attr_mask, cur_state, new_state);
@@ -1175,6 +1155,7 @@ static int mthca_alloc_qp_common(struct mthca_dev *dev,
 {
 	int ret;
 	int i;
+	struct mthca_next_seg *next;
 
 	qp->refcount = 1;
 	init_waitqueue_head(&qp->wait);
@@ -1217,7 +1198,6 @@ static int mthca_alloc_qp_common(struct mthca_dev *dev,
 	}
 
 	if (mthca_is_memfree(dev)) {
-		struct mthca_next_seg *next;
 		struct mthca_data_seg *scatter;
 		int size = (sizeof (struct mthca_next_seg) +
 			    qp->rq.max_gs * sizeof (struct mthca_data_seg)) / 16;
@@ -1240,6 +1220,13 @@ static int mthca_alloc_qp_common(struct mthca_dev *dev,
 						    qp->sq.wqe_shift) +
 						   qp->send_wqe_offset);
 		}
+	} else {
+		for (i = 0; i < qp->rq.max; ++i) {
+			next = get_recv_wqe(qp, i);
+			next->nda_op = htonl((((i + 1) % qp->rq.max) <<
+					      qp->rq.wqe_shift) | 1);
+		}
+
 	}
 
 	qp->sq.last = get_send_wqe(qp, qp->sq.max - 1);
@@ -1262,10 +1249,10 @@ static int mthca_set_qp_size(struct mthca_dev *dev, struct ib_qp_cap *cap,
 		return -EINVAL;
 
 	/*
-	 * For MLX transport we need 2 extra S/G entries:
+	 * For MLX transport we need 2 extra send gather entries:
 	 * one for the header and one for the checksum at the end
 	 */
-	if (qp->transport == MLX && cap->max_recv_sge + 2 > dev->limits.max_sg)
+	if (qp->transport == MLX && cap->max_send_sge + 2 > dev->limits.max_sg)
 		return -EINVAL;
 
 	if (mthca_is_memfree(dev)) {
@@ -1525,7 +1512,7 @@ static int build_mlx_header(struct mthca_dev *dev, struct mthca_sqp *sqp,
 	case IB_WR_SEND_WITH_IMM:
 		sqp->ud_header.bth.opcode = IB_OPCODE_UD_SEND_ONLY_WITH_IMMEDIATE;
 		sqp->ud_header.immediate_present = 1;
-		sqp->ud_header.immediate_data = wr->imm_data;
+		sqp->ud_header.immediate_data = wr->ex.imm_data;
 		break;
 	default:
 		return -EINVAL;
@@ -1672,7 +1659,7 @@ int mthca_tavor_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			cpu_to_be32(1);
 		if (wr->opcode == IB_WR_SEND_WITH_IMM ||
 		    wr->opcode == IB_WR_RDMA_WRITE_WITH_IMM)
-			((struct mthca_next_seg *) wqe)->imm = wr->imm_data;
+			((struct mthca_next_seg *) wqe)->imm = wr->ex.imm_data;
 
 		wqe += sizeof (struct mthca_next_seg);
 		size = sizeof (struct mthca_next_seg) / 16;
@@ -1863,7 +1850,6 @@ int mthca_tavor_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 		prev_wqe = qp->rq.last;
 		qp->rq.last = wqe;
 
-		((struct mthca_next_seg *) wqe)->nda_op = 0;
 		((struct mthca_next_seg *) wqe)->ee_nds =
 			cpu_to_be32(MTHCA_NEXT_DBD);
 		((struct mthca_next_seg *) wqe)->flags = 0;
@@ -1885,9 +1871,6 @@ int mthca_tavor_post_receive(struct ib_qp *ibqp, struct ib_recv_wr *wr,
 
 		qp->wrid[ind] = wr->wr_id;
 
-		((struct mthca_next_seg *) prev_wqe)->nda_op =
-			cpu_to_be32((ind << qp->rq.wqe_shift) | 1);
-		wmb();
 		((struct mthca_next_seg *) prev_wqe)->ee_nds =
 			cpu_to_be32(MTHCA_NEXT_DBD | size);
 
@@ -2012,10 +1995,12 @@ int mthca_arbel_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 			 cpu_to_be32(MTHCA_NEXT_CQ_UPDATE) : 0) |
 			((wr->send_flags & IB_SEND_SOLICITED) ?
 			 cpu_to_be32(MTHCA_NEXT_SOLICIT) : 0)   |
+			((wr->send_flags & IB_SEND_IP_CSUM) ?
+			 cpu_to_be32(MTHCA_NEXT_IP_CSUM | MTHCA_NEXT_TCP_UDP_CSUM) : 0) |
 			cpu_to_be32(1);
 		if (wr->opcode == IB_WR_SEND_WITH_IMM ||
 		    wr->opcode == IB_WR_RDMA_WRITE_WITH_IMM)
-			((struct mthca_next_seg *) wqe)->imm = wr->imm_data;
+			((struct mthca_next_seg *) wqe)->imm = wr->ex.imm_data;
 
 		wqe += sizeof (struct mthca_next_seg);
 		size = sizeof (struct mthca_next_seg) / 16;

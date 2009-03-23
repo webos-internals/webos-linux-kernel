@@ -37,6 +37,7 @@
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
+#include <linux/smp_lock.h>
 #include <linux/init.h>
 #include <linux/miscdevice.h>
 #include <linux/delay.h>
@@ -66,11 +67,11 @@ static inline void hwrng_cleanup(struct hwrng *rng)
 		rng->cleanup(rng);
 }
 
-static inline int hwrng_data_present(struct hwrng *rng)
+static inline int hwrng_data_present(struct hwrng *rng, int wait)
 {
 	if (!rng->data_present)
 		return 1;
-	return rng->data_present(rng);
+	return rng->data_present(rng, wait);
 }
 
 static inline int hwrng_data_read(struct hwrng *rng, u32 *data)
@@ -86,6 +87,7 @@ static int rng_dev_open(struct inode *inode, struct file *filp)
 		return -EINVAL;
 	if (filp->f_mode & FMODE_WRITE)
 		return -EINVAL;
+	cycle_kernel_lock();
 	return 0;
 }
 
@@ -94,8 +96,7 @@ static ssize_t rng_dev_read(struct file *filp, char __user *buf,
 {
 	u32 data;
 	ssize_t ret = 0;
-	int i, err = 0;
-	int data_present;
+	int err = 0;
 	int bytes_read;
 
 	while (size) {
@@ -107,27 +108,20 @@ static ssize_t rng_dev_read(struct file *filp, char __user *buf,
 			err = -ENODEV;
 			goto out;
 		}
-		if (filp->f_flags & O_NONBLOCK) {
-			data_present = hwrng_data_present(current_rng);
-		} else {
-			/* Some RNG require some time between data_reads to gather
-			 * new entropy. Poll it.
-			 */
-			for (i = 0; i < 20; i++) {
-				data_present = hwrng_data_present(current_rng);
-				if (data_present)
-					break;
-				udelay(10);
-			}
-		}
+
 		bytes_read = 0;
-		if (data_present)
+		if (hwrng_data_present(current_rng,
+				       !(filp->f_flags & O_NONBLOCK)))
 			bytes_read = hwrng_data_read(current_rng, &data);
 		mutex_unlock(&rng_mutex);
 
 		err = -EAGAIN;
 		if (!bytes_read && (filp->f_flags & O_NONBLOCK))
 			goto out;
+		if (bytes_read < 0) {
+			err = bytes_read;
+			goto out;
+		}
 
 		err = -EFAULT;
 		while (bytes_read && size) {

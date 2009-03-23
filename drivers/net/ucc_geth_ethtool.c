@@ -5,7 +5,7 @@
  *
  * Author: Li Yang <leoli@freescale.com>
  *
- * Limitation: 
+ * Limitation:
  * Can only get/set setttings of the first queue.
  * Need to re-open the interface manually after changing some paramters.
  *
@@ -37,7 +37,6 @@
 #include <asm/irq.h>
 #include <asm/uaccess.h>
 #include <asm/types.h>
-#include <asm/uaccess.h>
 
 #include "ucc_geth.h"
 #include "ucc_geth_mii.h"
@@ -73,6 +72,7 @@ static char tx_fw_stat_gstrings[][ETH_GSTRING_LEN] = {
 	"tx-frames-ok",
 	"tx-excessive-differ-frames",
 	"tx-256-511-frames",
+	"tx-512-1023-frames",
 	"tx-1024-1518-frames",
 	"tx-jumbo-frames",
 };
@@ -107,12 +107,6 @@ static char rx_fw_stat_gstrings[][ETH_GSTRING_LEN] = {
 #define UEC_HW_STATS_LEN ARRAY_SIZE(hw_stat_gstrings)
 #define UEC_TX_FW_STATS_LEN ARRAY_SIZE(tx_fw_stat_gstrings)
 #define UEC_RX_FW_STATS_LEN ARRAY_SIZE(rx_fw_stat_gstrings)
-
-extern int init_flow_control_params(u32 automatic_flow_control_mode,
-		int rx_flow_control_enable,
-		int tx_flow_control_enable, u16 pause_period,
-		u16 extension_field, volatile u32 *upsmr_register,
-		volatile u32 *uempr_register, volatile u32 *maccfg1_register);
 
 static int
 uec_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
@@ -165,7 +159,7 @@ uec_set_pauseparam(struct net_device *netdev,
 
 	ugeth->ug_info->receiveFlowControl = pause->rx_pause;
 	ugeth->ug_info->transmitFlowControl = pause->tx_pause;
-	
+
 	if (ugeth->phydev->autoneg) {
 		if (netif_running(netdev)) {
 			/* FIXME: automatically restart */
@@ -314,7 +308,7 @@ static void uec_get_strings(struct net_device *netdev, u32 stringset, u8 *buf)
 		buf += UEC_TX_FW_STATS_LEN * ETH_GSTRING_LEN;
 	}
 	if (stats_mode & UCC_GETH_STATISTICS_GATHERING_MODE_FIRMWARE_RX)
-		memcpy(buf, tx_fw_stat_gstrings, UEC_RX_FW_STATS_LEN *
+		memcpy(buf, rx_fw_stat_gstrings, UEC_RX_FW_STATS_LEN *
 			       	ETH_GSTRING_LEN);
 }
 
@@ -329,17 +323,17 @@ static void uec_get_ethtool_stats(struct net_device *netdev,
 	if (stats_mode & UCC_GETH_STATISTICS_GATHERING_MODE_HARDWARE) {
 		base = (u32 __iomem *)&ugeth->ug_regs->tx64;
 		for (i = 0; i < UEC_HW_STATS_LEN; i++)
-			data[j++] = (u64)in_be32(&base[i]);
+			data[j++] = in_be32(&base[i]);
 	}
 	if (stats_mode & UCC_GETH_STATISTICS_GATHERING_MODE_FIRMWARE_TX) {
 		base = (u32 __iomem *)ugeth->p_tx_fw_statistics_pram;
 		for (i = 0; i < UEC_TX_FW_STATS_LEN; i++)
-			data[j++] = (u64)in_be32(&base[i]);
+			data[j++] = base ? in_be32(&base[i]) : 0;
 	}
 	if (stats_mode & UCC_GETH_STATISTICS_GATHERING_MODE_FIRMWARE_RX) {
 		base = (u32 __iomem *)ugeth->p_rx_fw_statistics_pram;
 		for (i = 0; i < UEC_RX_FW_STATS_LEN; i++)
-			data[j++] = (u64)in_be32(&base[i]);
+			data[j++] = base ? in_be32(&base[i]) : 0;
 	}
 }
 

@@ -35,14 +35,7 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
-#ifndef CONFIG_BT_HCIBPA10X_DEBUG
-#undef  BT_DBG
-#define BT_DBG(D...)
-#endif
-
-#define VERSION "0.9"
-
-static int ignore = 0;
+#define VERSION "0.10"
 
 static struct usb_device_id bpa10x_table[] = {
 	/* Tektronix BPA 100/105 (Digianswer) */
@@ -258,7 +251,6 @@ static inline int bpa10x_submit_intr_urb(struct hci_dev *hdev)
 		BT_ERR("%s urb %p submission failed (%d)",
 						hdev->name, urb, -err);
 		usb_unanchor_urb(urb);
-		kfree(buf);
 	}
 
 	usb_free_urb(urb);
@@ -300,7 +292,6 @@ static inline int bpa10x_submit_bulk_urb(struct hci_dev *hdev)
 		BT_ERR("%s urb %p submission failed (%d)",
 						hdev->name, urb, -err);
 		usb_unanchor_urb(urb);
-		kfree(buf);
 	}
 
 	usb_free_urb(urb);
@@ -423,6 +414,7 @@ static int bpa10x_send_frame(struct sk_buff *skb)
 		break;
 
 	default:
+		usb_free_urb(urb);
 		return -EILSEQ;
 	}
 
@@ -446,8 +438,8 @@ static void bpa10x_destruct(struct hci_dev *hdev)
 
 	BT_DBG("%s", hdev->name);
 
-	kfree(data->rx_skb[0]);
-	kfree(data->rx_skb[1]);
+	kfree_skb(data->rx_skb[0]);
+	kfree_skb(data->rx_skb[1]);
 	kfree(data);
 }
 
@@ -458,9 +450,6 @@ static int bpa10x_probe(struct usb_interface *intf, const struct usb_device_id *
 	int err;
 
 	BT_DBG("intf %p id %p", intf, id);
-
-	if (ignore)
-		return -ENODEV;
 
 	if (intf->cur_altsetting->desc.bInterfaceNumber != 0)
 		return -ENODEV;
@@ -494,6 +483,8 @@ static int bpa10x_probe(struct usb_interface *intf, const struct usb_device_id *
 	hdev->destruct = bpa10x_destruct;
 
 	hdev->owner = THIS_MODULE;
+
+	set_bit(HCI_QUIRK_NO_RESET, &hdev->quirks);
 
 	err = hci_register_dev(hdev);
 	if (err < 0) {
@@ -544,9 +535,6 @@ static void __exit bpa10x_exit(void)
 
 module_init(bpa10x_init);
 module_exit(bpa10x_exit);
-
-module_param(ignore, bool, 0644);
-MODULE_PARM_DESC(ignore, "Ignore devices from the matching table");
 
 MODULE_AUTHOR("Marcel Holtmann <marcel@holtmann.org>");
 MODULE_DESCRIPTION("Digianswer Bluetooth USB driver ver " VERSION);

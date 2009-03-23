@@ -8,9 +8,9 @@
 
 #include <linux/buffer_head.h>
 #include <linux/string.h>
-#include <linux/efs_fs.h>
 #include <linux/smp_lock.h>
 #include <linux/exportfs.h>
+#include "efs.h"
 
 
 static efs_ino_t efs_find_entry(struct inode *inode, const char *name, int len) {
@@ -66,15 +66,15 @@ struct dentry *efs_lookup(struct inode *dir, struct dentry *dentry, struct namei
 	lock_kernel();
 	inodenum = efs_find_entry(dir, dentry->d_name.name, dentry->d_name.len);
 	if (inodenum) {
-		if (!(inode = iget(dir->i_sb, inodenum))) {
+		inode = efs_iget(dir->i_sb, inodenum);
+		if (IS_ERR(inode)) {
 			unlock_kernel();
-			return ERR_PTR(-EACCES);
+			return ERR_CAST(inode);
 		}
 	}
 	unlock_kernel();
 
-	d_add(dentry, inode);
-	return NULL;
+	return d_splice_alias(inode, dentry);
 }
 
 static struct inode *efs_nfs_get_inode(struct super_block *sb, u64 ino,
@@ -84,12 +84,11 @@ static struct inode *efs_nfs_get_inode(struct super_block *sb, u64 ino,
 
 	if (ino == 0)
 		return ERR_PTR(-ESTALE);
-	inode = iget(sb, ino);
-	if (inode == NULL)
-		return ERR_PTR(-ENOMEM);
+	inode = efs_iget(sb, ino);
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
 
-	if (is_bad_inode(inode) ||
-	    (generation && inode->i_generation != generation)) {
+	if (generation && inode->i_generation != generation) {
 		iput(inode);
 		return ERR_PTR(-ESTALE);
 	}
@@ -113,34 +112,14 @@ struct dentry *efs_fh_to_parent(struct super_block *sb, struct fid *fid,
 
 struct dentry *efs_get_parent(struct dentry *child)
 {
-	struct dentry *parent;
-	struct inode *inode;
+	struct dentry *parent = ERR_PTR(-ENOENT);
 	efs_ino_t ino;
-	int error;
 
 	lock_kernel();
-
-	error = -ENOENT;
 	ino = efs_find_entry(child->d_inode, "..", 2);
-	if (!ino)
-		goto fail;
-
-	error = -EACCES;
-	inode = iget(child->d_inode->i_sb, ino);
-	if (!inode)
-		goto fail;
-
-	error = -ENOMEM;
-	parent = d_alloc_anon(inode);
-	if (!parent)
-		goto fail_iput;
-
+	if (ino)
+		parent = d_obtain_alias(efs_iget(child->d_inode->i_sb, ino));
 	unlock_kernel();
+
 	return parent;
-
- fail_iput:
-	iput(inode);
- fail:
-	unlock_kernel();
-	return ERR_PTR(error);
 }

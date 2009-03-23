@@ -2,9 +2,7 @@
 # Network configuration
 #
 
-menu "Networking"
-
-config NET
+menuconfig NET
 	bool "Networking support"
 	---help---
 	  Unless you really know what you are doing, you should say Y here.
@@ -22,18 +20,12 @@ config NET
 	  recommended to read the NET-HOWTO, available from
 	  <http://www.tldp.org/docs.html#howto>.
 
-# Make sure that all config symbols are dependent on NET
 if NET
 
 menu "Networking options"
 
-config NET_NS
-	bool "Network namespace support"
-	default n
-	depends on EXPERIMENTAL && !SYSFS
-	help
-	  Allow user space to create what appear to be multiple instances
-	  of the network stack.
+config COMPAT_NET_DEV_OPS
+       def_bool y
 
 source "net/packet/Kconfig"
 source "net/unix/Kconfig"
@@ -45,7 +37,7 @@ config INET
 	---help---
 	  These are the protocols used on the Internet and on most local
 	  Ethernets. It is highly recommended to say Y here (this will enlarge
-	  your kernel by about 144 KB), since some programs (e.g. the X window
+	  your kernel by about 400 KB), since some programs (e.g. the X window
 	  system) use TCP/IP even if your machine is not connected to any
 	  other computer. You will get the so-called loopback device which
 	  allows you to ping yourself (great fun, that!).
@@ -144,9 +136,21 @@ config NETFILTER_DEBUG
 	  You can say Y here if you want to get additional messages useful in
 	  debugging the netfilter code.
 
+config NETFILTER_ADVANCED
+	bool "Advanced netfilter configuration"
+	depends on NETFILTER
+	default y
+	help
+	  If you say Y here you can select between all the netfilter modules.
+	  If you say N the more ununsual ones will not be shown and the
+	  basic ones needed by most people will default to 'M'.
+
+	  If unsure, say Y.
+
 config BRIDGE_NETFILTER
 	bool "Bridged IP/ARP packets filtering"
 	depends on BRIDGE && NETFILTER && INET
+	depends on NETFILTER_ADVANCED
 	default y
 	---help---
 	  Enabling this option will let arptables resp. iptables see bridged
@@ -169,7 +173,9 @@ source "net/dccp/Kconfig"
 source "net/sctp/Kconfig"
 source "net/tipc/Kconfig"
 source "net/atm/Kconfig"
+source "net/802/Kconfig"
 source "net/bridge/Kconfig"
+source "net/dsa/Kconfig"
 source "net/8021q/Kconfig"
 source "net/decnet/Kconfig"
 source "net/llc/Kconfig"
@@ -180,6 +186,7 @@ source "net/lapb/Kconfig"
 source "net/econet/Kconfig"
 source "net/wanrouter/Kconfig"
 source "net/sched/Kconfig"
+source "net/dcb/Kconfig"
 
 menu "Network testing"
 
@@ -218,25 +225,30 @@ endmenu
 endmenu
 
 source "net/ax25/Kconfig"
+source "net/can/Kconfig"
 source "net/irda/Kconfig"
 source "net/bluetooth/Kconfig"
 source "net/rxrpc/Kconfig"
+source "net/phonet/Kconfig"
 
 config FIB_RULES
 	bool
 
-menu "Wireless"
+menuconfig WIRELESS
+	bool "Wireless"
 	depends on !S390
+	default y
+
+if WIRELESS
 
 source "net/wireless/Kconfig"
 source "net/mac80211/Kconfig"
-source "net/ieee80211/Kconfig"
 
-endmenu
+endif # WIRELESS
+
+source "net/wimax/Kconfig"
 
 source "net/rfkill/Kconfig"
 source "net/9p/Kconfig"
 
 endif   # if NET
-endmenu # Networking
-

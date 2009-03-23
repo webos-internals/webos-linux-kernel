@@ -43,7 +43,7 @@ struct cpufreq_stats {
 #endif
 };
 
-static struct cpufreq_stats *cpufreq_stats_table[NR_CPUS];
+static DEFINE_PER_CPU(struct cpufreq_stats *, cpufreq_stats_table);
 
 struct cpufreq_stats_attribute {
 	struct attribute attr;
@@ -58,7 +58,7 @@ cpufreq_stats_update (unsigned int cpu)
 
 	cur_time = get_jiffies_64();
 	spin_lock(&cpufreq_stats_lock);
-	stat = cpufreq_stats_table[cpu];
+	stat = per_cpu(cpufreq_stats_table, cpu);
 	if (stat->time_in_state)
 		stat->time_in_state[stat->last_index] =
 			cputime64_add(stat->time_in_state[stat->last_index],
@@ -71,11 +71,11 @@ cpufreq_stats_update (unsigned int cpu)
 static ssize_t
 show_total_trans(struct cpufreq_policy *policy, char *buf)
 {
-	struct cpufreq_stats *stat = cpufreq_stats_table[policy->cpu];
+	struct cpufreq_stats *stat = per_cpu(cpufreq_stats_table, policy->cpu);
 	if (!stat)
 		return 0;
 	return sprintf(buf, "%d\n",
-			cpufreq_stats_table[stat->cpu]->total_trans);
+			per_cpu(cpufreq_stats_table, stat->cpu)->total_trans);
 }
 
 static ssize_t
@@ -83,7 +83,7 @@ show_time_in_state(struct cpufreq_policy *policy, char *buf)
 {
 	ssize_t len = 0;
 	int i;
-	struct cpufreq_stats *stat = cpufreq_stats_table[policy->cpu];
+	struct cpufreq_stats *stat = per_cpu(cpufreq_stats_table, policy->cpu);
 	if (!stat)
 		return 0;
 	cpufreq_stats_update(stat->cpu);
@@ -101,7 +101,7 @@ show_trans_table(struct cpufreq_policy *policy, char *buf)
 	ssize_t len = 0;
 	int i, j;
 
-	struct cpufreq_stats *stat = cpufreq_stats_table[policy->cpu];
+	struct cpufreq_stats *stat = per_cpu(cpufreq_stats_table, policy->cpu);
 	if (!stat)
 		return 0;
 	cpufreq_stats_update(stat->cpu);
@@ -114,7 +114,7 @@ show_trans_table(struct cpufreq_policy *policy, char *buf)
 				stat->freq_table[i]);
 	}
 	if (len >= PAGE_SIZE)
-		return len;
+		return PAGE_SIZE;
 
 	len += snprintf(buf + len, PAGE_SIZE - len, "\n");
 
@@ -131,8 +131,12 @@ show_trans_table(struct cpufreq_policy *policy, char *buf)
 			len += snprintf(buf + len, PAGE_SIZE - len, "%9u ",
 					stat->trans_table[i*stat->max_state+j]);
 		}
+		if (len >= PAGE_SIZE)
+			break;
 		len += snprintf(buf + len, PAGE_SIZE - len, "\n");
 	}
+	if (len >= PAGE_SIZE)
+		return PAGE_SIZE;
 	return len;
 }
 CPUFREQ_STATDEVICE_ATTR(trans_table,0444,show_trans_table);
@@ -166,7 +170,7 @@ freq_table_get_index(struct cpufreq_stats *stat, unsigned int freq)
 
 static void cpufreq_stats_free_table(unsigned int cpu)
 {
-	struct cpufreq_stats *stat = cpufreq_stats_table[cpu];
+	struct cpufreq_stats *stat = per_cpu(cpufreq_stats_table, cpu);
 	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
 	if (policy && policy->cpu == cpu)
 		sysfs_remove_group(&policy->kobj, &stats_attr_group);
@@ -174,7 +178,7 @@ static void cpufreq_stats_free_table(unsigned int cpu)
 		kfree(stat->time_in_state);
 		kfree(stat);
 	}
-	cpufreq_stats_table[cpu] = NULL;
+	per_cpu(cpufreq_stats_table, cpu) = NULL;
 	if (policy)
 		cpufreq_cpu_put(policy);
 }
@@ -188,7 +192,7 @@ cpufreq_stats_create_table (struct cpufreq_policy *policy,
 	struct cpufreq_policy *data;
 	unsigned int alloc_size;
 	unsigned int cpu = policy->cpu;
-	if (cpufreq_stats_table[cpu])
+	if (per_cpu(cpufreq_stats_table, cpu))
 		return -EBUSY;
 	if ((stat = kzalloc(sizeof(struct cpufreq_stats), GFP_KERNEL)) == NULL)
 		return -ENOMEM;
@@ -203,7 +207,7 @@ cpufreq_stats_create_table (struct cpufreq_policy *policy,
 		goto error_out;
 
 	stat->cpu = cpu;
-	cpufreq_stats_table[cpu] = stat;
+	per_cpu(cpufreq_stats_table, cpu) = stat;
 
 	for (i=0; table[i].frequency != CPUFREQ_TABLE_END; i++) {
 		unsigned int freq = table[i].frequency;
@@ -247,7 +251,7 @@ error_out:
 	cpufreq_cpu_put(data);
 error_get_fail:
 	kfree(stat);
-	cpufreq_stats_table[cpu] = NULL;
+	per_cpu(cpufreq_stats_table, cpu) = NULL;
 	return ret;
 }
 
@@ -280,11 +284,11 @@ cpufreq_stat_notifier_trans (struct notifier_block *nb, unsigned long val,
 	if (val != CPUFREQ_POSTCHANGE)
 		return 0;
 
-	stat = cpufreq_stats_table[freq->cpu];
+	stat = per_cpu(cpufreq_stats_table, freq->cpu);
 	if (!stat)
 		return 0;
 
-	old_index = freq_table_get_index(stat, freq->old);
+	old_index = stat->last_index;
 	new_index = freq_table_get_index(stat, freq->new);
 
 	cpufreq_stats_update(freq->cpu);
@@ -323,7 +327,7 @@ static int __cpuinit cpufreq_stat_cpu_callback(struct notifier_block *nfb,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block cpufreq_stat_cpu_notifier __cpuinitdata =
+static struct notifier_block cpufreq_stat_cpu_notifier __refdata =
 {
 	.notifier_call = cpufreq_stat_cpu_callback,
 };

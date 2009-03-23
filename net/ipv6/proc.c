@@ -7,8 +7,6 @@
  *		PROC file system.  This is very similar to the IPv4 version,
  *		except it reports the sockets in the INET6 address family.
  *
- * Version:	$Id: proc.c,v 1.17 2002/02/01 22:01:04 davem Exp $
- *
  * Authors:	David S. Miller (davem@caip.rutgers.edu)
  * 		YOSHIFUJI Hideaki <yoshfuji@linux-ipv6.org>
  *
@@ -27,25 +25,39 @@
 #include <net/ip.h>
 #include <net/sock.h>
 #include <net/tcp.h>
+#include <net/udp.h>
 #include <net/transp_v6.h>
 #include <net/ipv6.h>
 
-static struct proc_dir_entry *proc_net_devsnmp6;
-
 static int sockstat6_seq_show(struct seq_file *seq, void *v)
 {
+	struct net *net = seq->private;
+
 	seq_printf(seq, "TCP6: inuse %d\n",
-		       sock_prot_inuse(&tcpv6_prot));
+		       sock_prot_inuse_get(net, &tcpv6_prot));
 	seq_printf(seq, "UDP6: inuse %d\n",
-		       sock_prot_inuse(&udpv6_prot));
+		       sock_prot_inuse_get(net, &udpv6_prot));
 	seq_printf(seq, "UDPLITE6: inuse %d\n",
-			sock_prot_inuse(&udplitev6_prot));
+			sock_prot_inuse_get(net, &udplitev6_prot));
 	seq_printf(seq, "RAW6: inuse %d\n",
-		       sock_prot_inuse(&rawv6_prot));
+		       sock_prot_inuse_get(net, &rawv6_prot));
 	seq_printf(seq, "FRAG6: inuse %d memory %d\n",
-		       ip6_frag_nqueues(), ip6_frag_mem());
+		       ip6_frag_nqueues(net), ip6_frag_mem(net));
 	return 0;
 }
+
+static int sockstat6_seq_open(struct inode *inode, struct file *file)
+{
+	return single_open_net(inode, file, sockstat6_seq_show);
+}
+
+static const struct file_operations sockstat6_seq_fops = {
+	.owner	 = THIS_MODULE,
+	.open	 = sockstat6_seq_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = single_release_net,
+};
 
 static struct snmp_mib snmp6_ipstats_list[] = {
 /* ipv6 mib according to RFC 2465 */
@@ -120,7 +132,7 @@ static struct snmp_mib snmp6_udplite6_list[] = {
 
 static void snmp6_seq_show_icmpv6msg(struct seq_file *seq, void **mib)
 {
-	static char name[32];
+	char name[32];
 	int i;
 
 	/* print by name -- deprecated items */
@@ -132,7 +144,7 @@ static void snmp6_seq_show_icmpv6msg(struct seq_file *seq, void **mib)
 		p = icmp6type2name[icmptype];
 		if (!p)	/* don't print un-named types here */
 			continue;
-		(void) snprintf(name, sizeof(name)-1, "Icmp6%s%s",
+		snprintf(name, sizeof(name), "Icmp6%s%s",
 			i & 0x100 ? "Out" : "In", p);
 		seq_printf(seq, "%-32s\t%lu\n", name,
 			snmp_fold_field(mib, i));
@@ -145,7 +157,7 @@ static void snmp6_seq_show_icmpv6msg(struct seq_file *seq, void **mib)
 		val = snmp_fold_field(mib, i);
 		if (!val)
 			continue;
-		(void) snprintf(name, sizeof(name)-1, "Icmp6%sType%u",
+		snprintf(name, sizeof(name), "Icmp6%sType%u",
 			i & 0x100 ?  "Out" : "In", i & 0xff);
 		seq_printf(seq, "%-32s\t%lu\n", name, val);
 	}
@@ -163,44 +175,52 @@ snmp6_seq_show_item(struct seq_file *seq, void **mib, struct snmp_mib *itemlist)
 
 static int snmp6_seq_show(struct seq_file *seq, void *v)
 {
-	struct inet6_dev *idev = (struct inet6_dev *)seq->private;
+	struct net *net = (struct net *)seq->private;
 
-	if (idev) {
-		seq_printf(seq, "%-32s\t%u\n", "ifIndex", idev->dev->ifindex);
-		snmp6_seq_show_item(seq, (void **)idev->stats.ipv6, snmp6_ipstats_list);
-		snmp6_seq_show_item(seq, (void **)idev->stats.icmpv6, snmp6_icmp6_list);
-		snmp6_seq_show_icmpv6msg(seq, (void **)idev->stats.icmpv6msg);
-	} else {
-		snmp6_seq_show_item(seq, (void **)ipv6_statistics, snmp6_ipstats_list);
-		snmp6_seq_show_item(seq, (void **)icmpv6_statistics, snmp6_icmp6_list);
-		snmp6_seq_show_icmpv6msg(seq, (void **)icmpv6msg_statistics);
-		snmp6_seq_show_item(seq, (void **)udp_stats_in6, snmp6_udp6_list);
-		snmp6_seq_show_item(seq, (void **)udplite_stats_in6, snmp6_udplite6_list);
-	}
+	snmp6_seq_show_item(seq, (void **)net->mib.ipv6_statistics,
+			    snmp6_ipstats_list);
+	snmp6_seq_show_item(seq, (void **)net->mib.icmpv6_statistics,
+			    snmp6_icmp6_list);
+	snmp6_seq_show_icmpv6msg(seq, (void **)net->mib.icmpv6msg_statistics);
+	snmp6_seq_show_item(seq, (void **)net->mib.udp_stats_in6,
+			    snmp6_udp6_list);
+	snmp6_seq_show_item(seq, (void **)net->mib.udplite_stats_in6,
+			    snmp6_udplite6_list);
 	return 0;
 }
 
-static int sockstat6_seq_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, sockstat6_seq_show, NULL);
-}
-
-static const struct file_operations sockstat6_seq_fops = {
-	.owner	 = THIS_MODULE,
-	.open	 = sockstat6_seq_open,
-	.read	 = seq_read,
-	.llseek	 = seq_lseek,
-	.release = single_release,
-};
-
 static int snmp6_seq_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, snmp6_seq_show, PDE(inode)->data);
+	return single_open_net(inode, file, snmp6_seq_show);
 }
 
 static const struct file_operations snmp6_seq_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = snmp6_seq_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = single_release_net,
+};
+
+static int snmp6_dev_seq_show(struct seq_file *seq, void *v)
+{
+	struct inet6_dev *idev = (struct inet6_dev *)seq->private;
+
+	seq_printf(seq, "%-32s\t%u\n", "ifIndex", idev->dev->ifindex);
+	snmp6_seq_show_item(seq, (void **)idev->stats.ipv6, snmp6_ipstats_list);
+	snmp6_seq_show_item(seq, (void **)idev->stats.icmpv6, snmp6_icmp6_list);
+	snmp6_seq_show_icmpv6msg(seq, (void **)idev->stats.icmpv6msg);
+	return 0;
+}
+
+static int snmp6_dev_seq_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, snmp6_dev_seq_show, PDE(inode)->data);
+}
+
+static const struct file_operations snmp6_dev_seq_fops = {
+	.owner	 = THIS_MODULE,
+	.open	 = snmp6_dev_seq_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
 	.release = single_release,
@@ -209,19 +229,20 @@ static const struct file_operations snmp6_seq_fops = {
 int snmp6_register_dev(struct inet6_dev *idev)
 {
 	struct proc_dir_entry *p;
+	struct net *net;
 
 	if (!idev || !idev->dev)
 		return -EINVAL;
 
-	if (!proc_net_devsnmp6)
+	net = dev_net(idev->dev);
+	if (!net->mib.proc_net_devsnmp6)
 		return -ENOENT;
 
-	p = create_proc_entry(idev->dev->name, S_IRUGO, proc_net_devsnmp6);
+	p = proc_create_data(idev->dev->name, S_IRUGO,
+			     net->mib.proc_net_devsnmp6,
+			     &snmp6_dev_seq_fops, idev);
 	if (!p)
 		return -ENOMEM;
-
-	p->data = idev;
-	p->proc_fops = &snmp6_seq_fops;
 
 	idev->stats.proc_dir_entry = p;
 	return 0;
@@ -229,45 +250,57 @@ int snmp6_register_dev(struct inet6_dev *idev)
 
 int snmp6_unregister_dev(struct inet6_dev *idev)
 {
-	if (!proc_net_devsnmp6)
+	struct net *net = dev_net(idev->dev);
+	if (!net->mib.proc_net_devsnmp6)
 		return -ENOENT;
 	if (!idev || !idev->stats.proc_dir_entry)
 		return -EINVAL;
 	remove_proc_entry(idev->stats.proc_dir_entry->name,
-			  proc_net_devsnmp6);
+			  net->mib.proc_net_devsnmp6);
 	idev->stats.proc_dir_entry = NULL;
 	return 0;
 }
 
-int __init ipv6_misc_proc_init(void)
+static int ipv6_proc_init_net(struct net *net)
 {
-	int rc = 0;
+	if (!proc_net_fops_create(net, "sockstat6", S_IRUGO,
+			&sockstat6_seq_fops))
+		return -ENOMEM;
 
-	if (!proc_net_fops_create(&init_net, "snmp6", S_IRUGO, &snmp6_seq_fops))
+	if (!proc_net_fops_create(net, "snmp6", S_IRUGO, &snmp6_seq_fops))
 		goto proc_snmp6_fail;
 
-	proc_net_devsnmp6 = proc_mkdir("dev_snmp6", init_net.proc_net);
-	if (!proc_net_devsnmp6)
+	net->mib.proc_net_devsnmp6 = proc_mkdir("dev_snmp6", net->proc_net);
+	if (!net->mib.proc_net_devsnmp6)
 		goto proc_dev_snmp6_fail;
+	return 0;
 
-	if (!proc_net_fops_create(&init_net, "sockstat6", S_IRUGO, &sockstat6_seq_fops))
-		goto proc_sockstat6_fail;
-out:
-	return rc;
-
-proc_sockstat6_fail:
-	proc_net_remove(&init_net, "dev_snmp6");
-proc_dev_snmp6_fail:
-	proc_net_remove(&init_net, "snmp6");
 proc_snmp6_fail:
-	rc = -ENOMEM;
-	goto out;
+	proc_net_remove(net, "sockstat6");
+proc_dev_snmp6_fail:
+	proc_net_remove(net, "dev_snmp6");
+	return -ENOMEM;
+}
+
+static void ipv6_proc_exit_net(struct net *net)
+{
+	proc_net_remove(net, "sockstat6");
+	proc_net_remove(net, "dev_snmp6");
+	proc_net_remove(net, "snmp6");
+}
+
+static struct pernet_operations ipv6_proc_ops = {
+	.init = ipv6_proc_init_net,
+	.exit = ipv6_proc_exit_net,
+};
+
+int __init ipv6_misc_proc_init(void)
+{
+	return register_pernet_subsys(&ipv6_proc_ops);
 }
 
 void ipv6_misc_proc_exit(void)
 {
-	proc_net_remove(&init_net, "sockstat6");
-	proc_net_remove(&init_net, "dev_snmp6");
-	proc_net_remove(&init_net, "snmp6");
+	unregister_pernet_subsys(&ipv6_proc_ops);
 }
 

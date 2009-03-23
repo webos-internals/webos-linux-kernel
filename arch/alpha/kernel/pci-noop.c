@@ -109,7 +109,8 @@ sys_pciconfig_write(unsigned long bus, unsigned long dfn,
 /* Stubs for the routines in pci_iommu.c: */
 
 void *
-pci_alloc_consistent(struct pci_dev *pdev, size_t size, dma_addr_t *dma_addrp)
+__pci_alloc_consistent(struct pci_dev *pdev, size_t size,
+		       dma_addr_t *dma_addrp, gfp_t gfp)
 {
 	return NULL;
 }
@@ -165,7 +166,7 @@ dma_alloc_coherent(struct device *dev, size_t size,
 	ret = (void *)__get_free_pages(gfp, get_order(size));
 	if (ret) {
 		memset(ret, 0, size);
-		*dma_handle = virt_to_bus(ret);
+		*dma_handle = virt_to_phys(ret);
 	}
 	return ret;
 }
@@ -184,7 +185,7 @@ dma_map_sg(struct device *dev, struct scatterlist *sgl, int nents,
 
 		BUG_ON(!sg_page(sg));
 		va = sg_virt(sg);
-		sg_dma_address(sg) = (dma_addr_t)virt_to_bus(va);
+		sg_dma_address(sg) = (dma_addr_t)virt_to_phys(va);
 		sg_dma_len(sg) = sg->length;
 	}
 

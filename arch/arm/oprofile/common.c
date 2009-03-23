@@ -96,7 +96,7 @@ static int op_arm_resume(struct sys_device *dev)
 }
 
 static struct sysdev_class oprofile_sysclass = {
-	set_kset_name("oprofile"),
+	.name		= "oprofile",
 	.resume		= op_arm_resume,
 	.suspend	= op_arm_suspend,
 };
@@ -143,6 +143,10 @@ int __init oprofile_arch_init(struct oprofile_operations *ops)
 
 #ifdef CONFIG_OPROFILE_MPCORE
 	spec = &op_mpcore_spec;
+#endif
+
+#ifdef CONFIG_OPROFILE_ARMV7
+	spec = &op_armv7_spec;
 #endif
 
 	if (spec) {

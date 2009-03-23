@@ -40,6 +40,7 @@
 #include <linux/capability.h>
 #include <linux/rcupdate.h>
 #include <linux/completion.h>
+#include <linux/tracehook.h>
 
 #include <asm/errno.h>
 #include <asm/intrinsics.h>
@@ -227,12 +228,12 @@
 #ifdef PFM_DEBUGGING
 #define DPRINT(a) \
 	do { \
-		if (unlikely(pfm_sysctl.debug >0)) { printk("%s.%d: CPU%d [%d] ", __FUNCTION__, __LINE__, smp_processor_id(), task_pid_nr(current)); printk a; } \
+		if (unlikely(pfm_sysctl.debug >0)) { printk("%s.%d: CPU%d [%d] ", __func__, __LINE__, smp_processor_id(), task_pid_nr(current)); printk a; } \
 	} while (0)
 
 #define DPRINT_ovfl(a) \
 	do { \
-		if (unlikely(pfm_sysctl.debug > 0 && pfm_sysctl.debug_ovfl >0)) { printk("%s.%d: CPU%d [%d] ", __FUNCTION__, __LINE__, smp_processor_id(), task_pid_nr(current)); printk a; } \
+		if (unlikely(pfm_sysctl.debug > 0 && pfm_sysctl.debug_ovfl >0)) { printk("%s.%d: CPU%d [%d] ", __func__, __LINE__, smp_processor_id(), task_pid_nr(current)); printk a; } \
 	} while (0)
 #endif
 
@@ -586,21 +587,6 @@ pfm_put_task(struct task_struct *task)
 }
 
 static inline void
-pfm_set_task_notify(struct task_struct *task)
-{
-	struct thread_info *info;
-
-	info = (struct thread_info *) ((char *) task + IA64_TASK_SIZE);
-	set_bit(TIF_PERFMON_WORK, &info->flags);
-}
-
-static inline void
-pfm_clear_task_notify(void)
-{
-	clear_thread_flag(TIF_PERFMON_WORK);
-}
-
-static inline void
 pfm_reserve_page(unsigned long a)
 {
 	SetPageReserved(vmalloc_to_page((void *)a));
@@ -882,7 +868,7 @@ pfm_rvfree(void *mem, unsigned long size)
 }
 
 static pfm_context_t *
-pfm_context_alloc(void)
+pfm_context_alloc(int ctx_flags)
 {
 	pfm_context_t *ctx;
 
@@ -893,6 +879,46 @@ pfm_context_alloc(void)
 	ctx = kzalloc(sizeof(pfm_context_t), GFP_KERNEL);
 	if (ctx) {
 		DPRINT(("alloc ctx @%p\n", ctx));
+
+		/*
+		 * init context protection lock
+		 */
+		spin_lock_init(&ctx->ctx_lock);
+
+		/*
+		 * context is unloaded
+		 */
+		ctx->ctx_state = PFM_CTX_UNLOADED;
+
+		/*
+		 * initialization of context's flags
+		 */
+		ctx->ctx_fl_block       = (ctx_flags & PFM_FL_NOTIFY_BLOCK) ? 1 : 0;
+		ctx->ctx_fl_system      = (ctx_flags & PFM_FL_SYSTEM_WIDE) ? 1: 0;
+		ctx->ctx_fl_no_msg      = (ctx_flags & PFM_FL_OVFL_NO_MSG) ? 1: 0;
+		/*
+		 * will move to set properties
+		 * ctx->ctx_fl_excl_idle   = (ctx_flags & PFM_FL_EXCL_IDLE) ? 1: 0;
+		 */
+
+		/*
+		 * init restart semaphore to locked
+		 */
+		init_completion(&ctx->ctx_restart_done);
+
+		/*
+		 * activation is used in SMP only
+		 */
+		ctx->ctx_last_activation = PFM_INVALID_ACTIVATION;
+		SET_LAST_CPU(ctx, -1);
+
+		/*
+		 * initialize notification message queue
+		 */
+		ctx->ctx_msgq_head = ctx->ctx_msgq_tail = 0;
+		init_waitqueue_head(&ctx->ctx_msgq_wait);
+		init_waitqueue_head(&ctx->ctx_zombieq);
+
 	}
 	return ctx;
 }
@@ -1795,7 +1821,7 @@ pfm_syswide_cleanup_other_cpu(pfm_context_t *ctx)
 	int ret;
 
 	DPRINT(("calling CPU%d for cleanup\n", ctx->ctx_cpu));
-	ret = smp_call_function_single(ctx->ctx_cpu, pfm_syswide_force_stop, ctx, 0, 1);
+	ret = smp_call_function_single(ctx->ctx_cpu, pfm_syswide_force_stop, ctx, 1);
 	DPRINT(("called CPU%d for cleanup ret=%d\n", ctx->ctx_cpu, ret));
 }
 #endif /* CONFIG_SMP */
@@ -1839,11 +1865,6 @@ pfm_flush(struct file *filp, fl_owner_t id)
 	 * invoked after, it will find an empty queue and no
 	 * signal will be sent. In both case, we are safe
 	 */
-	if (filp->f_flags & FASYNC) {
-		DPRINT(("cleaning up async_queue=%p\n", ctx->ctx_async_queue));
-		pfm_do_fasync (-1, filp, ctx, 0);
-	}
-
 	PROTECT_CTX(ctx, flags);
 
 	state     = ctx->ctx_state;
@@ -2180,93 +2201,55 @@ static struct dentry_operations pfmfs_dentry_operations = {
 };
 
 
-static int
-pfm_alloc_fd(struct file **cfile)
+static struct file *
+pfm_alloc_file(pfm_context_t *ctx)
 {
-	int fd, ret = 0;
-	struct file *file = NULL;
-	struct inode * inode;
+	struct file *file;
+	struct inode *inode;
+	struct dentry *dentry;
 	char name[32];
 	struct qstr this;
-
-	fd = get_unused_fd();
-	if (fd < 0) return -ENFILE;
-
-	ret = -ENFILE;
-
-	file = get_empty_filp();
-	if (!file) goto out;
 
 	/*
 	 * allocate a new inode
 	 */
 	inode = new_inode(pfmfs_mnt->mnt_sb);
-	if (!inode) goto out;
+	if (!inode)
+		return ERR_PTR(-ENOMEM);
 
 	DPRINT(("new inode ino=%ld @%p\n", inode->i_ino, inode));
 
 	inode->i_mode = S_IFCHR|S_IRUGO;
-	inode->i_uid  = current->fsuid;
-	inode->i_gid  = current->fsgid;
+	inode->i_uid  = current_fsuid();
+	inode->i_gid  = current_fsgid();
 
 	sprintf(name, "[%lu]", inode->i_ino);
 	this.name = name;
 	this.len  = strlen(name);
 	this.hash = inode->i_ino;
 
-	ret = -ENOMEM;
-
 	/*
 	 * allocate a new dcache entry
 	 */
-	file->f_path.dentry = d_alloc(pfmfs_mnt->mnt_sb->s_root, &this);
-	if (!file->f_path.dentry) goto out;
+	dentry = d_alloc(pfmfs_mnt->mnt_sb->s_root, &this);
+	if (!dentry) {
+		iput(inode);
+		return ERR_PTR(-ENOMEM);
+	}
 
-	file->f_path.dentry->d_op = &pfmfs_dentry_operations;
+	dentry->d_op = &pfmfs_dentry_operations;
+	d_add(dentry, inode);
 
-	d_add(file->f_path.dentry, inode);
-	file->f_path.mnt = mntget(pfmfs_mnt);
-	file->f_mapping = inode->i_mapping;
+	file = alloc_file(pfmfs_mnt, dentry, FMODE_READ, &pfm_file_ops);
+	if (!file) {
+		dput(dentry);
+		return ERR_PTR(-ENFILE);
+	}
 
-	file->f_op    = &pfm_file_ops;
-	file->f_mode  = FMODE_READ;
 	file->f_flags = O_RDONLY;
-	file->f_pos   = 0;
+	file->private_data = ctx;
 
-	/*
-	 * may have to delay until context is attached?
-	 */
-	fd_install(fd, file);
-
-	/*
-	 * the file structure we will use
-	 */
-	*cfile = file;
-
-	return fd;
-out:
-	if (file) put_filp(file);
-	put_unused_fd(fd);
-	return ret;
-}
-
-static void
-pfm_free_fd(int fd, struct file *file)
-{
-	struct files_struct *files = current->files;
-	struct fdtable *fdt;
-
-	/* 
-	 * there ie no fd_uninstall(), so we do it here
-	 */
-	spin_lock(&files->file_lock);
-	fdt = files_fdtable(files);
-	rcu_assign_pointer(fdt->fd[fd], NULL);
-	spin_unlock(&files->file_lock);
-
-	if (file)
-		put_filp(file);
-	put_unused_fd(fd);
+	return file;
 }
 
 static int
@@ -2416,22 +2399,33 @@ error_kmem:
 static int
 pfm_bad_permissions(struct task_struct *task)
 {
+	const struct cred *tcred;
+	uid_t uid = current_uid();
+	gid_t gid = current_gid();
+	int ret;
+
+	rcu_read_lock();
+	tcred = __task_cred(task);
+
 	/* inspired by ptrace_attach() */
 	DPRINT(("cur: uid=%d gid=%d task: euid=%d suid=%d uid=%d egid=%d sgid=%d\n",
-		current->uid,
-		current->gid,
-		task->euid,
-		task->suid,
-		task->uid,
-		task->egid,
-		task->sgid));
+		uid,
+		gid,
+		tcred->euid,
+		tcred->suid,
+		tcred->uid,
+		tcred->egid,
+		tcred->sgid));
 
-	return ((current->uid != task->euid)
-	    || (current->uid != task->suid)
-	    || (current->uid != task->uid)
-	    || (current->gid != task->egid)
-	    || (current->gid != task->sgid)
-	    || (current->gid != task->gid)) && !capable(CAP_SYS_PTRACE);
+	ret = ((uid != tcred->euid)
+	       || (uid != tcred->suid)
+	       || (uid != tcred->uid)
+	       || (gid != tcred->egid)
+	       || (gid != tcred->sgid)
+	       || (gid != tcred->gid)) && !capable(CAP_SYS_PTRACE);
+
+	rcu_read_unlock();
+	return ret;
 }
 
 static int
@@ -2490,6 +2484,7 @@ pfm_setup_buffer_fmt(struct task_struct *task, struct file *filp, pfm_context_t 
 
 	/* link buffer format and context */
 	ctx->ctx_buf_fmt = fmt;
+	ctx->ctx_fl_is_sampling = 1; /* assume record() is defined */
 
 	/*
 	 * check if buffer format wants to use perfmon buffer allocation/mapping service
@@ -2631,14 +2626,14 @@ pfm_task_incompatible(pfm_context_t *ctx, struct task_struct *task)
 	 */
 	if (task == current) return 0;
 
-	if ((task->state != TASK_STOPPED) && (task->state != TASK_TRACED)) {
+	if (!task_is_stopped_or_traced(task)) {
 		DPRINT(("cannot attach to non-stopped task [%d] state=%ld\n", task_pid_nr(task), task->state));
 		return -EBUSY;
 	}
 	/*
 	 * make sure the task is off any CPU
 	 */
-	wait_task_inactive(task);
+	wait_task_inactive(task, 0);
 
 	/* more to come... */
 
@@ -2654,11 +2649,11 @@ pfm_get_task(pfm_context_t *ctx, pid_t pid, struct task_struct **task)
 	/* XXX: need to add more checks here */
 	if (pid < 2) return -EPERM;
 
-	if (pid != current->pid) {
+	if (pid != task_pid_vnr(current)) {
 
 		read_lock(&tasklist_lock);
 
-		p = find_task_by_pid(pid);
+		p = find_task_by_vpid(pid);
 
 		/* make sure task cannot go away while we operate on it */
 		if (p) get_task_struct(p);
@@ -2684,77 +2679,44 @@ pfm_context_create(pfm_context_t *ctx, void *arg, int count, struct pt_regs *reg
 {
 	pfarg_context_t *req = (pfarg_context_t *)arg;
 	struct file *filp;
+	struct path path;
 	int ctx_flags;
+	int fd;
 	int ret;
 
 	/* let's check the arguments first */
 	ret = pfarg_is_sane(current, req);
-	if (ret < 0) return ret;
+	if (ret < 0)
+		return ret;
 
 	ctx_flags = req->ctx_flags;
 
 	ret = -ENOMEM;
 
-	ctx = pfm_context_alloc();
-	if (!ctx) goto error;
+	fd = get_unused_fd();
+	if (fd < 0)
+		return fd;
 
-	ret = pfm_alloc_fd(&filp);
-	if (ret < 0) goto error_file;
+	ctx = pfm_context_alloc(ctx_flags);
+	if (!ctx)
+		goto error;
 
-	req->ctx_fd = ctx->ctx_fd = ret;
+	filp = pfm_alloc_file(ctx);
+	if (IS_ERR(filp)) {
+		ret = PTR_ERR(filp);
+		goto error_file;
+	}
 
-	/*
-	 * attach context to file
-	 */
-	filp->private_data = ctx;
+	req->ctx_fd = ctx->ctx_fd = fd;
 
 	/*
 	 * does the user want to sample?
 	 */
 	if (pfm_uuid_cmp(req->ctx_smpl_buf_id, pfm_null_uuid)) {
 		ret = pfm_setup_buffer_fmt(current, filp, ctx, ctx_flags, 0, req);
-		if (ret) goto buffer_error;
+		if (ret)
+			goto buffer_error;
 	}
-
-	/*
-	 * init context protection lock
-	 */
-	spin_lock_init(&ctx->ctx_lock);
-
-	/*
-	 * context is unloaded
-	 */
-	ctx->ctx_state = PFM_CTX_UNLOADED;
-
-	/*
-	 * initialization of context's flags
-	 */
-	ctx->ctx_fl_block       = (ctx_flags & PFM_FL_NOTIFY_BLOCK) ? 1 : 0;
-	ctx->ctx_fl_system      = (ctx_flags & PFM_FL_SYSTEM_WIDE) ? 1: 0;
-	ctx->ctx_fl_is_sampling = ctx->ctx_buf_fmt ? 1 : 0; /* assume record() is defined */
-	ctx->ctx_fl_no_msg      = (ctx_flags & PFM_FL_OVFL_NO_MSG) ? 1: 0;
-	/*
-	 * will move to set properties
-	 * ctx->ctx_fl_excl_idle   = (ctx_flags & PFM_FL_EXCL_IDLE) ? 1: 0;
-	 */
-
-	/*
-	 * init restart semaphore to locked
-	 */
-	init_completion(&ctx->ctx_restart_done);
-
-	/*
-	 * activation is used in SMP only
-	 */
-	ctx->ctx_last_activation = PFM_INVALID_ACTIVATION;
-	SET_LAST_CPU(ctx, -1);
-
-	/*
-	 * initialize notification message queue
-	 */
-	ctx->ctx_msgq_head = ctx->ctx_msgq_tail = 0;
-	init_waitqueue_head(&ctx->ctx_msgq_wait);
-	init_waitqueue_head(&ctx->ctx_zombieq);
 
 	DPRINT(("ctx=%p flags=0x%x system=%d notify_block=%d excl_idle=%d no_msg=%d ctx_fd=%d \n",
 		ctx,
@@ -2770,10 +2732,14 @@ pfm_context_create(pfm_context_t *ctx, void *arg, int count, struct pt_regs *reg
 	 */
 	pfm_reset_pmu_state(ctx);
 
+	fd_install(fd, filp);
+
 	return 0;
 
 buffer_error:
-	pfm_free_fd(ctx->ctx_fd, filp);
+	path = filp->f_path;
+	put_filp(filp);
+	path_put(&path);
 
 	if (ctx->ctx_buf_fmt) {
 		pfm_buf_fmt_exit(ctx->ctx_buf_fmt, current, NULL, regs);
@@ -2782,6 +2748,7 @@ error_file:
 	pfm_context_free(ctx);
 
 error:
+	put_unused_fd(fd);
 	return ret;
 }
 
@@ -3724,7 +3691,7 @@ pfm_restart(pfm_context_t *ctx, void *arg, int count, struct pt_regs *regs)
 
 		PFM_SET_WORK_PENDING(task, 1);
 
-		pfm_set_task_notify(task);
+		set_notify_resume(task);
 
 		/*
 		 * XXX: send reschedule if task runs on another CPU
@@ -4219,10 +4186,10 @@ pfm_check_task_exist(pfm_context_t *ctx)
 	do_each_thread (g, t) {
 		if (t->thread.pfm_context == ctx) {
 			ret = 0;
-			break;
+			goto out;
 		}
 	} while_each_thread (g, t);
-
+out:
 	read_unlock(&tasklist_lock);
 
 	DPRINT(("pfm_check_task_exist: ret=%d ctx=%p\n", ret, ctx));
@@ -4792,7 +4759,7 @@ recheck:
 	 * the task must be stopped.
 	 */
 	if (PFM_CMD_STOPPED(cmd)) {
-		if ((task->state != TASK_STOPPED) && (task->state != TASK_TRACED)) {
+		if (!task_is_stopped_or_traced(task)) {
 			DPRINT(("[%d] task not in stopped state\n", task_pid_nr(task)));
 			return -EBUSY;
 		}
@@ -4814,7 +4781,7 @@ recheck:
 
 		UNPROTECT_CTX(ctx, flags);
 
-		wait_task_inactive(task);
+		wait_task_inactive(task, 0);
 
 		PROTECT_CTX(ctx, flags);
 
@@ -5053,12 +5020,13 @@ pfm_context_force_terminate(pfm_context_t *ctx, struct pt_regs *regs)
 }
 
 static int pfm_ovfl_notify_user(pfm_context_t *ctx, unsigned long ovfl_pmds);
+
  /*
   * pfm_handle_work() can be called with interrupts enabled
   * (TIF_NEED_RESCHED) or disabled. The down_interruptible
   * call may sleep, therefore we must re-enable interrupts
   * to avoid deadlocks. It is safe to do so because this function
-  * is called ONLY when returning to user level (PUStk=1), in which case
+  * is called ONLY when returning to user level (pUStk=1), in which case
   * there is no risk of kernel stack overflow due to deep
   * interrupt nesting.
   */
@@ -5074,15 +5042,14 @@ pfm_handle_work(void)
 
 	ctx = PFM_GET_CTX(current);
 	if (ctx == NULL) {
-		printk(KERN_ERR "perfmon: [%d] has no PFM context\n", task_pid_nr(current));
+		printk(KERN_ERR "perfmon: [%d] has no PFM context\n",
+			task_pid_nr(current));
 		return;
 	}
 
 	PROTECT_CTX(ctx, flags);
 
 	PFM_SET_WORK_PENDING(current, 0);
-
-	pfm_clear_task_notify();
 
 	regs = task_pt_regs(current);
 
@@ -5098,11 +5065,12 @@ pfm_handle_work(void)
 	/*
 	 * must be done before we check for simple-reset mode
 	 */
-	if (ctx->ctx_fl_going_zombie || ctx->ctx_state == PFM_CTX_ZOMBIE) goto do_zombie;
-
+	if (ctx->ctx_fl_going_zombie || ctx->ctx_state == PFM_CTX_ZOMBIE)
+		goto do_zombie;
 
 	//if (CTX_OVFL_NOBLOCK(ctx)) goto skip_blocking;
-	if (reason == PFM_TRAP_REASON_RESET) goto skip_blocking;
+	if (reason == PFM_TRAP_REASON_RESET)
+		goto skip_blocking;
 
 	/*
 	 * restore interrupt mask to what it was on entry.
@@ -5150,7 +5118,8 @@ do_zombie:
 	/*
 	 * in case of interruption of down() we don't restart anything
 	 */
-	if (ret < 0) goto nothing_to_do;
+	if (ret < 0)
+		goto nothing_to_do;
 
 skip_blocking:
 	pfm_resume_after_ovfl(ctx, ovfl_regs, regs);
@@ -5450,7 +5419,7 @@ pfm_overflow_handler(struct task_struct *task, pfm_context_t *ctx, u64 pmc0, str
 			 * when coming from ctxsw, current still points to the
 			 * previous task, therefore we must work with task and not current.
 			 */
-			pfm_set_task_notify(task);
+			set_notify_resume(task);
 		}
 		/*
 		 * defer until state is changed (shorten spin window). the context is locked
@@ -5526,7 +5495,7 @@ stop_monitoring:
 }
 
 static int
-pfm_do_interrupt_handler(int irq, void *arg, struct pt_regs *regs)
+pfm_do_interrupt_handler(void *arg, struct pt_regs *regs)
 {
 	struct task_struct *task;
 	pfm_context_t *ctx;
@@ -5606,7 +5575,7 @@ pfm_interrupt_handler(int irq, void *arg)
 
 		start_cycles = ia64_get_itc();
 
-		ret = pfm_do_interrupt_handler(irq, arg, regs);
+		ret = pfm_do_interrupt_handler(arg, regs);
 
 		total_cycles = ia64_get_itc();
 
@@ -5795,7 +5764,7 @@ pfm_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-struct seq_operations pfm_seq_ops = {
+const struct seq_operations pfm_seq_ops = {
 	.start =	pfm_proc_start,
  	.next =		pfm_proc_next,
  	.stop =		pfm_proc_stop,
@@ -6544,7 +6513,7 @@ pfm_install_alt_pmu_interrupt(pfm_intr_handler_desc_t *hdl)
 	}
 
 	/* save the current system wide pmu states */
-	ret = on_each_cpu(pfm_alt_save_pmu_state, NULL, 0, 1);
+	ret = on_each_cpu(pfm_alt_save_pmu_state, NULL, 1);
 	if (ret) {
 		DPRINT(("on_each_cpu() failed: %d\n", ret));
 		goto cleanup_reserve;
@@ -6589,7 +6558,7 @@ pfm_remove_alt_pmu_interrupt(pfm_intr_handler_desc_t *hdl)
 
 	pfm_alt_intr_handler = NULL;
 
-	ret = on_each_cpu(pfm_alt_restore_pmu_state, NULL, 0, 1);
+	ret = on_each_cpu(pfm_alt_restore_pmu_state, NULL, 1);
 	if (ret) {
 		DPRINT(("on_each_cpu() failed: %d\n", ret));
 	}
@@ -6710,16 +6679,12 @@ pfm_init(void)
 	/*
 	 * create /proc/perfmon (mostly for debugging purposes)
 	 */
- 	perfmon_dir = create_proc_entry("perfmon", S_IRUGO, NULL);
+	perfmon_dir = proc_create("perfmon", S_IRUGO, NULL, &pfm_proc_fops);
 	if (perfmon_dir == NULL) {
 		printk(KERN_ERR "perfmon: cannot create /proc entry, perfmon disabled\n");
 		pmu_conf = NULL;
 		return -1;
 	}
-  	/*
- 	 * install customized file operations for /proc/perfmon entry
- 	 */
- 	perfmon_dir->proc_fops = &pfm_proc_fops;
 
 	/*
 	 * create /proc/sys/kernel/perfmon (for debugging purposes)

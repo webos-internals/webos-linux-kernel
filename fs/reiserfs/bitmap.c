@@ -272,7 +272,7 @@ static inline int block_group_used(struct super_block *s, u32 id)
 
 	/* If we don't have cached information on this bitmap block, we're
 	 * going to have to load it later anyway. Loading it here allows us
-	 * to make a better decision. This favors long-term performace gain
+	 * to make a better decision. This favors long-term performance gain
 	 * with a better on-disk layout vs. a short term gain of skipping the
 	 * read and potentially having a bad placement. */
 	if (info->free_count == UINT_MAX) {
@@ -479,7 +479,7 @@ static void __discard_prealloc(struct reiserfs_transaction_handle *th,
 	if (ei->i_prealloc_count < 0)
 		reiserfs_warning(th->t_super,
 				 "zam-4001:%s: inode has negative prealloc blocks count.",
-				 __FUNCTION__);
+				 __func__);
 #endif
 	while (ei->i_prealloc_count > 0) {
 		reiserfs_free_prealloc_block(th, inode, ei->i_prealloc_block);
@@ -517,7 +517,7 @@ void reiserfs_discard_all_prealloc(struct reiserfs_transaction_handle *th)
 		if (!ei->i_prealloc_count) {
 			reiserfs_warning(th->t_super,
 					 "zam-4001:%s: inode is in prealloc list but has no preallocated blocks.",
-					 __FUNCTION__);
+					 __func__);
 		}
 #endif
 		__discard_prealloc(th, ei);
@@ -632,7 +632,7 @@ int reiserfs_parse_alloc_options(struct super_block *s, char *options)
 		}
 
 		reiserfs_warning(s, "zam-4001: %s : unknown option - %s",
-				 __FUNCTION__, this_char);
+				 __func__, this_char);
 		return 1;
 	}
 
@@ -663,7 +663,7 @@ static inline void new_hashed_relocation(reiserfs_blocknr_hint_t * hint)
 
 /*
  * Relocation based on dirid, hashing them into a given bitmap block
- * files. Formatted nodes are unaffected, a seperate policy covers them
+ * files. Formatted nodes are unaffected, a separate policy covers them
  */
 static void dirid_groups(reiserfs_blocknr_hint_t * hint)
 {
@@ -688,7 +688,7 @@ static void dirid_groups(reiserfs_blocknr_hint_t * hint)
 
 /*
  * Relocation based on oid, hashing them into a given bitmap block
- * files. Formatted nodes are unaffected, a seperate policy covers them
+ * files. Formatted nodes are unaffected, a separate policy covers them
  */
 static void oid_groups(reiserfs_blocknr_hint_t * hint)
 {
@@ -1254,7 +1254,7 @@ struct buffer_head *reiserfs_read_bitmap_block(struct super_block *sb,
 	bh = sb_bread(sb, block);
 	if (bh == NULL)
 		reiserfs_warning(sb, "sh-2029: %s: bitmap block (#%u) "
-		                 "reading failed", __FUNCTION__, block);
+		                 "reading failed", __func__, block);
 	else {
 		if (buffer_locked(bh)) {
 			PROC_INFO_INC(sb, scan_bitmap.wait);

@@ -78,7 +78,7 @@ static struct pci_dev *fake_pci_dev(struct pci_channel *hose,
 }
 
 #define EARLY_PCI_OP(rw, size, type)					\
-int early_##rw##_config_##size(struct pci_channel *hose,		\
+static int early_##rw##_config_##size(struct pci_channel *hose,		\
 	int top_bus, int bus, int devfn, int offset, type value)	\
 {									\
 	return pci_##rw##_config_##size(				\
@@ -516,10 +516,8 @@ pciauto_bus_scan(struct pci_channel *hose, int top_bus, int current_bus)
 					 PCI_COMMAND, cmdstat | PCI_COMMAND_IO |
 					 PCI_COMMAND_MEMORY |
 					 PCI_COMMAND_MASTER);
-#if !defined(CONFIG_SH_HS7751RVOIP) && !defined(CONFIG_SH_RTS7751R2D)
 		early_write_config_byte(hose, top_bus, current_bus, pci_devfn,
 					PCI_LATENCY_TIMER, 0x80);
-#endif
 
 		/* Allocate PCI I/O and/or memory space */
 		pciauto_setup_bars(hose, top_bus, current_bus, pci_devfn, PCI_BASE_ADDRESS_5);

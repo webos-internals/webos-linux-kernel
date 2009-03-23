@@ -21,6 +21,7 @@
 #include <linux/list.h>
 #include <linux/poll.h>
 #include <linux/kmod.h>
+#include <linux/smp_lock.h>
 
 #include "platform.h"
 #undef ID_MASK
@@ -393,7 +394,7 @@ void diva_free_dma_map(void *hdev, struct _diva_dma_map_entry *pmap)
 	dma_addr_t dma_handle;
 	void *addr_handle;
 
-	for (i = 0; (pmap != 0); i++) {
+	for (i = 0; (pmap != NULL); i++) {
 		diva_get_dma_map_entry(pmap, i, &cpu_addr, &phys_addr);
 		if (!cpu_addr) {
 			break;
@@ -580,6 +581,7 @@ xdi_copy_from_user(void *os_handle, void *dst, const void __user *src, int lengt
  */
 static int divas_open(struct inode *inode, struct file *file)
 {
+	cycle_kernel_lock();
 	return (0);
 }
 
@@ -806,7 +808,6 @@ static int DIVA_INIT_FUNCTION divas_init(void)
 
 	if (!create_divas_proc()) {
 #ifdef MODULE
-		remove_divas_proc();
 		divas_unregister_chrdev();
 		divasfunc_exit();
 #endif

@@ -286,7 +286,7 @@ static ssize_t rtas_flash_read(struct file *file, char __user *buf,
 }
 
 /* constructor for flash_block_cache */
-void rtas_block_ctor(struct kmem_cache *cache, void *ptr)
+void rtas_block_ctor(void *ptr)
 {
 	memset(ptr, 0, RTAS_BLK_SIZE);
 }
@@ -356,7 +356,7 @@ static int rtas_excl_open(struct inode *inode, struct file *file)
 
 	/* Enforce exclusive open with use count of PDE */
 	spin_lock(&flash_file_open_lock);
-	if (atomic_read(&dp->count) > 1) {
+	if (atomic_read(&dp->count) > 2) {
 		spin_unlock(&flash_file_open_lock);
 		return -EBUSY;
 	}
@@ -704,18 +704,11 @@ static int initialize_flash_pde_data(const char *rtas_call_name,
 static struct proc_dir_entry *create_flash_pde(const char *filename,
 					       const struct file_operations *fops)
 {
-	struct proc_dir_entry *ent = NULL;
-
-	ent = create_proc_entry(filename, S_IRUSR | S_IWUSR, NULL);
-	if (ent != NULL) {
-		ent->proc_fops = fops;
-		ent->owner = THIS_MODULE;
-	}
-
-	return ent;
+	return proc_create(filename, S_IRUSR | S_IWUSR, NULL, fops);
 }
 
 static const struct file_operations rtas_flash_operations = {
+	.owner		= THIS_MODULE,
 	.read		= rtas_flash_read,
 	.write		= rtas_flash_write,
 	.open		= rtas_excl_open,
@@ -723,6 +716,7 @@ static const struct file_operations rtas_flash_operations = {
 };
 
 static const struct file_operations manage_flash_operations = {
+	.owner		= THIS_MODULE,
 	.read		= manage_flash_read,
 	.write		= manage_flash_write,
 	.open		= rtas_excl_open,
@@ -730,13 +724,14 @@ static const struct file_operations manage_flash_operations = {
 };
 
 static const struct file_operations validate_flash_operations = {
+	.owner		= THIS_MODULE,
 	.read		= validate_flash_read,
 	.write		= validate_flash_write,
 	.open		= rtas_excl_open,
 	.release	= validate_flash_release,
 };
 
-int __init rtas_flash_init(void)
+static int __init rtas_flash_init(void)
 {
 	int rc;
 
@@ -807,7 +802,7 @@ int __init rtas_flash_init(void)
 				rtas_block_ctor);
 	if (!flash_block_cache) {
 		printk(KERN_ERR "%s: failed to create block cache\n",
-				__FUNCTION__);
+				__func__);
 		rc = -ENOMEM;
 		goto cleanup;
 	}
@@ -822,7 +817,7 @@ cleanup:
 	return rc;
 }
 
-void __exit rtas_flash_cleanup(void)
+static void __exit rtas_flash_cleanup(void)
 {
 	rtas_flash_term_hook = NULL;
 

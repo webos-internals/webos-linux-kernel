@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2006 Silicon Graphics, Inc.  All rights reserved.
+ * Copyright (C) 2001-2008 Silicon Graphics, Inc.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License
@@ -123,8 +123,7 @@ static int uncached_add_chunk(struct uncached_pool *uc_pool, int nid)
 	status = ia64_pal_prefetch_visibility(PAL_VISIBILITY_PHYSICAL);
 	if (status == PAL_VISIBILITY_OK_REMOTE_NEEDED) {
 		atomic_set(&uc_pool->status, 0);
-		status = smp_call_function(uncached_ipi_visibility, uc_pool,
-					   0, 1);
+		status = smp_call_function(uncached_ipi_visibility, uc_pool, 1);
 		if (status || atomic_read(&uc_pool->status))
 			goto failed;
 	} else if (status != PAL_VISIBILITY_OK)
@@ -146,7 +145,7 @@ static int uncached_add_chunk(struct uncached_pool *uc_pool, int nid)
 	if (status != PAL_STATUS_SUCCESS)
 		goto failed;
 	atomic_set(&uc_pool->status, 0);
-	status = smp_call_function(uncached_ipi_mc_drain, uc_pool, 0, 1);
+	status = smp_call_function(uncached_ipi_mc_drain, uc_pool, 1);
 	if (status || atomic_read(&uc_pool->status))
 		goto failed;
 
@@ -177,12 +176,13 @@ failed:
  * uncached_alloc_page
  *
  * @starting_nid: node id of node to start with, or -1
+ * @n_pages: number of contiguous pages to allocate
  *
- * Allocate 1 uncached page. Allocates on the requested node. If no
- * uncached pages are available on the requested node, roundrobin starting
- * with the next higher node.
+ * Allocate the specified number of contiguous uncached pages on the
+ * the requested node. If not enough contiguous uncached pages are available
+ * on the requested node, roundrobin starting with the next higher node.
  */
-unsigned long uncached_alloc_page(int starting_nid)
+unsigned long uncached_alloc_page(int starting_nid, int n_pages)
 {
 	unsigned long uc_addr;
 	struct uncached_pool *uc_pool;
@@ -202,7 +202,8 @@ unsigned long uncached_alloc_page(int starting_nid)
 		if (uc_pool->pool == NULL)
 			continue;
 		do {
-			uc_addr = gen_pool_alloc(uc_pool->pool, PAGE_SIZE);
+			uc_addr = gen_pool_alloc(uc_pool->pool,
+						 n_pages * PAGE_SIZE);
 			if (uc_addr != 0)
 				return uc_addr;
 		} while (uncached_add_chunk(uc_pool, nid) == 0);
@@ -217,11 +218,12 @@ EXPORT_SYMBOL(uncached_alloc_page);
 /*
  * uncached_free_page
  *
- * @uc_addr: uncached address of page to free
+ * @uc_addr: uncached address of first page to free
+ * @n_pages: number of contiguous pages to free
  *
- * Free a single uncached page.
+ * Free the specified number of uncached pages.
  */
-void uncached_free_page(unsigned long uc_addr)
+void uncached_free_page(unsigned long uc_addr, int n_pages)
 {
 	int nid = paddr_to_nid(uc_addr - __IA64_UNCACHED_OFFSET);
 	struct gen_pool *pool = uncached_pools[nid].pool;
@@ -232,7 +234,7 @@ void uncached_free_page(unsigned long uc_addr)
 	if ((uc_addr & (0XFUL << 60)) != __IA64_UNCACHED_OFFSET)
 		panic("uncached_free_page invalid address %lx\n", uc_addr);
 
-	gen_pool_free(pool, uc_addr, PAGE_SIZE);
+	gen_pool_free(pool, uc_addr, n_pages * PAGE_SIZE);
 }
 EXPORT_SYMBOL(uncached_free_page);
 

@@ -21,6 +21,7 @@
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
+#include <linux/smp_lock.h>
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
 MODULE_DESCRIPTION("Input core");
@@ -241,7 +242,7 @@ static void input_handle_event(struct input_dev *dev,
 		break;
 	}
 
-	if (type != EV_SYN)
+	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
 		dev->sync = 0;
 
 	if ((disposition & INPUT_PASS_TO_DEVICE) && dev->event)
@@ -493,7 +494,7 @@ static void input_disconnect_device(struct input_dev *dev)
 	if (is_event_supported(EV_KEY, dev->evbit, EV_MAX)) {
 		for (code = 0; code <= KEY_MAX; code++) {
 			if (is_event_supported(code, dev->keybit, KEY_MAX) &&
-			    test_bit(code, dev->key)) {
+			    __test_and_clear_bit(code, dev->key)) {
 				input_pass_event(dev, EV_KEY, code, 0);
 			}
 		}
@@ -526,7 +527,7 @@ static int input_default_getkeycode(struct input_dev *dev,
 	if (!dev->keycodesize)
 		return -EINVAL;
 
-	if (scancode < 0 || scancode >= dev->keycodemax)
+	if (scancode >= dev->keycodemax)
 		return -EINVAL;
 
 	*keycode = input_fetch_keycode(dev, scancode);
@@ -540,10 +541,7 @@ static int input_default_setkeycode(struct input_dev *dev,
 	int old_keycode;
 	int i;
 
-	if (scancode < 0 || scancode >= dev->keycodemax)
-		return -EINVAL;
-
-	if (keycode < 0 || keycode > KEY_MAX)
+	if (scancode >= dev->keycodemax)
 		return -EINVAL;
 
 	if (!dev->keycodesize)
@@ -586,6 +584,75 @@ static int input_default_setkeycode(struct input_dev *dev,
 	return 0;
 }
 
+/**
+ * input_get_keycode - retrieve keycode currently mapped to a given scancode
+ * @dev: input device which keymap is being queried
+ * @scancode: scancode (or its equivalent for device in question) for which
+ *	keycode is needed
+ * @keycode: result
+ *
+ * This function should be called by anyone interested in retrieving current
+ * keymap. Presently keyboard and evdev handlers use it.
+ */
+int input_get_keycode(struct input_dev *dev, int scancode, int *keycode)
+{
+	if (scancode < 0)
+		return -EINVAL;
+
+	return dev->getkeycode(dev, scancode, keycode);
+}
+EXPORT_SYMBOL(input_get_keycode);
+
+/**
+ * input_get_keycode - assign new keycode to a given scancode
+ * @dev: input device which keymap is being updated
+ * @scancode: scancode (or its equivalent for device in question)
+ * @keycode: new keycode to be assigned to the scancode
+ *
+ * This function should be called by anyone needing to update current
+ * keymap. Presently keyboard and evdev handlers use it.
+ */
+int input_set_keycode(struct input_dev *dev, int scancode, int keycode)
+{
+	unsigned long flags;
+	int old_keycode;
+	int retval;
+
+	if (scancode < 0)
+		return -EINVAL;
+
+	if (keycode < 0 || keycode > KEY_MAX)
+		return -EINVAL;
+
+	spin_lock_irqsave(&dev->event_lock, flags);
+
+	retval = dev->getkeycode(dev, scancode, &old_keycode);
+	if (retval)
+		goto out;
+
+	retval = dev->setkeycode(dev, scancode, keycode);
+	if (retval)
+		goto out;
+
+	/*
+	 * Simulate keyup event if keycode is not present
+	 * in the keymap anymore
+	 */
+	if (test_bit(EV_KEY, dev->evbit) &&
+	    !is_event_supported(old_keycode, dev->keybit, KEY_MAX) &&
+	    __test_and_clear_bit(old_keycode, dev->key)) {
+
+		input_pass_event(dev, EV_KEY, old_keycode, 0);
+		if (dev->sync)
+			input_pass_event(dev, EV_SYN, SYN_REPORT, 1);
+	}
+
+ out:
+	spin_unlock_irqrestore(&dev->event_lock, flags);
+
+	return retval;
+}
+EXPORT_SYMBOL(input_set_keycode);
 
 #define MATCH_BIT(bit, max) \
 		for (i = 0; i < BITS_TO_LONGS(max); i++) \
@@ -755,7 +822,7 @@ static int input_devices_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static struct seq_operations input_devices_seq_ops = {
+static const struct seq_operations input_devices_seq_ops = {
 	.start	= input_devices_seq_start,
 	.next	= input_devices_seq_next,
 	.stop	= input_devices_seq_stop,
@@ -808,7 +875,7 @@ static int input_handlers_seq_show(struct seq_file *seq, void *v)
 
 	return 0;
 }
-static struct seq_operations input_handlers_seq_ops = {
+static const struct seq_operations input_handlers_seq_ops = {
 	.start	= input_handlers_seq_start,
 	.next	= input_handlers_seq_next,
 	.stop	= input_handlers_seq_stop,
@@ -832,30 +899,26 @@ static int __init input_proc_init(void)
 {
 	struct proc_dir_entry *entry;
 
-	proc_bus_input_dir = proc_mkdir("input", proc_bus);
+	proc_bus_input_dir = proc_mkdir("bus/input", NULL);
 	if (!proc_bus_input_dir)
 		return -ENOMEM;
 
 	proc_bus_input_dir->owner = THIS_MODULE;
 
-	entry = create_proc_entry("devices", 0, proc_bus_input_dir);
+	entry = proc_create("devices", 0, proc_bus_input_dir,
+			    &input_devices_fileops);
 	if (!entry)
 		goto fail1;
 
-	entry->owner = THIS_MODULE;
-	entry->proc_fops = &input_devices_fileops;
-
-	entry = create_proc_entry("handlers", 0, proc_bus_input_dir);
+	entry = proc_create("handlers", 0, proc_bus_input_dir,
+			    &input_handlers_fileops);
 	if (!entry)
 		goto fail2;
-
-	entry->owner = THIS_MODULE;
-	entry->proc_fops = &input_handlers_fileops;
 
 	return 0;
 
  fail2:	remove_proc_entry("devices", proc_bus_input_dir);
- fail1: remove_proc_entry("input", proc_bus);
+ fail1: remove_proc_entry("bus/input", NULL);
 	return -ENOMEM;
 }
 
@@ -863,7 +926,7 @@ static void input_proc_exit(void)
 {
 	remove_proc_entry("devices", proc_bus_input_dir);
 	remove_proc_entry("handlers", proc_bus_input_dir);
-	remove_proc_entry("input", proc_bus);
+	remove_proc_entry("bus/input", NULL);
 }
 
 #else /* !CONFIG_PROC_FS */
@@ -1326,11 +1389,8 @@ int input_register_device(struct input_dev *dev)
 	if (!dev->setkeycode)
 		dev->setkeycode = input_default_setkeycode;
 
-	snprintf(dev->dev.bus_id, sizeof(dev->dev.bus_id),
-		 "input%ld", (unsigned long) atomic_inc_return(&input_no) - 1);
-
-	if (dev->cdev.dev)
-		dev->dev.parent = dev->cdev.dev;
+	dev_set_name(&dev->dev, "input%ld",
+		     (unsigned long) atomic_inc_return(&input_no) - 1);
 
 	error = device_add(&dev->dev);
 	if (error)
@@ -1529,13 +1589,17 @@ EXPORT_SYMBOL(input_unregister_handle);
 
 static int input_open_file(struct inode *inode, struct file *file)
 {
-	struct input_handler *handler = input_table[iminor(inode) >> 5];
+	struct input_handler *handler;
 	const struct file_operations *old_fops, *new_fops = NULL;
 	int err;
 
+	lock_kernel();
 	/* No load-on-demand here? */
-	if (!handler || !(new_fops = fops_get(handler->fops)))
-		return -ENODEV;
+	handler = input_table[iminor(inode) >> 5];
+	if (!handler || !(new_fops = fops_get(handler->fops))) {
+		err = -ENODEV;
+		goto out;
+	}
 
 	/*
 	 * That's _really_ odd. Usually NULL ->open means "nothing special",
@@ -1543,7 +1607,8 @@ static int input_open_file(struct inode *inode, struct file *file)
 	 */
 	if (!new_fops->open) {
 		fops_put(new_fops);
-		return -ENODEV;
+		err = -ENODEV;
+		goto out;
 	}
 	old_fops = file->f_op;
 	file->f_op = new_fops;
@@ -1555,6 +1620,8 @@ static int input_open_file(struct inode *inode, struct file *file)
 		file->f_op = fops_get(old_fops);
 	}
 	fops_put(old_fops);
+out:
+	unlock_kernel();
 	return err;
 }
 

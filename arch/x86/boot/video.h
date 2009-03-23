@@ -9,8 +9,6 @@
  * ----------------------------------------------------------------------- */
 
 /*
- * arch/i386/boot/video.h
- *
  * Header file for the real-mode video probing code
  */
 
@@ -83,7 +81,8 @@ void store_screen(void);
 
 struct mode_info {
 	u16 mode;		/* Mode number (vga= style) */
-	u8  x, y;		/* Width, height */
+	u16 x, y;		/* Width, height */
+	u16 depth;		/* Bits per pixel, 0 for text mode */
 };
 
 struct card_info {

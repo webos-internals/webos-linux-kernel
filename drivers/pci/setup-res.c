@@ -26,12 +26,13 @@
 #include "pci.h"
 
 
-void
-pci_update_resource(struct pci_dev *dev, struct resource *res, int resno)
+void pci_update_resource(struct pci_dev *dev, int resno)
 {
 	struct pci_bus_region region;
 	u32 new, check, mask;
 	int reg;
+	enum pci_bar_type type;
+	struct resource *res = dev->resource + resno;
 
 	/*
 	 * Ignore resources for unimplemented BARs and unused resource slots
@@ -43,18 +44,18 @@ pci_update_resource(struct pci_dev *dev, struct resource *res, int resno)
 	/*
 	 * Ignore non-moveable resources.  This might be legacy resources for
 	 * which no functional BAR register exists or another important
-	 * system resource we should better not move around in system address
-	 * space.
+	 * system resource we shouldn't move around.
 	 */
 	if (res->flags & IORESOURCE_PCI_FIXED)
 		return;
 
 	pcibios_resource_to_bus(dev, &region, res);
 
-	pr_debug("  got res [%llx:%llx] bus [%lx:%lx] flags %lx for "
-		 "BAR %d of %s\n", (unsigned long long)res->start,
-		 (unsigned long long)res->end,
-		 region.start, region.end, res->flags, resno, pci_name(dev));
+	dev_dbg(&dev->dev, "BAR %d: got res %pR bus [%#llx-%#llx] "
+		"flags %#lx\n", resno, res,
+		 (unsigned long long)region.start,
+		 (unsigned long long)region.end,
+		 (unsigned long)res->flags);
 
 	new = region.start | (res->flags & PCI_REGION_FLAG_MASK);
 	if (res->flags & IORESOURCE_IO)
@@ -62,26 +63,21 @@ pci_update_resource(struct pci_dev *dev, struct resource *res, int resno)
 	else
 		mask = (u32)PCI_BASE_ADDRESS_MEM_MASK;
 
-	if (resno < 6) {
-		reg = PCI_BASE_ADDRESS_0 + 4 * resno;
-	} else if (resno == PCI_ROM_RESOURCE) {
+	reg = pci_resource_bar(dev, resno, &type);
+	if (!reg)
+		return;
+	if (type != pci_bar_unknown) {
 		if (!(res->flags & IORESOURCE_ROM_ENABLE))
 			return;
 		new |= PCI_ROM_ADDRESS_ENABLE;
-		reg = dev->rom_base_reg;
-	} else {
-		/* Hmm, non-standard resource. */
-	
-		return;		/* kill uninitialised var warning */
 	}
 
 	pci_write_config_dword(dev, reg, new);
 	pci_read_config_dword(dev, reg, &check);
 
 	if ((new ^ check) & mask) {
-		printk(KERN_ERR "PCI: Error while updating region "
-		       "%s/%d (%08x != %08x)\n", pci_name(dev), resno,
-		       new, check);
+		dev_err(&dev->dev, "BAR %d: error updating (%#08x != %#08x)\n",
+			resno, new, check);
 	}
 
 	if ((new & (PCI_BASE_ADDRESS_SPACE|PCI_BASE_ADDRESS_MEM_TYPE_MASK)) ==
@@ -90,15 +86,14 @@ pci_update_resource(struct pci_dev *dev, struct resource *res, int resno)
 		pci_write_config_dword(dev, reg + 4, new);
 		pci_read_config_dword(dev, reg + 4, &check);
 		if (check != new) {
-			printk(KERN_ERR "PCI: Error updating region "
-			       "%s/%d (high %08x != %08x)\n",
-			       pci_name(dev), resno, new, check);
+			dev_err(&dev->dev, "BAR %d: error updating "
+			       "(high %#08x != %#08x)\n", resno, new, check);
 		}
 	}
 	res->flags &= ~IORESOURCE_UNSET;
-	pr_debug("PCI: moved device %s resource %d (%lx) to %x\n",
-		pci_name(dev), resno, res->flags,
-		new & ~PCI_REGION_FLAG_MASK);
+	dev_dbg(&dev->dev, "BAR %d: moved to bus [%#llx-%#llx] flags %#lx\n",
+		resno, (unsigned long long)region.start,
+		(unsigned long long)region.end, res->flags);
 }
 
 int pci_claim_resource(struct pci_dev *dev, int resource)
@@ -115,17 +110,15 @@ int pci_claim_resource(struct pci_dev *dev, int resource)
 		err = insert_resource(root, res);
 
 	if (err) {
-		printk(KERN_ERR "PCI: %s region %d of %s %s [%llx:%llx]\n",
-			root ? "Address space collision on" :
-				"No parent found for",
-			resource, dtype, pci_name(dev),
-			(unsigned long long)res->start,
-			(unsigned long long)res->end);
+		dev_err(&dev->dev, "BAR %d: %s of %s %pR\n",
+			resource,
+			root ? "address space collision on" :
+				"no parent found for",
+			dtype, res);
 	}
 
 	return err;
 }
-EXPORT_SYMBOL_GPL(pci_claim_resource);
 
 int pci_assign_resource(struct pci_dev *dev, int resno)
 {
@@ -134,12 +127,16 @@ int pci_assign_resource(struct pci_dev *dev, int resno)
 	resource_size_t size, min, align;
 	int ret;
 
-	size = res->end - res->start + 1;
+	size = resource_size(res);
 	min = (res->flags & IORESOURCE_IO) ? PCIBIOS_MIN_IO : PCIBIOS_MIN_MEM;
-	/* The bridge resources are special, as their
-	   size != alignment. Sizing routines return
-	   required alignment in the "start" field. */
-	align = (resno < PCI_BRIDGE_RESOURCES) ? size : res->start;
+
+	align = resource_alignment(res);
+	if (!align) {
+		dev_info(&dev->dev, "BAR %d: can't allocate resource (bogus "
+			"alignment) %pR flags %#lx\n",
+			resno, res, res->flags);
+		return -EINVAL;
+	}
 
 	/* First, try exact prefetching match.. */
 	ret = pci_bus_alloc_resource(bus, res, size, align, min,
@@ -158,19 +155,18 @@ int pci_assign_resource(struct pci_dev *dev, int resno)
 	}
 
 	if (ret) {
-		printk(KERN_ERR "PCI: Failed to allocate %s resource "
-			"#%d:%llx@%llx for %s\n",
-			res->flags & IORESOURCE_IO ? "I/O" : "mem",
-			resno, (unsigned long long)size,
-			(unsigned long long)res->start, pci_name(dev));
-	} else if (resno < PCI_BRIDGE_RESOURCES) {
-		pci_update_resource(dev, res, resno);
+		dev_info(&dev->dev, "BAR %d: can't allocate %s resource %pR\n",
+			resno, res->flags & IORESOURCE_IO ? "I/O" : "mem", res);
+	} else {
+		res->flags &= ~IORESOURCE_STARTALIGN;
+		if (resno < PCI_BRIDGE_RESOURCES)
+			pci_update_resource(dev, resno);
 	}
 
 	return ret;
 }
 
-#ifdef CONFIG_EMBEDDED
+#if 0
 int pci_assign_resource_fixed(struct pci_dev *dev, int resno)
 {
 	struct pci_bus *bus = dev->bus;
@@ -196,13 +192,10 @@ int pci_assign_resource_fixed(struct pci_dev *dev, int resno)
 	}
 
 	if (ret) {
-		printk(KERN_ERR "PCI: Failed to allocate %s resource "
-				"#%d:%llx@%llx for %s\n",
-			res->flags & IORESOURCE_IO ? "I/O" : "mem",
-			resno, (unsigned long long)(res->end - res->start + 1),
-			(unsigned long long)res->start, pci_name(dev));
+		dev_err(&dev->dev, "BAR %d: can't allocate %s resource %pR\n",
+			resno, res->flags & IORESOURCE_IO ? "I/O" : "mem", res);
 	} else if (resno < PCI_BRIDGE_RESOURCES) {
-		pci_update_resource(dev, res, resno);
+		pci_update_resource(dev, resno);
 	}
 
 	return ret;
@@ -225,29 +218,23 @@ void pdev_sort_resources(struct pci_dev *dev, struct resource_list *head)
 		if (r->flags & IORESOURCE_PCI_FIXED)
 			continue;
 
-		r_align = r->end - r->start;
-		
 		if (!(r->flags) || r->parent)
 			continue;
+
+		r_align = resource_alignment(r);
 		if (!r_align) {
-			printk(KERN_WARNING "PCI: Ignore bogus resource %d "
-				"[%llx:%llx] of %s\n",
-				i, (unsigned long long)r->start,
-				(unsigned long long)r->end, pci_name(dev));
+			dev_warn(&dev->dev, "BAR %d: bogus alignment "
+				"%pR flags %#lx\n",
+				i, r, r->flags);
 			continue;
 		}
-		r_align = (i < PCI_BRIDGE_RESOURCES) ? r_align + 1 : r->start;
 		for (list = head; ; list = list->next) {
 			resource_size_t align = 0;
 			struct resource_list *ln = list->next;
-			int idx;
 
-			if (ln) {
-				idx = ln->res - &ln->dev->resource[0];
-				align = (idx < PCI_BRIDGE_RESOURCES) ?
-					ln->res->end - ln->res->start + 1 :
-					ln->res->start;
-			}
+			if (ln)
+				align = resource_alignment(ln->res);
+
 			if (r_align > align) {
 				tmp = kmalloc(sizeof(*tmp), GFP_KERNEL);
 				if (!tmp)
@@ -261,4 +248,45 @@ void pdev_sort_resources(struct pci_dev *dev, struct resource_list *head)
 			}
 		}
 	}
+}
+
+int pci_enable_resources(struct pci_dev *dev, int mask)
+{
+	u16 cmd, old_cmd;
+	int i;
+	struct resource *r;
+
+	pci_read_config_word(dev, PCI_COMMAND, &cmd);
+	old_cmd = cmd;
+
+	for (i = 0; i < PCI_NUM_RESOURCES; i++) {
+		if (!(mask & (1 << i)))
+			continue;
+
+		r = &dev->resource[i];
+
+		if (!(r->flags & (IORESOURCE_IO | IORESOURCE_MEM)))
+			continue;
+		if ((i == PCI_ROM_RESOURCE) &&
+				(!(r->flags & IORESOURCE_ROM_ENABLE)))
+			continue;
+
+		if (!r->parent) {
+			dev_err(&dev->dev, "device not available because of "
+				"BAR %d %pR collisions\n", i, r);
+			return -EINVAL;
+		}
+
+		if (r->flags & IORESOURCE_IO)
+			cmd |= PCI_COMMAND_IO;
+		if (r->flags & IORESOURCE_MEM)
+			cmd |= PCI_COMMAND_MEMORY;
+	}
+
+	if (cmd != old_cmd) {
+		dev_info(&dev->dev, "enabling device (%04x -> %04x)\n",
+			 old_cmd, cmd);
+		pci_write_config_word(dev, PCI_COMMAND, cmd);
+	}
+	return 0;
 }

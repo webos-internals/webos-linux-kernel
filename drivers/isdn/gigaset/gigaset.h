@@ -16,6 +16,9 @@
 #ifndef GIGASET_H
 #define GIGASET_H
 
+/* define global prefix for pr_ macros in linux/kernel.h */
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/compiler.h>
 #include <linux/types.h>
@@ -70,22 +73,13 @@
 
 extern int gigaset_debuglevel;	/* "needs" cast to (enum debuglevel) */
 
-/* any combination of these can be given with the 'debug=' parameter to insmod,
- * e.g. 'insmod usb_gigaset.o debug=0x2c' will set DEBUG_OPEN, DEBUG_CMD and
- * DEBUG_INTR.
- */
+/* debug flags, combine by adding/bitwise OR */
 enum debuglevel {
-	DEBUG_REG	  = 0x0002, /* serial port I/O register operations */
-	DEBUG_OPEN	  = 0x0004, /* open/close serial port */
-	DEBUG_INTR	  = 0x0008, /* interrupt processing */
-	DEBUG_INTR_DUMP	  = 0x0010, /* Activating hexdump debug output on
-				       interrupt requests, not available as
-				       run-time option */
+	DEBUG_INTR	  = 0x00008, /* interrupt processing */
 	DEBUG_CMD	  = 0x00020, /* sent/received LL commands */
 	DEBUG_STREAM	  = 0x00040, /* application data stream I/O events */
 	DEBUG_STREAM_DUMP = 0x00080, /* application data stream content */
 	DEBUG_LLDATA	  = 0x00100, /* sent/received LL data */
-	DEBUG_INTR_0	  = 0x00200, /* serial port interrupt processing */
 	DEBUG_DRIVER	  = 0x00400, /* driver structure */
 	DEBUG_HDLC	  = 0x00800, /* M10x HDLC processing */
 	DEBUG_WRITE	  = 0x01000, /* M105 data write */
@@ -93,7 +87,7 @@ enum debuglevel {
 	DEBUG_MCMD	  = 0x04000, /* COMMANDS THAT ARE SENT VERY OFTEN */
 	DEBUG_INIT	  = 0x08000, /* (de)allocation+initialization of data
 					structures */
-	DEBUG_LOCK	  = 0x10000, /* semaphore operations */
+	DEBUG_SUSPEND	  = 0x10000, /* suspend/resume processing */
 	DEBUG_OUTPUT	  = 0x20000, /* output to device */
 	DEBUG_ISO	  = 0x40000, /* isochronous transfers */
 	DEBUG_IF	  = 0x80000, /* character device operations */
@@ -105,32 +99,6 @@ enum debuglevel {
 	DEBUG_ANY	  = 0x3fffff, /* print message if any of the others is
 					 activated */
 };
-
-/* missing from linux/device.h ... */
-#ifndef dev_notice
-#define dev_notice(dev, format, arg...)		\
-	dev_printk(KERN_NOTICE , dev , format , ## arg)
-#endif
-
-/* Kernel message macros for situations where dev_printk and friends cannot be
- * used for lack of reliable access to a device structure.
- * linux/usb.h already contains these but in an obsolete form which clutters
- * the log needlessly, and according to the USB maintainer those should be
- * removed rather than fixed anyway.
- */
-#undef err
-#undef info
-#undef warn
-#undef notice
-
-#define err(format, arg...) printk(KERN_ERR KBUILD_MODNAME ": " \
-	format "\n" , ## arg)
-#define info(format, arg...) printk(KERN_INFO KBUILD_MODNAME ": " \
-	format "\n" , ## arg)
-#define warn(format, arg...) printk(KERN_WARNING KBUILD_MODNAME ": " \
-	format "\n" , ## arg)
-#define notice(format, arg...) printk(KERN_NOTICE KBUILD_MODNAME ": " \
-	format "\n" , ## arg)
 
 #ifdef CONFIG_GIGASET_DEBUG
 
@@ -196,6 +164,9 @@ void gigaset_dbg_buffer(enum debuglevel level, const unsigned char *msg,
 #define	HD_READ_ATMESSAGE		(0x13)		// 3070
 #define	HD_OPEN_ATCHANNEL		(0x28)		// 3070
 #define	HD_CLOSE_ATCHANNEL		(0x29)		// 3070
+
+/* number of B channels supported by base driver */
+#define BAS_CHANNELS	2
 
 /* USB frames for isochronous transfer */
 #define BAS_FRAMETIME	1	/* number of milliseconds between frames */
@@ -319,7 +290,7 @@ struct inbuf_t {
 	struct bc_state		*bcs;
 	struct cardstate	*cs;
 	int			inputstate;
-	atomic_t		head, tail;
+	int			head, tail;
 	unsigned char		data[RBUFSIZE];
 };
 
@@ -341,9 +312,9 @@ struct inbuf_t {
  *   are also filled with that value
  */
 struct isowbuf_t {
-	atomic_t	read;
-	atomic_t	nextread;
-	atomic_t	write;
+	int		read;
+	int		nextread;
+	int		write;
 	atomic_t	writesem;
 	int		wbits;
 	unsigned char	data[BAS_OUTBUFSIZE + BAS_OUTBUFPAD];
@@ -356,11 +327,13 @@ struct isowbuf_t {
  * - urb: pointer to the URB itself
  * - bcs: pointer to the B Channel control structure
  * - limit: end of write buffer area covered by this URB
+ * - status: URB completion status
  */
 struct isow_urbctx_t {
 	struct urb *urb;
 	struct bc_state *bcs;
 	int limit;
+	int status;
 };
 
 /* AT state structure
@@ -445,14 +418,15 @@ struct cardstate {
 	unsigned minor_index;
 	struct device *dev;
 	struct device *tty_dev;
+	unsigned flags;
 
 	const struct gigaset_ops *ops;
 
 	/* Stuff to handle communication */
 	wait_queue_head_t waitqueue;
 	int waiting;
-	atomic_t mode;			/* see M_XXXX */
-	atomic_t mstate;		/* Modem state: see MS_XXXX */
+	int mode;			/* see M_XXXX */
+	int mstate;			/* Modem state: see MS_XXXX */
 					/* only changed by the event layer */
 	int cmd_result;
 
@@ -509,7 +483,7 @@ struct cardstate {
 					   processed */
 	int curchannel;			/* channel those commands are meant
 					   for */
-	atomic_t commands_pending;	/* flag(s) in xxx.commands_pending have
+	int commands_pending;		/* flag(s) in xxx.commands_pending have
 					   been set */
 	struct tasklet_struct event_tasklet;
 					/* tasklet for serializing AT commands.
@@ -549,7 +523,6 @@ struct gigaset_driver {
 	unsigned minor;
 	unsigned minors;
 	struct cardstate *cs;
-	unsigned *flags;
 	int blocked;
 
 	const struct gigaset_ops *ops;
@@ -565,7 +538,7 @@ struct cmdbuf_t {
 
 struct bas_bc_state {
 	/* isochronous output state */
-	atomic_t	running;
+	int		running;
 	atomic_t	corrbytes;
 	spinlock_t	isooutlock;
 	struct isow_urbctx_t	isoouturbs[BAS_OUTURBS];
@@ -580,6 +553,7 @@ struct bas_bc_state {
 	struct urb *isoinurbs[BAS_INURBS];
 	unsigned char isoinbuf[BAS_INBUFSIZE * BAS_INURBS];
 	struct urb *isoindone;		/* completed isoc read URB */
+	int isoinstatus;		/* status of completed URB */
 	int loststatus;			/* status of dropped URB */
 	unsigned isoinlost;		/* number of bytes lost */
 	/* state of bit unstuffing algorithm
@@ -776,10 +750,6 @@ void gigaset_freedriver(struct gigaset_driver *drv);
 void gigaset_debugdrivers(void);
 struct cardstate *gigaset_get_cs_by_tty(struct tty_struct *tty);
 struct cardstate *gigaset_get_cs_by_id(int id);
-
-/* For drivers without fixed assignment device<->cardstate (usb) */
-struct cardstate *gigaset_getunassignedcs(struct gigaset_driver *drv);
-void gigaset_unassign(struct cardstate *cs);
 void gigaset_blockdriver(struct gigaset_driver *drv);
 
 /* Allocate and initialize card state. Calls hardware dependent
@@ -798,7 +768,7 @@ int gigaset_start(struct cardstate *cs);
 void gigaset_stop(struct cardstate *cs);
 
 /* Tell common.c that the driver is being unloaded. */
-void gigaset_shutdown(struct cardstate *cs);
+int gigaset_shutdown(struct cardstate *cs);
 
 /* Tell common.c that an skb has been sent. */
 void gigaset_skb_sent(struct bc_state *bcs, struct sk_buff *skb);

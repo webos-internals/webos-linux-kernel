@@ -1,4 +1,4 @@
-/* SCTP kernel reference Implementation
+/* SCTP kernel implementation
  * Copyright (c) 1999-2000 Cisco, Inc.
  * Copyright (c) 1999-2001 Motorola, Inc.
  * Copyright (c) 2001-2003 International Business Machines, Corp.
@@ -6,17 +6,17 @@
  * Copyright (c) 2001 Nokia, Inc.
  * Copyright (c) 2001 La Monte H.P. Yarroll
  *
- * This file is part of the SCTP kernel reference Implementation
+ * This file is part of the SCTP kernel implementation
  *
  * These functions handle all input from the IP layer into SCTP.
  *
- * The SCTP reference implementation is free software;
+ * This SCTP implementation is free software;
  * you can redistribute it and/or modify it under the terms of
  * the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
  *
- * The SCTP reference implementation is distributed in the hope that it
+ * This SCTP implementation is distributed in the hope that it
  * will be useful, but WITHOUT ANY WARRANTY; without even the implied
  *                 ************************
  * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
@@ -60,6 +60,8 @@
 #include <net/xfrm.h>
 #include <net/sctp/sctp.h>
 #include <net/sctp/sm.h>
+#include <net/sctp/checksum.h>
+#include <net/net_namespace.h>
 
 /* Forward declarations for internal helpers. */
 static int sctp_rcv_ootb(struct sk_buff *);
@@ -81,8 +83,8 @@ static inline int sctp_rcv_checksum(struct sk_buff *skb)
 {
 	struct sk_buff *list = skb_shinfo(skb)->frag_list;
 	struct sctphdr *sh = sctp_hdr(skb);
-	__u32 cmp = ntohl(sh->checksum);
-	__u32 val = sctp_start_cksum((__u8 *)sh, skb_headlen(skb));
+	__be32 cmp = sh->checksum;
+	__be32 val = sctp_start_cksum((__u8 *)sh, skb_headlen(skb));
 
 	for (; list; list = list->next)
 		val = sctp_update_cksum((__u8 *)list->data, skb_headlen(list),
@@ -247,6 +249,19 @@ int sctp_rcv(struct sk_buff *skb)
 	 */
 	sctp_bh_lock_sock(sk);
 
+	if (sk != rcvr->sk) {
+		/* Our cached sk is different from the rcvr->sk.  This is
+		 * because migrate()/accept() may have moved the association
+		 * to a new socket and released all the sockets.  So now we
+		 * are holding a lock on the old socket while the user may
+		 * be doing something with the new socket.  Switch our veiw
+		 * of the current sk.
+		 */
+		sctp_bh_unlock_sock(sk);
+		sk = rcvr->sk;
+		sctp_bh_lock_sock(sk);
+	}
+
 	if (sock_owned_by_user(sk)) {
 		SCTP_INC_STATS_BH(SCTP_MIB_IN_PKT_BACKLOG);
 		sctp_add_backlog(sk, skb);
@@ -367,7 +382,7 @@ static void sctp_add_backlog(struct sock *sk, struct sk_buff *skb)
 void sctp_icmp_frag_needed(struct sock *sk, struct sctp_association *asoc,
 			   struct sctp_transport *t, __u32 pmtu)
 {
-	if (!t || (t->pathmtu == pmtu))
+	if (!t || (t->pathmtu <= pmtu))
 		return;
 
 	if (sock_owned_by_user(sk)) {
@@ -408,7 +423,7 @@ void sctp_icmp_proto_unreachable(struct sock *sk,
 			   struct sctp_association *asoc,
 			   struct sctp_transport *t)
 {
-	SCTP_DEBUG_PRINTK("%s\n",  __FUNCTION__);
+	SCTP_DEBUG_PRINTK("%s\n",  __func__);
 
 	sctp_do_sm(SCTP_EVENT_T_OTHER,
 		   SCTP_ST_OTHER(SCTP_EVENT_ICMP_PROTO_UNREACH),
@@ -429,6 +444,9 @@ struct sock *sctp_err_lookup(int family, struct sk_buff *skb,
 	struct sock *sk = NULL;
 	struct sctp_association *asoc;
 	struct sctp_transport *transport = NULL;
+	struct sctp_init_chunk *chunkhdr;
+	__u32 vtag = ntohl(sctphdr->vtag);
+	int len = skb->len - ((void *)sctphdr - (void *)skb->data);
 
 	*app = NULL; *tpp = NULL;
 
@@ -450,8 +468,28 @@ struct sock *sctp_err_lookup(int family, struct sk_buff *skb,
 
 	sk = asoc->base.sk;
 
-	if (ntohl(sctphdr->vtag) != asoc->c.peer_vtag) {
-		ICMP_INC_STATS_BH(ICMP_MIB_INERRORS);
+	/* RFC 4960, Appendix C. ICMP Handling
+	 *
+	 * ICMP6) An implementation MUST validate that the Verification Tag
+	 * contained in the ICMP message matches the Verification Tag of
+	 * the peer.  If the Verification Tag is not 0 and does NOT
+	 * match, discard the ICMP message.  If it is 0 and the ICMP
+	 * message contains enough bytes to verify that the chunk type is
+	 * an INIT chunk and that the Initiate Tag matches the tag of the
+	 * peer, continue with ICMP7.  If the ICMP message is too short
+	 * or the chunk type or the Initiate Tag does not match, silently
+	 * discard the packet.
+	 */
+	if (vtag == 0) {
+		chunkhdr = (struct sctp_init_chunk *)((void *)sctphdr
+				+ sizeof(struct sctphdr));
+		if (len < sizeof(struct sctphdr) + sizeof(sctp_chunkhdr_t)
+			  + sizeof(__be32) ||
+		    chunkhdr->chunk_hdr.type != SCTP_CID_INIT ||
+		    ntohl(chunkhdr->init_hdr.init_tag) != asoc->c.my_vtag) {
+			goto out;
+		}
+	} else if (vtag != asoc->c.peer_vtag) {
 		goto out;
 	}
 
@@ -461,7 +499,7 @@ struct sock *sctp_err_lookup(int family, struct sk_buff *skb,
 	 * servers this needs to be solved differently.
 	 */
 	if (sock_owned_by_user(sk))
-		NET_INC_STATS_BH(LINUX_MIB_LOCKDROPPEDICMPS);
+		NET_INC_STATS_BH(&init_net, LINUX_MIB_LOCKDROPPEDICMPS);
 
 	*app = asoc;
 	*tpp = transport;
@@ -510,7 +548,7 @@ void sctp_v4_err(struct sk_buff *skb, __u32 info)
 	int err;
 
 	if (skb->len < ihlen + 8) {
-		ICMP_INC_STATS_BH(ICMP_MIB_INERRORS);
+		ICMP_INC_STATS_BH(&init_net, ICMP_MIB_INERRORS);
 		return;
 	}
 
@@ -524,7 +562,7 @@ void sctp_v4_err(struct sk_buff *skb, __u32 info)
 	skb->network_header = saveip;
 	skb->transport_header = savesctp;
 	if (!sk) {
-		ICMP_INC_STATS_BH(ICMP_MIB_INERRORS);
+		ICMP_INC_STATS_BH(&init_net, ICMP_MIB_INERRORS);
 		return;
 	}
 	/* Warning:  The sock lock is held.  Remember to call
@@ -724,7 +762,6 @@ static struct sctp_endpoint *__sctp_rcv_lookup_endpoint(const union sctp_addr *l
 	}
 
 	ep = sctp_sk((sctp_get_ctl_sock()))->ep;
-	epb = &ep->base;
 
 hit:
 	sctp_endpoint_hold(ep);
@@ -890,14 +927,6 @@ static struct sctp_association *__sctp_rcv_init_lookup(struct sk_buff *skb,
 
 	ch = (sctp_chunkhdr_t *) skb->data;
 
-	/* The code below will attempt to walk the chunk and extract
-	 * parameter information.  Before we do that, we need to verify
-	 * that the chunk length doesn't cause overflow.  Otherwise, we'll
-	 * walk off the end.
-	 */
-	if (WORD_ROUND(ntohs(ch->length)) > skb->len)
-		return NULL;
-
 	/*
 	 * This code will NOT touch anything inside the chunk--it is
 	 * strictly READ-ONLY.
@@ -934,6 +963,44 @@ static struct sctp_association *__sctp_rcv_init_lookup(struct sk_buff *skb,
 	return NULL;
 }
 
+/* ADD-IP, Section 5.2
+ * When an endpoint receives an ASCONF Chunk from the remote peer
+ * special procedures may be needed to identify the association the
+ * ASCONF Chunk is associated with. To properly find the association
+ * the following procedures SHOULD be followed:
+ *
+ * D2) If the association is not found, use the address found in the
+ * Address Parameter TLV combined with the port number found in the
+ * SCTP common header. If found proceed to rule D4.
+ *
+ * D2-ext) If more than one ASCONF Chunks are packed together, use the
+ * address found in the ASCONF Address Parameter TLV of each of the
+ * subsequent ASCONF Chunks. If found, proceed to rule D4.
+ */
+static struct sctp_association *__sctp_rcv_asconf_lookup(
+					sctp_chunkhdr_t *ch,
+					const union sctp_addr *laddr,
+					__be16 peer_port,
+					struct sctp_transport **transportp)
+{
+	sctp_addip_chunk_t *asconf = (struct sctp_addip_chunk *)ch;
+	struct sctp_af *af;
+	union sctp_addr_param *param;
+	union sctp_addr paddr;
+
+	/* Skip over the ADDIP header and find the Address parameter */
+	param = (union sctp_addr_param *)(asconf + 1);
+
+	af = sctp_get_af_specific(param_type2af(param->v4.param_hdr.type));
+	if (unlikely(!af))
+		return NULL;
+
+	af->from_addr_param(&paddr, param, peer_port, 0);
+
+	return __sctp_lookup_association(laddr, &paddr, transportp);
+}
+
+
 /* SCTP-AUTH, Section 6.3:
 *    If the receiver does not find a STCB for a packet containing an AUTH
 *    chunk as the first chunk and not a COOKIE-ECHO chunk as the second
@@ -942,20 +1009,64 @@ static struct sctp_association *__sctp_rcv_init_lookup(struct sk_buff *skb,
 *
 * This means that any chunks that can help us identify the association need
 * to be looked at to find this assocation.
-*
-* TODO: The only chunk currently defined that can do that is ASCONF, but we
-* don't support that functionality yet.
 */
-static struct sctp_association *__sctp_rcv_auth_lookup(struct sk_buff *skb,
-				      const union sctp_addr *paddr,
+static struct sctp_association *__sctp_rcv_walk_lookup(struct sk_buff *skb,
 				      const union sctp_addr *laddr,
 				      struct sctp_transport **transportp)
 {
-	/* XXX - walk through the chunks looking for something that can
-	 * help us find the association.  INIT, and INIT-ACK are not permitted.
-	 * That leaves ASCONF, but we don't support that yet.
+	struct sctp_association *asoc = NULL;
+	sctp_chunkhdr_t *ch;
+	int have_auth = 0;
+	unsigned int chunk_num = 1;
+	__u8 *ch_end;
+
+	/* Walk through the chunks looking for AUTH or ASCONF chunks
+	 * to help us find the association.
 	 */
-	return NULL;
+	ch = (sctp_chunkhdr_t *) skb->data;
+	do {
+		/* Break out if chunk length is less then minimal. */
+		if (ntohs(ch->length) < sizeof(sctp_chunkhdr_t))
+			break;
+
+		ch_end = ((__u8 *)ch) + WORD_ROUND(ntohs(ch->length));
+		if (ch_end > skb_tail_pointer(skb))
+			break;
+
+		switch(ch->type) {
+		    case SCTP_CID_AUTH:
+			    have_auth = chunk_num;
+			    break;
+
+		    case SCTP_CID_COOKIE_ECHO:
+			    /* If a packet arrives containing an AUTH chunk as
+			     * a first chunk, a COOKIE-ECHO chunk as the second
+			     * chunk, and possibly more chunks after them, and
+			     * the receiver does not have an STCB for that
+			     * packet, then authentication is based on
+			     * the contents of the COOKIE- ECHO chunk.
+			     */
+			    if (have_auth == 1 && chunk_num == 2)
+				    return NULL;
+			    break;
+
+		    case SCTP_CID_ASCONF:
+			    if (have_auth || sctp_addip_noauth)
+				    asoc = __sctp_rcv_asconf_lookup(ch, laddr,
+							sctp_hdr(skb)->source,
+							transportp);
+		    default:
+			    break;
+		}
+
+		if (asoc)
+			break;
+
+		ch = (sctp_chunkhdr_t *) ch_end;
+		chunk_num++;
+	} while (ch_end < skb_tail_pointer(skb));
+
+	return asoc;
 }
 
 /*
@@ -965,13 +1076,20 @@ static struct sctp_association *__sctp_rcv_auth_lookup(struct sk_buff *skb,
  * chunks.
  */
 static struct sctp_association *__sctp_rcv_lookup_harder(struct sk_buff *skb,
-				      const union sctp_addr *paddr,
 				      const union sctp_addr *laddr,
 				      struct sctp_transport **transportp)
 {
 	sctp_chunkhdr_t *ch;
 
 	ch = (sctp_chunkhdr_t *) skb->data;
+
+	/* The code below will attempt to walk the chunk and extract
+	 * parameter information.  Before we do that, we need to verify
+	 * that the chunk length doesn't cause overflow.  Otherwise, we'll
+	 * walk off the end.
+	 */
+	if (WORD_ROUND(ntohs(ch->length)) > skb->len)
+		return NULL;
 
 	/* If this is INIT/INIT-ACK look inside the chunk too. */
 	switch (ch->type) {
@@ -980,10 +1098,11 @@ static struct sctp_association *__sctp_rcv_lookup_harder(struct sk_buff *skb,
 		return __sctp_rcv_init_lookup(skb, laddr, transportp);
 		break;
 
-	case SCTP_CID_AUTH:
-		return __sctp_rcv_auth_lookup(skb, paddr, laddr, transportp);
+	default:
+		return __sctp_rcv_walk_lookup(skb, laddr, transportp);
 		break;
 	}
+
 
 	return NULL;
 }
@@ -1003,7 +1122,7 @@ static struct sctp_association *__sctp_rcv_lookup(struct sk_buff *skb,
 	 * parameters within the INIT or INIT-ACK.
 	 */
 	if (!asoc)
-		asoc = __sctp_rcv_lookup_harder(skb, paddr, laddr, transportp);
+		asoc = __sctp_rcv_lookup_harder(skb, laddr, transportp);
 
 	return asoc;
 }

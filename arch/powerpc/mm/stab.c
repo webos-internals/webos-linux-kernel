@@ -12,12 +12,14 @@
  *      2 of the License, or (at your option) any later version.
  */
 
+#include <linux/lmb.h>
+
 #include <asm/pgtable.h>
 #include <asm/mmu.h>
 #include <asm/mmu_context.h>
 #include <asm/paca.h>
 #include <asm/cputable.h>
-#include <asm/lmb.h>
+#include <asm/prom.h>
 #include <asm/abs_addr.h>
 #include <asm/firmware.h>
 #include <asm/iseries/hv_call.h>
@@ -28,8 +30,8 @@ struct stab_entry {
 };
 
 #define NR_STAB_CACHE_ENTRIES 8
-DEFINE_PER_CPU(long, stab_cache_ptr);
-DEFINE_PER_CPU(long, stab_cache[NR_STAB_CACHE_ENTRIES]);
+static DEFINE_PER_CPU(long, stab_cache_ptr);
+static DEFINE_PER_CPU(long, stab_cache[NR_STAB_CACHE_ENTRIES]);
 
 /*
  * Create a segment table entry for the given esid/vsid pair.
@@ -249,8 +251,8 @@ void __init stabs_alloc(void)
 
 		paca[cpu].stab_addr = newstab;
 		paca[cpu].stab_real = virt_to_abs(newstab);
-		printk(KERN_INFO "Segment table for CPU %d at 0x%lx "
-		       "virtual, 0x%lx absolute\n",
+		printk(KERN_INFO "Segment table for CPU %d at 0x%llx "
+		       "virtual, 0x%llx absolute\n",
 		       cpu, paca[cpu].stab_addr, paca[cpu].stab_real);
 	}
 }

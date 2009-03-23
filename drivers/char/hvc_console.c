@@ -27,7 +27,6 @@
 #include <linux/init.h>
 #include <linux/kbd_kern.h>
 #include <linux/kernel.h>
-#include <linux/kobject.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/module.h>
@@ -75,25 +74,8 @@ static int hvc_init(void);
 static int sysrq_pressed;
 #endif
 
-struct hvc_struct {
-	spinlock_t lock;
-	int index;
-	struct tty_struct *tty;
-	unsigned int count;
-	int do_wakeup;
-	char *outbuf;
-	int outbuf_size;
-	int n_outbuf;
-	uint32_t vtermno;
-	struct hv_ops *ops;
-	int irq_requested;
-	int irq;
-	struct list_head next;
-	struct kobject kobj; /* ref count & hvc_struct lifetime */
-};
-
 /* dynamic list of hvc_struct instances */
-static struct list_head hvc_structs = LIST_HEAD_INIT(hvc_structs);
+static LIST_HEAD(hvc_structs);
 
 /*
  * Protect the list of hvc_struct instances from inserts and removals during
@@ -110,7 +92,7 @@ static int last_hvc = -1;
 
 /*
  * Do not call this function with either the hvc_structs_lock or the hvc_struct
- * lock held.  If successful, this function increments the kobject reference
+ * lock held.  If successful, this function increments the kref reference
  * count against the target hvc_struct so it should be released when finished.
  */
 static struct hvc_struct *hvc_get_by_index(int index)
@@ -123,7 +105,7 @@ static struct hvc_struct *hvc_get_by_index(int index)
 	list_for_each_entry(hp, &hvc_structs, next) {
 		spin_lock_irqsave(&hp->lock, flags);
 		if (hp->index == index) {
-			kobject_get(&hp->kobj);
+			kref_get(&hp->kref);
 			spin_unlock_irqrestore(&hp->lock, flags);
 			spin_unlock(&hvc_structs_lock);
 			return hp;
@@ -179,7 +161,7 @@ static void hvc_console_print(struct console *co, const char *b,
 			}
 		} else {
 			r = cons_ops[index]->put_chars(vtermnos[index], c, i);
-			if (r < 0) {
+			if (r <= 0) {
 				/* throw away chars on error */
 				i = 0;
 			} else if (r > 0) {
@@ -242,6 +224,23 @@ static int __init hvc_console_init(void)
 }
 console_initcall(hvc_console_init);
 
+/* callback when the kboject ref count reaches zero. */
+static void destroy_hvc_struct(struct kref *kref)
+{
+	struct hvc_struct *hp = container_of(kref, struct hvc_struct, kref);
+	unsigned long flags;
+
+	spin_lock(&hvc_structs_lock);
+
+	spin_lock_irqsave(&hp->lock, flags);
+	list_del(&(hp->next));
+	spin_unlock_irqrestore(&hp->lock, flags);
+
+	spin_unlock(&hvc_structs_lock);
+
+	kfree(hp);
+}
+
 /*
  * hvc_instantiate() is an early console discovery method which locates
  * consoles * prior to the vio subsystem discovering them.  Hotplugged
@@ -261,7 +260,7 @@ int hvc_instantiate(uint32_t vtermno, int index, struct hv_ops *ops)
 	/* make sure no no tty has been registered in this index */
 	hp = hvc_get_by_index(index);
 	if (hp) {
-		kobject_put(&hp->kobj);
+		kref_put(&hp->kref, destroy_hvc_struct);
 		return -1;
 	}
 
@@ -281,27 +280,15 @@ int hvc_instantiate(uint32_t vtermno, int index, struct hv_ops *ops)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(hvc_instantiate);
 
 /* Wake the sleeping khvcd */
-static void hvc_kick(void)
+void hvc_kick(void)
 {
 	hvc_kicked = 1;
 	wake_up_process(hvc_task);
 }
-
-static int hvc_poll(struct hvc_struct *hp);
-
-/*
- * NOTE: This API isn't used if the console adapter doesn't support interrupts.
- * In this case the console is poll driven.
- */
-static irqreturn_t hvc_handle_interrupt(int irq, void *dev_instance)
-{
-	/* if hvc_poll request a repoll, then kick the hvcd thread */
-	if (hvc_poll(dev_instance))
-		hvc_kick();
-	return IRQ_HANDLED;
-}
+EXPORT_SYMBOL_GPL(hvc_kick);
 
 static void hvc_unthrottle(struct tty_struct *tty)
 {
@@ -316,11 +303,9 @@ static int hvc_open(struct tty_struct *tty, struct file * filp)
 {
 	struct hvc_struct *hp;
 	unsigned long flags;
-	int irq = 0;
 	int rc = 0;
-	struct kobject *kobjp;
 
-	/* Auto increments kobject reference if found. */
+	/* Auto increments kref reference if found. */
 	if (!(hp = hvc_get_by_index(tty->index)))
 		return -ENODEV;
 
@@ -333,34 +318,26 @@ static int hvc_open(struct tty_struct *tty, struct file * filp)
 	} /* else count == 0 */
 
 	tty->driver_data = hp;
-	tty->low_latency = 1; /* Makes flushes to ldisc synchronous. */
 
 	hp->tty = tty;
-	/* Save for request_irq outside of spin_lock. */
-	irq = hp->irq;
-	if (irq)
-		hp->irq_requested = 1;
-
-	kobjp = &hp->kobj;
 
 	spin_unlock_irqrestore(&hp->lock, flags);
-	/* check error, fallback to non-irq */
-	if (irq)
-		rc = request_irq(irq, hvc_handle_interrupt, IRQF_DISABLED, "hvc_console", hp);
+
+	if (hp->ops->notifier_add)
+		rc = hp->ops->notifier_add(hp, hp->data);
 
 	/*
-	 * If the request_irq() fails and we return an error.  The tty layer
+	 * If the notifier fails we return an error.  The tty layer
 	 * will call hvc_close() after a failed open but we don't want to clean
 	 * up there so we'll clean up here and clear out the previously set
-	 * tty fields and return the kobject reference.
+	 * tty fields and return the kref reference.
 	 */
 	if (rc) {
 		spin_lock_irqsave(&hp->lock, flags);
 		hp->tty = NULL;
-		hp->irq_requested = 0;
 		spin_unlock_irqrestore(&hp->lock, flags);
 		tty->driver_data = NULL;
-		kobject_put(kobjp);
+		kref_put(&hp->kref, destroy_hvc_struct);
 		printk(KERN_ERR "hvc_open: request_irq failed with rc %d.\n", rc);
 	}
 	/* Force wakeup of the polling thread */
@@ -372,8 +349,6 @@ static int hvc_open(struct tty_struct *tty, struct file * filp)
 static void hvc_close(struct tty_struct *tty, struct file * filp)
 {
 	struct hvc_struct *hp;
-	struct kobject *kobjp;
-	int irq = 0;
 	unsigned long flags;
 
 	if (tty_hung_up_p(filp))
@@ -382,7 +357,7 @@ static void hvc_close(struct tty_struct *tty, struct file * filp)
 	/*
 	 * No driver_data means that this close was issued after a failed
 	 * hvc_open by the tty layer's release_dev() function and we can just
-	 * exit cleanly because the kobject reference wasn't made.
+	 * exit cleanly because the kref reference wasn't made.
 	 */
 	if (!tty->driver_data)
 		return;
@@ -390,15 +365,16 @@ static void hvc_close(struct tty_struct *tty, struct file * filp)
 	hp = tty->driver_data;
 	spin_lock_irqsave(&hp->lock, flags);
 
-	kobjp = &hp->kobj;
 	if (--hp->count == 0) {
-		if (hp->irq_requested)
-			irq = hp->irq;
-		hp->irq_requested = 0;
-
 		/* We are done with the tty pointer now. */
 		hp->tty = NULL;
 		spin_unlock_irqrestore(&hp->lock, flags);
+
+		if (hp->ops->notifier_del)
+			hp->ops->notifier_del(hp, hp->data);
+
+		/* cancel pending tty resize work */
+		cancel_work_sync(&hp->tty_resize);
 
 		/*
 		 * Chain calls chars_in_buffer() and returns immediately if
@@ -406,10 +382,6 @@ static void hvc_close(struct tty_struct *tty, struct file * filp)
 		 * waking periodically to check chars_in_buffer().
 		 */
 		tty_wait_until_sent(tty, HVC_CLOSE_WAIT);
-
-		if (irq)
-			free_irq(irq, hp);
-
 	} else {
 		if (hp->count < 0)
 			printk(KERN_ERR "hvc_close %X: oops, count is %d\n",
@@ -417,19 +389,20 @@ static void hvc_close(struct tty_struct *tty, struct file * filp)
 		spin_unlock_irqrestore(&hp->lock, flags);
 	}
 
-	kobject_put(kobjp);
+	kref_put(&hp->kref, destroy_hvc_struct);
 }
 
 static void hvc_hangup(struct tty_struct *tty)
 {
 	struct hvc_struct *hp = tty->driver_data;
 	unsigned long flags;
-	int irq = 0;
 	int temp_open_count;
-	struct kobject *kobjp;
 
 	if (!hp)
 		return;
+
+	/* cancel pending tty resize work */
+	cancel_work_sync(&hp->tty_resize);
 
 	spin_lock_irqsave(&hp->lock, flags);
 
@@ -443,21 +416,19 @@ static void hvc_hangup(struct tty_struct *tty)
 		return;
 	}
 
-	kobjp = &hp->kobj;
 	temp_open_count = hp->count;
 	hp->count = 0;
 	hp->n_outbuf = 0;
 	hp->tty = NULL;
-	if (hp->irq_requested)
-		/* Saved for use outside of spin_lock. */
-		irq = hp->irq;
-	hp->irq_requested = 0;
+
 	spin_unlock_irqrestore(&hp->lock, flags);
-	if (irq)
-		free_irq(irq, hp);
+
+	if (hp->ops->notifier_hangup)
+			hp->ops->notifier_hangup(hp, hp->data);
+
 	while(temp_open_count) {
 		--temp_open_count;
-		kobject_put(kobjp);
+		kref_put(&hp->kref, destroy_hvc_struct);
 	}
 }
 
@@ -465,7 +436,7 @@ static void hvc_hangup(struct tty_struct *tty)
  * Push buffered characters whether they were just recently buffered or waiting
  * on a blocked hypervisor.  Call this function with hp->lock held.
  */
-static void hvc_push(struct hvc_struct *hp)
+static int hvc_push(struct hvc_struct *hp)
 {
 	int n;
 
@@ -473,7 +444,7 @@ static void hvc_push(struct hvc_struct *hp)
 	if (n <= 0) {
 		if (n == 0) {
 			hp->do_wakeup = 1;
-			return;
+			return 0;
 		}
 		/* throw away output on error; this happens when
 		   there is no session connected to the vterm. */
@@ -484,6 +455,8 @@ static void hvc_push(struct hvc_struct *hp)
 		memmove(hp->outbuf, hp->outbuf + n, hp->n_outbuf);
 	else
 		hp->do_wakeup = 1;
+
+	return n;
 }
 
 static int hvc_write(struct tty_struct *tty, const unsigned char *buf, int count)
@@ -526,6 +499,39 @@ static int hvc_write(struct tty_struct *tty, const unsigned char *buf, int count
 	return written;
 }
 
+/**
+ * hvc_set_winsz() - Resize the hvc tty terminal window.
+ * @work:	work structure.
+ *
+ * The routine shall not be called within an atomic context because it
+ * might sleep.
+ *
+ * Locking:	hp->lock
+ */
+static void hvc_set_winsz(struct work_struct *work)
+{
+	struct hvc_struct *hp;
+	unsigned long hvc_flags;
+	struct tty_struct *tty;
+	struct winsize ws;
+
+	hp = container_of(work, struct hvc_struct, tty_resize);
+	if (!hp)
+		return;
+
+	spin_lock_irqsave(&hp->lock, hvc_flags);
+	if (!hp->tty) {
+		spin_unlock_irqrestore(&hp->lock, hvc_flags);
+		return;
+	}
+	ws  = hp->ws;
+	tty = tty_kref_get(hp->tty);
+	spin_unlock_irqrestore(&hp->lock, hvc_flags);
+
+	tty_do_resize(tty, &ws);
+	tty_kref_put(tty);
+}
+
 /*
  * This is actually a contract between the driver and the tty layer outlining
  * how much write room the driver can guarantee will be sent OR BUFFERED.  This
@@ -565,23 +571,27 @@ static u32 timeout = MIN_TIMEOUT;
 #define HVC_POLL_READ	0x00000001
 #define HVC_POLL_WRITE	0x00000002
 
-static int hvc_poll(struct hvc_struct *hp)
+int hvc_poll(struct hvc_struct *hp)
 {
 	struct tty_struct *tty;
 	int i, n, poll_mask = 0;
 	char buf[N_INBUF] __ALIGNED__;
 	unsigned long flags;
 	int read_total = 0;
+	int written_total = 0;
 
 	spin_lock_irqsave(&hp->lock, flags);
 
 	/* Push pending writes */
 	if (hp->n_outbuf > 0)
-		hvc_push(hp);
+		written_total = hvc_push(hp);
 
 	/* Reschedule us if still some write pending */
-	if (hp->n_outbuf > 0)
+	if (hp->n_outbuf > 0) {
 		poll_mask |= HVC_POLL_WRITE;
+		/* If hvc_push() was not able to write, sleep a few msecs */
+		timeout = (written_total) ? 0 : MIN_TIMEOUT;
+	}
 
 	/* No tty attached, just skip */
 	tty = hp->tty;
@@ -592,10 +602,10 @@ static int hvc_poll(struct hvc_struct *hp)
 	if (test_bit(TTY_THROTTLED, &tty->flags))
 		goto throttled;
 
-	/* If we aren't interrupt driven and aren't throttled, we always
+	/* If we aren't notifier driven and aren't throttled, we always
 	 * request a reschedule
 	 */
-	if (hp->irq == 0)
+	if (!hp->irq_requested)
 		poll_mask |= HVC_POLL_READ;
 
 	/* Read data if any */
@@ -631,8 +641,11 @@ static int hvc_poll(struct hvc_struct *hp)
 				/* Handle the SysRq Hack */
 				/* XXX should support a sequence */
 				if (buf[i] == '\x0f') {	/* ^O */
-					sysrq_pressed = 1;
-					continue;
+					/* if ^O is pressed again, reset
+					 * sysrq_pressed and flip ^O char */
+					sysrq_pressed = !sysrq_pressed;
+					if (sysrq_pressed)
+						continue;
 				} else if (sysrq_pressed) {
 					handle_sysrq(buf[i], tty);
 					sysrq_pressed = 0;
@@ -664,12 +677,24 @@ static int hvc_poll(struct hvc_struct *hp)
 
 	return poll_mask;
 }
+EXPORT_SYMBOL_GPL(hvc_poll);
 
-#if defined(CONFIG_XMON) && defined(CONFIG_SMP)
-extern cpumask_t cpus_in_xmon;
-#else
-static const cpumask_t cpus_in_xmon = CPU_MASK_NONE;
-#endif
+/**
+ * hvc_resize() - Update terminal window size information.
+ * @hp:		HVC console pointer
+ * @ws:		Terminal window size structure
+ *
+ * Stores the specified window size information in the hvc structure of @hp.
+ * The function schedule the tty resize update.
+ *
+ * Locking:	Locking free; the function MUST be called holding hp->lock
+ */
+void hvc_resize(struct hvc_struct *hp, struct winsize ws)
+{
+	hp->ws = ws;
+	schedule_work(&hp->tty_resize);
+}
+EXPORT_SYMBOL_GPL(hvc_resize);
 
 /*
  * This kthread is either polling or interrupt driven.  This is determined by
@@ -688,7 +713,7 @@ static int khvcd(void *unused)
 		hvc_kicked = 0;
 		try_to_freeze();
 		wmb();
-		if (cpus_empty(cpus_in_xmon)) {
+		if (!cpus_are_in_xmon()) {
 			spin_lock(&hvc_structs_lock);
 			list_for_each_entry(hp, &hvc_structs, next) {
 				poll_mask |= hvc_poll(hp);
@@ -698,10 +723,6 @@ static int khvcd(void *unused)
 			poll_mask |= HVC_POLL_READ;
 		if (hvc_kicked)
 			continue;
-		if (poll_mask & HVC_POLL_WRITE) {
-			yield();
-			continue;
-		}
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (!hvc_kicked) {
 			if (poll_mask == 0)
@@ -729,28 +750,7 @@ static const struct tty_operations hvc_ops = {
 	.chars_in_buffer = hvc_chars_in_buffer,
 };
 
-/* callback when the kboject ref count reaches zero. */
-static void destroy_hvc_struct(struct kobject *kobj)
-{
-	struct hvc_struct *hp = container_of(kobj, struct hvc_struct, kobj);
-	unsigned long flags;
-
-	spin_lock(&hvc_structs_lock);
-
-	spin_lock_irqsave(&hp->lock, flags);
-	list_del(&(hp->next));
-	spin_unlock_irqrestore(&hp->lock, flags);
-
-	spin_unlock(&hvc_structs_lock);
-
-	kfree(hp);
-}
-
-static struct kobj_type hvc_kobj_type = {
-	.release = destroy_hvc_struct,
-};
-
-struct hvc_struct __devinit *hvc_alloc(uint32_t vtermno, int irq,
+struct hvc_struct __devinit *hvc_alloc(uint32_t vtermno, int data,
 					struct hv_ops *ops, int outbuf_size)
 {
 	struct hvc_struct *hp;
@@ -763,22 +763,20 @@ struct hvc_struct __devinit *hvc_alloc(uint32_t vtermno, int irq,
 			return ERR_PTR(err);
 	}
 
-	hp = kmalloc(ALIGN(sizeof(*hp), sizeof(long)) + outbuf_size,
+	hp = kzalloc(ALIGN(sizeof(*hp), sizeof(long)) + outbuf_size,
 			GFP_KERNEL);
 	if (!hp)
 		return ERR_PTR(-ENOMEM);
 
-	memset(hp, 0x00, sizeof(*hp));
-
 	hp->vtermno = vtermno;
-	hp->irq = irq;
+	hp->data = data;
 	hp->ops = ops;
 	hp->outbuf_size = outbuf_size;
 	hp->outbuf = &((char *)hp)[ALIGN(sizeof(*hp), sizeof(long))];
 
-	kobject_init(&hp->kobj);
-	hp->kobj.ktype = &hvc_kobj_type;
+	kref_init(&hp->kref);
 
+	INIT_WORK(&hp->tty_resize, hvc_set_winsz);
 	spin_lock_init(&hp->lock);
 	spin_lock(&hvc_structs_lock);
 
@@ -802,16 +800,15 @@ struct hvc_struct __devinit *hvc_alloc(uint32_t vtermno, int irq,
 
 	return hp;
 }
+EXPORT_SYMBOL_GPL(hvc_alloc);
 
-int __devexit hvc_remove(struct hvc_struct *hp)
+int hvc_remove(struct hvc_struct *hp)
 {
 	unsigned long flags;
-	struct kobject *kobjp;
 	struct tty_struct *tty;
 
 	spin_lock_irqsave(&hp->lock, flags);
 	tty = hp->tty;
-	kobjp = &hp->kobj;
 
 	if (hp->index < MAX_NR_HVC_CONSOLES)
 		vtermnos[hp->index] = -1;
@@ -821,12 +818,12 @@ int __devexit hvc_remove(struct hvc_struct *hp)
 	spin_unlock_irqrestore(&hp->lock, flags);
 
 	/*
-	 * We 'put' the instance that was grabbed when the kobject instance
-	 * was initialized using kobject_init().  Let the last holder of this
-	 * kobject cause it to be removed, which will probably be the tty_hangup
+	 * We 'put' the instance that was grabbed when the kref instance
+	 * was initialized using kref_init().  Let the last holder of this
+	 * kref cause it to be removed, which will probably be the tty_hangup
 	 * below.
 	 */
-	kobject_put(kobjp);
+	kref_put(&hp->kref, destroy_hvc_struct);
 
 	/*
 	 * This function call will auto chain call hvc_hangup.  The tty should
@@ -858,7 +855,7 @@ static int hvc_init(void)
 	drv->minor_start = HVC_MINOR;
 	drv->type = TTY_DRIVER_TYPE_SYSTEM;
 	drv->init_termios = tty_std_termios;
-	drv->flags = TTY_DRIVER_REAL_RAW;
+	drv->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_RESET_TERMIOS;
 	tty_set_operations(drv, &hvc_ops);
 
 	/* Always start the kthread because there can be hotplug vty adapters
@@ -876,16 +873,19 @@ static int hvc_init(void)
 		goto stop_thread;
 	}
 
-	/* FIXME: This mb() seems completely random.  Remove it. */
-	mb();
+	/*
+	 * Make sure tty is fully registered before allowing it to be
+	 * found by hvc_console_device.
+	 */
+	smp_mb();
 	hvc_driver = drv;
 	return 0;
 
-put_tty:
-	put_tty_driver(hvc_driver);
 stop_thread:
 	kthread_stop(hvc_task);
 	hvc_task = NULL;
+put_tty:
+	put_tty_driver(drv);
 out:
 	return err;
 }

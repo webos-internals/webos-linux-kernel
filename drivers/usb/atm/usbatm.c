@@ -80,6 +80,7 @@
 #include <linux/stat.h>
 #include <linux/timer.h>
 #include <linux/wait.h>
+#include <linux/kthread.h>
 
 #ifdef VERBOSE_DEBUG
 static int usbatm_print_packet(const unsigned char *data, int len);
@@ -343,7 +344,7 @@ static void usbatm_extract_one_cell(struct usbatm_data *instance, unsigned char 
 				__func__, sarb->len, vcc);
 		/* discard cells already received */
 		skb_trim(sarb, 0);
-		UDSL_ASSERT(sarb->tail + ATM_CELL_PAYLOAD <= sarb->end);
+		UDSL_ASSERT(instance, sarb->tail + ATM_CELL_PAYLOAD <= sarb->end);
 	}
 
 	memcpy(skb_tail_pointer(sarb), source + ATM_CELL_HEADER, ATM_CELL_PAYLOAD);
@@ -431,7 +432,7 @@ static void usbatm_extract_cells(struct usbatm_data *instance,
 		unsigned char *cell_buf = instance->cell_buf;
 		unsigned int space_left = stride - buf_usage;
 
-		UDSL_ASSERT(buf_usage <= stride);
+		UDSL_ASSERT(instance, buf_usage <= stride);
 
 		if (avail_data >= space_left) {
 			/* add new data and process cell */
@@ -474,7 +475,7 @@ static unsigned int usbatm_write_cells(struct usbatm_data *instance,
 	unsigned int stride = instance->tx_channel.stride;
 
 	vdbg("%s: skb->len=%d, avail_space=%u", __func__, skb->len, avail_space);
-	UDSL_ASSERT(!(avail_space % stride));
+	UDSL_ASSERT(instance, !(avail_space % stride));
 
 	for (bytes_written = 0; bytes_written < avail_space && ctrl->len;
 	     bytes_written += stride, target += stride) {
@@ -546,7 +547,7 @@ static void usbatm_rx_process(unsigned long data)
 				if (!urb->iso_frame_desc[i].status) {
 					unsigned int actual_length = urb->iso_frame_desc[i].actual_length;
 
-					UDSL_ASSERT(actual_length <= packet_size);
+					UDSL_ASSERT(instance, actual_length <= packet_size);
 
 					if (!merge_length)
 						merge_start = (unsigned char *)urb->transfer_buffer + urb->iso_frame_desc[i].offset;
@@ -639,14 +640,13 @@ static void usbatm_cancel_send(struct usbatm_data *instance,
 
 	atm_dbg(instance, "%s entered\n", __func__);
 	spin_lock_irq(&instance->sndqueue.lock);
-	for (skb = instance->sndqueue.next, n = skb->next;
-	     skb != (struct sk_buff *)&instance->sndqueue;
-	     skb = n, n = skb->next)
+	skb_queue_walk_safe(&instance->sndqueue, skb, n) {
 		if (UDSL_SKB(skb)->atm.vcc == vcc) {
 			atm_dbg(instance, "%s: popping skb 0x%p\n", __func__, skb);
 			__skb_unlink(skb, &instance->sndqueue);
 			usbatm_pop(vcc, skb);
 		}
+	}
 	spin_unlock_irq(&instance->sndqueue.lock);
 
 	tasklet_disable(&instance->tx_channel.tasklet);
@@ -770,10 +770,7 @@ static int usbatm_atm_proc_read(struct atm_dev *atm_dev, loff_t * pos, char *pag
 		return sprintf(page, "%s\n", instance->description);
 
 	if (!left--)
-		return sprintf(page, "MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-			       atm_dev->esi[0], atm_dev->esi[1],
-			       atm_dev->esi[2], atm_dev->esi[3],
-			       atm_dev->esi[4], atm_dev->esi[5]);
+		return sprintf(page, "MAC: %pM\n", atm_dev->esi);
 
 	if (!left--)
 		return sprintf(page,
@@ -1014,10 +1011,7 @@ static int usbatm_do_heavy_init(void *arg)
 	struct usbatm_data *instance = arg;
 	int ret;
 
-	daemonize(instance->driver->driver_name);
 	allow_signal(SIGTERM);
-	instance->thread_pid = current->pid;
-
 	complete(&instance->thread_started);
 
 	ret = instance->driver->heavy_init(instance, instance->usb_intf);
@@ -1026,7 +1020,7 @@ static int usbatm_do_heavy_init(void *arg)
 		ret = usbatm_atm_init(instance);
 
 	mutex_lock(&instance->serialize);
-	instance->thread_pid = -1;
+	instance->thread = NULL;
 	mutex_unlock(&instance->serialize);
 
 	complete_and_exit(&instance->thread_exited, ret);
@@ -1034,13 +1028,18 @@ static int usbatm_do_heavy_init(void *arg)
 
 static int usbatm_heavy_init(struct usbatm_data *instance)
 {
-	int ret = kernel_thread(usbatm_do_heavy_init, instance, CLONE_FS | CLONE_FILES);
+	struct task_struct *t;
 
-	if (ret < 0) {
-		usb_err(instance, "%s: failed to create kernel_thread (%d)!\n", __func__, ret);
-		return ret;
+	t = kthread_create(usbatm_do_heavy_init, instance,
+			instance->driver->driver_name);
+	if (IS_ERR(t)) {
+		usb_err(instance, "%s: failed to create kernel_thread (%ld)!\n",
+				__func__, PTR_ERR(t));
+		return PTR_ERR(t);
 	}
 
+	instance->thread = t;
+	wake_up_process(t);
 	wait_for_completion(&instance->thread_started);
 
 	return 0;
@@ -1124,7 +1123,7 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 	kref_init(&instance->refcount);		/* dropped in usbatm_usb_disconnect */
 	mutex_init(&instance->serialize);
 
-	instance->thread_pid = -1;
+	instance->thread = NULL;
 	init_completion(&instance->thread_started);
 	init_completion(&instance->thread_exited);
 
@@ -1186,7 +1185,7 @@ int usbatm_usb_probe(struct usb_interface *intf, const struct usb_device_id *id,
 		struct urb *urb;
 		unsigned int iso_packets = usb_pipeisoc(channel->endpoint) ? channel->buf_size / channel->packet_size : 0;
 
-		UDSL_ASSERT(!usb_pipeisoc(channel->endpoint) || usb_pipein(channel->endpoint));
+		UDSL_ASSERT(instance, !usb_pipeisoc(channel->endpoint) || usb_pipein(channel->endpoint));
 
 		urb = usb_alloc_urb(iso_packets, GFP_KERNEL);
 		if (!urb) {
@@ -1287,8 +1286,8 @@ void usbatm_usb_disconnect(struct usb_interface *intf)
 
 	mutex_lock(&instance->serialize);
 	instance->disconnected = 1;
-	if (instance->thread_pid >= 0)
-		kill_proc(instance->thread_pid, SIGTERM, 1);
+	if (instance->thread != NULL)
+		send_sig(SIGTERM, instance->thread, 1);
 	mutex_unlock(&instance->serialize);
 
 	wait_for_completion(&instance->thread_exited);

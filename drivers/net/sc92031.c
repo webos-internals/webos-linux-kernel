@@ -311,7 +311,6 @@ struct sc92031_priv {
 
 	/* for dev->get_stats */
 	long			rx_value;
-	struct net_device_stats	stats;
 };
 
 /* I don't know which registers can be safely read; however, I can guess
@@ -421,7 +420,7 @@ static void _sc92031_tx_clear(struct net_device *dev)
 
 	while (priv->tx_head - priv->tx_tail > 0) {
 		priv->tx_tail++;
-		priv->stats.tx_dropped++;
+		dev->stats.tx_dropped++;
 	}
 	priv->tx_head = priv->tx_tail = 0;
 }
@@ -676,27 +675,27 @@ static void _sc92031_tx_tasklet(struct net_device *dev)
 		priv->tx_tail++;
 
 		if (tx_status & TxStatOK) {
-			priv->stats.tx_bytes += tx_status & 0x1fff;
-			priv->stats.tx_packets++;
+			dev->stats.tx_bytes += tx_status & 0x1fff;
+			dev->stats.tx_packets++;
 			/* Note: TxCarrierLost is always asserted at 100mbps. */
-			priv->stats.collisions += (tx_status >> 22) & 0xf;
+			dev->stats.collisions += (tx_status >> 22) & 0xf;
 		}
 
 		if (tx_status & (TxOutOfWindow | TxAborted)) {
-			priv->stats.tx_errors++;
+			dev->stats.tx_errors++;
 
 			if (tx_status & TxAborted)
-				priv->stats.tx_aborted_errors++;
+				dev->stats.tx_aborted_errors++;
 
 			if (tx_status & TxCarrierLost)
-				priv->stats.tx_carrier_errors++;
+				dev->stats.tx_carrier_errors++;
 
 			if (tx_status & TxOutOfWindow)
-				priv->stats.tx_window_errors++;
+				dev->stats.tx_window_errors++;
 		}
 
 		if (tx_status & TxUnderrun)
-			priv->stats.tx_fifo_errors++;
+			dev->stats.tx_fifo_errors++;
 	}
 
 	if (priv->tx_tail != old_tx_tail)
@@ -704,27 +703,29 @@ static void _sc92031_tx_tasklet(struct net_device *dev)
 			netif_wake_queue(dev);
 }
 
-static void _sc92031_rx_tasklet_error(u32 rx_status,
-		struct sc92031_priv *priv, unsigned rx_size)
+static void _sc92031_rx_tasklet_error(struct net_device *dev,
+				      u32 rx_status, unsigned rx_size)
 {
 	if(rx_size > (MAX_ETH_FRAME_SIZE + 4) || rx_size < 16) {
-		priv->stats.rx_errors++;
-		priv->stats.rx_length_errors++;
+		dev->stats.rx_errors++;
+		dev->stats.rx_length_errors++;
 	}
 
 	if (!(rx_status & RxStatesOK)) {
-		priv->stats.rx_errors++;
+		dev->stats.rx_errors++;
 
 		if (rx_status & (RxHugeFrame | RxSmallFrame))
-			priv->stats.rx_length_errors++;
+			dev->stats.rx_length_errors++;
 
 		if (rx_status & RxBadAlign)
-			priv->stats.rx_frame_errors++;
+			dev->stats.rx_frame_errors++;
 
 		if (!(rx_status & RxCRCOK))
-			priv->stats.rx_crc_errors++;
-	} else
+			dev->stats.rx_crc_errors++;
+	} else {
+		struct sc92031_priv *priv = netdev_priv(dev);
 		priv->rx_loss++;
+	}
 }
 
 static void _sc92031_rx_tasklet(struct net_device *dev)
@@ -783,7 +784,7 @@ static void _sc92031_rx_tasklet(struct net_device *dev)
 				|| rx_size > (MAX_ETH_FRAME_SIZE + 4)
 				|| rx_size < 16
 				|| !(rx_status & RxStatesOK))) {
-			_sc92031_rx_tasklet_error(rx_status, priv, rx_size);
+			_sc92031_rx_tasklet_error(dev, rx_status, rx_size);
 			break;
 		}
 
@@ -795,7 +796,7 @@ static void _sc92031_rx_tasklet(struct net_device *dev)
 
 		rx_len -= rx_size_align + 4;
 
-		skb = dev_alloc_skb(pkt_size + NET_IP_ALIGN);
+		skb = netdev_alloc_skb(dev, pkt_size + NET_IP_ALIGN);
 		if (unlikely(!skb)) {
 			if (printk_ratelimit())
 				printk(KERN_ERR "%s: Couldn't allocate a skb_buff for a packet of size %u\n",
@@ -815,14 +816,13 @@ static void _sc92031_rx_tasklet(struct net_device *dev)
 		}
 
 		skb->protocol = eth_type_trans(skb, dev);
-		dev->last_rx = jiffies;
 		netif_rx(skb);
 
-		priv->stats.rx_bytes += pkt_size;
-		priv->stats.rx_packets++;
+		dev->stats.rx_bytes += pkt_size;
+		dev->stats.rx_packets++;
 
 		if (rx_status & Rx_Multicast)
-			priv->stats.multicast++;
+			dev->stats.multicast++;
 
 	next:
 		rx_ring_offset = (rx_ring_offset + rx_size_align) % RX_BUF_LEN;
@@ -835,13 +835,11 @@ static void _sc92031_rx_tasklet(struct net_device *dev)
 
 static void _sc92031_link_tasklet(struct net_device *dev)
 {
-	struct sc92031_priv *priv = netdev_priv(dev);
-
 	if (_sc92031_check_media(dev))
 		netif_wake_queue(dev);
 	else {
 		netif_stop_queue(dev);
-		priv->stats.tx_carrier_errors++;
+		dev->stats.tx_carrier_errors++;
 	}
 }
 
@@ -866,11 +864,11 @@ static void sc92031_tasklet(unsigned long data)
 		_sc92031_rx_tasklet(dev);
 
 	if (intr_status & RxOverflow)
-		priv->stats.rx_errors++;
+		dev->stats.rx_errors++;
 
 	if (intr_status & TimeOut) {
-		priv->stats.rx_errors++;
-		priv->stats.rx_length_errors++;
+		dev->stats.rx_errors++;
+		dev->stats.rx_length_errors++;
 	}
 
 	if (intr_status & (LinkFail | LinkOK))
@@ -936,38 +934,33 @@ static struct net_device_stats *sc92031_get_stats(struct net_device *dev)
 
 		if (temp == 0xffff) {
 			priv->rx_value += temp;
-			priv->stats.rx_fifo_errors = priv->rx_value;
-		} else {
-			priv->stats.rx_fifo_errors = temp + priv->rx_value;
-		}
+			dev->stats.rx_fifo_errors = priv->rx_value;
+		} else
+			dev->stats.rx_fifo_errors = temp + priv->rx_value;
 
 		spin_unlock_bh(&priv->lock);
 	}
 
-	return &priv->stats;
+	return &dev->stats;
 }
 
 static int sc92031_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	int err = 0;
 	struct sc92031_priv *priv = netdev_priv(dev);
 	void __iomem *port_base = priv->port_base;
-
 	unsigned len;
 	unsigned entry;
 	u32 tx_status;
 
 	if (unlikely(skb->len > TX_BUF_SIZE)) {
-		err = -EMSGSIZE;
-		priv->stats.tx_dropped++;
+		dev->stats.tx_dropped++;
 		goto out;
 	}
 
 	spin_lock(&priv->lock);
 
 	if (unlikely(!netif_carrier_ok(dev))) {
-		err = -ENOLINK;
-		priv->stats.tx_dropped++;
+		dev->stats.tx_dropped++;
 		goto out_unlock;
 	}
 
@@ -978,7 +971,7 @@ static int sc92031_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	skb_copy_and_csum_dev(skb, priv->tx_bufs + entry * TX_BUF_SIZE);
 
 	len = skb->len;
-	if (unlikely(len < ETH_ZLEN)) {
+	if (len < ETH_ZLEN) {
 		memset(priv->tx_bufs + entry * TX_BUF_SIZE + len,
 				0, ETH_ZLEN - len);
 		len = ETH_ZLEN;
@@ -1009,7 +1002,7 @@ out_unlock:
 out:
 	dev_kfree_skb(skb);
 
-	return err;
+	return NETDEV_TX_OK;
 }
 
 static int sc92031_open(struct net_device *dev)
@@ -1393,7 +1386,7 @@ static void sc92031_ethtool_get_ethtool_stats(struct net_device *dev,
 	spin_unlock_bh(&priv->lock);
 }
 
-static struct ethtool_ops sc92031_ethtool_ops = {
+static const struct ethtool_ops sc92031_ethtool_ops = {
 	.get_settings		= sc92031_ethtool_get_settings,
 	.set_settings		= sc92031_ethtool_set_settings,
 	.get_drvinfo		= sc92031_ethtool_get_drvinfo,
@@ -1404,6 +1397,22 @@ static struct ethtool_ops sc92031_ethtool_ops = {
 	.get_strings		= sc92031_ethtool_get_strings,
 	.get_sset_count		= sc92031_ethtool_get_sset_count,
 	.get_ethtool_stats	= sc92031_ethtool_get_ethtool_stats,
+};
+
+
+static const struct net_device_ops sc92031_netdev_ops = {
+	.ndo_get_stats		= sc92031_get_stats,
+	.ndo_start_xmit		= sc92031_start_xmit,
+	.ndo_open		= sc92031_open,
+	.ndo_stop		= sc92031_stop,
+	.ndo_set_multicast_list	= sc92031_set_multicast_list,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_tx_timeout		= sc92031_tx_timeout,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	= sc92031_poll_controller,
+#endif
 };
 
 static int __devinit sc92031_probe(struct pci_dev *pdev,
@@ -1446,6 +1455,7 @@ static int __devinit sc92031_probe(struct pci_dev *pdev,
 	}
 
 	pci_set_drvdata(pdev, dev);
+	SET_NETDEV_DEV(dev, &pdev->dev);
 
 #if SC92031_USE_BAR == 0
 	dev->mem_start = pci_resource_start(pdev, SC92031_USE_BAR);
@@ -1458,17 +1468,9 @@ static int __devinit sc92031_probe(struct pci_dev *pdev,
 	/* faked with skb_copy_and_csum_dev */
 	dev->features = NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_HIGHDMA;
 
-	dev->get_stats		= sc92031_get_stats;
-	dev->ethtool_ops	= &sc92031_ethtool_ops;
-	dev->hard_start_xmit	= sc92031_start_xmit;
+	dev->netdev_ops		= &sc92031_netdev_ops;
 	dev->watchdog_timeo	= TX_TIMEOUT;
-	dev->open		= sc92031_open;
-	dev->stop		= sc92031_stop;
-	dev->set_multicast_list	= sc92031_set_multicast_list;
-	dev->tx_timeout		= sc92031_tx_timeout;
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	dev->poll_controller	= sc92031_poll_controller;
-#endif
+	dev->ethtool_ops	= &sc92031_ethtool_ops;
 
 	priv = netdev_priv(dev);
 	spin_lock_init(&priv->lock);

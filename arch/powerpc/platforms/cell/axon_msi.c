@@ -13,7 +13,8 @@
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/msi.h>
-#include <linux/reboot.h>
+#include <linux/of_platform.h>
+#include <linux/debugfs.h>
 
 #include <asm/dcr.h>
 #include <asm/machdep.h>
@@ -65,13 +66,22 @@
 
 struct axon_msic {
 	struct irq_host *irq_host;
-	__le32 *fifo;
+	__le32 *fifo_virt;
+	dma_addr_t fifo_phys;
 	dcr_host_t dcr_host;
-	struct list_head list;
 	u32 read_offset;
+#ifdef DEBUG
+	u32 __iomem *trigger;
+#endif
 };
 
-static LIST_HEAD(axon_msic_list);
+#ifdef DEBUG
+void axon_msi_debug_setup(struct device_node *dn, struct axon_msic *msic);
+#else
+static inline void axon_msi_debug_setup(struct device_node *dn,
+					struct axon_msic *msic) { }
+#endif
+
 
 static void msic_dcr_write(struct axon_msic *msic, unsigned int dcr_n, u32 val)
 {
@@ -85,6 +95,7 @@ static void axon_msi_cascade(unsigned int irq, struct irq_desc *desc)
 	struct axon_msic *msic = get_irq_data(irq);
 	u32 write_offset, msi;
 	int idx;
+	int retry = 0;
 
 	write_offset = dcr_read(msic->dcr_host, MSIC_WRITE_OFFSET_REG);
 	pr_debug("axon_msi: original write_offset 0x%x\n", write_offset);
@@ -92,21 +103,45 @@ static void axon_msi_cascade(unsigned int irq, struct irq_desc *desc)
 	/* write_offset doesn't wrap properly, so we have to mask it */
 	write_offset &= MSIC_FIFO_SIZE_MASK;
 
-	while (msic->read_offset != write_offset) {
+	while (msic->read_offset != write_offset && retry < 100) {
 		idx  = msic->read_offset / sizeof(__le32);
-		msi  = le32_to_cpu(msic->fifo[idx]);
+		msi  = le32_to_cpu(msic->fifo_virt[idx]);
 		msi &= 0xFFFF;
 
 		pr_debug("axon_msi: woff %x roff %x msi %x\n",
 			  write_offset, msic->read_offset, msi);
 
+		if (msi < NR_IRQS && irq_map[msi].host == msic->irq_host) {
+			generic_handle_irq(msi);
+			msic->fifo_virt[idx] = cpu_to_le32(0xffffffff);
+		} else {
+			/*
+			 * Reading the MSIC_WRITE_OFFSET_REG does not
+			 * reliably flush the outstanding DMA to the
+			 * FIFO buffer. Here we were reading stale
+			 * data, so we need to retry.
+			 */
+			udelay(1);
+			retry++;
+			pr_debug("axon_msi: invalid irq 0x%x!\n", msi);
+			continue;
+		}
+
+		if (retry) {
+			pr_debug("axon_msi: late irq 0x%x, retry %d\n",
+				 msi, retry);
+			retry = 0;
+		}
+
 		msic->read_offset += MSIC_FIFO_ENTRY_SIZE;
 		msic->read_offset &= MSIC_FIFO_SIZE_MASK;
+	}
 
-		if (msi < NR_IRQS && irq_map[msi].host == msic->irq_host)
-			generic_handle_irq(msi);
-		else
-			pr_debug("axon_msi: invalid irq 0x%x!\n", msi);
+	if (retry) {
+		printk(KERN_WARNING "axon_msi: irq timed out\n");
+
+		msic->read_offset += MSIC_FIFO_ENTRY_SIZE;
+		msic->read_offset &= MSIC_FIFO_SIZE_MASK;
 	}
 
 	desc->chip->eoi(irq);
@@ -125,7 +160,7 @@ static struct axon_msic *find_msi_translator(struct pci_dev *dev)
 		return NULL;
 	}
 
-	for (; dn; tmp = of_get_parent(dn), of_node_put(dn), dn = tmp) {
+	for (; dn; dn = of_get_next_parent(dn)) {
 		ph = of_get_property(dn, "msi-translator", NULL);
 		if (ph)
 			break;
@@ -139,6 +174,7 @@ static struct axon_msic *find_msi_translator(struct pci_dev *dev)
 
 	tmp = dn;
 	dn = of_find_node_by_phandle(*ph);
+	of_node_put(tmp);
 	if (!dn) {
 		dev_dbg(&dev->dev,
 			"axon_msi: msi-translator doesn't point to a node\n");
@@ -156,7 +192,6 @@ static struct axon_msic *find_msi_translator(struct pci_dev *dev)
 
 out_error:
 	of_node_put(dn);
-	of_node_put(tmp);
 
 	return msic;
 }
@@ -171,7 +206,7 @@ static int axon_msi_check_device(struct pci_dev *dev, int nvec, int type)
 
 static int setup_msi_msg_address(struct pci_dev *dev, struct msi_msg *msg)
 {
-	struct device_node *dn, *tmp;
+	struct device_node *dn;
 	struct msi_desc *entry;
 	int len;
 	const u32 *prop;
@@ -184,7 +219,7 @@ static int setup_msi_msg_address(struct pci_dev *dev, struct msi_msg *msg)
 
 	entry = list_first_entry(&dev->msi_list, struct msi_desc, list);
 
-	for (; dn; tmp = of_get_parent(dn), of_node_put(dn), dn = tmp) {
+	for (; dn; dn = of_get_next_parent(dn)) {
 		if (entry->msi_attrib.is_64) {
 			prop = of_get_property(dn, "msi-address-64", &len);
 			if (prop)
@@ -292,30 +327,24 @@ static struct irq_host_ops msic_host_ops = {
 	.map	= msic_host_map,
 };
 
-static int axon_msi_notify_reboot(struct notifier_block *nb,
-				  unsigned long code, void *data)
+static int axon_msi_shutdown(struct of_device *device)
 {
-	struct axon_msic *msic;
+	struct axon_msic *msic = device->dev.platform_data;
 	u32 tmp;
 
-	list_for_each_entry(msic, &axon_msic_list, list) {
-		pr_debug("axon_msi: disabling %s\n",
-			  msic->irq_host->of_node->full_name);
-		tmp  = dcr_read(msic->dcr_host, MSIC_CTRL_REG);
-		tmp &= ~MSIC_CTRL_ENABLE & ~MSIC_CTRL_IRQ_ENABLE;
-		msic_dcr_write(msic, MSIC_CTRL_REG, tmp);
-	}
+	pr_debug("axon_msi: disabling %s\n",
+		  msic->irq_host->of_node->full_name);
+	tmp  = dcr_read(msic->dcr_host, MSIC_CTRL_REG);
+	tmp &= ~MSIC_CTRL_ENABLE & ~MSIC_CTRL_IRQ_ENABLE;
+	msic_dcr_write(msic, MSIC_CTRL_REG, tmp);
 
 	return 0;
 }
 
-static struct notifier_block axon_msi_reboot_notifier = {
-	.notifier_call = axon_msi_notify_reboot
-};
-
-static int axon_msi_setup_one(struct device_node *dn)
+static int axon_msi_probe(struct of_device *device,
+			  const struct of_device_id *device_id)
 {
-	struct page *page;
+	struct device_node *dn = device->node;
 	struct axon_msic *msic;
 	unsigned int virq;
 	int dcr_base, dcr_len;
@@ -346,17 +375,23 @@ static int axon_msi_setup_one(struct device_node *dn)
 		goto out_free_msic;
 	}
 
-	page = alloc_pages_node(of_node_to_nid(dn), GFP_KERNEL,
-				get_order(MSIC_FIFO_SIZE_BYTES));
-	if (!page) {
+	msic->fifo_virt = dma_alloc_coherent(&device->dev, MSIC_FIFO_SIZE_BYTES,
+					     &msic->fifo_phys, GFP_KERNEL);
+	if (!msic->fifo_virt) {
 		printk(KERN_ERR "axon_msi: couldn't allocate fifo for %s\n",
 		       dn->full_name);
 		goto out_free_msic;
 	}
 
-	msic->fifo = page_address(page);
+	virq = irq_of_parse_and_map(dn, 0);
+	if (virq == NO_IRQ) {
+		printk(KERN_ERR "axon_msi: irq parse and map failed for %s\n",
+		       dn->full_name);
+		goto out_free_fifo;
+	}
+	memset(msic->fifo_virt, 0xff, MSIC_FIFO_SIZE_BYTES);
 
-	msic->irq_host = irq_alloc_host(of_node_get(dn), IRQ_HOST_MAP_NOMAP,
+	msic->irq_host = irq_alloc_host(dn, IRQ_HOST_MAP_NOMAP,
 					NR_IRQS, &msic_host_ops, 0);
 	if (!msic->irq_host) {
 		printk(KERN_ERR "axon_msi: couldn't allocate irq_host for %s\n",
@@ -366,35 +401,36 @@ static int axon_msi_setup_one(struct device_node *dn)
 
 	msic->irq_host->host_data = msic;
 
-	virq = irq_of_parse_and_map(dn, 0);
-	if (virq == NO_IRQ) {
-		printk(KERN_ERR "axon_msi: irq parse and map failed for %s\n",
-		       dn->full_name);
-		goto out_free_host;
-	}
-
 	set_irq_data(virq, msic);
 	set_irq_chained_handler(virq, axon_msi_cascade);
 	pr_debug("axon_msi: irq 0x%x setup for axon_msi\n", virq);
 
 	/* Enable the MSIC hardware */
-	msic_dcr_write(msic, MSIC_BASE_ADDR_HI_REG, (u64)msic->fifo >> 32);
+	msic_dcr_write(msic, MSIC_BASE_ADDR_HI_REG, msic->fifo_phys >> 32);
 	msic_dcr_write(msic, MSIC_BASE_ADDR_LO_REG,
-				  (u64)msic->fifo & 0xFFFFFFFF);
+				  msic->fifo_phys & 0xFFFFFFFF);
 	msic_dcr_write(msic, MSIC_CTRL_REG,
 			MSIC_CTRL_IRQ_ENABLE | MSIC_CTRL_ENABLE |
 			MSIC_CTRL_FIFO_SIZE);
 
-	list_add(&msic->list, &axon_msic_list);
+	msic->read_offset = dcr_read(msic->dcr_host, MSIC_WRITE_OFFSET_REG)
+				& MSIC_FIFO_SIZE_MASK;
+
+	device->dev.platform_data = msic;
+
+	ppc_md.setup_msi_irqs = axon_msi_setup_msi_irqs;
+	ppc_md.teardown_msi_irqs = axon_msi_teardown_msi_irqs;
+	ppc_md.msi_check_device = axon_msi_check_device;
+
+	axon_msi_debug_setup(dn, msic);
 
 	printk(KERN_DEBUG "axon_msi: setup MSIC on %s\n", dn->full_name);
 
 	return 0;
 
-out_free_host:
-	kfree(msic->irq_host);
 out_free_fifo:
-	__free_pages(virt_to_page(msic->fifo), get_order(MSIC_FIFO_SIZE_BYTES));
+	dma_free_coherent(&device->dev, MSIC_FIFO_SIZE_BYTES, msic->fifo_virt,
+			  msic->fifo_phys);
 out_free_msic:
 	kfree(msic);
 out:
@@ -402,28 +438,68 @@ out:
 	return -1;
 }
 
-static int axon_msi_init(void)
+static const struct of_device_id axon_msi_device_id[] = {
+	{
+		.compatible	= "ibm,axon-msic"
+	},
+	{}
+};
+
+static struct of_platform_driver axon_msi_driver = {
+	.match_table	= axon_msi_device_id,
+	.probe		= axon_msi_probe,
+	.shutdown	= axon_msi_shutdown,
+	.driver		= {
+		.name	= "axon-msi"
+	},
+};
+
+static int __init axon_msi_init(void)
 {
-	struct device_node *dn;
-	int found = 0;
+	return of_register_platform_driver(&axon_msi_driver);
+}
+subsys_initcall(axon_msi_init);
 
-	pr_debug("axon_msi: initialising ...\n");
 
-	for_each_compatible_node(dn, NULL, "ibm,axon-msic") {
-		if (axon_msi_setup_one(dn) == 0)
-			found++;
-	}
-
-	if (found) {
-		ppc_md.setup_msi_irqs = axon_msi_setup_msi_irqs;
-		ppc_md.teardown_msi_irqs = axon_msi_teardown_msi_irqs;
-		ppc_md.msi_check_device = axon_msi_check_device;
-
-		register_reboot_notifier(&axon_msi_reboot_notifier);
-
-		pr_debug("axon_msi: registered callbacks!\n");
-	}
-
+#ifdef DEBUG
+static int msic_set(void *data, u64 val)
+{
+	struct axon_msic *msic = data;
+	out_le32(msic->trigger, val);
 	return 0;
 }
-arch_initcall(axon_msi_init);
+
+static int msic_get(void *data, u64 *val)
+{
+	*val = 0;
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(fops_msic, msic_get, msic_set, "%llu\n");
+
+void axon_msi_debug_setup(struct device_node *dn, struct axon_msic *msic)
+{
+	char name[8];
+	u64 addr;
+
+	addr = of_translate_address(dn, of_get_property(dn, "reg", NULL));
+	if (addr == OF_BAD_ADDR) {
+		pr_debug("axon_msi: couldn't translate reg property\n");
+		return;
+	}
+
+	msic->trigger = ioremap(addr, 0x4);
+	if (!msic->trigger) {
+		pr_debug("axon_msi: ioremap failed\n");
+		return;
+	}
+
+	snprintf(name, sizeof(name), "msic_%d", of_node_to_nid(dn));
+
+	if (!debugfs_create_file(name, 0600, powerpc_debugfs_root,
+				 msic, &fops_msic)) {
+		pr_debug("axon_msi: debugfs_create_file failed!\n");
+		return;
+	}
+}
+#endif /* DEBUG */

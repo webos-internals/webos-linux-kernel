@@ -1,6 +1,5 @@
 /*
  *
- *  $Id$
  *
  *  Copyright (C) 2005 Mike Isely <isely@pobox.com>
  *
@@ -30,6 +29,9 @@ static int pvr2_ctrl_range_check(struct pvr2_ctrl *cptr,int val)
 {
 	if (cptr->info->check_value) {
 		if (!cptr->info->check_value(cptr,val)) return -ERANGE;
+	} else if (cptr->info->type == pvr2_ctl_enum) {
+		if (val < 0) return -ERANGE;
+		if (val >= cptr->info->def.type_enum.count) return -ERANGE;
 	} else {
 		int lim;
 		lim = cptr->info->def.type_int.min_value;
@@ -60,16 +62,13 @@ int pvr2_ctrl_set_mask_value(struct pvr2_ctrl *cptr,int mask,int val)
 	int ret = 0;
 	if (!cptr) return -EINVAL;
 	LOCK_TAKE(cptr->hdw->big_lock); do {
-		if (cptr->info->set_value != 0) {
+		if (cptr->info->set_value) {
 			if (cptr->info->type == pvr2_ctl_bitmask) {
 				mask &= cptr->info->def.type_bitmask.valid_bits;
-			} else if (cptr->info->type == pvr2_ctl_int) {
+			} else if ((cptr->info->type == pvr2_ctl_int)||
+				   (cptr->info->type == pvr2_ctl_enum)) {
 				ret = pvr2_ctrl_range_check(cptr,val);
 				if (ret < 0) break;
-			} else if (cptr->info->type == pvr2_ctl_enum) {
-				if (val >= cptr->info->def.type_enum.count) {
-					break;
-				}
 			} else if (cptr->info->type != pvr2_ctl_bool) {
 				break;
 			}
@@ -135,13 +134,17 @@ int pvr2_ctrl_get_min(struct pvr2_ctrl *cptr)
 
 
 /* Retrieve control's default value (any type) */
-int pvr2_ctrl_get_def(struct pvr2_ctrl *cptr)
+int pvr2_ctrl_get_def(struct pvr2_ctrl *cptr, int *valptr)
 {
 	int ret = 0;
 	if (!cptr) return 0;
 	LOCK_TAKE(cptr->hdw->big_lock); do {
 		if (cptr->info->type == pvr2_ctl_int) {
-			ret = cptr->info->default_value;
+			if (cptr->info->get_def_value) {
+				ret = cptr->info->get_def_value(cptr, valptr);
+			} else {
+				*valptr = cptr->info->default_value;
+			}
 		}
 	} while(0); LOCK_GIVE(cptr->hdw->big_lock);
 	return ret;
@@ -204,8 +207,7 @@ int pvr2_ctrl_get_valname(struct pvr2_ctrl *cptr,int val,
 		if (cptr->info->type == pvr2_ctl_enum) {
 			const char **names;
 			names = cptr->info->def.type_enum.value_names;
-			if ((val >= 0) &&
-			    (val < cptr->info->def.type_enum.count)) {
+			if (pvr2_ctrl_range_check(cptr,val) == 0) {
 				if (names[val]) {
 					*blen = scnprintf(
 						bptr,bmax,"%s",
@@ -265,7 +267,7 @@ unsigned int pvr2_ctrl_get_v4lflags(struct pvr2_ctrl *cptr)
 int pvr2_ctrl_is_writable(struct pvr2_ctrl *cptr)
 {
 	if (!cptr) return 0;
-	return cptr->info->set_value != 0;
+	return cptr->info->set_value != NULL;
 }
 
 
@@ -528,10 +530,8 @@ int pvr2_ctrl_sym_to_value(struct pvr2_ctrl *cptr,
 				ptr,len,valptr,
 				cptr->info->def.type_enum.value_names,
 				cptr->info->def.type_enum.count);
-			if ((ret >= 0) &&
-			    ((*valptr < 0) ||
-			     (*valptr >= cptr->info->def.type_enum.count))) {
-				ret = -ERANGE;
+			if (ret >= 0) {
+				ret = pvr2_ctrl_range_check(cptr,*valptr);
 			}
 			if (maskptr) *maskptr = ~0;
 		} else if (cptr->info->type == pvr2_ctl_bitmask) {

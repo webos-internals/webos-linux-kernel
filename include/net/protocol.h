@@ -39,7 +39,11 @@ struct net_protocol {
 	int			(*gso_send_check)(struct sk_buff *skb);
 	struct sk_buff	       *(*gso_segment)(struct sk_buff *skb,
 					       int features);
-	int			no_policy;
+	struct sk_buff	      **(*gro_receive)(struct sk_buff **head,
+					       struct sk_buff *skb);
+	int			(*gro_complete)(struct sk_buff *skb);
+	unsigned int		no_policy:1,
+				netns_ok:1;
 };
 
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
@@ -55,6 +59,9 @@ struct inet6_protocol
 	int	(*gso_send_check)(struct sk_buff *skb);
 	struct sk_buff *(*gso_segment)(struct sk_buff *skb,
 				       int features);
+	struct sk_buff **(*gro_receive)(struct sk_buff **head,
+					struct sk_buff *skb);
+	int	(*gro_complete)(struct sk_buff *skb);
 
 	unsigned int	flags;	/* INET6_PROTO_xxx */
 };
@@ -102,7 +109,7 @@ extern void	inet_unregister_protosw(struct inet_protosw *p);
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
 extern int	inet6_add_protocol(struct inet6_protocol *prot, unsigned char num);
 extern int	inet6_del_protocol(struct inet6_protocol *prot, unsigned char num);
-extern void	inet6_register_protosw(struct inet_protosw *p);
+extern int	inet6_register_protosw(struct inet_protosw *p);
 extern void	inet6_unregister_protosw(struct inet_protosw *p);
 #endif
 

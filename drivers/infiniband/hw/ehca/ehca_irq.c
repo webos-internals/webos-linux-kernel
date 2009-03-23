@@ -62,6 +62,7 @@
 #define NEQE_PORT_NUMBER       EHCA_BMASK_IBM( 8, 15)
 #define NEQE_PORT_AVAILABILITY EHCA_BMASK_IBM(16, 16)
 #define NEQE_DISRUPTIVE        EHCA_BMASK_IBM(16, 16)
+#define NEQE_SPECIFIC_EVENT    EHCA_BMASK_IBM(16, 23)
 
 #define ERROR_DATA_LENGTH      EHCA_BMASK_IBM(52, 63)
 #define ERROR_DATA_TYPE        EHCA_BMASK_IBM( 0,  7)
@@ -98,7 +99,7 @@ static void print_error_data(struct ehca_shca *shca, void *data,
 			return;
 
 		ehca_err(&shca->ib_device,
-			 "QP 0x%x (resource=%lx) has errors.",
+			 "QP 0x%x (resource=%llx) has errors.",
 			 qp->ib_qp.qp_num, resource);
 		break;
 	}
@@ -107,21 +108,21 @@ static void print_error_data(struct ehca_shca *shca, void *data,
 		struct ehca_cq *cq = (struct ehca_cq *)data;
 
 		ehca_err(&shca->ib_device,
-			 "CQ 0x%x (resource=%lx) has errors.",
+			 "CQ 0x%x (resource=%llx) has errors.",
 			 cq->cq_number, resource);
 		break;
 	}
 	default:
 		ehca_err(&shca->ib_device,
-			 "Unknown error type: %lx on %s.",
+			 "Unknown error type: %llx on %s.",
 			 type, shca->ib_device.name);
 		break;
 	}
 
-	ehca_err(&shca->ib_device, "Error data is available: %lx.", resource);
+	ehca_err(&shca->ib_device, "Error data is available: %llx.", resource);
 	ehca_err(&shca->ib_device, "EHCA ----- error data begin "
 		 "---------------------------------------------------");
-	ehca_dmp(rblock, length, "resource=%lx", resource);
+	ehca_dmp(rblock, length, "resource=%llx", resource);
 	ehca_err(&shca->ib_device, "EHCA ----- error data end "
 		 "----------------------------------------------------");
 
@@ -151,7 +152,7 @@ int ehca_error_data(struct ehca_shca *shca, void *data,
 
 	if (ret == H_R_STATE)
 		ehca_err(&shca->ib_device,
-			 "No error data is available: %lx.", resource);
+			 "No error data is available: %llx.", resource);
 	else if (ret == H_SUCCESS) {
 		int length;
 
@@ -163,7 +164,7 @@ int ehca_error_data(struct ehca_shca *shca, void *data,
 		print_error_data(shca, data, rblock, length);
 	} else
 		ehca_err(&shca->ib_device,
-			 "Error data could not be fetched: %lx", resource);
+			 "Error data could not be fetched: %llx", resource);
 
 	ehca_free_fw_ctrlblock(rblock);
 
@@ -176,6 +177,10 @@ static void dispatch_qp_event(struct ehca_shca *shca, struct ehca_qp *qp,
 			      enum ib_event_type event_type)
 {
 	struct ib_event event;
+
+	/* PATH_MIG without the QP ever having been armed is false alarm */
+	if (event_type == IB_EVENT_PATH_MIG && !qp->mig_armed)
+		return;
 
 	event.device = &shca->ib_device;
 	event.event = event_type;
@@ -203,6 +208,8 @@ static void qp_event_callback(struct ehca_shca *shca, u64 eqe,
 
 	read_lock(&ehca_qp_idr_lock);
 	qp = idr_find(&ehca_qp_idr, token);
+	if (qp)
+		atomic_inc(&qp->nr_events);
 	read_unlock(&ehca_qp_idr_lock);
 
 	if (!qp)
@@ -222,6 +229,8 @@ static void qp_event_callback(struct ehca_shca *shca, u64 eqe,
 	if (fatal && qp->ext_type == EQPT_SRQBASE)
 		dispatch_qp_event(shca, qp, IB_EVENT_QP_LAST_WQE_REACHED);
 
+	if (atomic_dec_and_test(&qp->nr_events))
+		wake_up(&qp->wait_completion);
 	return;
 }
 
@@ -350,21 +359,50 @@ static void notify_port_conf_change(struct ehca_shca *shca, int port_num)
 	*old_attr = new_attr;
 }
 
+/* replay modify_qp for sqps -- return 0 if all is well, 1 if AQP1 destroyed */
+static int replay_modify_qp(struct ehca_sport *sport)
+{
+	int aqp1_destroyed;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sport->mod_sqp_lock, flags);
+
+	aqp1_destroyed = !sport->ibqp_sqp[IB_QPT_GSI];
+
+	if (sport->ibqp_sqp[IB_QPT_SMI])
+		ehca_recover_sqp(sport->ibqp_sqp[IB_QPT_SMI]);
+	if (!aqp1_destroyed)
+		ehca_recover_sqp(sport->ibqp_sqp[IB_QPT_GSI]);
+
+	spin_unlock_irqrestore(&sport->mod_sqp_lock, flags);
+
+	return aqp1_destroyed;
+}
+
 static void parse_ec(struct ehca_shca *shca, u64 eqe)
 {
 	u8 ec   = EHCA_BMASK_GET(NEQE_EVENT_CODE, eqe);
 	u8 port = EHCA_BMASK_GET(NEQE_PORT_NUMBER, eqe);
+	u8 spec_event;
+	struct ehca_sport *sport = &shca->sport[port - 1];
 
 	switch (ec) {
 	case 0x30: /* port availability change */
 		if (EHCA_BMASK_GET(NEQE_PORT_AVAILABILITY, eqe)) {
-			shca->sport[port - 1].port_state = IB_PORT_ACTIVE;
+			/* only replay modify_qp calls in autodetect mode;
+			 * if AQP1 was destroyed, the port is already down
+			 * again and we can drop the event.
+			 */
+			if (ehca_nr_ports < 0)
+				if (replay_modify_qp(sport))
+					break;
+
+			sport->port_state = IB_PORT_ACTIVE;
 			dispatch_port_event(shca, port, IB_EVENT_PORT_ACTIVE,
 					    "is active");
-			ehca_query_sma_attr(shca, port,
-					    &shca->sport[port - 1].saved_attr);
+			ehca_query_sma_attr(shca, port, &sport->saved_attr);
 		} else {
-			shca->sport[port - 1].port_state = IB_PORT_DOWN;
+			sport->port_state = IB_PORT_DOWN;
 			dispatch_port_event(shca, port, IB_EVENT_PORT_ERR,
 					    "is inactive");
 		}
@@ -378,13 +416,15 @@ static void parse_ec(struct ehca_shca *shca, u64 eqe)
 			ehca_warn(&shca->ib_device, "disruptive port "
 				  "%d configuration change", port);
 
-			shca->sport[port - 1].port_state = IB_PORT_DOWN;
+			sport->port_state = IB_PORT_DOWN;
 			dispatch_port_event(shca, port, IB_EVENT_PORT_ERR,
 					    "is inactive");
 
-			shca->sport[port - 1].port_state = IB_PORT_ACTIVE;
+			sport->port_state = IB_PORT_ACTIVE;
 			dispatch_port_event(shca, port, IB_EVENT_PORT_ACTIVE,
 					    "is active");
+			ehca_query_sma_attr(shca, port,
+					    &sport->saved_attr);
 		} else
 			notify_port_conf_change(shca, port);
 		break;
@@ -393,6 +433,16 @@ static void parse_ec(struct ehca_shca *shca, u64 eqe)
 		break;
 	case 0x33:  /* trace stopped */
 		ehca_err(&shca->ib_device, "Traced stopped.");
+		break;
+	case 0x34: /* util async event */
+		spec_event = EHCA_BMASK_GET(NEQE_SPECIFIC_EVENT, eqe);
+		if (spec_event == 0x80) /* client reregister required */
+			dispatch_port_event(shca, port,
+					    IB_EVENT_CLIENT_REREGISTER,
+					    "client reregister req.");
+		else
+			ehca_warn(&shca->ib_device, "Unknown util async "
+				  "event %x on port %x", spec_event, port);
 		break;
 	default:
 		ehca_err(&shca->ib_device, "Unknown event code: %x on %s.",
@@ -464,7 +514,7 @@ static inline void process_eqe(struct ehca_shca *shca, struct ehca_eqe *eqe)
 	struct ehca_cq *cq;
 
 	eqe_value = eqe->entry;
-	ehca_dbg(&shca->ib_device, "eqe_value=%lx", eqe_value);
+	ehca_dbg(&shca->ib_device, "eqe_value=%llx", eqe_value);
 	if (EHCA_BMASK_GET(EQE_COMPLETION_EVENT, eqe_value)) {
 		ehca_dbg(&shca->ib_device, "Got completion event");
 		token = EHCA_BMASK_GET(EQE_CQ_TOKEN, eqe_value);
@@ -497,7 +547,7 @@ void ehca_process_eq(struct ehca_shca *shca, int is_irq)
 {
 	struct ehca_eq *eq = &shca->eq;
 	struct ehca_eqe_cache_entry *eqe_cache = eq->eqe_cache;
-	u64 eqe_value;
+	u64 eqe_value, ret;
 	unsigned long flags;
 	int eqe_cnt, i;
 	int eq_empty = 0;
@@ -549,8 +599,13 @@ void ehca_process_eq(struct ehca_shca *shca, int is_irq)
 			ehca_dbg(&shca->ib_device,
 				 "No eqe found for irq event");
 		goto unlock_irq_spinlock;
-	} else if (!is_irq)
+	} else if (!is_irq) {
+		ret = hipz_h_eoi(eq->ist);
+		if (ret != H_SUCCESS)
+			ehca_err(&shca->ib_device,
+				 "bad return code EOI -rc = %lld\n", ret);
 		ehca_dbg(&shca->ib_device, "deadman found %x eqe", eqe_cnt);
+	}
 	if (unlikely(eqe_cnt == EHCA_EQE_CACHE_SIZE))
 		ehca_dbg(&shca->ib_device, "too many eqes for one irq event");
 	/* enable irq for new packets */
@@ -603,13 +658,13 @@ static inline int find_next_online_cpu(struct ehca_comp_pool *pool)
 	unsigned long flags;
 
 	WARN_ON_ONCE(!in_interrupt());
-	if (ehca_debug_level)
-		ehca_dmp(&cpu_online_map, sizeof(cpumask_t), "");
+	if (ehca_debug_level >= 3)
+		ehca_dmp(cpu_online_mask, cpumask_size(), "");
 
 	spin_lock_irqsave(&pool->last_cpu_lock, flags);
-	cpu = next_cpu(pool->last_cpu, cpu_online_map);
-	if (cpu == NR_CPUS)
-		cpu = first_cpu(cpu_online_map);
+	cpu = cpumask_next(pool->last_cpu, cpu_online_mask);
+	if (cpu >= nr_cpu_ids)
+		cpu = cpumask_first(cpu_online_mask);
 	pool->last_cpu = cpu;
 	spin_unlock_irqrestore(&pool->last_cpu_lock, flags);
 
@@ -800,7 +855,7 @@ static int __cpuinit comp_pool_callback(struct notifier_block *nfb,
 	case CPU_UP_CANCELED_FROZEN:
 		ehca_gen_dbg("CPU: %x (CPU_CANCELED)", cpu);
 		cct = per_cpu_ptr(pool->cpu_comp_tasks, cpu);
-		kthread_bind(cct->task, any_online_cpu(cpu_online_map));
+		kthread_bind(cct->task, cpumask_any(cpu_online_mask));
 		destroy_comp_task(pool, cpu);
 		break;
 	case CPU_ONLINE:
@@ -847,7 +902,7 @@ int ehca_create_comp_pool(void)
 		return -ENOMEM;
 
 	spin_lock_init(&pool->last_cpu_lock);
-	pool->last_cpu = any_online_cpu(cpu_online_map);
+	pool->last_cpu = cpumask_any(cpu_online_mask);
 
 	pool->cpu_comp_tasks = alloc_percpu(struct ehca_cpu_comp_task);
 	if (pool->cpu_comp_tasks == NULL) {
@@ -879,10 +934,9 @@ void ehca_destroy_comp_pool(void)
 
 	unregister_hotcpu_notifier(&comp_pool_callback_nb);
 
-	for (i = 0; i < NR_CPUS; i++) {
-		if (cpu_online(i))
-			destroy_comp_task(pool, i);
-	}
+	for_each_online_cpu(i)
+		destroy_comp_task(pool, i);
+
 	free_percpu(pool->cpu_comp_tasks);
 	kfree(pool);
 }

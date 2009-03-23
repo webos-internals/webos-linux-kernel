@@ -30,8 +30,12 @@
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/errno.h>
+#include <linux/bootmem.h>
 
-#include "pci.h"
+#include <asm/pat.h>
+#include <asm/e820.h>
+#include <asm/pci_x86.h>
+
 
 static int
 skip_isa_ioresource_align(struct pci_dev *dev) {
@@ -72,7 +76,7 @@ pcibios_align_resource(void *data, struct resource *res,
 		}
 	}
 }
-
+EXPORT_SYMBOL(pcibios_align_resource);
 
 /*
  *  Handle resources of PCI devices.  If the world were perfect, we could
@@ -125,10 +129,7 @@ static void __init pcibios_allocate_bus_resources(struct list_head *bus_list)
 				pr = pci_find_parent_resource(dev, r);
 				if (!r->start || !pr ||
 				    request_resource(pr, r) < 0) {
-					printk(KERN_ERR "PCI: Cannot allocate "
-						"resource region %d "
-						"of bridge %s\n",
-						idx, pci_name(dev));
+					dev_info(&dev->dev, "BAR %d: can't allocate resource\n", idx);
 					/*
 					 * Something is wrong with the region.
 					 * Invalidate the resource to prevent
@@ -163,15 +164,13 @@ static void __init pcibios_allocate_resources(int pass)
 			else
 				disabled = !(command & PCI_COMMAND_MEMORY);
 			if (pass == disabled) {
-				DBG("PCI: Resource %08lx-%08lx "
-				    "(f=%lx, d=%d, p=%d)\n",
-				    r->start, r->end, r->flags, disabled, pass);
+				dev_dbg(&dev->dev, "resource %#08llx-%#08llx (f=%lx, d=%d, p=%d)\n",
+					(unsigned long long) r->start,
+					(unsigned long long) r->end,
+					r->flags, disabled, pass);
 				pr = pci_find_parent_resource(dev, r);
 				if (!pr || request_resource(pr, r) < 0) {
-					printk(KERN_ERR "PCI: Cannot allocate "
-						"resource region %d "
-						"of device %s\n",
-						idx, pci_name(dev));
+					dev_info(&dev->dev, "BAR %d: can't allocate resource\n", idx);
 					/* We'll assign a new address later */
 					r->end -= r->start;
 					r->start = 0;
@@ -184,8 +183,7 @@ static void __init pcibios_allocate_resources(int pass)
 				/* Turn the ROM off, leave the resource region,
 				 * but keep it unregistered. */
 				u32 reg;
-				DBG("PCI: Switching off ROM of %s\n",
-					pci_name(dev));
+				dev_dbg(&dev->dev, "disabling ROM\n");
 				r->flags &= ~IORESOURCE_ROM_ENABLE;
 				pci_read_config_dword(dev,
 						dev->rom_base_reg, &reg);
@@ -230,6 +228,8 @@ void __init pcibios_resource_survey(void)
 	pcibios_allocate_bus_resources(&pci_root_buses);
 	pcibios_allocate_resources(0);
 	pcibios_allocate_resources(1);
+
+	e820_reserve_resources_late();
 }
 
 /**
@@ -237,44 +237,6 @@ void __init pcibios_resource_survey(void)
  * give a chance for motherboard reserve resources
  */
 fs_initcall(pcibios_assign_resources);
-
-int pcibios_enable_resources(struct pci_dev *dev, int mask)
-{
-	u16 cmd, old_cmd;
-	int idx;
-	struct resource *r;
-
-	pci_read_config_word(dev, PCI_COMMAND, &cmd);
-	old_cmd = cmd;
-	for (idx = 0; idx < PCI_NUM_RESOURCES; idx++) {
-		/* Only set up the requested stuff */
-		if (!(mask & (1 << idx)))
-			continue;
-
-		r = &dev->resource[idx];
-		if (!(r->flags & (IORESOURCE_IO | IORESOURCE_MEM)))
-			continue;
-		if ((idx == PCI_ROM_RESOURCE) &&
-				(!(r->flags & IORESOURCE_ROM_ENABLE)))
-			continue;
-		if (!r->start && r->end) {
-			printk(KERN_ERR "PCI: Device %s not available "
-				"because of resource %d collisions\n",
-				pci_name(dev), idx);
-			return -EINVAL;
-		}
-		if (r->flags & IORESOURCE_IO)
-			cmd |= PCI_COMMAND_IO;
-		if (r->flags & IORESOURCE_MEM)
-			cmd |= PCI_COMMAND_MEMORY;
-	}
-	if (cmd != old_cmd) {
-		printk("PCI: Enabling device %s (%04x -> %04x)\n",
-			pci_name(dev), old_cmd, cmd);
-		pci_write_config_word(dev, PCI_COMMAND, cmd);
-	}
-	return 0;
-}
 
 /*
  *  If we set up a device for bus mastering, we need to check the latency
@@ -292,15 +254,40 @@ void pcibios_set_master(struct pci_dev *dev)
 		lat = pcibios_max_latency;
 	else
 		return;
-	printk(KERN_DEBUG "PCI: Setting latency timer of device %s to %d\n",
-		pci_name(dev), lat);
+	dev_printk(KERN_DEBUG, &dev->dev, "setting latency timer to %d\n", lat);
 	pci_write_config_byte(dev, PCI_LATENCY_TIMER, lat);
 }
+
+static void pci_unmap_page_range(struct vm_area_struct *vma)
+{
+	u64 addr = (u64)vma->vm_pgoff << PAGE_SHIFT;
+	free_memtype(addr, addr + vma->vm_end - vma->vm_start);
+}
+
+static void pci_track_mmap_page_range(struct vm_area_struct *vma)
+{
+	u64 addr = (u64)vma->vm_pgoff << PAGE_SHIFT;
+	unsigned long flags = pgprot_val(vma->vm_page_prot)
+						& _PAGE_CACHE_MASK;
+
+	reserve_memtype(addr, addr + vma->vm_end - vma->vm_start, flags, NULL);
+}
+
+static struct vm_operations_struct pci_mmap_ops = {
+	.open  = pci_track_mmap_page_range,
+	.close = pci_unmap_page_range,
+	.access = generic_access_phys,
+};
 
 int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
 			enum pci_mmap_state mmap_state, int write_combine)
 {
 	unsigned long prot;
+	u64 addr = vma->vm_pgoff << PAGE_SHIFT;
+	unsigned long len = vma->vm_end - vma->vm_start;
+	unsigned long flags;
+	unsigned long new_flags;
+	int retval;
 
 	/* I/O space cannot be accessed via normal processor loads and
 	 * stores on this platform.
@@ -308,21 +295,46 @@ int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
 	if (mmap_state == pci_mmap_io)
 		return -EINVAL;
 
-	/* Leave vm_pgoff as-is, the PCI space address is the physical
-	 * address on this platform.
-	 */
 	prot = pgprot_val(vma->vm_page_prot);
-	if (boot_cpu_data.x86 > 3)
-		prot |= _PAGE_PCD | _PAGE_PWT;
+	if (pat_enabled && write_combine)
+		prot |= _PAGE_CACHE_WC;
+	else if (pat_enabled || boot_cpu_data.x86 > 3)
+		/*
+		 * ioremap() and ioremap_nocache() defaults to UC MINUS for now.
+		 * To avoid attribute conflicts, request UC MINUS here
+		 * aswell.
+		 */
+		prot |= _PAGE_CACHE_UC_MINUS;
+
 	vma->vm_page_prot = __pgprot(prot);
 
-	/* Write-combine setting is ignored, it is changed via the mtrr
-	 * interfaces on this platform.
-	 */
+	flags = pgprot_val(vma->vm_page_prot) & _PAGE_CACHE_MASK;
+	retval = reserve_memtype(addr, addr + len, flags, &new_flags);
+	if (retval)
+		return retval;
+
+	if (flags != new_flags) {
+		if (!is_new_memtype_allowed(flags, new_flags)) {
+			free_memtype(addr, addr+len);
+			return -EINVAL;
+		}
+		flags = new_flags;
+	}
+
+	if (((vma->vm_pgoff < max_low_pfn_mapped) ||
+	     (vma->vm_pgoff >= (1UL<<(32 - PAGE_SHIFT)) &&
+	      vma->vm_pgoff < max_pfn_mapped)) &&
+	    ioremap_change_attr((unsigned long)__va(addr), len, flags)) {
+		free_memtype(addr, addr + len);
+		return -EINVAL;
+	}
+
 	if (io_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			       vma->vm_end - vma->vm_start,
 			       vma->vm_page_prot))
 		return -EAGAIN;
+
+	vma->vm_ops = &pci_mmap_ops;
 
 	return 0;
 }

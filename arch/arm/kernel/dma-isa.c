@@ -19,10 +19,9 @@
 #include <linux/ioport.h>
 #include <linux/init.h>
 #include <linux/dma-mapping.h>
+#include <linux/io.h>
 
 #include <asm/dma.h>
-#include <asm/io.h>
-
 #include <asm/mach/dma.h>
 
 #define ISA_DMA_MODE_READ	0x44
@@ -216,7 +215,7 @@ void __init isa_init_dma(dma_t *dma)
 
 		request_dma(DMA_ISA_CASCADE, "cascade");
 
-		for (i = 0; i < sizeof(dma_resources) / sizeof(dma_resources[0]); i++)
+		for (i = 0; i < ARRAY_SIZE(dma_resources); i++)
 			request_resource(&ioport_resource, dma_resources + i);
 	}
 }

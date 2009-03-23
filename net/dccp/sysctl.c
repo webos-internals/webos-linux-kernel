@@ -41,27 +41,6 @@ static struct ctl_table dccp_default_table[] = {
 		.proc_handler	= proc_dointvec,
 	},
 	{
-		.procname	= "ack_ratio",
-		.data		= &sysctl_dccp_feat_ack_ratio,
-		.maxlen		= sizeof(sysctl_dccp_feat_ack_ratio),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec,
-	},
-	{
-		.procname	= "send_ackvec",
-		.data		= &sysctl_dccp_feat_send_ack_vector,
-		.maxlen		= sizeof(sysctl_dccp_feat_send_ack_vector),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec,
-	},
-	{
-		.procname	= "send_ndp",
-		.data		= &sysctl_dccp_feat_send_ndp_count,
-		.maxlen		= sizeof(sysctl_dccp_feat_send_ndp_count),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec,
-	},
-	{
 		.procname	= "request_retries",
 		.data		= &sysctl_dccp_request_retries,
 		.maxlen		= sizeof(sysctl_dccp_request_retries),
@@ -100,41 +79,19 @@ static struct ctl_table dccp_default_table[] = {
 	{ .ctl_name = 0, }
 };
 
-static struct ctl_table dccp_table[] = {
-	{
-		.ctl_name	= NET_DCCP_DEFAULT,
-		.procname	= "default",
-		.mode		= 0555,
-		.child		= dccp_default_table,
-	},
-	{ .ctl_name = 0, },
-};
-
-static struct ctl_table dccp_dir_table[] = {
-	{
-		.ctl_name	= NET_DCCP,
-		.procname	= "dccp",
-		.mode		= 0555,
-		.child		= dccp_table,
-	},
-	{ .ctl_name = 0, },
-};
-
-static struct ctl_table dccp_root_table[] = {
-	{
-		.ctl_name	= CTL_NET,
-		.procname	= "net",
-		.mode		= 0555,
-		.child		= dccp_dir_table,
-	},
-	{ .ctl_name = 0, },
+static struct ctl_path dccp_path[] = {
+	{ .procname = "net", .ctl_name = CTL_NET, },
+	{ .procname = "dccp", .ctl_name = NET_DCCP, },
+	{ .procname = "default", .ctl_name = NET_DCCP_DEFAULT, },
+	{ }
 };
 
 static struct ctl_table_header *dccp_table_header;
 
 int __init dccp_sysctl_init(void)
 {
-	dccp_table_header = register_sysctl_table(dccp_root_table);
+	dccp_table_header = register_sysctl_paths(dccp_path,
+			dccp_default_table);
 
 	return dccp_table_header != NULL ? 0 : -ENOMEM;
 }

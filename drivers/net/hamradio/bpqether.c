@@ -123,6 +123,20 @@ static LIST_HEAD(bpq_devices);
  * off into a separate class since they always nest.
  */
 static struct lock_class_key bpq_netdev_xmit_lock_key;
+static struct lock_class_key bpq_netdev_addr_lock_key;
+
+static void bpq_set_lockdep_class_one(struct net_device *dev,
+				      struct netdev_queue *txq,
+				      void *_unused)
+{
+	lockdep_set_class(&txq->_xmit_lock, &bpq_netdev_xmit_lock_key);
+}
+
+static void bpq_set_lockdep_class(struct net_device *dev)
+{
+	lockdep_set_class(&dev->addr_list_lock, &bpq_netdev_addr_lock_key);
+	netdev_for_each_tx_queue(dev, bpq_set_lockdep_class_one, NULL);
+}
 
 /* ------------------------------------------------------------------------ */
 
@@ -172,7 +186,7 @@ static int bpq_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_ty
 	struct ethhdr *eth;
 	struct bpqdev *bpq;
 
-	if (dev->nd_net != &init_net)
+	if (dev_net(dev) != &init_net)
 		goto drop;
 
 	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL)
@@ -216,7 +230,6 @@ static int bpq_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_ty
 
 	skb->protocol = ax25_type_trans(skb, dev);
 	netif_rx(skb);
-	dev->last_rx = jiffies;
 unlock:
 
 	rcu_read_unlock();
@@ -427,16 +440,15 @@ static int bpq_seq_show(struct seq_file *seq, void *v)
 			 "dev   ether      destination        accept from\n");
 	else {
 		const struct bpqdev *bpqdev = v;
-		DECLARE_MAC_BUF(mac);
 
-		seq_printf(seq, "%-5s %-10s %s  ",
+		seq_printf(seq, "%-5s %-10s %pM  ",
 			bpqdev->axdev->name, bpqdev->ethdev->name,
-			print_mac(mac, bpqdev->dest_addr));
+			bpqdev->dest_addr);
 
 		if (is_multicast_ether_addr(bpqdev->acpt_addr))
 			seq_printf(seq, "*\n");
 		else
-			seq_printf(seq, "%s\n", print_mac(mac, bpqdev->acpt_addr));
+			seq_printf(seq, "%pM\n", bpqdev->acpt_addr);
 
 	}
 	return 0;
@@ -523,7 +535,7 @@ static int bpq_new_device(struct net_device *edev)
 	err = register_netdevice(ndev);
 	if (err)
 		goto error;
-	lockdep_set_class(&ndev->_xmit_lock, &bpq_netdev_xmit_lock_key);
+	bpq_set_lockdep_class(ndev);
 
 	/* List protected by RTNL */
 	list_add_rcu(&bpq->bpq_list, &bpq_devices);
@@ -553,7 +565,7 @@ static int bpq_device_event(struct notifier_block *this,unsigned long event, voi
 {
 	struct net_device *dev = (struct net_device *)ptr;
 
-	if (dev->nd_net != &init_net)
+	if (dev_net(dev) != &init_net)
 		return NOTIFY_DONE;
 
 	if (!dev_is_ethdev(dev))

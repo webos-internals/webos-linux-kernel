@@ -12,8 +12,6 @@
 
 #include "lock_dlm.h"
 
-extern struct lm_lockops gdlm_ops;
-
 static ssize_t proto_name_show(struct gdlm_ls *ls, char *buf)
 {
 	return sprintf(buf, "%s\n", gdlm_ops.lm_proto_name);
@@ -116,17 +114,6 @@ static ssize_t recover_status_show(struct gdlm_ls *ls, char *buf)
 	return sprintf(buf, "%d\n", ls->recover_jid_status);
 }
 
-static ssize_t drop_count_show(struct gdlm_ls *ls, char *buf)
-{
-	return sprintf(buf, "%d\n", ls->drop_locks_count);
-}
-
-static ssize_t drop_count_store(struct gdlm_ls *ls, const char *buf, size_t len)
-{
-	ls->drop_locks_count = simple_strtol(buf, NULL, 0);
-	return len;
-}
-
 struct gdlm_attr {
 	struct attribute attr;
 	ssize_t (*show)(struct gdlm_ls *, char *);
@@ -146,7 +133,6 @@ GDLM_ATTR(first_done,     0444, first_done_show,     NULL);
 GDLM_ATTR(recover,        0644, recover_show,        recover_store);
 GDLM_ATTR(recover_done,   0444, recover_done_show,   NULL);
 GDLM_ATTR(recover_status, 0444, recover_status_show, NULL);
-GDLM_ATTR(drop_count,     0644, drop_count_show,     drop_count_store);
 
 static struct attribute *gdlm_attrs[] = {
 	&gdlm_attr_proto_name.attr,
@@ -159,7 +145,6 @@ static struct attribute *gdlm_attrs[] = {
 	&gdlm_attr_recover.attr,
 	&gdlm_attr_recover_done.attr,
 	&gdlm_attr_recover_status.attr,
-	&gdlm_attr_drop_count.attr,
 	NULL,
 };
 
@@ -189,51 +174,53 @@ static struct kobj_type gdlm_ktype = {
 	.sysfs_ops     = &gdlm_attr_ops,
 };
 
-static struct kset gdlm_kset = {
-	.ktype  = &gdlm_ktype,
-};
+static struct kset *gdlm_kset;
 
 int gdlm_kobject_setup(struct gdlm_ls *ls, struct kobject *fskobj)
 {
 	int error;
 
-	error = kobject_set_name(&ls->kobj, "%s", "lock_module");
-	if (error) {
-		log_error("can't set kobj name %d", error);
-		return error;
-	}
-
-	ls->kobj.kset = &gdlm_kset;
-	ls->kobj.ktype = &gdlm_ktype;
-	ls->kobj.parent = fskobj;
-
-	error = kobject_register(&ls->kobj);
+	ls->kobj.kset = gdlm_kset;
+	error = kobject_init_and_add(&ls->kobj, &gdlm_ktype, fskobj,
+				     "lock_module");
 	if (error)
 		log_error("can't register kobj %d", error);
+	kobject_uevent(&ls->kobj, KOBJ_ADD);
 
 	return error;
 }
 
 void gdlm_kobject_release(struct gdlm_ls *ls)
 {
-	kobject_unregister(&ls->kobj);
+	kobject_put(&ls->kobj);
 }
+
+static int gdlm_uevent(struct kset *kset, struct kobject *kobj,
+		       struct kobj_uevent_env *env)
+{
+        struct gdlm_ls *ls = container_of(kobj, struct gdlm_ls, kobj);
+        add_uevent_var(env, "LOCKTABLE=%s:%s", ls->clustername, ls->fsname);
+        add_uevent_var(env, "LOCKPROTO=lock_dlm");
+        return 0;
+}
+
+static struct kset_uevent_ops gdlm_uevent_ops = {
+	.uevent = gdlm_uevent,
+};
+
 
 int gdlm_sysfs_init(void)
 {
-	int error;
-
-	kobject_set_name(&gdlm_kset.kobj, "lock_dlm");
-	kobj_set_kset_s(&gdlm_kset, kernel_subsys);
-	error = kset_register(&gdlm_kset);
-	if (error)
-		printk("lock_dlm: cannot register kset %d\n", error);
-
-	return error;
+	gdlm_kset = kset_create_and_add("lock_dlm", &gdlm_uevent_ops, kernel_kobj);
+	if (!gdlm_kset) {
+		printk(KERN_WARNING "%s: can not create kset\n", __func__);
+		return -ENOMEM;
+	}
+	return 0;
 }
 
 void gdlm_sysfs_exit(void)
 {
-	kset_unregister(&gdlm_kset);
+	kset_unregister(gdlm_kset);
 }
 

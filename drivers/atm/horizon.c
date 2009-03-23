@@ -424,7 +424,7 @@ static inline void FLUSH_RX_CHANNEL (hrz_dev * dev, u16 channel) {
   return;
 }
 
-static inline void WAIT_FLUSH_RX_COMPLETE (hrz_dev * dev) {
+static void WAIT_FLUSH_RX_COMPLETE (hrz_dev * dev) {
   while (rd_regw (dev, RX_CHANNEL_PORT_OFF) & FLUSH_CHANNEL)
     ;
   return;
@@ -435,7 +435,7 @@ static inline void SELECT_RX_CHANNEL (hrz_dev * dev, u16 channel) {
   return;
 }
 
-static inline void WAIT_UPDATE_COMPLETE (hrz_dev * dev) {
+static void WAIT_UPDATE_COMPLETE (hrz_dev * dev) {
   while (rd_regw (dev, RX_CHANNEL_PORT_OFF) & RX_CHANNEL_UPDATE_IN_PROGRESS)
     ;
   return;
@@ -635,7 +635,7 @@ static int make_rate (const hrz_dev * dev, u32 c, rounding r,
 		// take care of rounding
 		switch (r) {
 			case round_down:
-				pre = (br+(c<<div)-1)/(c<<div);
+				pre = DIV_ROUND_UP(br, c<<div);
 				// but p must be non-zero
 				if (!pre)
 					pre = 1;
@@ -668,7 +668,7 @@ static int make_rate (const hrz_dev * dev, u32 c, rounding r,
 			// take care of rounding
 			switch (r) {
 				case round_down:
-					pre = (br+(c<<div)-1)/(c<<div);
+					pre = DIV_ROUND_UP(br, c<<div);
 					break;
 				case round_nearest:
 					pre = (br+(c<<div)/2)/(c<<div);
@@ -698,7 +698,7 @@ got_it:
 		if (bits)
 			*bits = (div<<CLOCK_SELECT_SHIFT) | (pre-1);
 		if (actual) {
-			*actual = (br + (pre<<div) - 1) / (pre<<div);
+			*actual = DIV_ROUND_UP(br, pre<<div);
 			PRINTD (DBG_QOS, "actual rate: %u", *actual);
 		}
 		return 0;
@@ -796,7 +796,7 @@ static void hrz_change_vc_qos (ATM_RXER * rxer, MAAL_QOS * qos) {
 
 /********** free an skb (as per ATM device driver documentation) **********/
 
-static inline void hrz_kfree_skb (struct sk_buff * skb) {
+static void hrz_kfree_skb (struct sk_buff * skb) {
   if (ATM_SKB(skb)->vcc->pop) {
     ATM_SKB(skb)->vcc->pop (ATM_SKB(skb)->vcc, skb);
   } else {
@@ -1076,7 +1076,7 @@ static void rx_schedule (hrz_dev * dev, int irq) {
 
 /********** handle RX bus master complete events **********/
 
-static inline void rx_bus_master_complete_handler (hrz_dev * dev) {
+static void rx_bus_master_complete_handler (hrz_dev * dev) {
   if (test_bit (rx_busy, &dev->flags)) {
     rx_schedule (dev, 1);
   } else {
@@ -1089,7 +1089,7 @@ static inline void rx_bus_master_complete_handler (hrz_dev * dev) {
 
 /********** (queue to) become the next TX thread **********/
 
-static inline int tx_hold (hrz_dev * dev) {
+static int tx_hold (hrz_dev * dev) {
   PRINTD (DBG_TX, "sleeping at tx lock %p %lu", dev, dev->flags);
   wait_event_interruptible(dev->tx_queue, (!test_and_set_bit(tx_busy, &dev->flags)));
   PRINTD (DBG_TX, "woken at tx lock %p %lu", dev, dev->flags);
@@ -1232,7 +1232,7 @@ static void tx_schedule (hrz_dev * const dev, int irq) {
 
 /********** handle TX bus master complete events **********/
 
-static inline void tx_bus_master_complete_handler (hrz_dev * dev) {
+static void tx_bus_master_complete_handler (hrz_dev * dev) {
   if (test_bit (tx_busy, &dev->flags)) {
     tx_schedule (dev, 1);
   } else {
@@ -1246,7 +1246,7 @@ static inline void tx_bus_master_complete_handler (hrz_dev * dev) {
 /********** move RX Q pointer to next item in circular buffer **********/
 
 // called only from IRQ sub-handler
-static inline u32 rx_queue_entry_next (hrz_dev * dev) {
+static u32 rx_queue_entry_next (hrz_dev * dev) {
   u32 rx_queue_entry;
   spin_lock (&dev->mem_lock);
   rx_queue_entry = rd_mem (dev, &dev->rx_q_entry->entry);
@@ -1270,7 +1270,7 @@ static inline void rx_disabled_handler (hrz_dev * dev) {
 /********** handle RX data received by device **********/
 
 // called from IRQ handler
-static inline void rx_data_av_handler (hrz_dev * dev) {
+static void rx_data_av_handler (hrz_dev * dev) {
   u32 rx_queue_entry;
   u32 rx_queue_entry_flags;
   u16 rx_len;
@@ -1394,7 +1394,7 @@ static irqreturn_t interrupt_handler(int irq, void *dev_id)
   irq_ok = 0;
   while ((int_source = rd_regl (dev, INT_SOURCE_REG_OFF)
 	  & INTERESTING_INTERRUPTS)) {
-    // In the interests of fairness, the (inline) handlers below are
+    // In the interests of fairness, the handlers below are
     // called in sequence and without immediate return to the head of
     // the while loop. This is only of issue for slow hosts (or when
     // debugging messages are on). Really slow hosts may find a fast
@@ -1458,7 +1458,7 @@ static void do_housekeeping (unsigned long arg) {
 /********** find an idle channel for TX and set it up **********/
 
 // called with tx_busy set
-static inline short setup_idle_tx_channel (hrz_dev * dev, hrz_vcc * vcc) {
+static short setup_idle_tx_channel (hrz_dev * dev, hrz_vcc * vcc) {
   unsigned short idle_channels;
   short tx_channel = -1;
   unsigned int spin_count;
@@ -1777,13 +1777,13 @@ static void hrz_reset (const hrz_dev * dev) {
 
 /********** read the burnt in address **********/
 
-static inline void WRITE_IT_WAIT (const hrz_dev *dev, u32 ctrl)
+static void WRITE_IT_WAIT (const hrz_dev *dev, u32 ctrl)
 {
 	wr_regl (dev, CONTROL_0_REG, ctrl);
 	udelay (5);
 }
   
-static inline void CLOCK_IT (const hrz_dev *dev, u32 ctrl)
+static void CLOCK_IT (const hrz_dev *dev, u32 ctrl)
 {
 	// DI must be valid around rising SK edge
 	WRITE_IT_WAIT(dev, ctrl & ~SEEPROM_SK);
@@ -1967,7 +1967,7 @@ static int __devinit hrz_init (hrz_dev * dev) {
   // Set the max AAL5 cell count to be just enough to contain the
   // largest AAL5 frame that the user wants to receive
   wr_regw (dev, MAX_AAL5_CELL_COUNT_OFF,
-	   (max_rx_size + ATM_AAL5_TRAILER + ATM_CELL_PAYLOAD - 1) / ATM_CELL_PAYLOAD);
+	   DIV_ROUND_UP(max_rx_size + ATM_AAL5_TRAILER, ATM_CELL_PAYLOAD));
   
   // Enable receive
   wr_regw (dev, RX_CONFIG_OFF, rd_regw (dev, RX_CONFIG_OFF) | RX_ENABLE);
@@ -2705,7 +2705,7 @@ static int __devinit hrz_probe(struct pci_dev *pci_dev, const struct pci_device_
 
 	/* XXX DEV_LABEL is a guess */
 	if (!request_region(iobase, HRZ_IO_EXTENT, DEV_LABEL)) {
-		return -EINVAL;
+		err = -EINVAL;
 		goto out_disable;
 	}
 

@@ -135,6 +135,7 @@ extern int mmc_wait_for_app_cmd(struct mmc_host *, struct mmc_card *,
 	struct mmc_command *, int);
 
 extern void mmc_set_data_timeout(struct mmc_data *, const struct mmc_card *);
+extern unsigned int mmc_align_data_size(struct mmc_card *, unsigned int);
 
 extern int __mmc_claim_host(struct mmc_host *host, atomic_t *abort);
 extern void mmc_release_host(struct mmc_host *host);
@@ -149,5 +150,7 @@ static inline void mmc_claim_host(struct mmc_host *host)
 {
 	__mmc_claim_host(host, NULL);
 }
+
+extern u32 mmc_vddrange_to_ocrmask(int vdd_min, int vdd_max);
 
 #endif

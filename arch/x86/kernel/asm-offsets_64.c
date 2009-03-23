@@ -10,6 +10,7 @@
 #include <linux/errno.h> 
 #include <linux/hardirq.h>
 #include <linux/suspend.h>
+#include <linux/kbuild.h>
 #include <asm/pda.h>
 #include <asm/processor.h>
 #include <asm/segment.h>
@@ -17,17 +18,13 @@
 #include <asm/ia32.h>
 #include <asm/bootparam.h>
 
-#define DEFINE(sym, val) \
-        asm volatile("\n->" #sym " %0 " #val : : "i" (val))
+#include <xen/interface/xen.h>
 
-#define BLANK() asm volatile("\n->" : : )
-
-#define OFFSET(sym, str, mem) \
-	DEFINE(sym, offsetof(struct str, mem))
+#include <asm/sigframe.h>
 
 #define __NO_STUBS 1
 #undef __SYSCALL
-#undef _ASM_X86_64_UNISTD_H_
+#undef _ASM_X86_UNISTD_64_H
 #define __SYSCALL(nr, sym) [nr] = 1,
 static char syscalls[] = {
 #include <asm/unistd.h>
@@ -38,15 +35,17 @@ int main(void)
 #define ENTRY(entry) DEFINE(tsk_ ## entry, offsetof(struct task_struct, entry))
 	ENTRY(state);
 	ENTRY(flags); 
-	ENTRY(thread); 
 	ENTRY(pid);
 	BLANK();
 #undef ENTRY
-#define ENTRY(entry) DEFINE(threadinfo_ ## entry, offsetof(struct thread_info, entry))
+#define ENTRY(entry) DEFINE(TI_ ## entry, offsetof(struct thread_info, entry))
 	ENTRY(flags);
 	ENTRY(addr_limit);
 	ENTRY(preempt_count);
 	ENTRY(status);
+#ifdef CONFIG_IA32_EMULATION
+	ENTRY(sysenter_return);
+#endif
 	BLANK();
 #undef ENTRY
 #define ENTRY(entry) DEFINE(pda_ ## entry, offsetof(struct x8664_pda, entry))
@@ -59,21 +58,38 @@ int main(void)
 	ENTRY(data_offset);
 	BLANK();
 #undef ENTRY
+#ifdef CONFIG_PARAVIRT
+	BLANK();
+	OFFSET(PARAVIRT_enabled, pv_info, paravirt_enabled);
+	OFFSET(PARAVIRT_PATCH_pv_cpu_ops, paravirt_patch_template, pv_cpu_ops);
+	OFFSET(PARAVIRT_PATCH_pv_irq_ops, paravirt_patch_template, pv_irq_ops);
+	OFFSET(PV_IRQ_irq_disable, pv_irq_ops, irq_disable);
+	OFFSET(PV_IRQ_irq_enable, pv_irq_ops, irq_enable);
+	OFFSET(PV_IRQ_adjust_exception_frame, pv_irq_ops, adjust_exception_frame);
+	OFFSET(PV_CPU_iret, pv_cpu_ops, iret);
+	OFFSET(PV_CPU_usergs_sysret32, pv_cpu_ops, usergs_sysret32);
+	OFFSET(PV_CPU_usergs_sysret64, pv_cpu_ops, usergs_sysret64);
+	OFFSET(PV_CPU_irq_enable_sysexit, pv_cpu_ops, irq_enable_sysexit);
+	OFFSET(PV_CPU_swapgs, pv_cpu_ops, swapgs);
+	OFFSET(PV_MMU_read_cr2, pv_mmu_ops, read_cr2);
+#endif
+
+
 #ifdef CONFIG_IA32_EMULATION
 #define ENTRY(entry) DEFINE(IA32_SIGCONTEXT_ ## entry, offsetof(struct sigcontext_ia32, entry))
-	ENTRY(eax);
-	ENTRY(ebx);
-	ENTRY(ecx);
-	ENTRY(edx);
-	ENTRY(esi);
-	ENTRY(edi);
-	ENTRY(ebp);
-	ENTRY(esp);
-	ENTRY(eip);
+	ENTRY(ax);
+	ENTRY(bx);
+	ENTRY(cx);
+	ENTRY(dx);
+	ENTRY(si);
+	ENTRY(di);
+	ENTRY(bp);
+	ENTRY(sp);
+	ENTRY(ip);
 	BLANK();
 #undef ENTRY
 	DEFINE(IA32_RT_SIGFRAME_sigcontext,
-	       offsetof (struct rt_sigframe32, uc.uc_mcontext));
+	       offsetof (struct rt_sigframe_ia32, uc.uc_mcontext));
 	BLANK();
 #endif
 	DEFINE(pbe_address, offsetof(struct pbe, address));
@@ -81,14 +97,14 @@ int main(void)
 	DEFINE(pbe_next, offsetof(struct pbe, next));
 	BLANK();
 #define ENTRY(entry) DEFINE(pt_regs_ ## entry, offsetof(struct pt_regs, entry))
-	ENTRY(rbx);
-	ENTRY(rbx);
-	ENTRY(rcx);
-	ENTRY(rdx);
-	ENTRY(rsp);
-	ENTRY(rbp);
-	ENTRY(rsi);
-	ENTRY(rdi);
+	ENTRY(bx);
+	ENTRY(bx);
+	ENTRY(cx);
+	ENTRY(dx);
+	ENTRY(sp);
+	ENTRY(bp);
+	ENTRY(si);
+	ENTRY(di);
 	ENTRY(r8);
 	ENTRY(r9);
 	ENTRY(r10);
@@ -97,7 +113,7 @@ int main(void)
 	ENTRY(r13);
 	ENTRY(r14);
 	ENTRY(r15);
-	ENTRY(eflags);
+	ENTRY(flags);
 	BLANK();
 #undef ENTRY
 #define ENTRY(entry) DEFINE(saved_context_ ## entry, offsetof(struct saved_context, entry))
@@ -108,7 +124,7 @@ int main(void)
 	ENTRY(cr8);
 	BLANK();
 #undef ENTRY
-	DEFINE(TSS_ist, offsetof(struct tss_struct, ist));
+	DEFINE(TSS_ist, offsetof(struct tss_struct, x86_tss.ist));
 	BLANK();
 	DEFINE(crypto_tfm_ctx_offset, offsetof(struct crypto_tfm, __crt_ctx));
 	BLANK();
@@ -119,5 +135,14 @@ int main(void)
 	OFFSET(BP_loadflags, boot_params, hdr.loadflags);
 	OFFSET(BP_hardware_subarch, boot_params, hdr.hardware_subarch);
 	OFFSET(BP_version, boot_params, hdr.version);
+
+	BLANK();
+	DEFINE(PAGE_SIZE_asm, PAGE_SIZE);
+#ifdef CONFIG_XEN
+	BLANK();
+	OFFSET(XEN_vcpu_info_mask, vcpu_info, evtchn_upcall_mask);
+	OFFSET(XEN_vcpu_info_pending, vcpu_info, evtchn_upcall_pending);
+#undef ENTRY
+#endif
 	return 0;
 }

@@ -20,7 +20,6 @@
 #include "xfs_bit.h"
 #include "xfs_log.h"
 #include "xfs_inum.h"
-#include "xfs_clnt.h"
 #include "xfs_trans.h"
 #include "xfs_sb.h"
 #include "xfs_ag.h"
@@ -51,7 +50,7 @@
 
 STATIC void
 xfs_fill_statvfs_from_dquot(
-	bhv_statvfs_t		*statp,
+	struct kstatfs		*statp,
 	xfs_disk_dquot_t	*dp)
 {
 	__uint64_t		limit;
@@ -88,7 +87,7 @@ xfs_fill_statvfs_from_dquot(
 STATIC void
 xfs_qm_statvfs(
 	xfs_inode_t		*ip,
-	bhv_statvfs_t		*statp)
+	struct kstatfs		*statp)
 {
 	xfs_mount_t		*mp = ip->i_mount;
 	xfs_dquot_t		*dqp;
@@ -118,7 +117,7 @@ xfs_qm_newmount(
 	*quotaflags = 0;
 	*needquotamount = B_FALSE;
 
-	quotaondisk = XFS_SB_VERSION_HASQUOTA(&mp->m_sb) &&
+	quotaondisk = xfs_sb_version_hasquota(&mp->m_sb) &&
 				(mp->m_sb.sb_qflags & XFS_ALL_QUOTA_ACCT);
 
 	if (quotaondisk) {
@@ -162,7 +161,7 @@ xfs_qm_newmount(
 			 * mounting, and get on with the boring life
 			 * without disk quotas.
 			 */
-			xfs_qm_mount_quotas(mp, 0);
+			xfs_qm_mount_quotas(mp);
 		} else {
 			/*
 			 * Clear the quota flags, but remember them. This
@@ -184,13 +183,12 @@ STATIC int
 xfs_qm_endmount(
 	xfs_mount_t	*mp,
 	uint		needquotamount,
-	uint		quotaflags,
-	int		mfsi_flags)
+	uint		quotaflags)
 {
 	if (needquotamount) {
 		ASSERT(mp->m_qflags == 0);
 		mp->m_qflags = quotaflags;
-		xfs_qm_mount_quotas(mp, mfsi_flags);
+		xfs_qm_mount_quotas(mp);
 	}
 
 #if defined(DEBUG) && defined(XFS_LOUD_RECOVERY)

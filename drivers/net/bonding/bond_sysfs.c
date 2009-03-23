@@ -36,23 +36,14 @@
 #include <linux/rtnetlink.h>
 #include <net/net_namespace.h>
 
-/* #define BONDING_DEBUG 1 */
 #include "bonding.h"
+
 #define to_dev(obj)	container_of(obj,struct device,kobj)
-#define to_bond(cd)	((struct bonding *)(to_net_dev(cd)->priv))
+#define to_bond(cd)	((struct bonding *)(netdev_priv(to_net_dev(cd))))
 
 /*---------------------------- Declarations -------------------------------*/
 
-
-extern struct list_head bond_dev_list;
-extern struct bond_params bonding_defaults;
-extern struct bond_parm_tbl bond_mode_tbl[];
-extern struct bond_parm_tbl bond_lacp_tbl[];
-extern struct bond_parm_tbl xmit_hashtype_tbl[];
-extern struct bond_parm_tbl arp_validate_tbl[];
-
 static int expected_refcount = -1;
-static struct class *netdev_class;
 /*--------------------------- Data Structures -----------------------------*/
 
 /* Bonding sysfs lock.  Why can't we just use the subsystem lock?
@@ -111,7 +102,6 @@ static ssize_t bonding_store_bonds(struct class *cls, const char *buffer, size_t
 	char *ifname;
 	int rv, res = count;
 	struct bonding *bond;
-	struct bonding *nxt;
 
 	sscanf(buffer, "%16s", command); /* IFNAMSIZ*/
 	ifname = command + 1;
@@ -122,7 +112,7 @@ static ssize_t bonding_store_bonds(struct class *cls, const char *buffer, size_t
 	if (command[0] == '+') {
 		printk(KERN_INFO DRV_NAME
 			": %s is being created...\n", ifname);
-		rv = bond_create(ifname, &bonding_defaults, &bond);
+		rv = bond_create(ifname, &bonding_defaults);
 		if (rv) {
 			printk(KERN_INFO DRV_NAME ": Bond creation failed.\n");
 			res = rv;
@@ -134,7 +124,7 @@ static ssize_t bonding_store_bonds(struct class *cls, const char *buffer, size_t
 		rtnl_lock();
 		down_write(&bonding_rwsem);
 
-		list_for_each_entry_safe(bond, nxt, &bond_dev_list, bond_list)
+		list_for_each_entry(bond, &bond_dev_list, bond_list)
 			if (strnicmp(bond->dev->name, ifname, IFNAMSIZ) == 0) {
 				/* check the ref count on the bond's kobject.
 				 * If it's > expected, then there's a file open,
@@ -146,29 +136,29 @@ static ssize_t bonding_store_bonds(struct class *cls, const char *buffer, size_t
 						": Unable remove bond %s due to open references.\n",
 						ifname);
 					res = -EPERM;
-					goto out;
+					goto out_unlock;
 				}
 				printk(KERN_INFO DRV_NAME
 					": %s is being deleted...\n",
 					bond->dev->name);
 				bond_destroy(bond);
-				up_write(&bonding_rwsem);
-				rtnl_unlock();
-				goto out;
+				goto out_unlock;
 			}
 
 		printk(KERN_ERR DRV_NAME
 			": unable to delete non-existent bond %s\n", ifname);
 		res = -ENODEV;
-		up_write(&bonding_rwsem);
-		rtnl_unlock();
-		goto out;
+		goto out_unlock;
 	}
 
 err_no_cmd:
 	printk(KERN_ERR DRV_NAME
 		": no command found in bonding_masters. Use +ifname or -ifname.\n");
-	res = -EPERM;
+	return -EPERM;
+
+out_unlock:
+	up_write(&bonding_rwsem);
+	rtnl_unlock();
 
 	/* Always return either count or an error.  If you return 0, you'll
 	 * get called forever, which is bad.
@@ -317,18 +307,12 @@ static ssize_t bonding_store_slaves(struct device *d,
 
 		/* Set the slave's MTU to match the bond */
 		original_mtu = dev->mtu;
-		if (dev->mtu != bond->dev->mtu) {
-			if (dev->change_mtu) {
-				res = dev->change_mtu(dev,
-						      bond->dev->mtu);
-				if (res) {
-					ret = res;
-					goto out;
-				}
-			} else {
-				dev->mtu = bond->dev->mtu;
-			}
+		res = dev_set_mtu(dev, bond->dev->mtu);
+		if (res) {
+			ret = res;
+			goto out;
 		}
+
 		res = bond_enslave(bond->dev, dev);
 		bond_for_each_slave(bond, slave, i)
 			if (strnicmp(slave->dev->name, ifname, IFNAMSIZ) == 0)
@@ -341,6 +325,7 @@ static ssize_t bonding_store_slaves(struct device *d,
 
 	if (command[0] == '-') {
 		dev = NULL;
+		original_mtu = 0;
 		bond_for_each_slave(bond, slave, i)
 			if (strnicmp(slave->dev->name, ifname, IFNAMSIZ) == 0) {
 				dev = slave->dev;
@@ -350,20 +335,13 @@ static ssize_t bonding_store_slaves(struct device *d,
 		if (dev) {
 			printk(KERN_INFO DRV_NAME ": %s: Removing slave %s\n",
 				bond->dev->name, dev->name);
-			if (bond->setup_by_slave)
-				res = bond_release_and_destroy(bond->dev, dev);
-			else
 				res = bond_release(bond->dev, dev);
 			if (res) {
 				ret = res;
 				goto out;
 			}
 			/* set the slave MTU to the default */
-			if (dev->change_mtu) {
-				dev->change_mtu(dev, original_mtu);
-			} else {
-				dev->mtu = original_mtu;
-			}
+			dev_set_mtu(dev, original_mtu);
 		}
 		else {
 			printk(KERN_ERR DRV_NAME ": unable to remove non-existent slave %s for bond %s.\n",
@@ -547,42 +525,37 @@ static ssize_t bonding_show_fail_over_mac(struct device *d, struct device_attrib
 {
 	struct bonding *bond = to_bond(d);
 
-	return sprintf(buf, "%d\n", bond->params.fail_over_mac) + 1;
+	return sprintf(buf, "%s %d\n",
+		       fail_over_mac_tbl[bond->params.fail_over_mac].modename,
+		       bond->params.fail_over_mac);
 }
 
 static ssize_t bonding_store_fail_over_mac(struct device *d, struct device_attribute *attr, const char *buf, size_t count)
 {
 	int new_value;
-	int ret = count;
 	struct bonding *bond = to_bond(d);
 
 	if (bond->slave_cnt != 0) {
 		printk(KERN_ERR DRV_NAME
 		       ": %s: Can't alter fail_over_mac with slaves in bond.\n",
 		       bond->dev->name);
-		ret = -EPERM;
-		goto out;
+		return -EPERM;
 	}
 
-	if (sscanf(buf, "%d", &new_value) != 1) {
+	new_value = bond_parse_parm(buf, fail_over_mac_tbl);
+	if (new_value < 0) {
 		printk(KERN_ERR DRV_NAME
-		       ": %s: no fail_over_mac value specified.\n",
-		       bond->dev->name);
-		ret = -EINVAL;
-		goto out;
+		       ": %s: Ignoring invalid fail_over_mac value %s.\n",
+		       bond->dev->name, buf);
+		return -EINVAL;
 	}
 
-	if ((new_value == 0) || (new_value == 1)) {
-		bond->params.fail_over_mac = new_value;
-		printk(KERN_INFO DRV_NAME ": %s: Setting fail_over_mac to %d.\n",
-		       bond->dev->name, new_value);
-	} else {
-		printk(KERN_INFO DRV_NAME
-		       ": %s: Ignoring invalid fail_over_mac value %d.\n",
-		       bond->dev->name, new_value);
-	}
-out:
-	return ret;
+	bond->params.fail_over_mac = new_value;
+	printk(KERN_INFO DRV_NAME ": %s: Setting fail_over_mac to %s (%d).\n",
+	       bond->dev->name, fail_over_mac_tbl[new_value].modename,
+	       new_value);
+
+	return count;
 }
 
 static DEVICE_ATTR(fail_over_mac, S_IRUGO | S_IWUSR, bonding_show_fail_over_mac, bonding_store_fail_over_mac);
@@ -628,6 +601,8 @@ static ssize_t bonding_store_arp_interval(struct device *d,
 	       ": %s: Setting ARP monitoring interval to %d.\n",
 	       bond->dev->name, new_value);
 	bond->params.arp_interval = new_value;
+	if (bond->params.arp_interval)
+		bond->dev->priv_flags |= IFF_MASTER_ARPMON;
 	if (bond->params.miimon) {
 		printk(KERN_INFO DRV_NAME
 		       ": %s: ARP monitoring cannot be used with MII monitoring. "
@@ -680,8 +655,8 @@ static ssize_t bonding_show_arp_targets(struct device *d,
 
 	for (i = 0; i < BOND_MAX_ARP_TARGETS; i++) {
 		if (bond->params.arp_targets[i])
-			res += sprintf(buf + res, "%u.%u.%u.%u ",
-			       NIPQUAD(bond->params.arp_targets[i]));
+			res += sprintf(buf + res, "%pI4 ",
+				       &bond->params.arp_targets[i]);
 	}
 	if (res)
 		buf[res-1] = '\n'; /* eat the leftover space */
@@ -703,8 +678,8 @@ static ssize_t bonding_store_arp_targets(struct device *d,
 	if (buf[0] == '+') {
 		if ((newtarget == 0) || (newtarget == htonl(INADDR_BROADCAST))) {
 			printk(KERN_ERR DRV_NAME
-			       ": %s: invalid ARP target %u.%u.%u.%u specified for addition\n",
- 			       bond->dev->name, NIPQUAD(newtarget));
+			       ": %s: invalid ARP target %pI4 specified for addition\n",
+			       bond->dev->name, &newtarget);
 			ret = -EINVAL;
 			goto out;
 		}
@@ -712,8 +687,8 @@ static ssize_t bonding_store_arp_targets(struct device *d,
 		for (i = 0; (i < BOND_MAX_ARP_TARGETS); i++) {
 			if (targets[i] == newtarget) { /* duplicate */
 				printk(KERN_ERR DRV_NAME
-				       ": %s: ARP target %u.%u.%u.%u is already present\n",
-				       bond->dev->name, NIPQUAD(newtarget));
+				       ": %s: ARP target %pI4 is already present\n",
+				       bond->dev->name, &newtarget);
 				if (done)
 					targets[i] = 0;
 				ret = -EINVAL;
@@ -721,8 +696,8 @@ static ssize_t bonding_store_arp_targets(struct device *d,
 			}
 			if (targets[i] == 0 && !done) {
 				printk(KERN_INFO DRV_NAME
-				       ": %s: adding ARP target %d.%d.%d.%d.\n",
-				       bond->dev->name, NIPQUAD(newtarget));
+				       ": %s: adding ARP target %pI4.\n",
+				       bond->dev->name, &newtarget);
 				done = 1;
 				targets[i] = newtarget;
 			}
@@ -739,8 +714,8 @@ static ssize_t bonding_store_arp_targets(struct device *d,
 	else if (buf[0] == '-')	{
 		if ((newtarget == 0) || (newtarget == htonl(INADDR_BROADCAST))) {
 			printk(KERN_ERR DRV_NAME
-			       ": %s: invalid ARP target %d.%d.%d.%d specified for removal\n",
-			       bond->dev->name, NIPQUAD(newtarget));
+			       ": %s: invalid ARP target %pI4 specified for removal\n",
+			       bond->dev->name, &newtarget);
 			ret = -EINVAL;
 			goto out;
 		}
@@ -748,16 +723,16 @@ static ssize_t bonding_store_arp_targets(struct device *d,
 		for (i = 0; (i < BOND_MAX_ARP_TARGETS); i++) {
 			if (targets[i] == newtarget) {
 				printk(KERN_INFO DRV_NAME
-				       ": %s: removing ARP target %d.%d.%d.%d.\n",
-				       bond->dev->name, NIPQUAD(newtarget));
+				       ": %s: removing ARP target %pI4.\n",
+				       bond->dev->name, &newtarget);
 				targets[i] = 0;
 				done = 1;
 			}
 		}
 		if (!done) {
 			printk(KERN_INFO DRV_NAME
-			       ": %s: unable to remove nonexistent ARP target %d.%d.%d.%d.\n",
-			       bond->dev->name, NIPQUAD(newtarget));
+			       ": %s: unable to remove nonexistent ARP target %pI4.\n",
+			       bond->dev->name, &newtarget);
 			ret = -EINVAL;
 			goto out;
 		}
@@ -950,6 +925,133 @@ out:
 }
 static DEVICE_ATTR(lacp_rate, S_IRUGO | S_IWUSR, bonding_show_lacp, bonding_store_lacp);
 
+static ssize_t bonding_show_ad_select(struct device *d,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	struct bonding *bond = to_bond(d);
+
+	return sprintf(buf, "%s %d\n",
+		ad_select_tbl[bond->params.ad_select].modename,
+		bond->params.ad_select);
+}
+
+
+static ssize_t bonding_store_ad_select(struct device *d,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	int new_value, ret = count;
+	struct bonding *bond = to_bond(d);
+
+	if (bond->dev->flags & IFF_UP) {
+		printk(KERN_ERR DRV_NAME
+		       ": %s: Unable to update ad_select because interface "
+		       "is up.\n", bond->dev->name);
+		ret = -EPERM;
+		goto out;
+	}
+
+	new_value = bond_parse_parm(buf, ad_select_tbl);
+
+	if (new_value != -1) {
+		bond->params.ad_select = new_value;
+		printk(KERN_INFO DRV_NAME
+		       ": %s: Setting ad_select to %s (%d).\n",
+		       bond->dev->name, ad_select_tbl[new_value].modename,
+		       new_value);
+	} else {
+		printk(KERN_ERR DRV_NAME
+		       ": %s: Ignoring invalid ad_select value %.*s.\n",
+		       bond->dev->name, (int)strlen(buf) - 1, buf);
+		ret = -EINVAL;
+	}
+out:
+	return ret;
+}
+
+static DEVICE_ATTR(ad_select, S_IRUGO | S_IWUSR, bonding_show_ad_select, bonding_store_ad_select);
+
+/*
+ * Show and set the number of grat ARP to send after a failover event.
+ */
+static ssize_t bonding_show_n_grat_arp(struct device *d,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct bonding *bond = to_bond(d);
+
+	return sprintf(buf, "%d\n", bond->params.num_grat_arp);
+}
+
+static ssize_t bonding_store_n_grat_arp(struct device *d,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	int new_value, ret = count;
+	struct bonding *bond = to_bond(d);
+
+	if (sscanf(buf, "%d", &new_value) != 1) {
+		printk(KERN_ERR DRV_NAME
+		       ": %s: no num_grat_arp value specified.\n",
+		       bond->dev->name);
+		ret = -EINVAL;
+		goto out;
+	}
+	if (new_value < 0 || new_value > 255) {
+		printk(KERN_ERR DRV_NAME
+		       ": %s: Invalid num_grat_arp value %d not in range 0-255; rejected.\n",
+		       bond->dev->name, new_value);
+		ret = -EINVAL;
+		goto out;
+	} else {
+		bond->params.num_grat_arp = new_value;
+	}
+out:
+	return ret;
+}
+static DEVICE_ATTR(num_grat_arp, S_IRUGO | S_IWUSR, bonding_show_n_grat_arp, bonding_store_n_grat_arp);
+
+/*
+ * Show and set the number of unsolicted NA's to send after a failover event.
+ */
+static ssize_t bonding_show_n_unsol_na(struct device *d,
+				       struct device_attribute *attr,
+				       char *buf)
+{
+	struct bonding *bond = to_bond(d);
+
+	return sprintf(buf, "%d\n", bond->params.num_unsol_na);
+}
+
+static ssize_t bonding_store_n_unsol_na(struct device *d,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	int new_value, ret = count;
+	struct bonding *bond = to_bond(d);
+
+	if (sscanf(buf, "%d", &new_value) != 1) {
+		printk(KERN_ERR DRV_NAME
+		       ": %s: no num_unsol_na value specified.\n",
+		       bond->dev->name);
+		ret = -EINVAL;
+		goto out;
+	}
+	if (new_value < 0 || new_value > 255) {
+		printk(KERN_ERR DRV_NAME
+		       ": %s: Invalid num_unsol_na value %d not in range 0-255; rejected.\n",
+		       bond->dev->name, new_value);
+		ret = -EINVAL;
+		goto out;
+	} else {
+		bond->params.num_unsol_na = new_value;
+	}
+out:
+	return ret;
+}
+static DEVICE_ATTR(num_unsol_na, S_IRUGO | S_IWUSR, bonding_show_n_unsol_na, bonding_store_n_unsol_na);
+
 /*
  * Show and set the MII monitor interval.  There are two tricky bits
  * here.  First, if MII monitoring is activated, then we must disable
@@ -1008,6 +1110,7 @@ static ssize_t bonding_store_miimon(struct device *d,
 			       "ARP monitoring. Disabling ARP monitoring...\n",
 			       bond->dev->name);
 			bond->params.arp_interval = 0;
+			bond->dev->priv_flags &= ~IFF_MASTER_ARPMON;
 			if (bond->params.arp_validate) {
 				bond_unregister_arp(bond);
 				bond->params.arp_validate =
@@ -1360,13 +1463,11 @@ static ssize_t bonding_show_ad_partner_mac(struct device *d,
 {
 	int count = 0;
 	struct bonding *bond = to_bond(d);
-	DECLARE_MAC_BUF(mac);
 
 	if (bond->params.mode == BOND_MODE_8023AD) {
 		struct ad_info ad_info;
 		if (!bond_3ad_get_active_agg_info(bond, &ad_info)) {
-			count = sprintf(buf,"%s\n",
-					print_mac(mac, ad_info.partner_system));
+			count = sprintf(buf, "%pM\n", ad_info.partner_system);
 		}
 	}
 
@@ -1386,7 +1487,10 @@ static struct attribute *per_bond_attrs[] = {
 	&dev_attr_downdelay.attr,
 	&dev_attr_updelay.attr,
 	&dev_attr_lacp_rate.attr,
+	&dev_attr_ad_select.attr,
 	&dev_attr_xmit_hash_policy.attr,
+	&dev_attr_num_grat_arp.attr,
+	&dev_attr_num_unsol_na.attr,
 	&dev_attr_miimon.attr,
 	&dev_attr_primary.attr,
 	&dev_attr_use_carrier.attr,
@@ -1411,19 +1515,9 @@ static struct attribute_group bonding_group = {
  */
 int bond_create_sysfs(void)
 {
-	int ret = 0;
-	struct bonding *firstbond;
+	int ret;
 
-	/* get the netdev class pointer */
-	firstbond = container_of(bond_dev_list.next, struct bonding, bond_list);
-	if (!firstbond)
-		return -ENODEV;
-
-	netdev_class = firstbond->dev->dev.class;
-	if (!netdev_class)
-		return -ENODEV;
-
-	ret = class_create_file(netdev_class, &class_attr_bonding_masters);
+	ret = netdev_class_create_file(&class_attr_bonding_masters);
 	/*
 	 * Permit multiple loads of the module by ignoring failures to
 	 * create the bonding_masters sysfs file.  Bonding devices
@@ -1436,8 +1530,12 @@ int bond_create_sysfs(void)
 	 * configure multiple bonding devices.
 	 */
 	if (ret == -EEXIST) {
-		netdev_class = NULL;
-		return 0;
+		/* Is someone being kinky and naming a device bonding_master? */
+		if (__dev_get_by_name(&init_net,
+				      class_attr_bonding_masters.attr.name))
+			printk(KERN_ERR
+			       "network device named %s already exists in sysfs",
+			       class_attr_bonding_masters.attr.name);
 	}
 
 	return ret;
@@ -1449,8 +1547,7 @@ int bond_create_sysfs(void)
  */
 void bond_destroy_sysfs(void)
 {
-	if (netdev_class)
-		class_remove_file(netdev_class, &class_attr_bonding_masters);
+	netdev_class_remove_file(&class_attr_bonding_masters);
 }
 
 /*

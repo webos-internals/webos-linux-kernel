@@ -21,7 +21,7 @@
 #include <linux/netfilter_ipv6/ip6t_rt.h>
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("IPv6 RT match");
+MODULE_DESCRIPTION("Xtables: IPv6 Routing Header match");
 MODULE_AUTHOR("Andras Kis-Szabo <kisza@sch.bme.hu>");
 
 /* Returns 1 if the id is matched by the range, 0 otherwise */
@@ -36,19 +36,11 @@ segsleft_match(u_int32_t min, u_int32_t max, u_int32_t id, bool invert)
 	return r;
 }
 
-static bool
-match(const struct sk_buff *skb,
-      const struct net_device *in,
-      const struct net_device *out,
-      const struct xt_match *match,
-      const void *matchinfo,
-      int offset,
-      unsigned int protoff,
-      bool *hotdrop)
+static bool rt_mt6(const struct sk_buff *skb, const struct xt_match_param *par)
 {
 	struct ipv6_rt_hdr _route;
 	const struct ipv6_rt_hdr *rh;
-	const struct ip6t_rt *rtinfo = matchinfo;
+	const struct ip6t_rt *rtinfo = par->matchinfo;
 	unsigned int temp;
 	unsigned int ptr;
 	unsigned int hdrlen = 0;
@@ -60,13 +52,13 @@ match(const struct sk_buff *skb,
 	err = ipv6_find_hdr(skb, &ptr, NEXTHDR_ROUTING, NULL);
 	if (err < 0) {
 		if (err != -ENOENT)
-			*hotdrop = true;
+			*par->hotdrop = true;
 		return false;
 	}
 
 	rh = skb_header_pointer(skb, ptr, sizeof(_route), &_route);
 	if (rh == NULL) {
-		*hotdrop = true;
+		*par->hotdrop = true;
 		return false;
 	}
 
@@ -115,7 +107,8 @@ match(const struct sk_buff *skb,
 		!!(rtinfo->invflags & IP6T_RT_INV_TYP)));
 
 	if (ret && (rtinfo->flags & IP6T_RT_RES)) {
-		u_int32_t *rp, _reserved;
+		const u_int32_t *rp;
+		u_int32_t _reserved;
 		rp = skb_header_pointer(skb,
 					ptr + offsetof(struct rt0_hdr,
 						       reserved),
@@ -193,15 +186,9 @@ match(const struct sk_buff *skb,
 	return false;
 }
 
-/* Called when user tries to insert an entry of this type. */
-static bool
-checkentry(const char *tablename,
-	   const void *entry,
-	   const struct xt_match *match,
-	   void *matchinfo,
-	   unsigned int hook_mask)
+static bool rt_mt6_check(const struct xt_mtchk_param *par)
 {
-	const struct ip6t_rt *rtinfo = matchinfo;
+	const struct ip6t_rt *rtinfo = par->matchinfo;
 
 	if (rtinfo->invflags & ~IP6T_RT_INV_MASK) {
 		pr_debug("ip6t_rt: unknown flags %X\n", rtinfo->invflags);
@@ -218,24 +205,24 @@ checkentry(const char *tablename,
 	return true;
 }
 
-static struct xt_match rt_match __read_mostly = {
+static struct xt_match rt_mt6_reg __read_mostly = {
 	.name		= "rt",
-	.family		= AF_INET6,
-	.match		= match,
+	.family		= NFPROTO_IPV6,
+	.match		= rt_mt6,
 	.matchsize	= sizeof(struct ip6t_rt),
-	.checkentry	= checkentry,
+	.checkentry	= rt_mt6_check,
 	.me		= THIS_MODULE,
 };
 
-static int __init ip6t_rt_init(void)
+static int __init rt_mt6_init(void)
 {
-	return xt_register_match(&rt_match);
+	return xt_register_match(&rt_mt6_reg);
 }
 
-static void __exit ip6t_rt_fini(void)
+static void __exit rt_mt6_exit(void)
 {
-	xt_unregister_match(&rt_match);
+	xt_unregister_match(&rt_mt6_reg);
 }
 
-module_init(ip6t_rt_init);
-module_exit(ip6t_rt_fini);
+module_init(rt_mt6_init);
+module_exit(rt_mt6_exit);

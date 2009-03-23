@@ -29,7 +29,7 @@ struct hppb_card {
 	struct hppb_card *next;
 };
 
-struct hppb_card hppb_card_head = {
+static struct hppb_card hppb_card_head = {
 	.hpa = 0,
 	.next = NULL,
 };
@@ -95,7 +95,7 @@ static struct parisc_driver hppb_driver = {
 };
 
 /**
- * hppb_init - HP-PB bus initalization procedure.
+ * hppb_init - HP-PB bus initialization procedure.
  *
  * Register this driver.   
  */

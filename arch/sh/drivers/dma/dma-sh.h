@@ -11,7 +11,7 @@
 #ifndef __DMA_SH_H
 #define __DMA_SH_H
 
-#include <asm/cpu/dma.h>
+#include <cpu/dma.h>
 
 /* Definitions for the SuperH DMAC */
 #define REQ_L	0x00000000
@@ -29,6 +29,7 @@
 #define RS_IN	0x00000200
 #define RS_OUT	0x00000300
 #define TS_BLK	0x00000040
+#define TM_BUR	0x00000020
 #define CHCR_DE 0x00000001
 #define CHCR_TE 0x00000002
 #define CHCR_IE 0x00000004

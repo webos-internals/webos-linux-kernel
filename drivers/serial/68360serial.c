@@ -51,6 +51,7 @@ extern int  kgdb_output_string (const char* s, unsigned int count);
 
 /* #ifdef CONFIG_SERIAL_CONSOLE */ /* This seems to be a post 2.0 thing - mles */
 #include <linux/console.h>
+#include <linux/jiffies.h>
 
 /* this defines the index into rs_table for the port to use
  */
@@ -392,7 +393,7 @@ static void rs_360_start(struct tty_struct *tty)
 
 static _INLINE_ void receive_chars(ser_info_t *info)
 {
-	struct tty_struct *tty = info->tty;
+	struct tty_struct *tty = info->port.tty;
 	unsigned char ch, flag, *cp;
 	/*int	ignored = 0;*/
 	int	i;
@@ -513,7 +514,7 @@ static _INLINE_ void receive_chars(ser_info_t *info)
 
 static _INLINE_ void receive_break(ser_info_t *info)
 {
-	struct tty_struct *tty = info->tty;
+	struct tty_struct *tty = info->port.tty;
 
 	info->state->icount.brk++;
 	/* Check to see if there is room in the tty buffer for
@@ -527,7 +528,7 @@ static _INLINE_ void transmit_chars(ser_info_t *info)
 {
 
 	if ((info->flags & TX_WAKEUP) ||
-	    (info->tty->flags & (1 << TTY_DO_WRITE_WAKEUP))) {
+	    (info->port.tty->flags & (1 << TTY_DO_WRITE_WAKEUP))) {
 		schedule_work(&info->tqueue);
 	}
 
@@ -583,12 +584,12 @@ static _INLINE_ void check_modem_status(struct async_struct *info)
 		}
 	}
 	if (info->flags & ASYNC_CTS_FLOW) {
-		if (info->tty->hw_stopped) {
+		if (info->port.tty->hw_stopped) {
 			if (status & UART_MSR_CTS) {
 #if (defined(SERIAL_DEBUG_INTR) || defined(SERIAL_DEBUG_FLOW))
 				printk("CTS tx start...");
 #endif
-				info->tty->hw_stopped = 0;
+				info->port.tty->hw_stopped = 0;
 				info->IER |= UART_IER_THRI;
 				serial_out(info, UART_IER, info->IER);
 				rs_sched_event(info, RS_EVENT_WRITE_WAKEUP);
@@ -599,7 +600,7 @@ static _INLINE_ void check_modem_status(struct async_struct *info)
 #if (defined(SERIAL_DEBUG_INTR) || defined(SERIAL_DEBUG_FLOW))
 				printk("CTS tx stop...");
 #endif
-				info->tty->hw_stopped = 1;
+				info->port.tty->hw_stopped = 1;
 				info->IER &= ~UART_IER_THRI;
 				serial_out(info, UART_IER, info->IER);
 			}
@@ -669,7 +670,7 @@ static void do_softint(void *private_)
 	ser_info_t	*info = (ser_info_t *) private_;
 	struct tty_struct	*tty;
 	
-	tty = info->tty;
+	tty = info->port.tty;
 	if (!tty)
 		return;
 
@@ -692,7 +693,7 @@ static void do_serial_hangup(void *private_)
 	struct async_struct	*info = (struct async_struct *) private_;
 	struct tty_struct	*tty;
 	
-	tty = info->tty;
+	tty = info->port.tty;
 	if (!tty)
 		return;
 
@@ -720,8 +721,8 @@ static int startup(ser_info_t *info)
 
 #ifdef maybe
 	if (!state->port || !state->type) {
-		if (info->tty)
-			set_bit(TTY_IO_ERROR, &info->tty->flags);
+		if (info->port.tty)
+			set_bit(TTY_IO_ERROR, &info->port.tty->flags);
 		goto errout;
 	}
 #endif
@@ -733,12 +734,12 @@ static int startup(ser_info_t *info)
 
 #ifdef modem_control
 	info->MCR = 0;
-	if (info->tty->termios->c_cflag & CBAUD)
+	if (info->port.tty->termios->c_cflag & CBAUD)
 		info->MCR = UART_MCR_DTR | UART_MCR_RTS;
 #endif
 	
-	if (info->tty)
-		clear_bit(TTY_IO_ERROR, &info->tty->flags);
+	if (info->port.tty)
+		clear_bit(TTY_IO_ERROR, &info->port.tty->flags);
 
 	/*
 	 * and set the speed of the serial port
@@ -841,8 +842,8 @@ static void shutdown(ser_info_t *info)
 			smcp->smc_smcmr &= ~(SMCMR_REN | SMCMR_TEN);
 	}
 	
-	if (info->tty)
-		set_bit(TTY_IO_ERROR, &info->tty->flags);
+	if (info->port.tty)
+		set_bit(TTY_IO_ERROR, &info->port.tty->flags);
 
 	info->flags &= ~ASYNC_INITIALIZED;
 	local_irq_restore(flags);
@@ -862,9 +863,9 @@ static void change_speed(ser_info_t *info)
 	volatile struct smc_regs	*smcp;
 	volatile struct scc_regs	*sccp;
 
-	if (!info->tty || !info->tty->termios)
+	if (!info->port.tty || !info->port.tty->termios)
 		return;
-	cflag = info->tty->termios->c_cflag;
+	cflag = info->port.tty->termios->c_cflag;
 
 	state = info->state;
 
@@ -935,24 +936,24 @@ static void change_speed(ser_info_t *info)
 	 * Set up parity check flag
 	 */
 	info->read_status_mask = (BD_SC_EMPTY | BD_SC_OV);
-	if (I_INPCK(info->tty))
+	if (I_INPCK(info->port.tty))
 		info->read_status_mask |= BD_SC_FR | BD_SC_PR;
-	if (I_BRKINT(info->tty) || I_PARMRK(info->tty))
+	if (I_BRKINT(info->port.tty) || I_PARMRK(info->port.tty))
 		info->read_status_mask |= BD_SC_BR;
 	
 	/*
 	 * Characters to ignore
 	 */
 	info->ignore_status_mask = 0;
-	if (I_IGNPAR(info->tty))
+	if (I_IGNPAR(info->port.tty))
 		info->ignore_status_mask |= BD_SC_PR | BD_SC_FR;
-	if (I_IGNBRK(info->tty)) {
+	if (I_IGNBRK(info->port.tty)) {
 		info->ignore_status_mask |= BD_SC_BR;
 		/*
 		 * If we're ignore parity and break indicators, ignore 
 		 * overruns too.  (For real raw support).
 		 */
-		if (I_IGNPAR(info->tty))
+		if (I_IGNPAR(info->port.tty))
 			info->ignore_status_mask |= BD_SC_OV;
 	}
 	/*
@@ -994,10 +995,10 @@ static void rs_360_put_char(struct tty_struct *tty, unsigned char ch)
 	volatile QUICC_BD	*bdp;
 
 	if (serial_paranoia_check(info, tty->name, "rs_put_char"))
-		return;
+		return 0;
 
 	if (!tty)
-		return;
+		return 0;
 
 	bdp = info->tx_cur;
 	while (bdp->status & BD_SC_READY);
@@ -1015,6 +1016,7 @@ static void rs_360_put_char(struct tty_struct *tty, unsigned char ch)
 		bdp++;
 
 	info->tx_cur = (QUICC_BD *)bdp;
+	return 1;
 
 }
 
@@ -1245,7 +1247,7 @@ static int rs_360_tiocmget(struct tty_struct *tty, struct file *file)
 #ifdef modem_control
 	unsigned char control, status;
 
-	if (serial_paranoia_check(info, tty->name, __FUNCTION__))
+	if (serial_paranoia_check(info, tty->name, __func__))
 		return -ENODEV;
 
 	if (tty->flags & (1 << TTY_IO_ERROR))
@@ -1276,12 +1278,12 @@ static int rs_360_tiocmset(struct tty_struct *tty, struct file *file,
 	ser_info_t *info = (ser_info_t *)tty->driver_data;
  	unsigned int arg;
 
-	if (serial_paranoia_check(info, tty->name, __FUNCTION__))
+	if (serial_paranoia_check(info, tty->name, __func__))
 		return -ENODEV;
 
 	if (tty->flags & (1 << TTY_IO_ERROR))
 		return -EIO;
-
+	/* FIXME: locking on info->mcr */
  	if (set & TIOCM_RTS)
  		info->mcr |= UART_MCR_RTS;
  	if (set & TIOCM_DTR)
@@ -1434,18 +1436,6 @@ static int rs_360_ioctl(struct tty_struct *tty, struct file * file,
 			if (retval)
 				return retval;
 			end_break(info);
-			return 0;
-		case TIOCGSOFTCAR:
-			/* return put_user(C_CLOCAL(tty) ? 1 : 0, (int *) arg); */
-			put_user(C_CLOCAL(tty) ? 1 : 0, (int *) arg);
-			return 0;
-		case TIOCSSOFTCAR:
-			error = get_user(arg, (unsigned int *) arg); 
-			if (error)
-				return error;
-			tty->termios->c_cflag =
-				((tty->termios->c_cflag & ~CLOCAL) |
-				 (arg ? CLOCAL : 0));
 			return 0;
 #ifdef maybe
 		case TIOCSERGETLSR: /* Get line status register */
@@ -1664,12 +1654,11 @@ static void rs_360_close(struct tty_struct *tty, struct file * filp)
 		rs_360_wait_until_sent(tty, info->timeout);
 	}
 	shutdown(info);
-	if (tty->driver->flush_buffer)
-		tty->driver->flush_buffer(tty);
+	rs_360_flush_buffer(tty);
 	tty_ldisc_flush(tty);		
 	tty->closing = 0;
 	info->event = 0;
-	info->tty = 0;
+	info->port.tty = NULL;
 	if (info->blocked_open) {
 		if (info->close_delay) {
 			msleep_interruptible(jiffies_to_msecs(info->close_delay));
@@ -1716,6 +1705,7 @@ static void rs_360_wait_until_sent(struct tty_struct *tty, int timeout)
 	printk("jiff=%lu...", jiffies);
 #endif
 
+	lock_kernel();
 	/* We go through the loop at least once because we can't tell
 	 * exactly when the last character exits the shifter.  There can
 	 * be at least two characters waiting to be sent after the buffers
@@ -1729,7 +1719,7 @@ static void rs_360_wait_until_sent(struct tty_struct *tty, int timeout)
 		msleep_interruptible(jiffies_to_msecs(char_time));
 		if (signal_pending(current))
 			break;
-		if (timeout && ((orig_jiffies + timeout) < jiffies))
+		if (timeout && (time_after(jiffies, orig_jiffies + timeout)))
 			break;
 		/* The 'tx_cur' is really the next buffer to send.  We
 		 * have to back up to the previous BD and wait for it
@@ -1744,6 +1734,7 @@ static void rs_360_wait_until_sent(struct tty_struct *tty, int timeout)
 			bdp--;
 	} while (bdp->status & BD_SC_READY);
 	current->state = TASK_RUNNING;
+	unlock_kernel();
 #ifdef SERIAL_DEBUG_RS_WAIT_UNTIL_SENT
 	printk("lsr = %d (jiff=%lu)...done\n", lsr, jiffies);
 #endif
@@ -1767,7 +1758,7 @@ static void rs_360_hangup(struct tty_struct *tty)
 	info->event = 0;
 	state->count = 0;
 	info->flags &= ~ASYNC_NORMAL_ACTIVE;
-	info->tty = 0;
+	info->port.tty = NULL;
 	wake_up_interruptible(&info->open_wait);
 }
 
@@ -1928,7 +1919,7 @@ static int rs_360_open(struct tty_struct *tty, struct file * filp)
 	printk("rs_open %s, count = %d\n", tty->name, info->state->count);
 #endif
 	tty->driver_data = info;
-	info->tty = tty;
+	info->port.tty = tty;
 
 	/*
 	 * Start up serial port
@@ -1985,7 +1976,7 @@ static inline int line_info(char *buf, struct serial_state *state)
 		info->port = state->port;
 		info->flags = state->flags;
 		info->quot = 0;
-		info->tty = 0;
+		info->port.tty = NULL;
 	}
 	local_irq_disable();
 	status = serial_in(info, UART_MSR);

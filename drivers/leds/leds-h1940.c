@@ -16,30 +16,31 @@
 #include <linux/string.h>
 #include <linux/ctype.h>
 #include <linux/leds.h>
-#include <asm/arch/regs-gpio.h>
-#include <asm/hardware.h>
-#include <asm/arch/h1940-latch.h>
+#include <mach/regs-gpio.h>
+#include <mach/hardware.h>
+#include <mach/h1940-latch.h>
 
 /*
  * Green led.
  */
-void h1940_greenled_set(struct led_classdev *led_dev, enum led_brightness value)
+static void h1940_greenled_set(struct led_classdev *led_dev,
+			       enum led_brightness value)
 {
 	switch (value) {
-		case LED_HALF:
-			h1940_latch_control(0,H1940_LATCH_LED_FLASH);
-			s3c2410_gpio_setpin(S3C2410_GPA7,1);
-			break;
-		case LED_FULL:
-			h1940_latch_control(0,H1940_LATCH_LED_GREEN);
-			s3c2410_gpio_setpin(S3C2410_GPA7,1);
-			break;
-		default:
-		case LED_OFF:
-			h1940_latch_control(H1940_LATCH_LED_FLASH,0);
-			h1940_latch_control(H1940_LATCH_LED_GREEN,0);
-			s3c2410_gpio_setpin(S3C2410_GPA7,0);
-			break;
+	case LED_HALF:
+		h1940_latch_control(0, H1940_LATCH_LED_FLASH);
+		s3c2410_gpio_setpin(S3C2410_GPA7, 1);
+		break;
+	case LED_FULL:
+		h1940_latch_control(0, H1940_LATCH_LED_GREEN);
+		s3c2410_gpio_setpin(S3C2410_GPA7, 1);
+		break;
+	default:
+	case LED_OFF:
+		h1940_latch_control(H1940_LATCH_LED_FLASH, 0);
+		h1940_latch_control(H1940_LATCH_LED_GREEN, 0);
+		s3c2410_gpio_setpin(S3C2410_GPA7, 0);
+		break;
 	}
 }
 
@@ -52,23 +53,24 @@ static struct led_classdev h1940_greenled = {
 /*
  * Red led.
  */
-void h1940_redled_set(struct led_classdev *led_dev, enum led_brightness value)
+static void h1940_redled_set(struct led_classdev *led_dev,
+			     enum led_brightness value)
 {
 	switch (value) {
-		case LED_HALF:
-			h1940_latch_control(0,H1940_LATCH_LED_FLASH);
-			s3c2410_gpio_setpin(S3C2410_GPA1,1);
-			break;
-		case LED_FULL:
-			h1940_latch_control(0,H1940_LATCH_LED_RED);
-			s3c2410_gpio_setpin(S3C2410_GPA1,1);
-			break;
-		default:
-		case LED_OFF:
-			h1940_latch_control(H1940_LATCH_LED_FLASH,0);
-			h1940_latch_control(H1940_LATCH_LED_RED,0);
-			s3c2410_gpio_setpin(S3C2410_GPA1,0);
-			break;
+	case LED_HALF:
+		h1940_latch_control(0, H1940_LATCH_LED_FLASH);
+		s3c2410_gpio_setpin(S3C2410_GPA1, 1);
+		break;
+	case LED_FULL:
+		h1940_latch_control(0, H1940_LATCH_LED_RED);
+		s3c2410_gpio_setpin(S3C2410_GPA1, 1);
+		break;
+	default:
+	case LED_OFF:
+		h1940_latch_control(H1940_LATCH_LED_FLASH, 0);
+		h1940_latch_control(H1940_LATCH_LED_RED, 0);
+		s3c2410_gpio_setpin(S3C2410_GPA1, 0);
+		break;
 	}
 }
 
@@ -82,15 +84,16 @@ static struct led_classdev h1940_redled = {
  * Blue led.
  * (it can only be blue flashing led)
  */
-void h1940_blueled_set(struct led_classdev *led_dev, enum led_brightness value)
+static void h1940_blueled_set(struct led_classdev *led_dev,
+			      enum led_brightness value)
 {
 	if (value) {
 		/* flashing Blue */
-		h1940_latch_control(0,H1940_LATCH_LED_FLASH);
-		s3c2410_gpio_setpin(S3C2410_GPA3,1);
+		h1940_latch_control(0, H1940_LATCH_LED_FLASH);
+		s3c2410_gpio_setpin(S3C2410_GPA3, 1);
 	} else {
-		h1940_latch_control(H1940_LATCH_LED_FLASH,0);
-		s3c2410_gpio_setpin(S3C2410_GPA3,0);
+		h1940_latch_control(H1940_LATCH_LED_FLASH, 0);
+		s3c2410_gpio_setpin(S3C2410_GPA3, 0);
 	}
 
 }
@@ -139,6 +142,7 @@ static int h1940leds_remove(struct platform_device *pdev)
 static struct platform_driver h1940leds_driver = {
 	.driver		= {
 		.name	= "h1940-leds",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= h1940leds_probe,
 	.remove		= h1940leds_remove,
@@ -161,3 +165,4 @@ module_exit(h1940leds_exit);
 MODULE_AUTHOR("Arnaud Patard <arnaud.patard@rtp-net.org>");
 MODULE_DESCRIPTION("LED driver for the iPAQ H1940");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:h1940-leds");

@@ -68,8 +68,7 @@
 @  r11 = CPU number
 @  lr  = failure return
 
-	.globl	vfp_support_entry
-vfp_support_entry:
+ENTRY(vfp_support_entry)
 	DBGSTR3	"instr %08x pc %08x state %p", r0, r2, r10
 
 	VFPFMRX	r1, FPEXC		@ Is the VFP enabled?
@@ -99,12 +98,15 @@ vfp_support_entry:
 	DBGSTR1	"save old state %p", r4
 	cmp	r4, #0
 	beq	no_old_VFP_process
+	VFPFSTMIA r4, r5		@ save the working registers
 	VFPFMRX	r5, FPSCR		@ current status
-	VFPFMRX	r6, FPINST		@ FPINST (always there, rev0 onwards)
-	tst	r1, #FPEXC_FPV2		@ is there an FPINST2 to read?
-	VFPFMRX	r8, FPINST2, NE		@ FPINST2 if needed - avoids reading
-					@ nonexistant reg on rev0
-	VFPFSTMIA r4 			@ save the working registers
+	tst	r1, #FPEXC_EX		@ is there additional state to save?
+	beq	1f
+	VFPFMRX	r6, FPINST		@ FPINST (only if FPEXC.EX is set)
+	tst	r1, #FPEXC_FP2V		@ is there an FPINST2 to read?
+	beq	1f
+	VFPFMRX	r8, FPINST2		@ FPINST2 if needed (and present)
+1:
 	stmia	r4, {r1, r5, r6, r8}	@ save FPEXC, FPSCR, FPINST, FPINST2
 					@ and point r4 at the word at the
 					@ start of the register dump
@@ -114,13 +116,16 @@ no_old_VFP_process:
 	DBGSTR1	"load state %p", r10
 	str	r10, [r3, r11, lsl #2]	@ update the last_VFP_context pointer
 					@ Load the saved state back into the VFP
-	VFPFLDMIA r10	 		@ reload the working registers while
+	VFPFLDMIA r10, r5		@ reload the working registers while
 					@ FPEXC is in a safe state
 	ldmia	r10, {r1, r5, r6, r8}	@ load FPEXC, FPSCR, FPINST, FPINST2
-	tst	r1, #FPEXC_FPV2		@ is there an FPINST2 to write?
-	VFPFMXR	FPINST2, r8, NE		@ FPINST2 if needed - avoids writing
-					@ nonexistant reg on rev0
-	VFPFMXR	FPINST, r6
+	tst	r1, #FPEXC_EX		@ is there additional state to restore?
+	beq	1f
+	VFPFMXR	FPINST, r6		@ restore FPINST (only if FPEXC.EX is set)
+	tst	r1, #FPEXC_FP2V		@ is there an FPINST2 to write?
+	beq	1f
+	VFPFMXR	FPINST2, r8		@ FPINST2 if needed (and present)
+1:
 	VFPFMXR	FPSCR, r5		@ restore status
 
 check_for_exception:
@@ -136,10 +141,14 @@ check_for_exception:
 
 
 look_for_VFP_exceptions:
-	tst	r1, #FPEXC_EX
+	@ Check for synchronous or asynchronous exception
+	tst	r1, #FPEXC_EX | FPEXC_DEX
 	bne	process_exception
+	@ On some implementations of the VFP subarch 1, setting FPSCR.IXE
+	@ causes all the CDP instructions to be bounced synchronously without
+	@ setting the FPEXC.EX bit
 	VFPFMRX	r5, FPSCR
-	tst	r5, #FPSCR_IXE		@ IXE doesn't set FPEXC_EX !
+	tst	r5, #FPSCR_IXE
 	bne	process_exception
 
 	@ Fall into hand on to next handler - appropriate coproc instr
@@ -150,10 +159,6 @@ look_for_VFP_exceptions:
 
 process_exception:
 	DBGSTR	"bounce"
-	sub	r2, r2, #4
-	str	r2, [sp, #S_PC]		@ retry the instruction on exit from
-					@ the imprecise exception handling in
-					@ the support code
 	mov	r2, sp			@ nothing stacked - regdump is at TOS
 	mov	lr, r9			@ setup for a return to the user code.
 
@@ -161,34 +166,36 @@ process_exception:
 	@   r0 holds the trigger instruction
 	@   r1 holds the FPEXC value
 	@   r2 pointer to register dump
-	b	VFP9_bounce		@ we have handled this - the support
+	b	VFP_bounce		@ we have handled this - the support
 					@ code will raise an exception if
 					@ required. If not, the user code will
 					@ retry the faulted instruction
+ENDPROC(vfp_support_entry)
 
-#ifdef CONFIG_SMP
-	.globl	vfp_save_state
-	.type	vfp_save_state, %function
-vfp_save_state:
+#if defined(CONFIG_SMP) || defined(CONFIG_PM)
+ENTRY(vfp_save_state)
 	@ Save the current VFP state
 	@ r0 - save location
 	@ r1 - FPEXC
 	DBGSTR1	"save VFP state %p", r0
+	VFPFSTMIA r0, r2		@ save the working registers
 	VFPFMRX	r2, FPSCR		@ current status
-	VFPFMRX	r3, FPINST		@ FPINST (always there, rev0 onwards)
-	tst	r1, #FPEXC_FPV2		@ is there an FPINST2 to read?
-	VFPFMRX	r12, FPINST2, NE	@ FPINST2 if needed - avoids reading
-					@ nonexistant reg on rev0
-	VFPFSTMIA r0 			@ save the working registers
+	tst	r1, #FPEXC_EX		@ is there additional state to save?
+	beq	1f
+	VFPFMRX	r3, FPINST		@ FPINST (only if FPEXC.EX is set)
+	tst	r1, #FPEXC_FP2V		@ is there an FPINST2 to read?
+	beq	1f
+	VFPFMRX	r12, FPINST2		@ FPINST2 if needed (and present)
+1:
 	stmia	r0, {r1, r2, r3, r12}	@ save FPEXC, FPSCR, FPINST, FPINST2
 	mov	pc, lr
+ENDPROC(vfp_save_state)
 #endif
 
 last_VFP_context_address:
 	.word	last_VFP_context
 
-	.globl	vfp_get_float
-vfp_get_float:
+ENTRY(vfp_get_float)
 	add	pc, pc, r0, lsl #3
 	mov	r0, r0
 	.irp	dr,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
@@ -197,9 +204,9 @@ vfp_get_float:
 	mrc	p10, 0, r0, c\dr, c0, 4	@ fmrs	r0, s1
 	mov	pc, lr
 	.endr
+ENDPROC(vfp_get_float)
 
-	.globl	vfp_put_float
-vfp_put_float:
+ENTRY(vfp_put_float)
 	add	pc, pc, r1, lsl #3
 	mov	r0, r0
 	.irp	dr,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
@@ -208,26 +215,41 @@ vfp_put_float:
 	mcr	p10, 0, r0, c\dr, c0, 4	@ fmsr	r0, s1
 	mov	pc, lr
 	.endr
+ENDPROC(vfp_put_float)
 
-	.globl	vfp_get_double
-vfp_get_double:
+ENTRY(vfp_get_double)
 	add	pc, pc, r0, lsl #3
 	mov	r0, r0
 	.irp	dr,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 	fmrrd	r0, r1, d\dr
 	mov	pc, lr
 	.endr
+#ifdef CONFIG_VFPv3
+	@ d16 - d31 registers
+	.irp	dr,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+	mrrc	p11, 3, r0, r1, c\dr	@ fmrrd	r0, r1, d\dr
+	mov	pc, lr
+	.endr
+#endif
 
-	@ virtual register 16 for compare with zero
+	@ virtual register 16 (or 32 if VFPv3) for compare with zero
 	mov	r0, #0
 	mov	r1, #0
 	mov	pc, lr
+ENDPROC(vfp_get_double)
 
-	.globl	vfp_put_double
-vfp_put_double:
+ENTRY(vfp_put_double)
 	add	pc, pc, r2, lsl #3
 	mov	r0, r0
 	.irp	dr,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 	fmdrr	d\dr, r0, r1
 	mov	pc, lr
 	.endr
+#ifdef CONFIG_VFPv3
+	@ d16 - d31 registers
+	.irp	dr,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+	mcrr	p11, 3, r1, r2, c\dr	@ fmdrr	r1, r2, d\dr
+	mov	pc, lr
+	.endr
+#endif
+ENDPROC(vfp_put_double)

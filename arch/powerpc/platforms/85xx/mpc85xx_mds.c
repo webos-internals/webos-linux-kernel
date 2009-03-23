@@ -30,9 +30,10 @@
 #include <linux/initrd.h>
 #include <linux/module.h>
 #include <linux/fsl_devices.h>
+#include <linux/of_platform.h>
+#include <linux/of_device.h>
+#include <linux/phy.h>
 
-#include <asm/of_device.h>
-#include <asm/of_platform.h>
 #include <asm/system.h>
 #include <asm/atomic.h>
 #include <asm/time.h>
@@ -56,6 +57,95 @@
 #define DBG(fmt...)
 #endif
 
+#define MV88E1111_SCR	0x10
+#define MV88E1111_SCR_125CLK	0x0010
+static int mpc8568_fixup_125_clock(struct phy_device *phydev)
+{
+	int scr;
+	int err;
+
+	/* Workaround for the 125 CLK Toggle */
+	scr = phy_read(phydev, MV88E1111_SCR);
+
+	if (scr < 0)
+		return scr;
+
+	err = phy_write(phydev, MV88E1111_SCR, scr & ~(MV88E1111_SCR_125CLK));
+
+	if (err)
+		return err;
+
+	err = phy_write(phydev, MII_BMCR, BMCR_RESET);
+
+	if (err)
+		return err;
+
+	scr = phy_read(phydev, MV88E1111_SCR);
+
+	if (scr < 0)
+		return err;
+
+	err = phy_write(phydev, MV88E1111_SCR, scr | 0x0008);
+
+	return err;
+}
+
+static int mpc8568_mds_phy_fixups(struct phy_device *phydev)
+{
+	int temp;
+	int err;
+
+	/* Errata */
+	err = phy_write(phydev,29, 0x0006);
+
+	if (err)
+		return err;
+
+	temp = phy_read(phydev, 30);
+
+	if (temp < 0)
+		return temp;
+
+	temp = (temp & (~0x8000)) | 0x4000;
+	err = phy_write(phydev,30, temp);
+
+	if (err)
+		return err;
+
+	err = phy_write(phydev,29, 0x000a);
+
+	if (err)
+		return err;
+
+	temp = phy_read(phydev, 30);
+
+	if (temp < 0)
+		return temp;
+
+	temp = phy_read(phydev, 30);
+
+	if (temp < 0)
+		return temp;
+
+	temp &= ~0x0020;
+
+	err = phy_write(phydev,30,temp);
+
+	if (err)
+		return err;
+
+	/* Disable automatic MDI/MDIX selection */
+	temp = phy_read(phydev, 16);
+
+	if (temp < 0)
+		return temp;
+
+	temp &= ~0x0060;
+	err = phy_write(phydev,16,temp);
+
+	return err;
+}
+
 /* ************************************************************************
  *
  * Setup the architecture
@@ -64,7 +154,7 @@
 static void __init mpc85xx_mds_setup_arch(void)
 {
 	struct device_node *np;
-	static u8 *bcsr_regs = NULL;
+	static u8 __iomem *bcsr_regs = NULL;
 
 	if (ppc_md.progress)
 		ppc_md.progress("mpc85xx_mds_setup_arch()", 0);
@@ -94,21 +184,25 @@ static void __init mpc85xx_mds_setup_arch(void)
 #endif
 
 #ifdef CONFIG_QUICC_ENGINE
-	if ((np = of_find_node_by_name(NULL, "qe")) != NULL) {
-		qe_reset();
-		of_node_put(np);
+	np = of_find_compatible_node(NULL, NULL, "fsl,qe");
+	if (!np) {
+		np = of_find_node_by_name(NULL, "qe");
+		if (!np)
+			return;
 	}
 
-	if ((np = of_find_node_by_name(NULL, "par_io")) != NULL) {
-		struct device_node *ucc = NULL;
+	qe_reset();
+	of_node_put(np);
+
+	np = of_find_node_by_name(NULL, "par_io");
+	if (np) {
+		struct device_node *ucc;
 
 		par_io_init(np);
 		of_node_put(np);
 
-		for ( ;(ucc = of_find_node_by_name(ucc, "ucc")) != NULL;)
+		for_each_node_by_name(ucc, "ucc")
 			par_io_of_config(ucc);
-
-		of_node_put(ucc);
 	}
 
 	if (bcsr_regs) {
@@ -131,28 +225,57 @@ static void __init mpc85xx_mds_setup_arch(void)
 
 		iounmap(bcsr_regs);
 	}
-
 #endif	/* CONFIG_QUICC_ENGINE */
 }
+
+
+static int __init board_fixups(void)
+{
+	char phy_id[20];
+	char *compstrs[2] = {"fsl,gianfar-mdio", "fsl,ucc-mdio"};
+	struct device_node *mdio;
+	struct resource res;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(compstrs); i++) {
+		mdio = of_find_compatible_node(NULL, NULL, compstrs[i]);
+
+		of_address_to_resource(mdio, 0, &res);
+		snprintf(phy_id, sizeof(phy_id), "%llx:%02x",
+			(unsigned long long)res.start, 1);
+
+		phy_register_fixup_for_id(phy_id, mpc8568_fixup_125_clock);
+		phy_register_fixup_for_id(phy_id, mpc8568_mds_phy_fixups);
+
+		/* Register a workaround for errata */
+		snprintf(phy_id, sizeof(phy_id), "%llx:%02x",
+			(unsigned long long)res.start, 7);
+		phy_register_fixup_for_id(phy_id, mpc8568_mds_phy_fixups);
+
+		of_node_put(mdio);
+	}
+
+	return 0;
+}
+machine_arch_initcall(mpc85xx_mds, board_fixups);
 
 static struct of_device_id mpc85xx_ids[] = {
 	{ .type = "soc", },
 	{ .compatible = "soc", },
+	{ .compatible = "simple-bus", },
 	{ .type = "qe", },
+	{ .compatible = "fsl,qe", },
 	{},
 };
 
 static int __init mpc85xx_publish_devices(void)
 {
-	if (!machine_is(mpc85xx_mds))
-		return 0;
-
 	/* Publish the QE devices */
-	of_platform_bus_probe(NULL,mpc85xx_ids,NULL);
+	of_platform_bus_probe(NULL, mpc85xx_ids, NULL);
 
 	return 0;
 }
-device_initcall(mpc85xx_publish_devices);
+machine_device_initcall(mpc85xx_mds, mpc85xx_publish_devices);
 
 static void __init mpc85xx_mds_pic_init(void)
 {
@@ -179,10 +302,12 @@ static void __init mpc85xx_mds_pic_init(void)
 	mpic_init(mpic);
 
 #ifdef CONFIG_QUICC_ENGINE
-	np = of_find_node_by_type(NULL, "qeic");
-	if (!np)
-		return;
-
+	np = of_find_compatible_node(NULL, NULL, "fsl,qe-ic");
+	if (!np) {
+		np = of_find_node_by_type(NULL, "qeic");
+		if (!np)
+			return;
+	}
 	qe_ic_init(np, 0, qe_ic_cascade_muxed_mpic, NULL);
 	of_node_put(np);
 #endif				/* CONFIG_QUICC_ENGINE */

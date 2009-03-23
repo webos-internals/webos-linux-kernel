@@ -488,13 +488,6 @@ static void de620_set_multicast_list(struct net_device *dev)
 {
 	if (dev->mc_count || dev->flags&(IFF_ALLMULTI|IFF_PROMISC))
 	{ /* Enable promiscuous mode */
-		/*
-		 *	We must make the kernel realise we had to move
-		 *	into promisc mode or we start all out war on
-		 *	the cable. - AC
-		 */
-		dev->flags|=IFF_PROMISC;
-
 		de620_set_register(dev, W_TCR, (TCR_DEF & ~RXPBM) | RXALL);
 	}
 	else
@@ -693,7 +686,6 @@ static int de620_rx_intr(struct net_device *dev)
 			PRINTK(("Read %d bytes\n", size));
 			skb->protocol=eth_type_trans(skb,dev);
 			netif_rx(skb); /* deliver it "upstairs" */
-			dev->last_rx = jiffies;
 			/* count all receives */
 			dev->stats.rx_packets++;
 			dev->stats.rx_bytes += size;
@@ -792,6 +784,17 @@ static int adapter_init(struct net_device *dev)
 	return 0; /* all ok */
 }
 
+static const struct net_device_ops de620_netdev_ops = {
+	.ndo_open 		= de620_open,
+	.ndo_stop 		= de620_close,
+	.ndo_start_xmit 	= de620_start_xmit,
+	.ndo_tx_timeout 	= de620_timeout,
+	.ndo_set_multicast_list = de620_set_multicast_list,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_validate_addr	= eth_validate_addr,
+};
+
 /******************************************************************************
  *
  * Only start-up code below
@@ -807,7 +810,6 @@ struct net_device * __init de620_probe(int unit)
 	struct net_device *dev;
 	int err = -ENOMEM;
 	int i;
-	DECLARE_MAC_BUF(mac);
 
 	dev = alloc_etherdev(0);
 	if (!dev)
@@ -860,7 +862,7 @@ struct net_device * __init de620_probe(int unit)
 		dev->broadcast[i] = 0xff;
 	}
 
-	printk(", Ethernet Address: %s", print_mac(mac, dev->dev_addr));
+	printk(", Ethernet Address: %pM", dev->dev_addr);
 
 	printk(" (%dk RAM,",
 		(nic_data.RAM_Size) ? (nic_data.RAM_Size >> 2) : 64);
@@ -870,12 +872,8 @@ struct net_device * __init de620_probe(int unit)
 	else
 		printk(" UTP)\n");
 
-	dev->open 		= de620_open;
-	dev->stop 		= de620_close;
-	dev->hard_start_xmit 	= de620_start_xmit;
-	dev->tx_timeout 	= de620_timeout;
+	dev->netdev_ops = &de620_netdev_ops;
 	dev->watchdog_timeo	= HZ*2;
-	dev->set_multicast_list = de620_set_multicast_list;
 
 	/* base_addr and irq are already set, see above! */
 
@@ -883,10 +881,7 @@ struct net_device * __init de620_probe(int unit)
 	if (de620_debug) {
 		printk("\nEEPROM contents:\n");
 		printk("RAM_Size = 0x%02X\n", nic_data.RAM_Size);
-		printk("NodeID = %02X:%02X:%02X:%02X:%02X:%02X\n",
-			nic_data.NodeID[0], nic_data.NodeID[1],
-			nic_data.NodeID[2], nic_data.NodeID[3],
-			nic_data.NodeID[4], nic_data.NodeID[5]);
+		printk("NodeID = %pM\n", nic_data.NodeID);
 		printk("Model = %d\n", nic_data.Model);
 		printk("Media = %d\n", nic_data.Media);
 		printk("SCR = 0x%02x\n", nic_data.SCR);
@@ -1015,20 +1010,3 @@ void cleanup_module(void)
 }
 #endif /* MODULE */
 MODULE_LICENSE("GPL");
-
-
-/*
- * (add '-DMODULE' when compiling as loadable module)
- *
- * compile-command:
- *	gcc -D__KERNEL__ -Wall -Wstrict-prototypes -O2 \
- *	 -fomit-frame-pointer -m486 \
- *	-I/usr/src/linux/include -I../../net/inet -c de620.c
-*/
-/*
- * Local variables:
- *  kernel-compile-command: "gcc -D__KERNEL__ -Ilinux/include -I../../net/inet -Wall -Wstrict-prototypes -O2 -m486 -c de620.c"
- *  module-compile-command: "gcc -D__KERNEL__ -DMODULE -Ilinux/include -I../../net/inet -Wall -Wstrict-prototypes -O2 -m486 -c de620.c"
- *  compile-command: "gcc -D__KERNEL__ -DMODULE -Ilinux/include -I../../net/inet -Wall -Wstrict-prototypes -O2 -m486 -c de620.c"
- * End:
- */

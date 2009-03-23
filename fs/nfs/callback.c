@@ -15,6 +15,8 @@
 #include <linux/nfs_fs.h>
 #include <linux/mutex.h>
 #include <linux/freezer.h>
+#include <linux/kthread.h>
+#include <linux/sunrpc/svcauth_gss.h>
 
 #include <net/inet_sock.h>
 
@@ -26,10 +28,8 @@
 
 struct nfs_callback_data {
 	unsigned int users;
-	struct svc_serv *serv;
-	pid_t pid;
-	struct completion started;
-	struct completion stopped;
+	struct svc_rqst *rqst;
+	struct task_struct *task;
 };
 
 static struct nfs_callback_data nfs_callback_info;
@@ -40,6 +40,16 @@ unsigned int nfs_callback_set_tcpport;
 unsigned short nfs_callback_tcpport;
 static const int nfs_set_port_min = 0;
 static const int nfs_set_port_max = 65535;
+
+/*
+ * If the kernel has IPv6 support available, always listen for
+ * both AF_INET and AF_INET6 requests.
+ */
+#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+static const sa_family_t	nfs_callback_family = AF_INET6;
+#else
+static const sa_family_t	nfs_callback_family = AF_INET;
+#endif
 
 static int param_set_port(const char *val, struct kernel_param *kp)
 {
@@ -57,143 +67,174 @@ module_param_call(callback_tcpport, param_set_port, param_get_int,
 /*
  * This is the callback kernel thread.
  */
-static void nfs_callback_svc(struct svc_rqst *rqstp)
+static int
+nfs_callback_svc(void *vrqstp)
 {
-	int err;
+	int err, preverr = 0;
+	struct svc_rqst *rqstp = vrqstp;
 
-	__module_get(THIS_MODULE);
-	lock_kernel();
-
-	nfs_callback_info.pid = current->pid;
-	daemonize("nfsv4-svc");
-	/* Process request with signals blocked, but allow SIGKILL.  */
-	allow_signal(SIGKILL);
 	set_freezable();
 
-	complete(&nfs_callback_info.started);
-
-	for(;;) {
-		char buf[RPC_MAX_ADDRBUFLEN];
-
-		if (signalled()) {
-			if (nfs_callback_info.users == 0)
-				break;
-			flush_signals(current);
-		}
+	/*
+	 * FIXME: do we really need to run this under the BKL? If so, please
+	 * add a comment about what it's intended to protect.
+	 */
+	lock_kernel();
+	while (!kthread_should_stop()) {
 		/*
 		 * Listen for a request on the socket
 		 */
 		err = svc_recv(rqstp, MAX_SCHEDULE_TIMEOUT);
-		if (err == -EAGAIN || err == -EINTR)
+		if (err == -EAGAIN || err == -EINTR) {
+			preverr = err;
 			continue;
-		if (err < 0) {
-			printk(KERN_WARNING
-					"%s: terminating on error %d\n",
-					__FUNCTION__, -err);
-			break;
 		}
-		dprintk("%s: request from %s\n", __FUNCTION__,
-				svc_print_addr(rqstp, buf, sizeof(buf)));
+		if (err < 0) {
+			if (err != preverr) {
+				printk(KERN_WARNING "%s: unexpected error "
+					"from svc_recv (%d)\n", __func__, err);
+				preverr = err;
+			}
+			schedule_timeout_uninterruptible(HZ);
+			continue;
+		}
+		preverr = err;
 		svc_process(rqstp);
 	}
-
-	svc_exit_thread(rqstp);
-	nfs_callback_info.pid = 0;
-	complete(&nfs_callback_info.stopped);
 	unlock_kernel();
-	module_put_and_exit(0);
+	return 0;
 }
 
 /*
- * Bring up the server process if it is not already up.
+ * Bring up the callback thread if it is not already up.
  */
 int nfs_callback_up(void)
 {
-	struct svc_serv *serv;
+	struct svc_serv *serv = NULL;
 	int ret = 0;
 
-	lock_kernel();
 	mutex_lock(&nfs_callback_mutex);
-	if (nfs_callback_info.users++ || nfs_callback_info.pid != 0)
+	if (nfs_callback_info.users++ || nfs_callback_info.task != NULL)
 		goto out;
-	init_completion(&nfs_callback_info.started);
-	init_completion(&nfs_callback_info.stopped);
-	serv = svc_create(&nfs4_callback_program, NFS4_CALLBACK_BUFSIZE, NULL);
+	serv = svc_create(&nfs4_callback_program, NFS4_CALLBACK_BUFSIZE,
+				nfs_callback_family, NULL);
 	ret = -ENOMEM;
 	if (!serv)
 		goto out_err;
 
-	ret = svc_makesock(serv, IPPROTO_TCP, nfs_callback_set_tcpport,
-							SVC_SOCK_ANONYMOUS);
+	ret = svc_create_xprt(serv, "tcp", nfs_callback_set_tcpport,
+			      SVC_SOCK_ANONYMOUS);
 	if (ret <= 0)
-		goto out_destroy;
+		goto out_err;
 	nfs_callback_tcpport = ret;
-	dprintk("Callback port = 0x%x\n", nfs_callback_tcpport);
+	dprintk("NFS: Callback listener port = %u (af %u)\n",
+			nfs_callback_tcpport, nfs_callback_family);
 
-	ret = svc_create_thread(nfs_callback_svc, serv);
-	if (ret < 0)
-		goto out_destroy;
-	nfs_callback_info.serv = serv;
-	wait_for_completion(&nfs_callback_info.started);
+	nfs_callback_info.rqst = svc_prepare_thread(serv, &serv->sv_pools[0]);
+	if (IS_ERR(nfs_callback_info.rqst)) {
+		ret = PTR_ERR(nfs_callback_info.rqst);
+		nfs_callback_info.rqst = NULL;
+		goto out_err;
+	}
+
+	svc_sock_update_bufs(serv);
+
+	nfs_callback_info.task = kthread_run(nfs_callback_svc,
+					     nfs_callback_info.rqst,
+					     "nfsv4-svc");
+	if (IS_ERR(nfs_callback_info.task)) {
+		ret = PTR_ERR(nfs_callback_info.task);
+		svc_exit_thread(nfs_callback_info.rqst);
+		nfs_callback_info.rqst = NULL;
+		nfs_callback_info.task = NULL;
+		goto out_err;
+	}
 out:
+	/*
+	 * svc_create creates the svc_serv with sv_nrthreads == 1, and then
+	 * svc_prepare_thread increments that. So we need to call svc_destroy
+	 * on both success and failure so that the refcount is 1 when the
+	 * thread exits.
+	 */
+	if (serv)
+		svc_destroy(serv);
 	mutex_unlock(&nfs_callback_mutex);
-	unlock_kernel();
 	return ret;
-out_destroy:
-	dprintk("Couldn't create callback socket or server thread; err = %d\n",
-		ret);
-	svc_destroy(serv);
 out_err:
+	dprintk("NFS: Couldn't create callback socket or server thread; "
+		"err = %d\n", ret);
 	nfs_callback_info.users--;
 	goto out;
 }
 
 /*
- * Kill the server process if it is not already up.
+ * Kill the callback thread if it's no longer being used.
  */
 void nfs_callback_down(void)
 {
-	lock_kernel();
 	mutex_lock(&nfs_callback_mutex);
 	nfs_callback_info.users--;
-	do {
-		if (nfs_callback_info.users != 0 || nfs_callback_info.pid == 0)
-			break;
-		if (kill_proc(nfs_callback_info.pid, SIGKILL, 1) < 0)
-			break;
-	} while (wait_for_completion_timeout(&nfs_callback_info.stopped, 5*HZ) == 0);
+	if (nfs_callback_info.users == 0 && nfs_callback_info.task != NULL) {
+		kthread_stop(nfs_callback_info.task);
+		svc_exit_thread(nfs_callback_info.rqst);
+		nfs_callback_info.rqst = NULL;
+		nfs_callback_info.task = NULL;
+	}
 	mutex_unlock(&nfs_callback_mutex);
-	unlock_kernel();
+}
+
+static int check_gss_callback_principal(struct nfs_client *clp,
+					struct svc_rqst *rqstp)
+{
+	struct rpc_clnt *r = clp->cl_rpcclient;
+	char *p = svc_gss_principal(rqstp);
+
+	/*
+	 * It might just be a normal user principal, in which case
+	 * userspace won't bother to tell us the name at all.
+	 */
+	if (p == NULL)
+		return SVC_DENIED;
+
+	/* Expect a GSS_C_NT_HOSTBASED_NAME like "nfs@serverhostname" */
+
+	if (memcmp(p, "nfs@", 4) != 0)
+		return SVC_DENIED;
+	p += 4;
+	if (strcmp(p, r->cl_server) != 0)
+		return SVC_DENIED;
+	return SVC_OK;
 }
 
 static int nfs_callback_authenticate(struct svc_rqst *rqstp)
 {
-	struct sockaddr_in *addr = svc_addr_in(rqstp);
 	struct nfs_client *clp;
-	char buf[RPC_MAX_ADDRBUFLEN];
+	RPC_IFDEBUG(char buf[RPC_MAX_ADDRBUFLEN]);
+	int ret = SVC_OK;
 
 	/* Don't talk to strangers */
-	clp = nfs_find_client(addr, 4);
+	clp = nfs_find_client(svc_addr(rqstp), 4);
 	if (clp == NULL)
 		return SVC_DROP;
 
-	dprintk("%s: %s NFSv4 callback!\n", __FUNCTION__,
+	dprintk("%s: %s NFSv4 callback!\n", __func__,
 			svc_print_addr(rqstp, buf, sizeof(buf)));
-	nfs_put_client(clp);
 
 	switch (rqstp->rq_authop->flavour) {
 		case RPC_AUTH_NULL:
 			if (rqstp->rq_proc != CB_NULL)
-				return SVC_DENIED;
+				ret = SVC_DENIED;
 			break;
 		case RPC_AUTH_UNIX:
 			break;
 		case RPC_AUTH_GSS:
-			/* FIXME: RPCSEC_GSS handling? */
+			ret = check_gss_callback_principal(clp, rqstp);
+			break;
 		default:
-			return SVC_DENIED;
+			ret = SVC_DENIED;
 	}
-	return SVC_OK;
+	nfs_put_client(clp);
+	return ret;
 }
 
 /*

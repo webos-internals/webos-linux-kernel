@@ -45,6 +45,8 @@ void reiserfs_delete_inode(struct inode *inode)
 			goto out;
 		reiserfs_update_inode_transaction(inode);
 
+		reiserfs_discard_prealloc(&th, inode);
+
 		err = reiserfs_delete_object(&th, inode);
 
 		/* Do quota update inside a transaction for journaled quotas. We must do that
@@ -1520,7 +1522,6 @@ static struct dentry *reiserfs_get_dentry(struct super_block *sb,
 
 {
 	struct cpu_key key;
-	struct dentry *result;
 	struct inode *inode;
 
 	key.on_disk_key.k_objectid = objectid;
@@ -1533,16 +1534,8 @@ static struct dentry *reiserfs_get_dentry(struct super_block *sb,
 		inode = NULL;
 	}
 	reiserfs_write_unlock(sb);
-	if (!inode)
-		inode = ERR_PTR(-ESTALE);
-	if (IS_ERR(inode))
-		return ERR_PTR(PTR_ERR(inode));
-	result = d_alloc_anon(inode);
-	if (!result) {
-		iput(inode);
-		return ERR_PTR(-ENOMEM);
-	}
-	return result;
+
+	return d_obtain_alias(inode);
 }
 
 struct dentry *reiserfs_fh_to_dentry(struct super_block *sb, struct fid *fid,
@@ -1760,6 +1753,7 @@ int reiserfs_new_inode(struct reiserfs_transaction_handle *th,
 		       struct inode *inode)
 {
 	struct super_block *sb;
+	struct reiserfs_iget_args args;
 	INITIALIZE_PATH(path_to_key);
 	struct cpu_key key;
 	struct item_head ih;
@@ -1785,6 +1779,20 @@ int reiserfs_new_inode(struct reiserfs_transaction_handle *th,
 	ih.ih_key.k_objectid = cpu_to_le32(reiserfs_get_unused_objectid(th));
 	if (!ih.ih_key.k_objectid) {
 		err = -ENOMEM;
+		goto out_bad_inode;
+	}
+	args.objectid = inode->i_ino = le32_to_cpu(ih.ih_key.k_objectid);
+	if (old_format_only(sb))
+		make_le_item_head(&ih, NULL, KEY_FORMAT_3_5, SD_OFFSET,
+				  TYPE_STAT_DATA, SD_V1_SIZE, MAX_US_INT);
+	else
+		make_le_item_head(&ih, NULL, KEY_FORMAT_3_6, SD_OFFSET,
+				  TYPE_STAT_DATA, SD_SIZE, MAX_US_INT);
+	memcpy(INODE_PKEY(inode), &(ih.ih_key), KEY_SIZE);
+	args.dirid = le32_to_cpu(ih.ih_key.k_dir_id);
+	if (insert_inode_locked4(inode, args.objectid,
+			     reiserfs_find_actor, &args) < 0) {
+		err = -EINVAL;
 		goto out_bad_inode;
 	}
 	if (old_format_only(sb))
@@ -1832,13 +1840,6 @@ int reiserfs_new_inode(struct reiserfs_transaction_handle *th,
 	reiserfs_init_acl_default(inode);
 	reiserfs_init_xattr_rwsem(inode);
 
-	if (old_format_only(sb))
-		make_le_item_head(&ih, NULL, KEY_FORMAT_3_5, SD_OFFSET,
-				  TYPE_STAT_DATA, SD_V1_SIZE, MAX_US_INT);
-	else
-		make_le_item_head(&ih, NULL, KEY_FORMAT_3_6, SD_OFFSET,
-				  TYPE_STAT_DATA, SD_SIZE, MAX_US_INT);
-
 	/* key to search for correct place for new stat data */
 	_make_cpu_key(&key, KEY_FORMAT_3_6, le32_to_cpu(ih.ih_key.k_dir_id),
 		      le32_to_cpu(ih.ih_key.k_objectid), SD_OFFSET,
@@ -1866,13 +1867,9 @@ int reiserfs_new_inode(struct reiserfs_transaction_handle *th,
 	} else {
 		inode2sd(&sd, inode, inode->i_size);
 	}
-	// these do not go to on-disk stat data
-	inode->i_ino = le32_to_cpu(ih.ih_key.k_objectid);
-
 	// store in in-core inode the key of stat data and version all
 	// object items will have (directory items will have old offset
 	// format, other new objects will consist of new items)
-	memcpy(INODE_PKEY(inode), &(ih.ih_key), KEY_SIZE);
 	if (old_format_only(sb) || S_ISDIR(mode) || S_ISLNK(mode))
 		set_inode_item_key_version(inode, KEY_FORMAT_3_5);
 	else
@@ -1936,7 +1933,6 @@ int reiserfs_new_inode(struct reiserfs_transaction_handle *th,
 		reiserfs_mark_inode_private(inode);
 	}
 
-	insert_inode_hash(inode);
 	reiserfs_update_sd(th, inode);
 	reiserfs_check_path(&path_to_key);
 
@@ -1963,6 +1959,7 @@ int reiserfs_new_inode(struct reiserfs_transaction_handle *th,
       out_inserted_sd:
 	inode->i_nlink = 0;
 	th->t_trans_id = 0;	/* so the caller can't use this handle later */
+	unlock_new_inode(inode); /* OK to do even if we hadn't locked it */
 
 	/* If we were inheriting an ACL, we need to release the lock so that
 	 * iput doesn't deadlock in reiserfs_delete_xattrs. The locking
@@ -2143,7 +2140,7 @@ int reiserfs_truncate_file(struct inode *p_s_inode, int update_timestamps)
 		/* if we are not on a block boundary */
 		if (length) {
 			length = blocksize - length;
-			zero_user_page(page, offset, length, KM_USER0);
+			zero_user(page, offset, length);
 			if (buffer_mapped(bh) && bh->b_blocknr != 0) {
 				mark_buffer_dirty(bh);
 			}
@@ -2367,7 +2364,7 @@ static int reiserfs_write_full_page(struct page *page,
 			unlock_page(page);
 			return 0;
 		}
-		zero_user_page(page, last_offset, PAGE_CACHE_SIZE - last_offset, KM_USER0);
+		zero_user_segment(page, last_offset, PAGE_CACHE_SIZE);
 	}
 	bh = head;
 	block = page->index << (PAGE_CACHE_SHIFT - s->s_blocksize_bits);
@@ -2433,7 +2430,7 @@ static int reiserfs_write_full_page(struct page *page,
 		if (wbc->sync_mode != WB_SYNC_NONE || !wbc->nonblocking) {
 			lock_buffer(bh);
 		} else {
-			if (test_set_buffer_locked(bh)) {
+			if (!trylock_buffer(bh)) {
 				redirty_page_for_writepage(wbc, page);
 				continue;
 			}
@@ -2563,7 +2560,7 @@ static int reiserfs_write_begin(struct file *file,
 	}
 
 	index = pos >> PAGE_CACHE_SHIFT;
-	page = __grab_cache_page(mapping, index);
+	page = grab_cache_page_write_begin(mapping, index, flags);
 	if (!page)
 		return -ENOMEM;
 	*pagep = page;

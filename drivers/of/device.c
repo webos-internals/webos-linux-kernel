@@ -10,35 +10,6 @@
 #include <asm/errno.h>
 
 /**
- * of_match_node - Tell if an device_node has a matching of_match structure
- * @ids: array of of device match structures to search in
- * @node: the of device structure to match against
- *
- * Low level utility function used by device matching.
- */
-const struct of_device_id *of_match_node(const struct of_device_id *matches,
-					 const struct device_node *node)
-{
-	while (matches->name[0] || matches->type[0] || matches->compatible[0]) {
-		int match = 1;
-		if (matches->name[0])
-			match &= node->name
-				&& !strcmp(matches->name, node->name);
-		if (matches->type[0])
-			match &= node->type
-				&& !strcmp(matches->type, node->type);
-		if (matches->compatible[0])
-			match &= of_device_is_compatible(node,
-						matches->compatible);
-		if (match)
-			return matches;
-		matches++;
-	}
-	return NULL;
-}
-EXPORT_SYMBOL(of_match_node);
-
-/**
  * of_match_device - Tell if an of_device structure has a matching
  * of_match structure
  * @ids: array of of device match structures to search in
@@ -77,16 +48,42 @@ void of_dev_put(struct of_device *dev)
 }
 EXPORT_SYMBOL(of_dev_put);
 
-static ssize_t dev_show_devspec(struct device *dev,
+static ssize_t devspec_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct of_device *ofdev;
 
 	ofdev = to_of_device(dev);
-	return sprintf(buf, "%s", ofdev->node->full_name);
+	return sprintf(buf, "%s\n", ofdev->node->full_name);
 }
 
-static DEVICE_ATTR(devspec, S_IRUGO, dev_show_devspec, NULL);
+static ssize_t name_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct of_device *ofdev;
+
+	ofdev = to_of_device(dev);
+	return sprintf(buf, "%s\n", ofdev->node->name);
+}
+
+static ssize_t modalias_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct of_device *ofdev = to_of_device(dev);
+	ssize_t len = 0;
+
+	len = of_device_get_modalias(ofdev, buf, PAGE_SIZE - 2);
+	buf[len] = '\n';
+	buf[len+1] = 0;
+	return len+1;
+}
+
+struct device_attribute of_platform_device_attrs[] = {
+	__ATTR_RO(devspec),
+	__ATTR_RO(name),
+	__ATTR_RO(modalias),
+	__ATTR_NULL
+};
 
 /**
  * of_release_dev - free an of device structure when all users of it are finished.
@@ -107,25 +104,70 @@ EXPORT_SYMBOL(of_release_dev);
 
 int of_device_register(struct of_device *ofdev)
 {
-	int rc;
-
 	BUG_ON(ofdev->node == NULL);
 
-	rc = device_register(&ofdev->dev);
-	if (rc)
-		return rc;
+	device_initialize(&ofdev->dev);
 
-	rc = device_create_file(&ofdev->dev, &dev_attr_devspec);
-	if (rc)
-		device_unregister(&ofdev->dev);
+	/* device_add will assume that this device is on the same node as
+	 * the parent. If there is no parent defined, set the node
+	 * explicitly */
+	if (!ofdev->dev.parent)
+		set_dev_node(&ofdev->dev, of_node_to_nid(ofdev->node));
 
-	return rc;
+	return device_add(&ofdev->dev);
 }
 EXPORT_SYMBOL(of_device_register);
 
 void of_device_unregister(struct of_device *ofdev)
 {
-	device_remove_file(&ofdev->dev, &dev_attr_devspec);
 	device_unregister(&ofdev->dev);
 }
 EXPORT_SYMBOL(of_device_unregister);
+
+ssize_t of_device_get_modalias(struct of_device *ofdev,
+				char *str, ssize_t len)
+{
+	const char *compat;
+	int cplen, i;
+	ssize_t tsize, csize, repend;
+
+	/* Name & Type */
+	csize = snprintf(str, len, "of:N%sT%s",
+				ofdev->node->name, ofdev->node->type);
+
+	/* Get compatible property if any */
+	compat = of_get_property(ofdev->node, "compatible", &cplen);
+	if (!compat)
+		return csize;
+
+	/* Find true end (we tolerate multiple \0 at the end */
+	for (i = (cplen - 1); i >= 0 && !compat[i]; i--)
+		cplen--;
+	if (!cplen)
+		return csize;
+	cplen++;
+
+	/* Check space (need cplen+1 chars including final \0) */
+	tsize = csize + cplen;
+	repend = tsize;
+
+	if (csize >= len)		/* @ the limit, all is already filled */
+		return tsize;
+
+	if (tsize >= len) {		/* limit compat list */
+		cplen = len - csize - 1;
+		repend = len;
+	}
+
+	/* Copy and do char replacement */
+	memcpy(&str[csize + 1], compat, cplen);
+	for (i = csize; i < repend; i++) {
+		char c = str[i];
+		if (c == '\0')
+			str[i] = 'C';
+		else if (c == ' ')
+			str[i] = '_';
+	}
+
+	return tsize;
+}

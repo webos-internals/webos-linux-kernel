@@ -17,7 +17,6 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 */
 
-#include <sound/driver.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -395,7 +394,8 @@ static int snd_ad1816a_timer_open(struct snd_timer *timer)
 
 static unsigned long snd_ad1816a_timer_resolution(struct snd_timer *timer)
 {
-	snd_assert(timer != NULL, return 0);
+	if (snd_BUG_ON(!timer))
+		return 0;
 
 	return 10000;
 }
@@ -962,7 +962,8 @@ int __devinit snd_ad1816a_mixer(struct snd_ad1816a *chip)
 	unsigned int idx;
 	int err;
 
-	snd_assert(chip != NULL && chip->card != NULL, return -EINVAL);
+	if (snd_BUG_ON(!chip || !chip->card))
+		return -EINVAL;
 
 	card = chip->card;
 

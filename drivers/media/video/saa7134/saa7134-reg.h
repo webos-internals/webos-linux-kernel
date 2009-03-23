@@ -365,6 +365,10 @@
 #define SAA7135_DSP_RWSTATE_RDB                 (1 << 1)
 #define SAA7135_DSP_RWSTATE_WRR                 (1 << 0)
 
+#define SAA7135_DSP_RWCLEAR			0x586
+#define SAA7135_DSP_RWCLEAR_RERR		    1
+
+#define SAA7133_I2S_AUDIO_CONTROL               0x591
 /* ------------------------------------------------------------------ */
 /*
  * Local variables:

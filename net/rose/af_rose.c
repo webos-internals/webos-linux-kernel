@@ -74,6 +74,20 @@ ax25_address rose_callsign;
  * separate class since they always nest.
  */
 static struct lock_class_key rose_netdev_xmit_lock_key;
+static struct lock_class_key rose_netdev_addr_lock_key;
+
+static void rose_set_lockdep_one(struct net_device *dev,
+				 struct netdev_queue *txq,
+				 void *_unused)
+{
+	lockdep_set_class(&txq->_xmit_lock, &rose_netdev_xmit_lock_key);
+}
+
+static void rose_set_lockdep_key(struct net_device *dev)
+{
+	lockdep_set_class(&dev->addr_list_lock, &rose_netdev_addr_lock_key);
+	netdev_for_each_tx_queue(dev, rose_set_lockdep_one, NULL);
+}
 
 /*
  *	Convert a ROSE address into text.
@@ -116,7 +130,7 @@ int rosecmp(rose_address *addr1, rose_address *addr2)
  */
 int rosecmpm(rose_address *addr1, rose_address *addr2, unsigned short mask)
 {
-	int i, j;
+	unsigned int i, j;
 
 	if (mask > 10)
 		return 1;
@@ -197,7 +211,7 @@ static int rose_device_event(struct notifier_block *this, unsigned long event,
 {
 	struct net_device *dev = (struct net_device *)ptr;
 
-	if (dev->nd_net != &init_net)
+	if (!net_eq(dev_net(dev), &init_net))
 		return NOTIFY_DONE;
 
 	if (event != NETDEV_DOWN)
@@ -345,10 +359,9 @@ void rose_destroy_socket(struct sock *sk)
 	if (atomic_read(&sk->sk_wmem_alloc) ||
 	    atomic_read(&sk->sk_rmem_alloc)) {
 		/* Defer: outstanding buffers */
-		init_timer(&sk->sk_timer);
+		setup_timer(&sk->sk_timer, rose_destroy_timer,
+				(unsigned long)sk);
 		sk->sk_timer.expires  = jiffies + 10 * HZ;
-		sk->sk_timer.function = rose_destroy_timer;
-		sk->sk_timer.data     = (unsigned long)sk;
 		add_timer(&sk->sk_timer);
 	} else
 		sock_put(sk);
@@ -552,7 +565,7 @@ static struct sock *rose_make_new(struct sock *osk)
 	if (osk->sk_type != SOCK_SEQPACKET)
 		return NULL;
 
-	sk = sk_alloc(osk->sk_net, PF_ROSE, GFP_ATOMIC, &rose_proto);
+	sk = sk_alloc(sock_net(osk), PF_ROSE, GFP_ATOMIC, &rose_proto);
 	if (sk == NULL)
 		return NULL;
 
@@ -567,13 +580,11 @@ static struct sock *rose_make_new(struct sock *osk)
 #endif
 
 	sk->sk_type     = osk->sk_type;
-	sk->sk_socket   = osk->sk_socket;
 	sk->sk_priority = osk->sk_priority;
 	sk->sk_protocol = osk->sk_protocol;
 	sk->sk_rcvbuf   = osk->sk_rcvbuf;
 	sk->sk_sndbuf   = osk->sk_sndbuf;
 	sk->sk_state    = TCP_ESTABLISHED;
-	sk->sk_sleep    = osk->sk_sleep;
 	sock_copy_flags(sk, osk);
 
 	init_timer(&rose->timer);
@@ -599,17 +610,24 @@ static int rose_release(struct socket *sock)
 
 	if (sk == NULL) return 0;
 
+	sock_hold(sk);
+	sock_orphan(sk);
+	lock_sock(sk);
 	rose = rose_sk(sk);
 
 	switch (rose->state) {
 	case ROSE_STATE_0:
+		release_sock(sk);
 		rose_disconnect(sk, 0, -1, -1);
+		lock_sock(sk);
 		rose_destroy_socket(sk);
 		break;
 
 	case ROSE_STATE_2:
 		rose->neighbour->use--;
+		release_sock(sk);
 		rose_disconnect(sk, 0, -1, -1);
+		lock_sock(sk);
 		rose_destroy_socket(sk);
 		break;
 
@@ -634,6 +652,8 @@ static int rose_release(struct socket *sock)
 	}
 
 	sock->sk = NULL;
+	release_sock(sk);
+	sock_put(sk);
 
 	return 0;
 }
@@ -670,7 +690,7 @@ static int rose_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 
 	source = &addr->srose_call;
 
-	user = ax25_findbyuid(current->euid);
+	user = ax25_findbyuid(current_euid());
 	if (user) {
 		rose->source_call = user->call;
 		ax25_uid_put(user);
@@ -751,9 +771,11 @@ static int rose_connect(struct socket *sock, struct sockaddr *uaddr, int addr_le
 	sock->state = SS_UNCONNECTED;
 
 	rose->neighbour = rose_get_neigh(&addr->srose_addr, &cause,
-					 &diagnostic);
-	if (!rose->neighbour)
-		return -ENETUNREACH;
+					 &diagnostic, 0);
+	if (!rose->neighbour) {
+		err = -ENETUNREACH;
+		goto out_release;
+	}
 
 	rose->lci = rose_new_lci(rose->neighbour);
 	if (!rose->lci) {
@@ -769,7 +791,7 @@ static int rose_connect(struct socket *sock, struct sockaddr *uaddr, int addr_le
 			goto out_release;
 		}
 
-		user = ax25_findbyuid(current->euid);
+		user = ax25_findbyuid(current_euid());
 		if (!user) {
 			err = -EINVAL;
 			goto out_release;
@@ -845,7 +867,7 @@ rose_try_next_neigh:
 
 	if (sk->sk_state != TCP_ESTABLISHED) {
 	/* Try next neighbour */
-		rose->neighbour = rose_get_neigh(&addr->srose_addr, &cause, &diagnostic);
+		rose->neighbour = rose_get_neigh(&addr->srose_addr, &cause, &diagnostic, 0);
 		if (rose->neighbour)
 			goto rose_try_next_neigh;
 
@@ -914,14 +936,12 @@ static int rose_accept(struct socket *sock, struct socket *newsock, int flags)
 		goto out_release;
 
 	newsk = skb->sk;
-	newsk->sk_socket = newsock;
-	newsk->sk_sleep = &newsock->wait;
+	sock_graft(newsk, newsock);
 
 	/* Now attach up the new socket */
 	skb->sk = NULL;
 	kfree_skb(skb);
 	sk->sk_ack_backlog--;
-	newsock->sk = newsk;
 
 out_release:
 	release_sock(sk);
@@ -974,8 +994,8 @@ int rose_rx_call_request(struct sk_buff *skb, struct net_device *dev, struct ros
 	 */
 	memset(&facilities, 0x00, sizeof(struct rose_facilities_struct));
 
-	len  = (((skb->data[3] >> 4) & 0x0F) + 1) / 2;
-	len += (((skb->data[3] >> 0) & 0x0F) + 1) / 2;
+	len  = (((skb->data[3] >> 4) & 0x0F) + 1) >> 1;
+	len += (((skb->data[3] >> 0) & 0x0F) + 1) >> 1;
 	if (!rose_parse_facilities(skb->data + len + 4, &facilities)) {
 		rose_transmit_clear_request(neigh, lci, ROSE_INVALID_FACILITY, 76);
 		return 0;
@@ -1051,6 +1071,10 @@ static int rose_sendmsg(struct kiocb *iocb, struct socket *sock,
 	struct sk_buff *skb;
 	unsigned char *asmptr;
 	int n, size, qbit = 0;
+
+	/* ROSE empty frame has no meaning : don't send */
+	if (len == 0)
+		return 0;
 
 	if (msg->msg_flags & ~(MSG_DONTWAIT|MSG_EOR|MSG_CMSG_COMPAT))
 		return -EINVAL;
@@ -1245,6 +1269,12 @@ static int rose_recvmsg(struct kiocb *iocb, struct socket *sock,
 	skb_reset_transport_header(skb);
 	copied     = skb->len;
 
+	/* ROSE empty frame has no meaning : ignore it */
+	if (copied == 0) {
+		skb_free_datagram(sk, skb);
+		return copied;
+	}
+
 	if (copied > size) {
 		copied = size;
 		msg->msg_flags |= MSG_TRUNC;
@@ -1378,6 +1408,7 @@ static int rose_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 
 #ifdef CONFIG_PROC_FS
 static void *rose_info_start(struct seq_file *seq, loff_t *pos)
+	__acquires(rose_list_lock)
 {
 	int i;
 	struct sock *s;
@@ -1405,6 +1436,7 @@ static void *rose_info_next(struct seq_file *seq, void *v, loff_t *pos)
 }
 
 static void rose_info_stop(struct seq_file *seq, void *v)
+	__releases(rose_list_lock)
 {
 	spin_unlock_bh(&rose_list_lock);
 }
@@ -1568,7 +1600,7 @@ static int __init rose_proto_init(void)
 			free_netdev(dev);
 			goto fail;
 		}
-		lockdep_set_class(&dev->_xmit_lock, &rose_netdev_xmit_lock_key);
+		rose_set_lockdep_key(dev);
 		dev_rose[i] = dev;
 	}
 

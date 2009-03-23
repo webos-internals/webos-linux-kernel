@@ -21,7 +21,6 @@
 #include <linux/interrupt.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/ac97_codec.h>
@@ -105,7 +104,7 @@ static int hac_get_codec_data(struct hac_priv *hac, unsigned short r,
 	unsigned int to1, to2, i;
 	unsigned short adr;
 
-	for (i = 0; i < AC97_READ_RETRY; ++i) {
+	for (i = AC97_READ_RETRY; i; i--) {
 		*v = 0;
 		/* wait for HAC to receive something from the codec */
 		for (to1 = TMO_E4;
@@ -132,7 +131,7 @@ static int hac_get_codec_data(struct hac_priv *hac, unsigned short r,
 		udelay(21);
 	}
 	HACREG(HACRSR) &= ~(RSR_STDRY | RSR_STARY);
-	return (i < AC97_READ_RETRY);
+	return i;
 }
 
 static unsigned short hac_read_codec_aux(struct hac_priv *hac,
@@ -141,7 +140,7 @@ static unsigned short hac_read_codec_aux(struct hac_priv *hac,
 	unsigned short val;
 	unsigned int i, to;
 
-	for (i = 0; i < AC97_READ_RETRY; i++) {
+	for (i = AC97_READ_RETRY; i; i--) {
 		/* send_read_request */
 		local_irq_disable();
 		HACREG(HACTSR) &= ~(TSR_CMDAMT);
@@ -159,10 +158,7 @@ static unsigned short hac_read_codec_aux(struct hac_priv *hac,
 			break;
 	}
 
-	if (i == AC97_READ_RETRY)
-		return ~0;
-
-	return val;
+	return i ? val : ~0;
 }
 
 static void hac_ac97_write(struct snd_ac97 *ac97, unsigned short reg,
@@ -172,7 +168,7 @@ static void hac_ac97_write(struct snd_ac97 *ac97, unsigned short reg,
 	struct hac_priv *hac = &hac_cpu_data[unit_id];
 	unsigned int i, to;
 	/* write_codec_aux */
-	for (i = 0; i < AC97_WRITE_RETRY; i++) {
+	for (i = AC97_WRITE_RETRY; i; i--) {
 		/* send_write_request */
 		local_irq_disable();
 		HACREG(HACTSR) &= ~(TSR_CMDDMT | TSR_CMDAMT);
@@ -240,7 +236,8 @@ struct snd_ac97_bus_ops soc_ac97_ops = {
 EXPORT_SYMBOL_GPL(soc_ac97_ops);
 
 static int hac_hw_params(struct snd_pcm_substream *substream,
-			 struct snd_pcm_hw_params *params)
+			 struct snd_pcm_hw_params *params,
+			 struct snd_soc_dai *dai)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct hac_priv *hac = &hac_cpu_data[rtd->dai->cpu_dai->id];
@@ -270,11 +267,11 @@ static int hac_hw_params(struct snd_pcm_substream *substream,
 #define AC97_FMTS	\
 	SNDRV_PCM_FMTBIT_S16_LE
 
-struct snd_soc_cpu_dai sh4_hac_dai[] = {
+struct snd_soc_dai sh4_hac_dai[] = {
 {
 	.name			= "HAC0",
 	.id			= 0,
-	.type			= SND_SOC_DAI_AC97,
+	.ac97_control		= 1,
 	.playback = {
 		.rates		= AC97_RATES,
 		.formats	= AC97_FMTS,
@@ -294,8 +291,8 @@ struct snd_soc_cpu_dai sh4_hac_dai[] = {
 #ifdef CONFIG_CPU_SUBTYPE_SH7760
 {
 	.name			= "HAC1",
+	.ac97_control		= 1,
 	.id			= 1,
-	.type			= SND_SOC_DAI_AC97,
 	.playback = {
 		.rates		= AC97_RATES,
 		.formats	= AC97_FMTS,
@@ -316,6 +313,18 @@ struct snd_soc_cpu_dai sh4_hac_dai[] = {
 #endif
 };
 EXPORT_SYMBOL_GPL(sh4_hac_dai);
+
+static int __init sh4_hac_init(void)
+{
+	return snd_soc_register_dais(sh4_hac_dai, ARRAY_SIZE(sh4_hac_dai));
+}
+module_init(sh4_hac_init);
+
+static void __exit sh4_hac_exit(void)
+{
+	snd_soc_unregister_dais(sh4_hac_dai, ARRAY_SIZE(sh4_hac_dai));
+}
+module_exit(sh4_hac_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SuperH onchip HAC (AC97) audio driver");

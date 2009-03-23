@@ -31,19 +31,19 @@
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/serial_core.h>
+#include <linux/io.h>
 
 #include <asm/mach/map.h>
 
-#include <asm/hardware.h>
-#include <asm/io.h>
+#include <mach/hardware.h>
 
-#include <asm/plat-s3c/regs-serial.h>
-#include <asm/arch/regs-clock.h>
-#include <asm/arch/regs-gpio.h>
+#include <plat/regs-serial.h>
+#include <mach/regs-clock.h>
+#include <mach/regs-gpio.h>
 
-#include <asm/plat-s3c24xx/s3c2412.h>
-#include <asm/plat-s3c24xx/clock.h>
-#include <asm/plat-s3c24xx/cpu.h>
+#include <plat/s3c2412.h>
+#include <plat/clock.h>
+#include <plat/cpu.h>
 
 /* We currently have to assume that the system is running
  * from the XTPll input, and that all ***REFCLKs are being
@@ -92,12 +92,6 @@ static int s3c2412_upll_enable(struct clk *clk, int enable)
 }
 
 /* clock selections */
-
-/* CPU EXTCLK input */
-static struct clk clk_ext = {
-	.name		= "extclk",
-	.id		= -1,
-};
 
 static struct clk clk_erefclk = {
 	.name		= "erefclk",
@@ -217,7 +211,7 @@ static int s3c2412_setparent_msysclk(struct clk *clk, struct clk *parent)
 
 	if (parent == &clk_mdivclk)
 		clksrc &= ~S3C2412_CLKSRC_MSYSCLK_MPLL;
-	else if (parent == &clk_upll)
+	else if (parent == &clk_mpll)
 		clksrc |= S3C2412_CLKSRC_MSYSCLK_MPLL;
 	else
 		return -EINVAL;
@@ -232,6 +226,45 @@ static struct clk clk_msysclk = {
 	.name		= "msysclk",
 	.id		= -1,
 	.set_parent	= s3c2412_setparent_msysclk,
+};
+
+static int s3c2412_setparent_armclk(struct clk *clk, struct clk *parent)
+{
+	unsigned long flags;
+	unsigned long clkdiv;
+	unsigned long dvs;
+
+	/* Note, we current equate fclk andf msysclk for S3C2412 */
+
+	if (parent == &clk_msysclk || parent == &clk_f)
+		dvs = 0;
+	else if (parent == &clk_h)
+		dvs = S3C2412_CLKDIVN_DVSEN;
+	else
+		return -EINVAL;
+
+	clk->parent = parent;
+
+	/* update this under irq lockdown, clkdivn is not protected
+	 * by the clock system. */
+
+	local_irq_save(flags);
+
+	clkdiv  = __raw_readl(S3C2410_CLKDIVN);
+	clkdiv &= ~S3C2412_CLKDIVN_DVSEN;
+	clkdiv |= dvs;
+	__raw_writel(clkdiv, S3C2410_CLKDIVN);
+
+	local_irq_restore(flags);
+
+	return 0;
+}
+
+static struct clk clk_armclk = {
+	.name		= "armclk",
+	.id		= -1,
+	.parent		= &clk_msysclk,
+	.set_parent	= s3c2412_setparent_armclk,
 };
 
 /* these next clocks have an divider immediately after them,
@@ -592,6 +625,17 @@ static struct clk_init clks_src[] __initdata = {
 		.bit	= S3C2412_CLKSRC_USBCLK_HCLK,
 		.src_0	= &clk_usysclk,
 		.src_1	= &clk_h,
+	/* here we assume  OM[4] select xtal */
+	}, {
+		.clk	= &clk_erefclk,
+		.bit	= S3C2412_CLKSRC_EREFCLK_EXTCLK,
+		.src_0	= &clk_xtal,
+		.src_1	= &clk_ext,
+	}, {
+		.clk	= &clk_urefclk,
+		.bit	= S3C2412_CLKSRC_UREFCLK_EXTCLK,
+		.src_0	= &clk_xtal,
+		.src_1	= &clk_ext,
 	},
 };
 
@@ -627,14 +671,14 @@ static void __init s3c2412_clk_initparents(void)
 static struct clk *clks[] __initdata = {
 	&clk_ext,
 	&clk_usb_bus,
-	&clk_erefclk,
-	&clk_urefclk,
 	&clk_mrefclk,
+	&clk_armclk,
 };
 
 int __init s3c2412_baseclk_add(void)
 {
 	unsigned long clkcon  = __raw_readl(S3C2410_CLKCON);
+	unsigned int dvs;
 	struct clk *clkp;
 	int ret;
 	int ptr;
@@ -642,6 +686,8 @@ int __init s3c2412_baseclk_add(void)
 	clk_upll.enable = s3c2412_upll_enable;
 	clk_usb_bus.parent = &clk_usbsrc;
 	clk_usb_bus.rate = 0x0;
+
+	clk_f.parent = &clk_msysclk;
 
 	s3c2412_clk_initparents();
 
@@ -654,6 +700,15 @@ int __init s3c2412_baseclk_add(void)
 			       clkp->name, ret);
 		}
 	}
+
+	/* set the dvs state according to what we got at boot time */
+
+	dvs = __raw_readl(S3C2410_CLKDIVN) & S3C2412_CLKDIVN_DVSEN;
+
+	if (dvs)
+		clk_armclk.parent = &clk_h;
+
+	printk(KERN_INFO "S3C2412: DVS is %s\n", dvs ? "on" : "off");
 
 	/* ensure usb bus clock is within correct rate of 48MHz */
 
@@ -712,5 +767,6 @@ int __init s3c2412_baseclk_add(void)
 		s3c2412_clkcon_enable(clkp, 0);
 	}
 
+	s3c_pwmclk_init();
 	return 0;
 }

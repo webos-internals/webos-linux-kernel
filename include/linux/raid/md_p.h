@@ -15,6 +15,8 @@
 #ifndef _MD_P_H
 #define _MD_P_H
 
+#include <linux/types.h>
+
 /*
  * RAID superblock.
  *
@@ -43,14 +45,11 @@
  */
 #define MD_RESERVED_BYTES		(64 * 1024)
 #define MD_RESERVED_SECTORS		(MD_RESERVED_BYTES / 512)
-#define MD_RESERVED_BLOCKS		(MD_RESERVED_BYTES / BLOCK_SIZE)
 
 #define MD_NEW_SIZE_SECTORS(x)		((x & ~(MD_RESERVED_SECTORS - 1)) - MD_RESERVED_SECTORS)
-#define MD_NEW_SIZE_BLOCKS(x)		((x & ~(MD_RESERVED_BLOCKS - 1)) - MD_RESERVED_BLOCKS)
 
 #define MD_SB_BYTES			4096
 #define MD_SB_WORDS			(MD_SB_BYTES / 4)
-#define MD_SB_BLOCKS			(MD_SB_BYTES / BLOCK_SIZE)
 #define MD_SB_SECTORS			(MD_SB_BYTES / 512)
 
 /*
@@ -196,6 +195,8 @@ static inline __u64 md_event(mdp_super_t *sb) {
 	__u64 ev = sb->events_hi;
 	return (ev<<32)| sb->events_lo;
 }
+
+#define MD_SUPERBLOCK_1_TIME_SEC_MASK ((1ULL<<40) - 1)
 
 /*
  * The version-1 superblock :

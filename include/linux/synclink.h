@@ -13,9 +13,7 @@
 #define _SYNCLINK_H_
 #define SYNCLINK_H_VERSION 3.6
 
-#define BOOLEAN int
-#define TRUE 1
-#define FALSE 0
+#include <linux/types.h>
 
 #define BIT0	0x0001
 #define BIT1	0x0002
@@ -140,6 +138,7 @@
 #define MGSL_INTERFACE_RTS_EN   0x10
 #define MGSL_INTERFACE_LL       0x20
 #define MGSL_INTERFACE_RL       0x40
+#define MGSL_INTERFACE_MSB_FIRST 0x80
 
 typedef struct _MGSL_PARAMS
 {

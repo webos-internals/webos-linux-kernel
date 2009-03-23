@@ -32,10 +32,22 @@
 #include <linux/idr.h>
 #include <net/9p/9p.h>
 
+/**
+ * struct p9_idpool - per-connection accounting for tag idpool
+ * @lock: protects the pool
+ * @pool: idr to allocate tag id from
+ *
+ */
+
 struct p9_idpool {
-	struct semaphore lock;
+	spinlock_t lock;
 	struct idr pool;
 };
+
+/**
+ * p9_idpool_create - create a new per-connection id pool
+ *
+ */
 
 struct p9_idpool *p9_idpool_create(void)
 {
@@ -45,12 +57,17 @@ struct p9_idpool *p9_idpool_create(void)
 	if (!p)
 		return ERR_PTR(-ENOMEM);
 
-	init_MUTEX(&p->lock);
+	spin_lock_init(&p->lock);
 	idr_init(&p->pool);
 
 	return p;
 }
 EXPORT_SYMBOL(p9_idpool_create);
+
+/**
+ * p9_idpool_destroy - create a new per-connection id pool
+ * @p: idpool to destory
+ */
 
 void p9_idpool_destroy(struct p9_idpool *p)
 {
@@ -61,9 +78,9 @@ EXPORT_SYMBOL(p9_idpool_destroy);
 
 /**
  * p9_idpool_get - allocate numeric id from pool
- * @p - pool to allocate from
+ * @p: pool to allocate from
  *
- * XXX - This seems to be an awful generic function, should it be in idr.c with
+ * Bugs: This seems to be an awful generic function, should it be in idr.c with
  *            the lock included in struct idr?
  */
 
@@ -71,55 +88,58 @@ int p9_idpool_get(struct p9_idpool *p)
 {
 	int i = 0;
 	int error;
+	unsigned long flags;
 
 retry:
 	if (idr_pre_get(&p->pool, GFP_KERNEL) == 0)
 		return 0;
 
-	if (down_interruptible(&p->lock) == -EINTR) {
-		P9_EPRINTK(KERN_WARNING, "Interrupted while locking\n");
-		return -1;
-	}
+	spin_lock_irqsave(&p->lock, flags);
 
 	/* no need to store exactly p, we just need something non-null */
 	error = idr_get_new(&p->pool, p, &i);
-	up(&p->lock);
+	spin_unlock_irqrestore(&p->lock, flags);
 
 	if (error == -EAGAIN)
 		goto retry;
 	else if (error)
 		return -1;
 
+	P9_DPRINTK(P9_DEBUG_MUX, " id %d pool %p\n", i, p);
 	return i;
 }
 EXPORT_SYMBOL(p9_idpool_get);
 
 /**
  * p9_idpool_put - release numeric id from pool
- * @p - pool to allocate from
+ * @id: numeric id which is being released
+ * @p: pool to release id into
  *
- * XXX - This seems to be an awful generic function, should it be in idr.c with
+ * Bugs: This seems to be an awful generic function, should it be in idr.c with
  *            the lock included in struct idr?
  */
 
 void p9_idpool_put(int id, struct p9_idpool *p)
 {
-	if (down_interruptible(&p->lock) == -EINTR) {
-		P9_EPRINTK(KERN_WARNING, "Interrupted while locking\n");
-		return;
-	}
+	unsigned long flags;
+
+	P9_DPRINTK(P9_DEBUG_MUX, " id %d pool %p\n", id, p);
+
+	spin_lock_irqsave(&p->lock, flags);
 	idr_remove(&p->pool, id);
-	up(&p->lock);
+	spin_unlock_irqrestore(&p->lock, flags);
 }
 EXPORT_SYMBOL(p9_idpool_put);
 
 /**
  * p9_idpool_check - check if the specified id is available
- * @id - id to check
- * @p - pool
+ * @id: id to check
+ * @p: pool to check
  */
+
 int p9_idpool_check(int id, struct p9_idpool *p)
 {
 	return idr_find(&p->pool, id) != NULL;
 }
 EXPORT_SYMBOL(p9_idpool_check);
+

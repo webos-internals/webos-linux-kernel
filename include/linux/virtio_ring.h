@@ -15,9 +15,13 @@
 /* This marks a buffer as write-only (otherwise read-only). */
 #define VRING_DESC_F_WRITE	2
 
-/* This means don't notify other side when buffer added. */
+/* The Host uses this in used->flags to advise the Guest: don't kick me when
+ * you add a buffer.  It's unreliable, so it's simply an optimization.  Guest
+ * will still kick if it's out of buffers. */
 #define VRING_USED_F_NO_NOTIFY	1
-/* This means don't interrupt guest when buffer consumed. */
+/* The Guest uses this in avail->flags to advise the Host: don't interrupt me
+ * when you consume a buffer.  It's unreliable, so it's simply an
+ * optimization.  */
 #define VRING_AVAIL_F_NO_INTERRUPT	1
 
 /* Virtio ring descriptors: 16 bytes.  These can chain together via "next". */
@@ -79,7 +83,7 @@ struct vring {
  *	__u16 avail_idx;
  *	__u16 available[num];
  *
- *	// Padding to the next page boundary.
+ *	// Padding to the next align boundary.
  *	char pad[];
  *
  *	// A ring of used descriptor heads with free-running index.
@@ -89,19 +93,19 @@ struct vring {
  * };
  */
 static inline void vring_init(struct vring *vr, unsigned int num, void *p,
-			      unsigned int pagesize)
+			      unsigned long align)
 {
 	vr->num = num;
 	vr->desc = p;
 	vr->avail = p + num*sizeof(struct vring_desc);
-	vr->used = (void *)(((unsigned long)&vr->avail->ring[num] + pagesize-1)
-			    & ~(pagesize - 1));
+	vr->used = (void *)(((unsigned long)&vr->avail->ring[num] + align-1)
+			    & ~(align - 1));
 }
 
-static inline unsigned vring_size(unsigned int num, unsigned int pagesize)
+static inline unsigned vring_size(unsigned int num, unsigned long align)
 {
 	return ((sizeof(struct vring_desc) * num + sizeof(__u16) * (2 + num)
-		 + pagesize - 1) & ~(pagesize - 1))
+		 + align - 1) & ~(align - 1))
 		+ sizeof(__u16) * 2 + sizeof(struct vring_used_elem) * num;
 }
 
@@ -111,11 +115,14 @@ struct virtio_device;
 struct virtqueue;
 
 struct virtqueue *vring_new_virtqueue(unsigned int num,
+				      unsigned int vring_align,
 				      struct virtio_device *vdev,
 				      void *pages,
 				      void (*notify)(struct virtqueue *vq),
-				      bool (*callback)(struct virtqueue *vq));
+				      void (*callback)(struct virtqueue *vq));
 void vring_del_virtqueue(struct virtqueue *vq);
+/* Filter out transport-specific feature bits. */
+void vring_transport_features(struct virtio_device *vdev);
 
 irqreturn_t vring_interrupt(int irq, void *_vq);
 #endif /* __KERNEL__ */

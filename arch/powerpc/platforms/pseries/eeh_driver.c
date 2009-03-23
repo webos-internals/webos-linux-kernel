@@ -41,18 +41,21 @@ static inline const char * pcid_name (struct pci_dev *pdev)
 	return "";
 }
 
-#ifdef DEBUG
-static void print_device_node_tree (struct pci_dn *pdn, int dent)
+#if 0
+static void print_device_node_tree(struct pci_dn *pdn, int dent)
 {
 	int i;
-	if (!pdn) return;
-	for (i=0;i<dent; i++)
+	struct device_node *pc;
+
+	if (!pdn)
+		return;
+	for (i = 0; i < dent; i++)
 		printk(" ");
 	printk("dn=%s mode=%x \tcfg_addr=%x pe_addr=%x \tfull=%s\n",
 		pdn->node->name, pdn->eeh_mode, pdn->eeh_config_addr,
 		pdn->eeh_pe_config_addr, pdn->node->full_name);
 	dent += 3;
-	struct device_node *pc = pdn->node->child;
+	pc = pdn->node->child;
 	while (pc) {
 		print_device_node_tree(PCI_DN(pc), dent);
 		pc = pc->sibling;
@@ -310,8 +313,6 @@ struct pci_dn * handle_eeh_events (struct eeh_event *event)
 	const char *location, *pci_str, *drv_str;
 
 	frozen_dn = find_device_pe(event->dn);
-	frozen_bus = pcibios_find_pci_bus(frozen_dn);
-
 	if (!frozen_dn) {
 
 		location = of_get_property(event->dn, "ibm,loc-code", NULL);
@@ -321,6 +322,8 @@ struct pci_dn * handle_eeh_events (struct eeh_event *event)
 		        location, pci_name(event->dev));
 		return NULL;
 	}
+
+	frozen_bus = pcibios_find_pci_bus(frozen_dn);
 	location = of_get_property(frozen_dn, "ibm,loc-code", NULL);
 	location = location ? location : "unknown";
 
@@ -354,13 +357,6 @@ struct pci_dn * handle_eeh_events (struct eeh_event *event)
 	if (frozen_pdn->eeh_freeze_count > EEH_MAX_ALLOWED_FREEZES)
 		goto excess_failures;
 
-	/* Get the current PCI slot state. */
-	rc = eeh_wait_for_slot_status (frozen_pdn, MAX_WAIT_FOR_RECOVERY*1000);
-	if (rc < 0) {
-		printk(KERN_WARNING "EEH: Permanent failure\n");
-		goto hard_fail;
-	}
-
 	printk(KERN_WARNING
 	   "EEH: This PCI device has failed %d times in the last hour:\n",
 		frozen_pdn->eeh_freeze_count);
@@ -375,6 +371,14 @@ struct pci_dn * handle_eeh_events (struct eeh_event *event)
 	 * slot is dlpar removed and added.
 	 */
 	pci_walk_bus(frozen_bus, eeh_report_error, &result);
+
+	/* Get the current PCI slot state. This can take a long time,
+	 * sometimes over 3 seconds for certain systems. */
+	rc = eeh_wait_for_slot_status (frozen_pdn, MAX_WAIT_FOR_RECOVERY*1000);
+	if (rc < 0) {
+		printk(KERN_WARNING "EEH: Permanent failure\n");
+		goto hard_fail;
+	}
 
 	/* Since rtas may enable MMIO when posting the error log,
 	 * don't post the error log until after all dev drivers

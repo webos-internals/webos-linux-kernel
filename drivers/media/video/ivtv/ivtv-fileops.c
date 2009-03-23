@@ -39,7 +39,7 @@
    associated VBI streams are also automatically claimed.
    Possible error returns: -EBUSY if someone else has claimed
    the stream or 0 on success. */
-int ivtv_claim_stream(struct ivtv_open_id *id, int type)
+static int ivtv_claim_stream(struct ivtv_open_id *id, int type)
 {
 	struct ivtv *itv = id->itv;
 	struct ivtv_stream *s = &itv->streams[type];
@@ -78,7 +78,7 @@ int ivtv_claim_stream(struct ivtv_open_id *id, int type)
 	if (type == IVTV_DEC_STREAM_TYPE_MPG) {
 		vbi_type = IVTV_DEC_STREAM_TYPE_VBI;
 	} else if (type == IVTV_ENC_STREAM_TYPE_MPG &&
-		   itv->vbi.insert_mpeg && itv->vbi.sliced_in->service_set) {
+		   itv->vbi.insert_mpeg && !ivtv_raw_vbi(itv)) {
 		vbi_type = IVTV_ENC_STREAM_TYPE_VBI;
 	} else {
 		return 0;
@@ -155,7 +155,7 @@ static void ivtv_dualwatch(struct ivtv *itv)
 
 	new_stereo_mode = itv->params.audio_properties & stereo_mask;
 	memset(&vt, 0, sizeof(vt));
-	ivtv_call_i2c_clients(itv, VIDIOC_G_TUNER, &vt);
+	ivtv_call_all(itv, tuner, g_tuner, &vt);
 	if (vt.audmode == V4L2_TUNER_MODE_LANG1_LANG2 && (vt.rxsubchans & V4L2_TUNER_SUB_LANG2))
 		new_stereo_mode = dual;
 
@@ -219,7 +219,9 @@ static struct ivtv_buffer *ivtv_get_buffer(struct ivtv_stream *s, int non_block,
 			/* Process pending program info updates and pending VBI data */
 			ivtv_update_pgm_info(itv);
 
-			if (jiffies - itv->dualwatch_jiffies > msecs_to_jiffies(1000)) {
+			if (time_after(jiffies,
+				       itv->dualwatch_jiffies +
+				       msecs_to_jiffies(1000))) {
 				itv->dualwatch_jiffies = jiffies;
 				ivtv_dualwatch(itv);
 			}
@@ -303,7 +305,7 @@ static size_t ivtv_copy_buf_to_user(struct ivtv_stream *s, struct ivtv_buffer *b
 
 	if (len > ucount) len = ucount;
 	if (itv->vbi.insert_mpeg && s->type == IVTV_ENC_STREAM_TYPE_MPG &&
-	    itv->vbi.sliced_in->service_set && buf != &itv->vbi.sliced_mpeg_buf) {
+	    !ivtv_raw_vbi(itv) && buf != &itv->vbi.sliced_mpeg_buf) {
 		const char *start = buf->buf + buf->readpos;
 		const char *p = start + 1;
 		const u8 *q;
@@ -370,7 +372,7 @@ static ssize_t ivtv_read(struct ivtv_stream *s, char __user *ubuf, size_t tot_co
 	/* Each VBI buffer is one frame, the v4l2 API says that for VBI the frames should
 	   arrive one-by-one, so make sure we never output more than one VBI frame at a time */
 	if (s->type == IVTV_DEC_STREAM_TYPE_VBI ||
-			(s->type == IVTV_ENC_STREAM_TYPE_VBI && itv->vbi.sliced_in->service_set))
+	    (s->type == IVTV_ENC_STREAM_TYPE_VBI && !ivtv_raw_vbi(itv)))
 		single_frame = 1;
 
 	for (;;) {
@@ -542,6 +544,7 @@ ssize_t ivtv_v4l2_write(struct file *filp, const char __user *user_buf, size_t c
 	struct ivtv_open_id *id = filp->private_data;
 	struct ivtv *itv = id->itv;
 	struct ivtv_stream *s = &itv->streams[id->type];
+	struct yuv_playback_info *yi = &itv->yuv_info;
 	struct ivtv_buffer *buf;
 	struct ivtv_queue q;
 	int bytes_written = 0;
@@ -579,7 +582,39 @@ ssize_t ivtv_v4l2_write(struct file *filp, const char __user *user_buf, size_t c
 	ivtv_queue_init(&q);
 	set_bit(IVTV_F_S_APPL_IO, &s->s_flags);
 
+	/* Start decoder (returns 0 if already started) */
+	mutex_lock(&itv->serialize_lock);
+	rc = ivtv_start_decoding(id, itv->speed);
+	mutex_unlock(&itv->serialize_lock);
+	if (rc) {
+		IVTV_DEBUG_WARN("Failed start decode stream %s\n", s->name);
+
+		/* failure, clean up */
+		clear_bit(IVTV_F_S_STREAMING, &s->s_flags);
+		clear_bit(IVTV_F_S_APPL_IO, &s->s_flags);
+		return rc;
+	}
+
 retry:
+	/* If possible, just DMA the entire frame - Check the data transfer size
+	since we may get here before the stream has been fully set-up */
+	if (mode == OUT_YUV && s->q_full.length == 0 && itv->dma_data_req_size) {
+		while (count >= itv->dma_data_req_size) {
+			rc = ivtv_yuv_udma_stream_frame(itv, (void __user *)user_buf);
+
+			if (rc < 0)
+				return rc;
+
+			bytes_written += itv->dma_data_req_size;
+			user_buf += itv->dma_data_req_size;
+			count -= itv->dma_data_req_size;
+		}
+		if (count == 0) {
+			IVTV_DEBUG_HI_FILE("Wrote %d bytes to %s (%d)\n", bytes_written, s->name, s->q_full.bytesused);
+			return bytes_written;
+		}
+	}
+
 	for (;;) {
 		/* Gather buffers */
 		while (q.length - q.bytesused < count && (buf = ivtv_dequeue(s, &s->q_io)))
@@ -604,9 +639,16 @@ retry:
 
 	/* copy user data into buffers */
 	while ((buf = ivtv_dequeue(s, &q))) {
-		/* Make sure we really got all the user data */
-		rc = ivtv_buf_copy_from_user(s, buf, user_buf, count);
+		/* yuv is a pain. Don't copy more data than needed for a single
+		   frame, otherwise we lose sync with the incoming stream */
+		if (s->type == IVTV_DEC_STREAM_TYPE_YUV &&
+		    yi->stream_size + count > itv->dma_data_req_size)
+			rc  = ivtv_buf_copy_from_user(s, buf, user_buf,
+				itv->dma_data_req_size - yi->stream_size);
+		else
+			rc = ivtv_buf_copy_from_user(s, buf, user_buf, count);
 
+		/* Make sure we really got all the user data */
 		if (rc < 0) {
 			ivtv_queue_move(s, &q, NULL, &s->q_free, 0);
 			return rc;
@@ -614,6 +656,16 @@ retry:
 		user_buf += rc;
 		count -= rc;
 		bytes_written += rc;
+
+		if (s->type == IVTV_DEC_STREAM_TYPE_YUV) {
+			yi->stream_size += rc;
+			/* If we have a complete yuv frame, break loop now */
+			if (yi->stream_size == itv->dma_data_req_size) {
+				ivtv_enqueue(s, buf, &s->q_full);
+				yi->stream_size = 0;
+				break;
+			}
+		}
 
 		if (buf->bytesused != s->buf_size) {
 			/* incomplete, leave in q_io for next time */
@@ -626,21 +678,12 @@ retry:
 		ivtv_enqueue(s, buf, &s->q_full);
 	}
 
-	/* Start decoder (returns 0 if already started) */
-	mutex_lock(&itv->serialize_lock);
-	rc = ivtv_start_decoding(id, itv->speed);
-	mutex_unlock(&itv->serialize_lock);
-	if (rc) {
-		IVTV_DEBUG_WARN("Failed start decode stream %s\n", s->name);
-
-		/* failure, clean up */
-		clear_bit(IVTV_F_S_STREAMING, &s->s_flags);
-		clear_bit(IVTV_F_S_APPL_IO, &s->s_flags);
-		return rc;
-	}
 	if (test_bit(IVTV_F_S_NEEDS_DATA, &s->s_flags)) {
 		if (s->q_full.length >= itv->dma_data_req_size) {
 			int got_sig;
+
+			if (mode == OUT_YUV)
+				ivtv_yuv_setup_stream_frame(itv);
 
 			prepare_to_wait(&itv->dma_waitq, &wait, TASK_INTERRUPTIBLE);
 			while (!(got_sig = signal_pending(current)) &&
@@ -714,8 +757,10 @@ unsigned int ivtv_v4l2_enc_poll(struct file *filp, poll_table * wait)
 	IVTV_DEBUG_HI_FILE("Encoder poll\n");
 	poll_wait(filp, &s->waitq, wait);
 
-	if (eof || s->q_full.length)
+	if (s->q_full.length || s->q_io.length)
 		return POLLIN | POLLRDNORM;
+	if (eof)
+		return POLLHUP;
 	return 0;
 }
 
@@ -786,7 +831,7 @@ static void ivtv_stop_decoding(struct ivtv_open_id *id, int flags, u64 pts)
 	ivtv_release_stream(s);
 }
 
-int ivtv_v4l2_close(struct inode *inode, struct file *filp)
+int ivtv_v4l2_close(struct file *filp)
 {
 	struct ivtv_open_id *id = filp->private_data;
 	struct ivtv *itv = id->itv;
@@ -812,7 +857,7 @@ int ivtv_v4l2_close(struct inode *inode, struct file *filp)
 		/* Mark that the radio is no longer in use */
 		clear_bit(IVTV_F_I_RADIO_USER, &itv->i_flags);
 		/* Switch tuner to TV */
-		ivtv_call_i2c_clients(itv, VIDIOC_S_STD, &itv->std);
+		ivtv_call_all(itv, tuner, s_std, itv->std);
 		/* Select correct audio input (i.e. TV tuner or Line in) */
 		ivtv_audio_set_io(itv);
 		if (itv->hw_flags & IVTV_HW_SAA711X)
@@ -820,7 +865,7 @@ int ivtv_v4l2_close(struct inode *inode, struct file *filp)
 			struct v4l2_crystal_freq crystal_freq;
 			crystal_freq.freq = SAA7115_FREQ_32_11_MHZ;
 			crystal_freq.flags = 0;
-			ivtv_saa7115(itv, VIDIOC_INT_S_CRYSTAL_FREQ, &crystal_freq);
+			ivtv_call_hw(itv, IVTV_HW_SAA711X, video, s_crystal_freq, &crystal_freq);
 		}
 		if (atomic_read(&itv->capturing) > 0) {
 			/* Undo video mute */
@@ -907,59 +952,46 @@ static int ivtv_serialized_open(struct ivtv_stream *s, struct file *filp)
 		/* We have the radio */
 		ivtv_mute(itv);
 		/* Switch tuner to radio */
-		ivtv_call_i2c_clients(itv, AUDC_SET_RADIO, NULL);
+		ivtv_call_all(itv, tuner, s_radio);
 		/* Select the correct audio input (i.e. radio tuner) */
 		ivtv_audio_set_io(itv);
-		if (itv->hw_flags & IVTV_HW_SAA711X)
-		{
+		if (itv->hw_flags & IVTV_HW_SAA711X) {
 			struct v4l2_crystal_freq crystal_freq;
 			crystal_freq.freq = SAA7115_FREQ_32_11_MHZ;
 			crystal_freq.flags = SAA7115_FREQ_FL_APLL;
-			ivtv_saa7115(itv, VIDIOC_INT_S_CRYSTAL_FREQ, &crystal_freq);
+			ivtv_call_hw(itv, IVTV_HW_SAA711X, video, s_crystal_freq, &crystal_freq);
 		}
 		/* Done! Unmute and continue. */
 		ivtv_unmute(itv);
 	}
 
 	/* YUV or MPG Decoding Mode? */
-	if (s->type == IVTV_DEC_STREAM_TYPE_MPG)
+	if (s->type == IVTV_DEC_STREAM_TYPE_MPG) {
 		clear_bit(IVTV_F_I_DEC_YUV, &itv->i_flags);
-	else if (s->type == IVTV_DEC_STREAM_TYPE_YUV)
+	} else if (s->type == IVTV_DEC_STREAM_TYPE_YUV) {
 		set_bit(IVTV_F_I_DEC_YUV, &itv->i_flags);
+		/* For yuv, we need to know the dma size before we start */
+		itv->dma_data_req_size =
+				1080 * ((itv->yuv_info.v4l2_src_h + 31) & ~31);
+		itv->yuv_info.stream_size = 0;
+	}
 	return 0;
 }
 
-int ivtv_v4l2_open(struct inode *inode, struct file *filp)
+int ivtv_v4l2_open(struct file *filp)
 {
-	int res, x, y = 0;
+	int res;
 	struct ivtv *itv = NULL;
 	struct ivtv_stream *s = NULL;
-	int minor = iminor(inode);
+	struct video_device *vdev = video_devdata(filp);
 
-	/* Find which card this open was on */
-	spin_lock(&ivtv_cards_lock);
-	for (x = 0; itv == NULL && x < ivtv_cards_active; x++) {
-		/* find out which stream this open was on */
-		for (y = 0; y < IVTV_MAX_STREAMS; y++) {
-			s = &ivtv_cards[x]->streams[y];
-			if (s->v4l2dev && s->v4l2dev->minor == minor) {
-				itv = ivtv_cards[x];
-				break;
-			}
-		}
-	}
-	spin_unlock(&ivtv_cards_lock);
-
-	if (itv == NULL) {
-		/* Couldn't find a device registered
-		   on that minor, shouldn't happen! */
-		printk(KERN_WARNING "No ivtv device found on minor %d\n", minor);
-		return -ENXIO;
-	}
+	s = video_get_drvdata(vdev);
+	itv = s->itv;
 
 	mutex_lock(&itv->serialize_lock);
 	if (ivtv_init_on_first_open(itv)) {
-		IVTV_ERR("Failed to initialize on minor %d\n", minor);
+		IVTV_ERR("Failed to initialize on minor %d\n",
+				s->v4l2dev->minor);
 		mutex_unlock(&itv->serialize_lock);
 		return -ENXIO;
 	}

@@ -1,26 +1,41 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/quota.h>
+#include <linux/quotaops.h>
 #include <linux/dqblk_v1.h>
-#include <linux/quotaio_v1.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
 
 #include <asm/byteorder.h>
 
+#include "quotaio_v1.h"
+
 MODULE_AUTHOR("Jan Kara");
 MODULE_DESCRIPTION("Old quota format support");
 MODULE_LICENSE("GPL");
+
+#define QUOTABLOCK_BITS 10
+#define QUOTABLOCK_SIZE (1 << QUOTABLOCK_BITS)
+
+static inline qsize_t v1_stoqb(qsize_t space)
+{
+	return (space + QUOTABLOCK_SIZE - 1) >> QUOTABLOCK_BITS;
+}
+
+static inline qsize_t v1_qbtos(qsize_t blocks)
+{
+	return blocks << QUOTABLOCK_BITS;
+}
 
 static void v1_disk2mem_dqblk(struct mem_dqblk *m, struct v1_disk_dqblk *d)
 {
 	m->dqb_ihardlimit = d->dqb_ihardlimit;
 	m->dqb_isoftlimit = d->dqb_isoftlimit;
 	m->dqb_curinodes = d->dqb_curinodes;
-	m->dqb_bhardlimit = d->dqb_bhardlimit;
-	m->dqb_bsoftlimit = d->dqb_bsoftlimit;
-	m->dqb_curspace = ((qsize_t)d->dqb_curblocks) << QUOTABLOCK_BITS;
+	m->dqb_bhardlimit = v1_qbtos(d->dqb_bhardlimit);
+	m->dqb_bsoftlimit = v1_qbtos(d->dqb_bsoftlimit);
+	m->dqb_curspace = v1_qbtos(d->dqb_curblocks);
 	m->dqb_itime = d->dqb_itime;
 	m->dqb_btime = d->dqb_btime;
 }
@@ -30,9 +45,9 @@ static void v1_mem2disk_dqblk(struct v1_disk_dqblk *d, struct mem_dqblk *m)
 	d->dqb_ihardlimit = m->dqb_ihardlimit;
 	d->dqb_isoftlimit = m->dqb_isoftlimit;
 	d->dqb_curinodes = m->dqb_curinodes;
-	d->dqb_bhardlimit = m->dqb_bhardlimit;
-	d->dqb_bsoftlimit = m->dqb_bsoftlimit;
-	d->dqb_curblocks = toqb(m->dqb_curspace);
+	d->dqb_bhardlimit = v1_stoqb(m->dqb_bhardlimit);
+	d->dqb_bsoftlimit = v1_stoqb(m->dqb_bsoftlimit);
+	d->dqb_curblocks = v1_stoqb(m->dqb_curspace);
 	d->dqb_itime = m->dqb_itime;
 	d->dqb_btime = m->dqb_btime;
 }
@@ -139,6 +154,9 @@ static int v1_read_file_info(struct super_block *sb, int type)
 		goto out;
 	}
 	ret = 0;
+	/* limits are stored as unsigned 32-bit data */
+	dqopt->info[type].dqi_maxblimit = 0xffffffff;
+	dqopt->info[type].dqi_maxilimit = 0xffffffff;
 	dqopt->info[type].dqi_igrace = dqblk.dqb_itime ? dqblk.dqb_itime : MAX_IQ_TIME;
 	dqopt->info[type].dqi_bgrace = dqblk.dqb_btime ? dqblk.dqb_btime : MAX_DQ_TIME;
 out:

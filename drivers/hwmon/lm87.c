@@ -5,7 +5,7 @@
  *                          Philip Edelbrock <phil@netroedge.com>
  *                          Stephen Rousset <stephen.rousset@rocketlogix.com>
  *                          Dan Eaton <dan.eaton@rocketlogix.com>
- * Copyright (C) 2004       Jean Delvare <khali@linux-fr.org>
+ * Copyright (C) 2004-2008  Jean Delvare <khali@linux-fr.org>
  *
  * Original port to Linux 2.6 by Jeff Oliver.
  *
@@ -21,11 +21,10 @@
  *   http://www.national.com/pf/LM/LM87.html
  *
  * Some functions share pins, so not all functions are available at the same
- * time. Which are depends on the hardware setup. This driver assumes that
- * the BIOS configured the chip correctly. In that respect, it  differs from
- * the original driver (from lm_sensors for Linux 2.4), which would force the
- * LM87 to an arbitrary, compile-time chosen mode, regardless of the actual
- * chipset wiring.
+ * time. Which are depends on the hardware setup. This driver normally
+ * assumes that firmware configured the chip correctly. Where this is not
+ * the case, platform code must set the I2C client's platform_data to point
+ * to a u8 value to be written to the channel register.
  * For reference, here is the list of exclusive functions:
  *  - in0+in5 (default) or temp3
  *  - fan1 (default) or in6
@@ -36,6 +35,11 @@
  * control the speed of a fan. All new chips use pulse width modulation
  * instead. The LM87 is the only hardware monitoring chipset I know of
  * which uses amplitude modulation. Be careful when using this feature.
+ *
+ * This driver also supports the ADM1024, a sensor chip made by Analog
+ * Devices. That chip is fully compatible with the LM87. Complete
+ * datasheet can be obtained from Analog's website at:
+ *   http://www.analog.com/en/prod/0,2877,ADM1024,00.html
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -68,13 +72,13 @@
  * LM87 has three possible addresses: 0x2c, 0x2d and 0x2e.
  */
 
-static unsigned short normal_i2c[] = { 0x2c, 0x2d, 0x2e, I2C_CLIENT_END };
+static const unsigned short normal_i2c[] = { 0x2c, 0x2d, 0x2e, I2C_CLIENT_END };
 
 /*
  * Insmod parameters
  */
 
-I2C_CLIENT_INSMOD_1(lm87);
+I2C_CLIENT_INSMOD_2(lm87, adm1024);
 
 /*
  * The LM87 registers
@@ -152,23 +156,35 @@ static u8 LM87_REG_TEMP_LOW[3] = { 0x3A, 0x38, 0x2C };
  * Functions declaration
  */
 
-static int lm87_attach_adapter(struct i2c_adapter *adapter);
-static int lm87_detect(struct i2c_adapter *adapter, int address, int kind);
+static int lm87_probe(struct i2c_client *client,
+		      const struct i2c_device_id *id);
+static int lm87_detect(struct i2c_client *new_client, int kind,
+		       struct i2c_board_info *info);
 static void lm87_init_client(struct i2c_client *client);
-static int lm87_detach_client(struct i2c_client *client);
+static int lm87_remove(struct i2c_client *client);
 static struct lm87_data *lm87_update_device(struct device *dev);
 
 /*
  * Driver data (common to all clients)
  */
 
+static const struct i2c_device_id lm87_id[] = {
+	{ "lm87", lm87 },
+	{ "adm1024", adm1024 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, lm87_id);
+
 static struct i2c_driver lm87_driver = {
+	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "lm87",
 	},
-	.id		= I2C_DRIVERID_LM87,
-	.attach_adapter	= lm87_attach_adapter,
-	.detach_client	= lm87_detach_client,
+	.probe		= lm87_probe,
+	.remove		= lm87_remove,
+	.id_table	= lm87_id,
+	.detect		= lm87_detect,
+	.address_data	= &addr_data,
 };
 
 /*
@@ -176,13 +192,13 @@ static struct i2c_driver lm87_driver = {
  */
 
 struct lm87_data {
-	struct i2c_client client;
 	struct device *hwmon_dev;
 	struct mutex update_lock;
 	char valid; /* zero until following fields are valid */
 	unsigned long last_updated; /* In jiffies */
 
 	u8 channel;		/* register value */
+	u8 config;		/* original register value */
 
 	u8 in[8];		/* register value */
 	u8 in_max[8];		/* register value */
@@ -506,8 +522,7 @@ static ssize_t show_vrm(struct device *dev, struct device_attribute *attr, char 
 }
 static ssize_t set_vrm(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm87_data *data = i2c_get_clientdata(client);
+	struct lm87_data *data = dev_get_drvdata(dev);
 	data->vrm = simple_strtoul(buf, NULL, 10);
 	return count;
 }
@@ -558,13 +573,6 @@ static SENSOR_DEVICE_ATTR(temp3_fault, S_IRUGO, show_alarm, NULL, 15);
 /*
  * Real code
  */
-
-static int lm87_attach_adapter(struct i2c_adapter *adapter)
-{
-	if (!(adapter->class & I2C_CLASS_HWMON))
-		return 0;
-	return i2c_probe(adapter, &addr_data, lm87_detect);
-}
 
 static struct attribute *lm87_attributes[] = {
 	&dev_attr_in1_input.attr,
@@ -653,32 +661,15 @@ static const struct attribute_group lm87_group_opt = {
 	.attrs = lm87_attributes_opt,
 };
 
-/*
- * The following function does more than just detection. If detection
- * succeeds, it also registers the new chip.
- */
-static int lm87_detect(struct i2c_adapter *adapter, int address, int kind)
+/* Return 0 if detection is successful, -ENODEV otherwise */
+static int lm87_detect(struct i2c_client *new_client, int kind,
+		       struct i2c_board_info *info)
 {
-	struct i2c_client *new_client;
-	struct lm87_data *data;
-	int err = 0;
+	struct i2c_adapter *adapter = new_client->adapter;
+	static const char *names[] = { "lm87", "adm1024" };
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		goto exit;
-
-	if (!(data = kzalloc(sizeof(struct lm87_data), GFP_KERNEL))) {
-		err = -ENOMEM;
-		goto exit;
-	}
-
-	/* The common I2C client data is placed right before the
-	   LM87-specific data. */
-	new_client = &data->client;
-	i2c_set_clientdata(new_client, data);
-	new_client->addr = address;
-	new_client->adapter = adapter;
-	new_client->driver = &lm87_driver;
-	new_client->flags = 0;
+		return -ENODEV;
 
 	/* Default to an LM87 if forced */
 	if (kind == 0)
@@ -686,26 +677,45 @@ static int lm87_detect(struct i2c_adapter *adapter, int address, int kind)
 
 	/* Now, we do the remaining detection. */
 	if (kind < 0) {
+		u8 cid = lm87_read_value(new_client, LM87_REG_COMPANY_ID);
 		u8 rev = lm87_read_value(new_client, LM87_REG_REVISION);
 
-		if (rev < 0x01 || rev > 0x08
-		 || (lm87_read_value(new_client, LM87_REG_CONFIG) & 0x80)
-		 || lm87_read_value(new_client, LM87_REG_COMPANY_ID) != 0x02) {
+		if (cid == 0x02			/* National Semiconductor */
+		 && (rev >= 0x01 && rev <= 0x08))
+			kind = lm87;
+		else if (cid == 0x41		/* Analog Devices */
+		      && (rev & 0xf0) == 0x10)
+			kind = adm1024;
+
+		if (kind < 0
+		 || (lm87_read_value(new_client, LM87_REG_CONFIG) & 0x80)) {
 			dev_dbg(&adapter->dev,
 				"LM87 detection failed at 0x%02x.\n",
-				address);
-			goto exit_free;
+				new_client->addr);
+			return -ENODEV;
 		}
 	}
 
-	/* We can fill in the remaining client fields */
-	strlcpy(new_client->name, "lm87", I2C_NAME_SIZE);
+	strlcpy(info->type, names[kind - 1], I2C_NAME_SIZE);
+
+	return 0;
+}
+
+static int lm87_probe(struct i2c_client *new_client,
+		      const struct i2c_device_id *id)
+{
+	struct lm87_data *data;
+	int err;
+
+	data = kzalloc(sizeof(struct lm87_data), GFP_KERNEL);
+	if (!data) {
+		err = -ENOMEM;
+		goto exit;
+	}
+
+	i2c_set_clientdata(new_client, data);
 	data->valid = 0;
 	mutex_init(&data->update_lock);
-
-	/* Tell the I2C layer a new client has arrived */
-	if ((err = i2c_attach_client(new_client)))
-		goto exit_free;
 
 	/* Initialize the LM87 chip */
 	lm87_init_client(new_client);
@@ -721,7 +731,7 @@ static int lm87_detect(struct i2c_adapter *adapter, int address, int kind)
 
 	/* Register sysfs hooks */
 	if ((err = sysfs_create_group(&new_client->dev.kobj, &lm87_group)))
-		goto exit_detach;
+		goto exit_free;
 
 	if (data->channel & CHAN_NO_FAN(0)) {
 		if ((err = device_create_file(&new_client->dev,
@@ -821,9 +831,8 @@ static int lm87_detect(struct i2c_adapter *adapter, int address, int kind)
 exit_remove:
 	sysfs_remove_group(&new_client->dev.kobj, &lm87_group);
 	sysfs_remove_group(&new_client->dev.kobj, &lm87_group_opt);
-exit_detach:
-	i2c_detach_client(new_client);
 exit_free:
+	lm87_write_value(new_client, LM87_REG_CONFIG, data->config);
 	kfree(data);
 exit:
 	return err;
@@ -832,12 +841,17 @@ exit:
 static void lm87_init_client(struct i2c_client *client)
 {
 	struct lm87_data *data = i2c_get_clientdata(client);
-	u8 config;
 
-	data->channel = lm87_read_value(client, LM87_REG_CHANNEL_MODE);
+	if (client->dev.platform_data) {
+		data->channel = *(u8 *)client->dev.platform_data;
+		lm87_write_value(client,
+				 LM87_REG_CHANNEL_MODE, data->channel);
+	} else {
+		data->channel = lm87_read_value(client, LM87_REG_CHANNEL_MODE);
+	}
+	data->config = lm87_read_value(client, LM87_REG_CONFIG) & 0x6F;
 
-	config = lm87_read_value(client, LM87_REG_CONFIG);
-	if (!(config & 0x01)) {
+	if (!(data->config & 0x01)) {
 		int i;
 
 		/* Limits are left uninitialized after power-up */
@@ -859,25 +873,22 @@ static void lm87_init_client(struct i2c_client *client)
 			lm87_write_value(client, LM87_REG_IN_MAX(0), 0xFF);
 		}
 	}
-	if ((config & 0x81) != 0x01) {
-		/* Start monitoring */
+
+	/* Make sure Start is set and INT#_Clear is clear */
+	if ((data->config & 0x09) != 0x01)
 		lm87_write_value(client, LM87_REG_CONFIG,
-				 (config & 0xF7) | 0x01);
-	}
+				 (data->config & 0x77) | 0x01);
 }
 
-static int lm87_detach_client(struct i2c_client *client)
+static int lm87_remove(struct i2c_client *client)
 {
 	struct lm87_data *data = i2c_get_clientdata(client);
-	int err;
 
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &lm87_group);
 	sysfs_remove_group(&client->dev.kobj, &lm87_group_opt);
 
-	if ((err = i2c_detach_client(client)))
-		return err;
-
+	lm87_write_value(client, LM87_REG_CONFIG, data->config);
 	kfree(data);
 	return 0;
 }

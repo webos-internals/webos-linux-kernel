@@ -30,6 +30,7 @@
 #include <linux/security.h>
 #include <linux/compat.h>
 #include <linux/fs_stack.h>
+#include <linux/smp_lock.h>
 #include "ecryptfs_kernel.h"
 
 /**
@@ -70,34 +71,33 @@ struct ecryptfs_getdents_callback {
 	void *dirent;
 	struct dentry *dentry;
 	filldir_t filldir;
-	int err;
 	int filldir_called;
 	int entries_written;
 };
 
-/* Inspired by generic filldir in fs/readir.c */
+/* Inspired by generic filldir in fs/readdir.c */
 static int
-ecryptfs_filldir(void *dirent, const char *name, int namelen, loff_t offset,
-		 u64 ino, unsigned int d_type)
+ecryptfs_filldir(void *dirent, const char *lower_name, int lower_namelen,
+		 loff_t offset, u64 ino, unsigned int d_type)
 {
-	struct ecryptfs_crypt_stat *crypt_stat;
 	struct ecryptfs_getdents_callback *buf =
 	    (struct ecryptfs_getdents_callback *)dirent;
+	size_t name_size;
+	char *name;
 	int rc;
-	int decoded_length;
-	char *decoded_name;
 
-	crypt_stat = ecryptfs_dentry_to_private(buf->dentry)->crypt_stat;
 	buf->filldir_called++;
-	decoded_length = ecryptfs_decode_filename(crypt_stat, name, namelen,
-						  &decoded_name);
-	if (decoded_length < 0) {
-		rc = decoded_length;
+	rc = ecryptfs_decode_and_decrypt_filename(&name, &name_size,
+						  buf->dentry, lower_name,
+						  lower_namelen);
+	if (rc) {
+		printk(KERN_ERR "%s: Error attempting to decode and decrypt "
+		       "filename [%s]; rc = [%d]\n", __func__, lower_name,
+		       rc);
 		goto out;
 	}
-	rc = buf->filldir(buf->dirent, decoded_name, decoded_length, offset,
-			  ino, d_type);
-	kfree(decoded_name);
+	rc = buf->filldir(buf->dirent, name, name_size, offset, ino, d_type);
+	kfree(name);
 	if (rc >= 0)
 		buf->entries_written++;
 out:
@@ -106,8 +106,8 @@ out:
 
 /**
  * ecryptfs_readdir
- * @file: The ecryptfs file struct
- * @dirent: Directory entry
+ * @file: The eCryptfs directory file
+ * @dirent: Directory entry handle
  * @filldir: The filldir callback function
  */
 static int ecryptfs_readdir(struct file *file, void *dirent, filldir_t filldir)
@@ -124,18 +124,18 @@ static int ecryptfs_readdir(struct file *file, void *dirent, filldir_t filldir)
 	buf.dirent = dirent;
 	buf.dentry = file->f_path.dentry;
 	buf.filldir = filldir;
-retry:
 	buf.filldir_called = 0;
 	buf.entries_written = 0;
-	buf.err = 0;
 	rc = vfs_readdir(lower_file, ecryptfs_filldir, (void *)&buf);
-	if (buf.err)
-		rc = buf.err;
-	if (buf.filldir_called && !buf.entries_written)
-		goto retry;
 	file->f_pos = lower_file->f_pos;
+	if (rc < 0)
+		goto out;
+	if (buf.filldir_called && !buf.entries_written)
+		goto out;
 	if (rc >= 0)
-		fsstack_copy_attr_atime(inode, lower_file->f_path.dentry->d_inode);
+		fsstack_copy_attr_atime(inode,
+					lower_file->f_path.dentry->d_inode);
+out:
 	return rc;
 }
 
@@ -191,11 +191,30 @@ static int ecryptfs_open(struct inode *inode, struct file *file)
 				      | ECRYPTFS_ENCRYPTED);
 	}
 	mutex_unlock(&crypt_stat->cs_mutex);
+	if ((ecryptfs_inode_to_private(inode)->lower_file->f_flags & O_RDONLY)
+	    && !(file->f_flags & O_RDONLY)) {
+		rc = -EPERM;
+		printk(KERN_WARNING "%s: Lower persistent file is RO; eCryptfs "
+		       "file must hence be opened RO\n", __func__);
+		goto out;
+	}
+	if (!ecryptfs_inode_to_private(inode)->lower_file) {
+		rc = ecryptfs_init_persistent_file(ecryptfs_dentry);
+		if (rc) {
+			printk(KERN_ERR "%s: Error attempting to initialize "
+			       "the persistent file for the dentry with name "
+			       "[%s]; rc = [%d]\n", __func__,
+			       ecryptfs_dentry->d_name.name, rc);
+			goto out;
+		}
+	}
 	ecryptfs_set_file_lower(
 		file, ecryptfs_inode_to_private(inode)->lower_file);
 	if (S_ISDIR(ecryptfs_dentry->d_inode->i_mode)) {
 		ecryptfs_printk(KERN_DEBUG, "This is a directory\n");
+		mutex_lock(&crypt_stat->cs_mutex);
 		crypt_stat->flags &= ~(ECRYPTFS_ENCRYPTED);
+		mutex_unlock(&crypt_stat->cs_mutex);
 		rc = 0;
 		goto out;
 	}
@@ -209,9 +228,10 @@ static int ecryptfs_open(struct inode *inode, struct file *file)
 			if (!(mount_crypt_stat->flags
 			      & ECRYPTFS_PLAINTEXT_PASSTHROUGH_ENABLED)) {
 				rc = -EIO;
-				printk(KERN_WARNING "Attempt to read file that "
+				printk(KERN_WARNING "Either the lower file "
 				       "is not in a valid eCryptfs format, "
-				       "and plaintext passthrough mode is not "
+				       "or the key could not be retrieved. "
+				       "Plaintext passthrough mode is not "
 				       "enabled; returning -EIO\n");
 				mutex_unlock(&crypt_stat->cs_mutex);
 				goto out_free;
@@ -255,18 +275,9 @@ static int ecryptfs_release(struct inode *inode, struct file *file)
 static int
 ecryptfs_fsync(struct file *file, struct dentry *dentry, int datasync)
 {
-	struct file *lower_file = ecryptfs_file_to_lower(file);
-	struct dentry *lower_dentry = ecryptfs_dentry_to_lower(dentry);
-	struct inode *lower_inode = lower_dentry->d_inode;
-	int rc = -EINVAL;
-
-	if (lower_inode->i_fop->fsync) {
-		mutex_lock(&lower_inode->i_mutex);
-		rc = lower_inode->i_fop->fsync(lower_file, lower_dentry,
-					       datasync);
-		mutex_unlock(&lower_inode->i_mutex);
-	}
-	return rc;
+	return vfs_fsync(ecryptfs_file_to_lower(file),
+			 ecryptfs_dentry_to_lower(dentry),
+			 datasync);
 }
 
 static int ecryptfs_fasync(int fd, struct file *file, int flag)
@@ -274,9 +285,11 @@ static int ecryptfs_fasync(int fd, struct file *file, int flag)
 	int rc = 0;
 	struct file *lower_file = NULL;
 
+	lock_kernel();
 	lower_file = ecryptfs_file_to_lower(file);
 	if (lower_file->f_op && lower_file->f_op->fasync)
 		rc = lower_file->f_op->fasync(fd, lower_file, flag);
+	unlock_kernel();
 	return rc;
 }
 

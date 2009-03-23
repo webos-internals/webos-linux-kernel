@@ -33,6 +33,40 @@ enum fid_type {
 	 * 32 bit parent directory inode number.
 	 */
 	FILEID_INO32_GEN_PARENT = 2,
+
+	/*
+	 * 64 bit object ID, 64 bit root object ID,
+	 * 32 bit generation number.
+	 */
+	FILEID_BTRFS_WITHOUT_PARENT = 0x4d,
+
+	/*
+	 * 64 bit object ID, 64 bit root object ID,
+	 * 32 bit generation number,
+	 * 64 bit parent object ID, 32 bit parent generation.
+	 */
+	FILEID_BTRFS_WITH_PARENT = 0x4e,
+
+	/*
+	 * 64 bit object ID, 64 bit root object ID,
+	 * 32 bit generation number,
+	 * 64 bit parent object ID, 32 bit parent generation,
+	 * 64 bit parent root object ID.
+	 */
+	FILEID_BTRFS_WITH_PARENT_ROOT = 0x4f,
+
+	/*
+	 * 32 bit block number, 16 bit partition reference,
+	 * 16 bit unused, 32 bit generation number.
+	 */
+	FILEID_UDF_WITHOUT_PARENT = 0x51,
+
+	/*
+	 * 32 bit block number, 16 bit partition reference,
+	 * 16 bit unused, 32 bit generation number,
+	 * 32 bit parent block number, 32 bit parent generation number
+	 */
+	FILEID_UDF_WITH_PARENT = 0x52,
 };
 
 struct fid {
@@ -43,17 +77,25 @@ struct fid {
 			u32 parent_ino;
 			u32 parent_gen;
 		} i32;
-		__u32 raw[6];
+ 		struct {
+ 			u32 block;
+ 			u16 partref;
+ 			u16 parent_partref;
+ 			u32 generation;
+ 			u32 parent_block;
+ 			u32 parent_generation;
+ 		} udf;
+		__u32 raw[0];
 	};
 };
 
 /**
  * struct export_operations - for nfsd to communicate with file systems
- * @decode_fh:      decode a file handle fragment and return a &struct dentry
  * @encode_fh:      encode a file handle fragment from a dentry
+ * @fh_to_dentry:   find the implied object and get a dentry for it
+ * @fh_to_parent:   find the implied object's parent and get a dentry for it
  * @get_name:       find the name for a given inode in a given directory
  * @get_parent:     find the parent of a given directory
- * @get_dentry:     find a dentry for the inode given a file handle sub-fragment
  *
  * See Documentation/filesystems/Exporting for details on how to use
  * this interface correctly.

@@ -42,6 +42,7 @@
 
 #define XL_DEBUG 0
 
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -94,20 +95,20 @@ MODULE_DESCRIPTION("3Com 3C359 Velocity XL Token Ring Adapter Driver \n") ;
 static int ringspeed[XL_MAX_ADAPTERS] = {0,} ;
 
 module_param_array(ringspeed, int, NULL, 0);
-MODULE_PARM_DESC(ringspeed,"3c359: Ringspeed selection - 4,16 or 0") ; 
+MODULE_PARM_DESC(ringspeed,"3c359: Ringspeed selection - 4,16 or 0") ;
 
 /* Packet buffer size */
 
 static int pkt_buf_sz[XL_MAX_ADAPTERS] = {0,} ;
  
 module_param_array(pkt_buf_sz, int, NULL, 0) ;
-MODULE_PARM_DESC(pkt_buf_sz,"3c359: Initial buffer size") ; 
+MODULE_PARM_DESC(pkt_buf_sz,"3c359: Initial buffer size") ;
 /* Message Level */
 
-static int message_level[XL_MAX_ADAPTERS] = {0,} ; 
+static int message_level[XL_MAX_ADAPTERS] = {0,} ;
 
 module_param_array(message_level, int, NULL, 0) ;
-MODULE_PARM_DESC(message_level, "3c359: Level of reported messages \n") ; 
+MODULE_PARM_DESC(message_level, "3c359: Level of reported messages") ;
 /* 
  *	This is a real nasty way of doing this, but otherwise you
  *	will be stuck with 1555 lines of hex #'s in the code.
@@ -131,7 +132,6 @@ static void xl_dn_comp(struct net_device *dev);
 static int xl_close(struct net_device *dev);
 static void xl_set_rx_mode(struct net_device *dev);
 static irqreturn_t xl_interrupt(int irq, void *dev_id);
-static struct net_device_stats * xl_get_stats(struct net_device *dev);
 static int xl_set_mac_address(struct net_device *dev, void *addr) ; 
 static void xl_arb_cmd(struct net_device *dev);
 static void xl_asb_cmd(struct net_device *dev) ; 
@@ -296,8 +296,9 @@ static int __devinit xl_probe(struct pci_dev *pdev,
 	} ; 
 
 	/* 
-	 * Allowing init_trdev to allocate the dev->priv structure will align xl_private
-   	 * on a 32 bytes boundary which we need for the rx/tx descriptors
+	 * Allowing init_trdev to allocate the private data will align
+	 * xl_private on a 32 bytes boundary which we need for the rx/tx
+	 * descriptors
 	 */
 
 	dev = alloc_trdev(sizeof(struct xl_private)) ; 
@@ -342,7 +343,6 @@ static int __devinit xl_probe(struct pci_dev *pdev,
 	dev->stop=&xl_close;
 	dev->do_ioctl=NULL;
 	dev->set_multicast_list=&xl_set_rx_mode;
-	dev->get_stats=&xl_get_stats ;
 	dev->set_mac_address=&xl_set_mac_address ; 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 
@@ -408,7 +408,7 @@ static int xl_hw_reset(struct net_device *dev)
 	t=jiffies;
 	while (readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_CMD_IN_PROGRESS) { 
 		schedule();		
-		if(jiffies-t > 40*HZ) {
+		if (time_after(jiffies, t + 40 * HZ)) {
 			printk(KERN_ERR "%s: 3COM 3C359 Velocity XL  card not responding to global reset.\n", dev->name);
 			return -ENODEV;
 		}
@@ -519,7 +519,7 @@ static int xl_hw_reset(struct net_device *dev)
 	t=jiffies;
 	while ( !(readw(xl_mmio + MMIO_INTSTATUS_AUTO) & INTSTAT_SRB) ) { 
 		schedule();		
-		if(jiffies-t > 15*HZ) {
+		if (time_after(jiffies, t + 15 * HZ)) {
 			printk(KERN_ERR "3COM 3C359 Velocity XL  card not responding.\n");
 			return -ENODEV; 
 		}
@@ -639,13 +639,13 @@ static int xl_open(struct net_device *dev)
 	/* These MUST be on 8 byte boundaries */
 	xl_priv->xl_tx_ring = kzalloc((sizeof(struct xl_tx_desc) * XL_TX_RING_SIZE) + 7, GFP_DMA | GFP_KERNEL);
 	if (xl_priv->xl_tx_ring == NULL) {
-		printk(KERN_WARNING "%s: Not enough memory to allocate rx buffers.\n",
+		printk(KERN_WARNING "%s: Not enough memory to allocate tx buffers.\n",
 				     dev->name);
 		free_irq(dev->irq,dev);
 		return -ENOMEM;
 	}
 	xl_priv->xl_rx_ring = kzalloc((sizeof(struct xl_rx_desc) * XL_RX_RING_SIZE) +7, GFP_DMA | GFP_KERNEL);
-	if (xl_priv->xl_tx_ring == NULL) {
+	if (xl_priv->xl_rx_ring == NULL) {
 		printk(KERN_WARNING "%s: Not enough memory to allocate rx buffers.\n",
 				     dev->name);
 		free_irq(dev->irq,dev);
@@ -670,6 +670,8 @@ static int xl_open(struct net_device *dev)
 	if (i==0) { 
 		printk(KERN_WARNING "%s: Not enough memory to allocate rx buffers. Adapter disabled \n",dev->name) ; 
 		free_irq(dev->irq,dev) ; 
+		kfree(xl_priv->xl_tx_ring);
+		kfree(xl_priv->xl_rx_ring);
 		return -EIO ; 
 	} 
 
@@ -790,7 +792,7 @@ static int xl_open_hw(struct net_device *dev)
 	t=jiffies;
 	while (! (readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_SRB)) { 
 		schedule();		
-		if(jiffies-t > 40*HZ) {
+		if (time_after(jiffies, t + 40 * HZ)) {
 			printk(KERN_ERR "3COM 3C359 Velocity XL  card not responding.\n");
 			break ; 
 		}
@@ -920,7 +922,7 @@ static void xl_rx(struct net_device *dev)
 					adv_rx_ring(dev) ; 
 				
 				adv_rx_ring(dev) ; /* One more time just for luck :) */ 
-				xl_priv->xl_stats.rx_dropped++ ; 
+				dev->stats.rx_dropped++ ; 
 
 				writel(ACK_INTERRUPT | UPCOMPACK | LATCH_ACK , xl_mmio + MMIO_COMMAND) ; 
 				return ; 				
@@ -956,7 +958,7 @@ static void xl_rx(struct net_device *dev)
 			if (skb==NULL) { /* Still need to fix the rx ring */
 				printk(KERN_WARNING "%s: dev_alloc_skb failed in rx, single buffer \n",dev->name) ; 
 				adv_rx_ring(dev) ; 
-				xl_priv->xl_stats.rx_dropped++ ; 
+				dev->stats.rx_dropped++ ; 
 				writel(ACK_INTERRUPT | UPCOMPACK | LATCH_ACK , xl_mmio + MMIO_COMMAND) ; 
 				return ; 
 			}
@@ -970,12 +972,11 @@ static void xl_rx(struct net_device *dev)
 			xl_priv->xl_rx_ring[xl_priv->rx_ring_tail].upfragaddr = cpu_to_le32(pci_map_single(xl_priv->pdev,skb->data,xl_priv->pkt_buf_sz, PCI_DMA_FROMDEVICE));
 			xl_priv->xl_rx_ring[xl_priv->rx_ring_tail].upfraglen = cpu_to_le32(xl_priv->pkt_buf_sz) | RXUPLASTFRAG;
 			adv_rx_ring(dev) ; 
-			xl_priv->xl_stats.rx_packets++ ; 
-			xl_priv->xl_stats.rx_bytes += frame_length ; 	
+			dev->stats.rx_packets++ ; 
+			dev->stats.rx_bytes += frame_length ; 	
 
 			netif_rx(skb2) ; 		
 		 } /* if multiple buffers */
-		dev->last_rx = jiffies ; 	
 	} /* while packet to do */
 
 	/* Clear the updComplete interrupt */
@@ -1003,7 +1004,7 @@ static void xl_reset(struct net_device *dev)
 
 	t=jiffies;
 	while (readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_CMD_IN_PROGRESS) { 
-		if(jiffies-t > 40*HZ) {
+		if (time_after(jiffies, t + 40 * HZ)) {
 			printk(KERN_ERR "3COM 3C359 Velocity XL  card not responding.\n");
 			break ; 
 		}
@@ -1181,8 +1182,8 @@ static int xl_xmit(struct sk_buff *skb, struct net_device *dev)
 		txd->buffer = cpu_to_le32(pci_map_single(xl_priv->pdev, skb->data, skb->len, PCI_DMA_TODEVICE));
 		txd->buffer_length = cpu_to_le32(skb->len) | TXDNFRAGLAST;
 		xl_priv->tx_ring_skb[tx_head] = skb ; 
-		xl_priv->xl_stats.tx_packets++ ; 
-		xl_priv->xl_stats.tx_bytes += skb->len ;
+		dev->stats.tx_packets++ ; 
+		dev->stats.tx_bytes += skb->len ;
 
 		/* 
 		 * Set the nextptr of the previous descriptor equal to this descriptor, add XL_TX_RING_SIZE -1 
@@ -1270,7 +1271,7 @@ static int xl_close(struct net_device *dev)
 	t=jiffies;
 	while (readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_CMD_IN_PROGRESS) { 
 		schedule();		
-		if(jiffies-t > 10*HZ) {
+		if (time_after(jiffies, t + 10 * HZ)) {
 			printk(KERN_ERR "%s: 3COM 3C359 Velocity XL-DNSTALL not responding.\n", dev->name);
 			break ; 
 		}
@@ -1279,7 +1280,7 @@ static int xl_close(struct net_device *dev)
 	t=jiffies;
 	while (readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_CMD_IN_PROGRESS) { 
 		schedule();		
-		if(jiffies-t > 10*HZ) {
+		if (time_after(jiffies, t + 10 * HZ)) {
 			printk(KERN_ERR "%s: 3COM 3C359 Velocity XL-DNDISABLE not responding.\n", dev->name);
 			break ;
 		}
@@ -1288,7 +1289,7 @@ static int xl_close(struct net_device *dev)
 	t=jiffies;
 	while (readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_CMD_IN_PROGRESS) { 
 		schedule();		
-		if(jiffies-t > 10*HZ) {
+		if (time_after(jiffies, t + 10 * HZ)) {
 			printk(KERN_ERR "%s: 3COM 3C359 Velocity XL-UPSTALL not responding.\n", dev->name);
 			break ; 
 		}
@@ -1305,7 +1306,7 @@ static int xl_close(struct net_device *dev)
 	t=jiffies;
 	while (!(readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_SRB)) { 
 		schedule();		
-		if(jiffies-t > 10*HZ) {
+		if (time_after(jiffies, t + 10 * HZ)) {
 			printk(KERN_ERR "%s: 3COM 3C359 Velocity XL-CLOSENIC not responding.\n", dev->name);
 			break ; 
 		}
@@ -1334,7 +1335,7 @@ static int xl_close(struct net_device *dev)
 	t=jiffies;
 	while (readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_CMD_IN_PROGRESS) { 
 		schedule();		
-		if(jiffies-t > 10*HZ) {
+		if (time_after(jiffies, t + 10 * HZ)) {
 			printk(KERN_ERR "%s: 3COM 3C359 Velocity XL-UPRESET not responding.\n", dev->name);
 			break ; 
 		}
@@ -1343,7 +1344,7 @@ static int xl_close(struct net_device *dev)
 	t=jiffies;
 	while (readw(xl_mmio + MMIO_INTSTATUS) & INTSTAT_CMD_IN_PROGRESS) { 
 		schedule();		
-		if(jiffies-t > 10*HZ) {
+		if (time_after(jiffies, t + 10 * HZ)) {
 			printk(KERN_ERR "%s: 3COM 3C359 Velocity XL-DNRESET not responding.\n", dev->name);
 			break ; 
 		}
@@ -1462,12 +1463,6 @@ static void xl_srb_bh(struct net_device *dev)
 	return ; 	
 } 
 
-static struct net_device_stats * xl_get_stats(struct net_device *dev)
-{
-	struct xl_private *xl_priv = netdev_priv(dev);
-	return (struct net_device_stats *) &xl_priv->xl_stats; 
-}
-
 static int xl_set_mac_address (struct net_device *dev, void *addr) 
 {
 	struct sockaddr *saddr = addr ; 
@@ -1578,7 +1573,6 @@ static void xl_arb_cmd(struct net_device *dev)
 		 * anyway.
 		 */
 
-		dev->last_rx = jiffies ; 
 		/* Acknowledge interrupt, this tells nic we are done with the arb */
 		writel(ACK_INTERRUPT | ARBCACK | LATCH_ACK, xl_mmio + MMIO_COMMAND) ; 
 

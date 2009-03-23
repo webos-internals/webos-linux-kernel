@@ -12,14 +12,10 @@
  * ----------------------------------------------------------------------- */
 
 /*
- * arch/i386/boot/apm.c
- *
  * Get APM BIOS information
  */
 
 #include "boot.h"
-
-#if defined(CONFIG_APM) || defined(CONFIG_APM_MODULE)
 
 int query_apm_bios(void)
 {
@@ -95,4 +91,3 @@ int query_apm_bios(void)
 	return 0;
 }
 
-#endif

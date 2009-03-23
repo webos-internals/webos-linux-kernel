@@ -1,5 +1,5 @@
 /*
- * kernel/ccontainer_debug.c - Example cgroup subsystem that
+ * kernel/cgroup_debug.c - Example cgroup subsystem that
  * exposes debug info
  *
  * Copyright (C) Google Inc, 2007
@@ -57,29 +57,39 @@ static u64 current_css_set_refcount_read(struct cgroup *cont,
 	u64 count;
 
 	rcu_read_lock();
-	count = atomic_read(&current->cgroups->ref.refcount);
+	count = atomic_read(&current->cgroups->refcount);
 	rcu_read_unlock();
 	return count;
+}
+
+static u64 releasable_read(struct cgroup *cgrp, struct cftype *cft)
+{
+	return test_bit(CGRP_RELEASABLE, &cgrp->flags);
 }
 
 static struct cftype files[] =  {
 	{
 		.name = "cgroup_refcount",
-		.read_uint = cgroup_refcount_read,
+		.read_u64 = cgroup_refcount_read,
 	},
 	{
 		.name = "taskcount",
-		.read_uint = taskcount_read,
+		.read_u64 = taskcount_read,
 	},
 
 	{
 		.name = "current_css_set",
-		.read_uint = current_css_set_read,
+		.read_u64 = current_css_set_read,
 	},
 
 	{
 		.name = "current_css_set_refcount",
-		.read_uint = current_css_set_refcount_read,
+		.read_u64 = current_css_set_refcount_read,
+	},
+
+	{
+		.name = "releasable",
+		.read_u64 = releasable_read,
 	},
 };
 

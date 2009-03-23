@@ -24,7 +24,7 @@
 #ifndef _DVBDMX_H_
 #define _DVBDMX_H_
 
-#include <asm/types.h>
+#include <linux/types.h>
 #ifdef __KERNEL__
 #include <linux/time.h>
 #else
@@ -39,9 +39,10 @@ typedef enum
 	DMX_OUT_DECODER, /* Streaming directly to decoder. */
 	DMX_OUT_TAP,     /* Output going to a memory buffer */
 			 /* (to be retrieved via the read command).*/
-	DMX_OUT_TS_TAP   /* Output multiplexed into a new TS  */
+	DMX_OUT_TS_TAP,  /* Output multiplexed into a new TS  */
 			 /* (to be retrieved by reading from the */
 			 /* logical DVR device).                 */
+	DMX_OUT_TSDEMUX_TAP /* Like TS_TAP but retrieved from the DMX device */
 } dmx_output_t;
 
 

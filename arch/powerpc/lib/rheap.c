@@ -54,7 +54,7 @@ static int grow(rh_info_t * info, int max_blocks)
 
 	new_blocks = max_blocks - info->max_blocks;
 
-	block = kmalloc(sizeof(rh_block_t) * max_blocks, GFP_KERNEL);
+	block = kmalloc(sizeof(rh_block_t) * max_blocks, GFP_ATOMIC);
 	if (block == NULL)
 		return -ENOMEM;
 
@@ -258,7 +258,7 @@ rh_info_t *rh_create(unsigned int alignment)
 	if ((alignment & (alignment - 1)) != 0)
 		return ERR_PTR(-EINVAL);
 
-	info = kmalloc(sizeof(*info), GFP_KERNEL);
+	info = kmalloc(sizeof(*info), GFP_ATOMIC);
 	if (info == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -556,6 +556,7 @@ unsigned long rh_alloc_fixed(rh_info_t * info, unsigned long start, int size, co
 		be = blk->start + blk->size;
 		if (s >= bs && e <= be)
 			break;
+		blk = NULL;
 	}
 
 	if (blk == NULL)

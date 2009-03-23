@@ -38,7 +38,7 @@
 
 #define DRV_NAME  	"qla3xxx"
 #define DRV_STRING 	"QLogic ISP3XXX Network Driver"
-#define DRV_VERSION	"v2.03.00-k4"
+#define DRV_VERSION	"v2.03.00-k5"
 #define PFX		DRV_NAME " "
 
 static const char ql3xxx_driver_name[] = DRV_NAME;
@@ -328,7 +328,7 @@ static void ql_release_to_lrg_buf_free_list(struct ql3_adapter *qdev,
 					     qdev->lrg_buffer_len -
 					     QL_HEADER_SPACE,
 					     PCI_DMA_FROMDEVICE);
-			err = pci_dma_mapping_error(map);
+			err = pci_dma_mapping_error(qdev->pdev, map);
 			if(err) {
 				printk(KERN_ERR "%s: PCI mapping failed with error: %d\n",
 				       qdev->ndev->name, err);
@@ -540,20 +540,12 @@ static void eeprom_readword(struct ql3_adapter *qdev,
 	fm93c56a_deselect(qdev);
 }
 
-static void ql_swap_mac_addr(u8 * macAddress)
+static void ql_set_mac_addr(struct net_device *ndev, u16 *addr)
 {
-#ifdef __BIG_ENDIAN
-	u8 temp;
-	temp = macAddress[0];
-	macAddress[0] = macAddress[1];
-	macAddress[1] = temp;
-	temp = macAddress[2];
-	macAddress[2] = macAddress[3];
-	macAddress[3] = temp;
-	temp = macAddress[4];
-	macAddress[4] = macAddress[5];
-	macAddress[5] = temp;
-#endif
+	__le16 *p = (__le16 *)ndev->dev_addr;
+	p[0] = cpu_to_le16(addr[0]);
+	p[1] = cpu_to_le16(addr[1]);
+	p[2] = cpu_to_le16(addr[2]);
 }
 
 static int ql_get_nvram_params(struct ql3_adapter *qdev)
@@ -589,18 +581,6 @@ static int ql_get_nvram_params(struct ql3_adapter *qdev)
 		spin_unlock_irqrestore(&qdev->hw_lock, hw_flags);
 		return -1;
 	}
-
-	/*
-	 * We have a problem with endianness for the MAC addresses
-	 * and the two 8-bit values version, and numPorts.  We
-	 * have to swap them on big endian systems.
-	 */
-	ql_swap_mac_addr(qdev->nvram_data.funcCfg_fn0.macAddress);
-	ql_swap_mac_addr(qdev->nvram_data.funcCfg_fn1.macAddress);
-	ql_swap_mac_addr(qdev->nvram_data.funcCfg_fn2.macAddress);
-	ql_swap_mac_addr(qdev->nvram_data.funcCfg_fn3.macAddress);
-	pEEPROMData = (u16 *) & qdev->nvram_data.version;
-	*pEEPROMData = le16_to_cpu(*pEEPROMData);
 
 	spin_unlock_irqrestore(&qdev->hw_lock, hw_flags);
 	return checksum;
@@ -711,7 +691,7 @@ static int ql_mii_write_reg_ex(struct ql3_adapter *qdev,
 	if (ql_wait_for_mii_ready(qdev)) {
 		if (netif_msg_link(qdev))
 			printk(KERN_WARNING PFX
-			       "%s: Timed out waiting for management port to"
+			       "%s: Timed out waiting for management port to "
 			       "get free before issuing command.\n",
 			       qdev->ndev->name);
 		return -1;
@@ -1457,9 +1437,9 @@ static void ql_phy_start_neg_ex(struct ql3_adapter *qdev)
 	reg &= ~PHY_GIG_ALL_PARAMS;
 
 	if(portConfiguration & PORT_CONFIG_1000MB_SPEED) {
-		if(portConfiguration & PORT_CONFIG_FULL_DUPLEX_ENABLED) 
+		if(portConfiguration & PORT_CONFIG_FULL_DUPLEX_ENABLED)
 			reg |= PHY_GIG_ADV_1000F;
-		else 
+		else
 			reg |= PHY_GIG_ADV_1000H;
 	}
 
@@ -1535,9 +1515,6 @@ static u32 ql_get_link_state(struct ql3_adapter *qdev)
 		linkState = LS_UP;
 	} else {
 		linkState = LS_DOWN;
-		if (netif_msg_link(qdev))
-			printk(KERN_WARNING PFX
-			       "%s: Link is down.\n", qdev->ndev->name);
 	}
 	return linkState;
 }
@@ -1601,10 +1578,6 @@ static int ql_finish_auto_neg(struct ql3_adapter *qdev)
 			ql_mac_enable(qdev, 1);
 		}
 
-		if (netif_msg_link(qdev))
-			printk(KERN_DEBUG PFX
-			       "%s: Change port_link_state LS_DOWN to LS_UP.\n",
-			       qdev->ndev->name);
 		qdev->port_link_state = LS_UP;
 		netif_start_queue(qdev->ndev);
 		netif_carrier_on(qdev->ndev);
@@ -1675,14 +1648,9 @@ static void ql_link_state_machine_work(struct work_struct *work)
 		/* Fall Through */
 
 	case LS_DOWN:
-		if (netif_msg_link(qdev))
-			printk(KERN_DEBUG PFX
-			       "%s: port_link_state = LS_DOWN.\n",
-			       qdev->ndev->name);
 		if (curr_link_state == LS_UP) {
 			if (netif_msg_link(qdev))
-				printk(KERN_DEBUG PFX
-				       "%s: curr_link_state = LS_UP.\n",
+				printk(KERN_INFO PFX "%s: Link is up.\n",
 				       qdev->ndev->name);
 			if (ql_is_auto_neg_complete(qdev))
 				ql_finish_auto_neg(qdev);
@@ -1690,6 +1658,7 @@ static void ql_link_state_machine_work(struct work_struct *work)
 			if (qdev->port_link_state == LS_UP)
 				ql_link_down_detect_clear(qdev);
 
+			qdev->port_link_state = LS_UP;
 		}
 		break;
 
@@ -1698,12 +1667,14 @@ static void ql_link_state_machine_work(struct work_struct *work)
 		 * See if the link is currently down or went down and came
 		 * back up
 		 */
-		if ((curr_link_state == LS_DOWN) || ql_link_down_detect(qdev)) {
+		if (curr_link_state == LS_DOWN) {
 			if (netif_msg_link(qdev))
 				printk(KERN_INFO PFX "%s: Link is down.\n",
 				       qdev->ndev->name);
 			qdev->port_link_state = LS_DOWN;
 		}
+		if (ql_link_down_detect(qdev))
+			qdev->port_link_state = LS_DOWN;
 		break;
 	}
 	spin_unlock_irqrestore(&qdev->hw_lock, hw_flags);
@@ -1939,7 +1910,7 @@ static int ql_populate_free_queue(struct ql3_adapter *qdev)
 						     QL_HEADER_SPACE,
 						     PCI_DMA_FROMDEVICE);
 
-				err = pci_dma_mapping_error(map);
+				err = pci_dma_mapping_error(qdev->pdev, map);
 				if(err) {
 					printk(KERN_ERR "%s: PCI mapping failed with error: %d\n",
 					       qdev->ndev->name, err);
@@ -2156,7 +2127,6 @@ static void ql_process_mac_rx_intr(struct ql3_adapter *qdev,
 	skb->protocol = eth_type_trans(skb, qdev->ndev);
 
 	netif_receive_skb(skb);
-	qdev->ndev->last_rx = jiffies;
 	lrg_buf_cb2->skb = NULL;
 
 	if (qdev->device_id == QL3022_DEVICE_ID)
@@ -2230,7 +2200,6 @@ static void ql_process_macip_rx_intr(struct ql3_adapter *qdev,
 	netif_receive_skb(skb2);
 	ndev->stats.rx_packets++;
 	ndev->stats.rx_bytes += length;
-	ndev->last_rx = jiffies;
 	lrg_buf_cb2->skb = NULL;
 
 	if (qdev->device_id == QL3022_DEVICE_ID)
@@ -2315,7 +2284,6 @@ static int ql_tx_rx_clean(struct ql3_adapter *qdev,
 static int ql_poll(struct napi_struct *napi, int budget)
 {
 	struct ql3_adapter *qdev = container_of(napi, struct ql3_adapter, napi);
-	struct net_device *ndev = qdev->ndev;
 	int rx_cleaned = 0, tx_cleaned = 0;
 	unsigned long hw_flags;
 	struct ql3xxx_port_registers __iomem *port_regs = qdev->mem_map_registers;
@@ -2324,7 +2292,7 @@ static int ql_poll(struct napi_struct *napi, int budget)
 
 	if (tx_cleaned + rx_cleaned != budget) {
 		spin_lock_irqsave(&qdev->hw_lock, hw_flags);
-		__netif_rx_complete(ndev, napi);
+		__netif_rx_complete(napi);
 		ql_update_small_bufq_prod_index(qdev);
 		ql_update_lrg_bufq_prod_index(qdev);
 		writel(qdev->rsp_consumer_index,
@@ -2383,8 +2351,8 @@ static irqreturn_t ql3xxx_isr(int irq, void *dev_id)
 		spin_unlock(&qdev->adapter_lock);
 	} else if (value & ISP_IMR_DISABLE_CMPL_INT) {
 		ql_disable_interrupts(qdev);
-		if (likely(netif_rx_schedule_prep(ndev, &qdev->napi))) {
-			__netif_rx_schedule(ndev, &qdev->napi);
+		if (likely(netif_rx_schedule_prep(&qdev->napi))) {
+			__netif_rx_schedule(&qdev->napi);
 		}
 	} else {
 		return IRQ_NONE;
@@ -2474,7 +2442,7 @@ static int ql_send_map(struct ql3_adapter *qdev,
 	 */
 	map = pci_map_single(qdev->pdev, skb->data, len, PCI_DMA_TODEVICE);
 
-	err = pci_dma_mapping_error(map);
+	err = pci_dma_mapping_error(qdev->pdev, map);
 	if(err) {
 		printk(KERN_ERR "%s: PCI mapping failed with error: %d\n",
 		       qdev->ndev->name, err);
@@ -2492,8 +2460,7 @@ static int ql_send_map(struct ql3_adapter *qdev,
 
 	if (seg_cnt == 1) {
 		/* Terminate the last segment. */
-		oal_entry->len =
-		    cpu_to_le32(le32_to_cpu(oal_entry->len) | OAL_LAST_ENTRY);
+		oal_entry->len |= cpu_to_le32(OAL_LAST_ENTRY);
 	} else {
 		oal = tx_cb->oal;
 		for (completed_segs=0; completed_segs<frag_cnt; completed_segs++,seg++) {
@@ -2508,7 +2475,7 @@ static int ql_send_map(struct ql3_adapter *qdev,
 						     sizeof(struct oal),
 						     PCI_DMA_TODEVICE);
 
-				err = pci_dma_mapping_error(map);
+				err = pci_dma_mapping_error(qdev->pdev, map);
 				if(err) {
 
 					printk(KERN_ERR "%s: PCI mapping outbound address list with error: %d\n",
@@ -2535,7 +2502,7 @@ static int ql_send_map(struct ql3_adapter *qdev,
 					 frag->page_offset, frag->size,
 					 PCI_DMA_TODEVICE);
 
-			err = pci_dma_mapping_error(map);
+			err = pci_dma_mapping_error(qdev->pdev, map);
 			if(err) {
 				printk(KERN_ERR "%s: PCI mapping frags failed with error: %d\n",
 				       qdev->ndev->name, err);
@@ -2550,8 +2517,7 @@ static int ql_send_map(struct ql3_adapter *qdev,
 					  frag->size);
 		}
 		/* Terminate the last segment. */
-		oal_entry->len =
-		    cpu_to_le32(le32_to_cpu(oal_entry->len) | OAL_LAST_ENTRY);
+		oal_entry->len |= cpu_to_le32(OAL_LAST_ENTRY);
 	}
 
 	return NETDEV_TX_OK;
@@ -2938,7 +2904,7 @@ static int ql_alloc_large_buffers(struct ql3_adapter *qdev)
 					     QL_HEADER_SPACE,
 					     PCI_DMA_FROMDEVICE);
 
-			err = pci_dma_mapping_error(map);
+			err = pci_dma_mapping_error(qdev->pdev, map);
 			if(err) {
 				printk(KERN_ERR "%s: PCI mapping failed with error: %d\n",
 				       qdev->ndev->name, err);
@@ -3035,7 +3001,7 @@ static int ql_alloc_mem_resources(struct ql3_adapter *qdev)
 		    LS_64BITS(qdev->shadow_reg_phy_addr);
 
 		qdev->prsp_producer_index =
-		    (u32 *) (((u8 *) qdev->preq_consumer_index) + 8);
+		    (__le32 *) (((u8 *) qdev->preq_consumer_index) + 8);
 		qdev->rsp_producer_index_phy_addr_high =
 		    qdev->req_consumer_index_phy_addr_high;
 		qdev->rsp_producer_index_phy_addr_low =
@@ -3215,7 +3181,7 @@ static int ql_adapter_initialize(struct ql3_adapter *qdev)
 	ql_write_page1_reg(qdev, &hmem_regs->reqLength, NUM_REQ_Q_ENTRIES);
 
 	/* Response Queue Registers */
-	*((u16 *) (qdev->prsp_producer_index)) = 0;
+	*((__le16 *) (qdev->prsp_producer_index)) = 0;
 	qdev->rsp_consumer_index = 0;
 	qdev->rsp_current = qdev->rsp_q_virt_addr;
 
@@ -3517,8 +3483,6 @@ static void ql_set_mac_info(struct ql3_adapter *qdev)
 	case ISP_CONTROL_FN0_NET:
 		qdev->mac_index = 0;
 		qdev->mac_ob_opcode = OUTBOUND_MAC_IOCB | func_number;
-		qdev->tcp_ob_opcode = OUTBOUND_TCP_IOCB | func_number;
-		qdev->update_ob_opcode = UPDATE_NCB_IOCB | func_number;
 		qdev->mb_bit_mask = FN0_MA_BITS_MASK;
 		qdev->PHYAddr = PORT0_PHY_ADDRESS;
 		if (port_status & PORT_STATUS_SM0)
@@ -3530,8 +3494,6 @@ static void ql_set_mac_info(struct ql3_adapter *qdev)
 	case ISP_CONTROL_FN1_NET:
 		qdev->mac_index = 1;
 		qdev->mac_ob_opcode = OUTBOUND_MAC_IOCB | func_number;
-		qdev->tcp_ob_opcode = OUTBOUND_TCP_IOCB | func_number;
-		qdev->update_ob_opcode = UPDATE_NCB_IOCB | func_number;
 		qdev->mb_bit_mask = FN1_MA_BITS_MASK;
 		qdev->PHYAddr = PORT1_PHY_ADDRESS;
 		if (port_status & PORT_STATUS_SM1)
@@ -3548,14 +3510,13 @@ static void ql_set_mac_info(struct ql3_adapter *qdev)
 		       qdev->ndev->name,value);
 		break;
 	}
-	qdev->numPorts = qdev->nvram_data.numPorts;
+	qdev->numPorts = qdev->nvram_data.version_and_numPorts >> 8;
 }
 
 static void ql_display_dev_info(struct net_device *ndev)
 {
 	struct ql3_adapter *qdev = (struct ql3_adapter *)netdev_priv(ndev);
 	struct pci_dev *pdev = qdev->pdev;
-	DECLARE_MAC_BUF(mac);
 
 	printk(KERN_INFO PFX
 	       "\n%s Adapter %d RevisionID %d found %s on PCI slot %d.\n",
@@ -3581,8 +3542,8 @@ static void ql_display_dev_info(struct net_device *ndev)
 
 	if (netif_msg_probe(qdev))
 		printk(KERN_INFO PFX
-		       "%s: MAC address %s\n",
-		       ndev->name, print_mac(mac, ndev->dev_addr));
+		       "%s: MAC address %pM\n",
+		       ndev->name, ndev->dev_addr);
 }
 
 static int ql_adapter_down(struct ql3_adapter *qdev, int do_reset)
@@ -3723,7 +3684,9 @@ static int ql_cycle_adapter(struct ql3_adapter *qdev, int reset)
 		printk(KERN_ERR PFX
 				"%s: Driver up/down cycle failed, "
 				"closing device\n",qdev->ndev->name);
+		rtnl_lock();
 		dev_close(qdev->ndev);
+		rtnl_unlock();
 		return -1;
 	}
 	return 0;
@@ -3748,14 +3711,6 @@ static int ql3xxx_open(struct net_device *ndev)
 {
 	struct ql3_adapter *qdev = netdev_priv(ndev);
 	return (ql_adapter_up(qdev));
-}
-
-static void ql3xxx_set_multicast_list(struct net_device *ndev)
-{
-	/*
-	 * We are manually parsing the list in the net_device structure.
-	 */
-	return;
 }
 
 static int ql3xxx_set_mac_address(struct net_device *ndev, void *p)
@@ -3944,13 +3899,24 @@ static void ql3xxx_timer(unsigned long ptr)
 	queue_delayed_work(qdev->workqueue, &qdev->link_state_work, 0);
 }
 
+static const struct net_device_ops ql3xxx_netdev_ops = {
+	.ndo_open		= ql3xxx_open,
+	.ndo_start_xmit		= ql3xxx_send,
+	.ndo_stop		= ql3xxx_close,
+	.ndo_set_multicast_list = NULL, /* not allowed on NIC side */
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_set_mac_address	= ql3xxx_set_mac_address,
+	.ndo_tx_timeout		= ql3xxx_tx_timeout,
+};
+
 static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 				  const struct pci_device_id *pci_entry)
 {
 	struct net_device *ndev = NULL;
 	struct ql3_adapter *qdev = NULL;
 	static int cards_found = 0;
-	int pci_using_dac, err;
+	int uninitialized_var(pci_using_dac), err;
 
 	err = pci_enable_device(pdev);
 	if (err) {
@@ -4010,9 +3976,7 @@ static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 	if (qdev->device_id == QL3032_DEVICE_ID)
 		ndev->features |= NETIF_F_IP_CSUM | NETIF_F_SG;
 
-	qdev->mem_map_registers =
-	    ioremap_nocache(pci_resource_start(pdev, 1),
-			    pci_resource_len(qdev->pdev, 1));
+	qdev->mem_map_registers = pci_ioremap_bar(pdev, 1);
 	if (!qdev->mem_map_registers) {
 		printk(KERN_ERR PFX "%s: cannot map device registers\n",
 		       pci_name(pdev));
@@ -4024,13 +3988,8 @@ static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 	spin_lock_init(&qdev->hw_lock);
 
 	/* Set driver entry points */
-	ndev->open = ql3xxx_open;
-	ndev->hard_start_xmit = ql3xxx_send;
-	ndev->stop = ql3xxx_close;
-	ndev->set_multicast_list = ql3xxx_set_multicast_list;
+	ndev->netdev_ops = &ql3xxx_netdev_ops;
 	SET_ETHTOOL_OPS(ndev, &ql3xxx_ethtool_ops);
-	ndev->set_mac_address = ql3xxx_set_mac_address;
-	ndev->tx_timeout = ql3xxx_tx_timeout;
 	ndev->watchdog_timeo = 5 * HZ;
 
 	netif_napi_add(ndev, &qdev->napi, ql_poll, 64);
@@ -4051,19 +4010,14 @@ static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 	/* Validate and set parameters */
 	if (qdev->mac_index) {
 		ndev->mtu = qdev->nvram_data.macCfg_port1.etherMtu_mac ;
-		memcpy(ndev->dev_addr, &qdev->nvram_data.funcCfg_fn2.macAddress,
-		       ETH_ALEN);
+		ql_set_mac_addr(ndev, qdev->nvram_data.funcCfg_fn2.macAddress);
 	} else {
 		ndev->mtu = qdev->nvram_data.macCfg_port0.etherMtu_mac ;
-		memcpy(ndev->dev_addr, &qdev->nvram_data.funcCfg_fn0.macAddress,
-		       ETH_ALEN);
+		ql_set_mac_addr(ndev, qdev->nvram_data.funcCfg_fn0.macAddress);
 	}
 	memcpy(ndev->perm_addr, ndev->dev_addr, ndev->addr_len);
 
 	ndev->tx_queue_len = NUM_REQ_Q_ENTRIES;
-
-	/* Turn off support for multicasting */
-	ndev->flags &= ~IFF_MULTICAST;
 
 	/* Record PCI bus information. */
 	ql_get_board_info(qdev);

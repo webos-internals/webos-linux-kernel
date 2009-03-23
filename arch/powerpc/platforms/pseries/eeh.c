@@ -21,6 +21,8 @@
  * Please address comments and feedback to Linas Vepstas <linas@austin.ibm.com>
  */
 
+#undef DEBUG
+
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/list.h>
@@ -29,6 +31,8 @@
 #include <linux/rbtree.h>
 #include <linux/seq_file.h>
 #include <linux/spinlock.h>
+#include <linux/of.h>
+
 #include <asm/atomic.h>
 #include <asm/eeh.h>
 #include <asm/eeh_event.h>
@@ -37,7 +41,6 @@
 #include <asm/ppc-pci.h>
 #include <asm/rtas.h>
 
-#undef DEBUG
 
 /** Overview:
  *  EEH, or "Extended Error Handling" is a PCI bridge technology for
@@ -74,9 +77,9 @@
  */
 
 /* If a device driver keeps reading an MMIO register in an interrupt
- * handler after a slot isolation event has occurred, we assume it
- * is broken and panic.  This sets the threshold for how many read
- * attempts we allow before panicking.
+ * handler after a slot isolation event, it might be broken.
+ * This sets the threshold for how many read attempts we allow
+ * before printing an error message.
  */
 #define EEH_MAX_FAILS	2100000
 
@@ -169,7 +172,6 @@ static void rtas_slot_error_detail(struct pci_dn *pdn, int severity,
  */
 static size_t gather_pci_data(struct pci_dn *pdn, char * buf, size_t len)
 {
-	struct device_node *dn;
 	struct pci_dev *dev = pdn->pcidev;
 	u32 cfg;
 	int cap, i;
@@ -243,12 +245,12 @@ static size_t gather_pci_data(struct pci_dn *pdn, char * buf, size_t len)
 
 	/* Gather status on devices under the bridge */
 	if (dev->class >> 16 == PCI_BASE_CLASS_BRIDGE) {
-		dn = pdn->node->child;
-		while (dn) {
+		struct device_node *dn;
+
+		for_each_child_of_node(pdn->node, dn) {
 			pdn = PCI_DN(dn);
 			if (pdn)
 				n += gather_pci_data(pdn, buf+n, len-n);
-			dn = dn->sibling;
 		}
 	}
 
@@ -372,7 +374,7 @@ struct device_node * find_device_pe(struct device_node *dn)
 	return dn;
 }
 
-/** Mark all devices that are peers of this device as failed.
+/** Mark all devices that are children of this device as failed.
  *  Mark the device driver too, so that it can see the failure
  *  immediately; this is critical, since some drivers poll
  *  status registers in interrupts ... If a driver is polling,
@@ -380,9 +382,11 @@ struct device_node * find_device_pe(struct device_node *dn)
  *  an interrupt context, which is bad.
  */
 
-static void __eeh_mark_slot (struct device_node *dn, int mode_flag)
+static void __eeh_mark_slot(struct device_node *parent, int mode_flag)
 {
-	while (dn) {
+	struct device_node *dn;
+
+	for_each_child_of_node(parent, dn) {
 		if (PCI_DN(dn)) {
 			/* Mark the pci device driver too */
 			struct pci_dev *dev = PCI_DN(dn)->pcidev;
@@ -392,10 +396,8 @@ static void __eeh_mark_slot (struct device_node *dn, int mode_flag)
 			if (dev && dev->driver)
 				dev->error_state = pci_channel_io_frozen;
 
-			if (dn->child)
-				__eeh_mark_slot (dn->child, mode_flag);
+			__eeh_mark_slot(dn, mode_flag);
 		}
-		dn = dn->sibling;
 	}
 }
 
@@ -415,19 +417,19 @@ void eeh_mark_slot (struct device_node *dn, int mode_flag)
 	if (dev)
 		dev->error_state = pci_channel_io_frozen;
 
-	__eeh_mark_slot (dn->child, mode_flag);
+	__eeh_mark_slot(dn, mode_flag);
 }
 
-static void __eeh_clear_slot (struct device_node *dn, int mode_flag)
+static void __eeh_clear_slot(struct device_node *parent, int mode_flag)
 {
-	while (dn) {
+	struct device_node *dn;
+
+	for_each_child_of_node(parent, dn) {
 		if (PCI_DN(dn)) {
 			PCI_DN(dn)->eeh_mode &= ~mode_flag;
 			PCI_DN(dn)->eeh_check_count = 0;
-			if (dn->child)
-				__eeh_clear_slot (dn->child, mode_flag);
+			__eeh_clear_slot(dn, mode_flag);
 		}
-		dn = dn->sibling;
 	}
 }
 
@@ -444,7 +446,7 @@ void eeh_clear_slot (struct device_node *dn, int mode_flag)
 
 	PCI_DN(dn)->eeh_mode &= ~mode_flag;
 	PCI_DN(dn)->eeh_check_count = 0;
-	__eeh_clear_slot (dn->child, mode_flag);
+	__eeh_clear_slot(dn, mode_flag);
 	spin_unlock_irqrestore(&confirm_error_lock, flags);
 }
 
@@ -470,6 +472,7 @@ int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 	unsigned long flags;
 	struct pci_dn *pdn;
 	int rc = 0;
+	const char *location;
 
 	total_mmio_ffs++;
 
@@ -480,16 +483,15 @@ int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 		no_dn++;
 		return 0;
 	}
+	dn = find_device_pe(dn);
 	pdn = PCI_DN(dn);
 
 	/* Access to IO BARs might get this far and still not want checking. */
 	if (!(pdn->eeh_mode & EEH_MODE_SUPPORTED) ||
 	    pdn->eeh_mode & EEH_MODE_NOCHECK) {
 		ignored_check++;
-#ifdef DEBUG
-		printk ("EEH:ignored check (%x) for %s %s\n", 
-		        pdn->eeh_mode, pci_name (dev), dn->full_name);
-#endif
+		pr_debug("EEH: Ignored check (%x) for %s %s\n",
+			 pdn->eeh_mode, pci_name (dev), dn->full_name);
 		return 0;
 	}
 
@@ -508,18 +510,15 @@ int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 	rc = 1;
 	if (pdn->eeh_mode & EEH_MODE_ISOLATED) {
 		pdn->eeh_check_count ++;
-		if (pdn->eeh_check_count >= EEH_MAX_FAILS) {
-			printk (KERN_ERR "EEH: Device driver ignored %d bad reads, panicing\n",
-			        pdn->eeh_check_count);
+		if (pdn->eeh_check_count % EEH_MAX_FAILS == 0) {
+			location = of_get_property(dn, "ibm,loc-code", NULL);
+			printk (KERN_ERR "EEH: %d reads ignored for recovering device at "
+				"location=%s driver=%s pci addr=%s\n",
+				pdn->eeh_check_count, location,
+				dev->driver->name, pci_name(dev));
+			printk (KERN_ERR "EEH: Might be infinite loop in %s driver\n",
+				dev->driver->name);
 			dump_stack();
-			msleep(5000);
-			
-			/* re-read the slot reset state */
-			if (read_slot_reset_state(pdn, rets) != 0)
-				rets[0] = -1;	/* reset state unknown */
-
-			/* If we are here, then we hit an infinite loop. Stop. */
-			panic("EEH: MMIO halt (%d) on device:%s\n", rets[0], pci_name(dev));
 		}
 		goto dn_unlock;
 	}
@@ -545,7 +544,7 @@ int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 
 	/* Note that config-io to empty slots may fail;
 	 * they are empty when they don't have children. */
-	if ((rets[0] == 5) && (dn->child == NULL)) {
+	if ((rets[0] == 5) && (rets[2] == 0) && (dn->child == NULL)) {
 		false_positives++;
 		pdn->eeh_false_positives ++;
 		rc = 0;
@@ -811,6 +810,7 @@ int rtas_set_slot_reset(struct pci_dn *pdn)
 static inline void __restore_bars (struct pci_dn *pdn)
 {
 	int i;
+	u32 cmd;
 
 	if (NULL==pdn->phb) return;
 	for (i=4; i<10; i++) {
@@ -831,6 +831,19 @@ static inline void __restore_bars (struct pci_dn *pdn)
 
 	/* max latency, min grant, interrupt pin and line */
 	rtas_write_config(pdn, 15*4, 4, pdn->config_space[15]);
+
+	/* Restore PERR & SERR bits, some devices require it,
+	   don't touch the other command bits */
+	rtas_read_config(pdn, PCI_COMMAND, 4, &cmd);
+	if (pdn->config_space[1] & PCI_COMMAND_PARITY)
+		cmd |= PCI_COMMAND_PARITY;
+	else
+		cmd &= ~PCI_COMMAND_PARITY;
+	if (pdn->config_space[1] & PCI_COMMAND_SERR)
+		cmd |= PCI_COMMAND_SERR;
+	else
+		cmd &= ~PCI_COMMAND_SERR;
+	rtas_write_config(pdn, PCI_COMMAND, 4, cmd);
 }
 
 /**
@@ -848,11 +861,8 @@ void eeh_restore_bars(struct pci_dn *pdn)
 	if ((pdn->eeh_mode & EEH_MODE_SUPPORTED) && !IS_BRIDGE(pdn->class_code))
 		__restore_bars (pdn);
 
-	dn = pdn->node->child;
-	while (dn) {
+	for_each_child_of_node(pdn->node, dn)
 		eeh_restore_bars (PCI_DN(dn));
-		dn = dn->sibling;
-	}
 }
 
 /**
@@ -946,7 +956,6 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 	unsigned int rets[3];
 	struct eeh_early_enable_info *info = data;
 	int ret;
-	const char *status = of_get_property(dn, "status", NULL);
 	const u32 *class_code = of_get_property(dn, "class-code", NULL);
 	const u32 *vendor_id = of_get_property(dn, "vendor-id", NULL);
 	const u32 *device_id = of_get_property(dn, "device-id", NULL);
@@ -960,8 +969,8 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 	pdn->eeh_freeze_count = 0;
 	pdn->eeh_false_positives = 0;
 
-	if (status && strncmp(status, "ok", 2) != 0)
-		return NULL;	/* ignore devices with bad status */
+	if (!of_device_is_available(dn))
+		return NULL;
 
 	/* Ignore bad nodes. */
 	if (!class_code || !vendor_id || !device_id)
@@ -1005,10 +1014,9 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 			eeh_subsystem_enabled = 1;
 			pdn->eeh_mode |= EEH_MODE_SUPPORTED;
 
-#ifdef DEBUG
-			printk(KERN_DEBUG "EEH: %s: eeh enabled, config=%x pe_config=%x\n",
-			       dn->full_name, pdn->eeh_config_addr, pdn->eeh_pe_config_addr);
-#endif
+			pr_debug("EEH: %s: eeh enabled, config=%x pe_config=%x\n",
+				 dn->full_name, pdn->eeh_config_addr,
+				 pdn->eeh_pe_config_addr);
 		} else {
 
 			/* This device doesn't support EEH, but it may have an
@@ -1130,7 +1138,8 @@ static void eeh_add_device_early(struct device_node *dn)
 void eeh_add_device_tree_early(struct device_node *dn)
 {
 	struct device_node *sib;
-	for (sib = dn->child; sib; sib = sib->sibling)
+
+	for_each_child_of_node(dn, sib)
 		eeh_add_device_tree_early(sib);
 	eeh_add_device_early(dn);
 }
@@ -1151,13 +1160,17 @@ static void eeh_add_device_late(struct pci_dev *dev)
 	if (!dev || !eeh_subsystem_enabled)
 		return;
 
-#ifdef DEBUG
-	printk(KERN_DEBUG "EEH: adding device %s\n", pci_name(dev));
-#endif
+	pr_debug("EEH: Adding device %s\n", pci_name(dev));
 
-	pci_dev_get (dev);
 	dn = pci_device_to_OF_node(dev);
 	pdn = PCI_DN(dn);
+	if (pdn->pcidev == dev) {
+		pr_debug("EEH: Already referenced !\n");
+		return;
+	}
+	WARN_ON(pdn->pcidev);
+
+	pci_dev_get (dev);
 	pdn->pcidev = dev;
 
 	pci_addr_cache_insert_device(dev);
@@ -1196,17 +1209,18 @@ static void eeh_remove_device(struct pci_dev *dev)
 		return;
 
 	/* Unregister the device with the EEH/PCI address search system */
-#ifdef DEBUG
-	printk(KERN_DEBUG "EEH: remove device %s\n", pci_name(dev));
-#endif
-	pci_addr_cache_remove_device(dev);
-	eeh_sysfs_remove_device(dev);
+	pr_debug("EEH: Removing device %s\n", pci_name(dev));
 
 	dn = pci_device_to_OF_node(dev);
-	if (PCI_DN(dn)->pcidev) {
-		PCI_DN(dn)->pcidev = NULL;
-		pci_dev_put (dev);
+	if (PCI_DN(dn)->pcidev == NULL) {
+		pr_debug("EEH: Not referenced !\n");
+		return;
 	}
+	PCI_DN(dn)->pcidev = NULL;
+	pci_dev_put (dev);
+
+	pci_addr_cache_remove_device(dev);
+	eeh_sysfs_remove_device(dev);
 }
 
 void eeh_remove_bus_device(struct pci_dev *dev)
@@ -1261,14 +1275,8 @@ static const struct file_operations proc_eeh_operations = {
 
 static int __init eeh_init_proc(void)
 {
-	struct proc_dir_entry *e;
-
-	if (machine_is(pseries)) {
-		e = create_proc_entry("ppc64/eeh", 0, NULL);
-		if (e)
-			e->proc_fops = &proc_eeh_operations;
-	}
-
+	if (machine_is(pseries))
+		proc_create("ppc64/eeh", 0, NULL, &proc_eeh_operations);
 	return 0;
 }
 __initcall(eeh_init_proc);

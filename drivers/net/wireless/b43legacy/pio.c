@@ -181,7 +181,7 @@ union txhdr_union {
 	struct b43legacy_txhdr_fw3 txhdr_fw3;
 };
 
-static void pio_tx_write_fragment(struct b43legacy_pioqueue *queue,
+static int pio_tx_write_fragment(struct b43legacy_pioqueue *queue,
 				  struct sk_buff *skb,
 				  struct b43legacy_pio_txpacket *packet,
 				  size_t txhdr_size)
@@ -189,14 +189,17 @@ static void pio_tx_write_fragment(struct b43legacy_pioqueue *queue,
 	union txhdr_union txhdr_data;
 	u8 *txhdr = NULL;
 	unsigned int octets;
+	int err;
 
 	txhdr = (u8 *)(&txhdr_data.txhdr_fw3);
 
 	B43legacy_WARN_ON(skb_shinfo(skb)->nr_frags != 0);
-	b43legacy_generate_txhdr(queue->dev,
+	err = b43legacy_generate_txhdr(queue->dev,
 				 txhdr, skb->data, skb->len,
-				 &packet->txstat.control,
+				 IEEE80211_SKB_CB(skb),
 				 generate_cookie(queue, packet));
+	if (err)
+		return err;
 
 	tx_start(queue);
 	octets = skb->len + txhdr_size;
@@ -204,6 +207,8 @@ static void pio_tx_write_fragment(struct b43legacy_pioqueue *queue,
 		octets--;
 	tx_data(queue, txhdr, (u8 *)skb->data, octets);
 	tx_complete(queue, skb);
+
+	return 0;
 }
 
 static void free_txpacket(struct b43legacy_pio_txpacket *packet,
@@ -226,6 +231,7 @@ static int pio_tx_packet(struct b43legacy_pio_txpacket *packet)
 	struct b43legacy_pioqueue *queue = packet->queue;
 	struct sk_buff *skb = packet->skb;
 	u16 octets;
+	int err;
 
 	octets = (u16)skb->len + sizeof(struct b43legacy_txhdr_fw3);
 	if (queue->tx_devq_size < octets) {
@@ -247,8 +253,14 @@ static int pio_tx_packet(struct b43legacy_pio_txpacket *packet)
 	if (queue->tx_devq_used + octets > queue->tx_devq_size)
 		return -EBUSY;
 	/* Now poke the device. */
-	pio_tx_write_fragment(queue, skb, packet,
+	err = pio_tx_write_fragment(queue, skb, packet,
 			      sizeof(struct b43legacy_txhdr_fw3));
+	if (unlikely(err == -ENOKEY)) {
+		/* Drop this packet, as we don't have the encryption key
+		 * anymore and must not transmit it unencrypted. */
+		free_txpacket(packet, 1);
+		return 0;
+	}
 
 	/* Account for the packet size.
 	 * (We must not overflow the device TX queue)
@@ -334,9 +346,9 @@ struct b43legacy_pioqueue *b43legacy_setup_pioqueue(struct b43legacy_wldev *dev,
 	tasklet_init(&queue->txtask, tx_tasklet,
 		     (unsigned long)queue);
 
-	value = b43legacy_read32(dev, B43legacy_MMIO_STATUS_BITFIELD);
-	value &= ~B43legacy_SBF_XFER_REG_BYTESWAP;
-	b43legacy_write32(dev, B43legacy_MMIO_STATUS_BITFIELD, value);
+	value = b43legacy_read32(dev, B43legacy_MMIO_MACCTL);
+	value &= ~B43legacy_MACCTL_BE;
+	b43legacy_write32(dev, B43legacy_MMIO_MACCTL, value);
 
 	qsize = b43legacy_read16(dev, queue->mmio_base
 				 + B43legacy_PIO_TXQBUFSIZE);
@@ -451,8 +463,7 @@ err_destroy0:
 }
 
 int b43legacy_pio_tx(struct b43legacy_wldev *dev,
-		     struct sk_buff *skb,
-		     struct ieee80211_tx_control *ctl)
+		     struct sk_buff *skb)
 {
 	struct b43legacy_pioqueue *queue = dev->pio.queue1;
 	struct b43legacy_pio_txpacket *packet;
@@ -463,9 +474,6 @@ int b43legacy_pio_tx(struct b43legacy_wldev *dev,
 	packet = list_entry(queue->txfree.next, struct b43legacy_pio_txpacket,
 			    list);
 	packet->skb = skb;
-
-	memset(&packet->txstat, 0, sizeof(packet->txstat));
-	memcpy(&packet->txstat.control, ctl, sizeof(*ctl));
 
 	list_move_tail(&packet->list, &queue->txqueue);
 	queue->nr_txfree--;
@@ -482,19 +490,52 @@ void b43legacy_pio_handle_txstatus(struct b43legacy_wldev *dev,
 {
 	struct b43legacy_pioqueue *queue;
 	struct b43legacy_pio_txpacket *packet;
+	struct ieee80211_tx_info *info;
+	int retry_limit;
 
 	queue = parse_cookie(dev, status->cookie, &packet);
 	B43legacy_WARN_ON(!queue);
+
+	if (!packet->skb)
+		return;
 
 	queue->tx_devq_packets--;
 	queue->tx_devq_used -= (packet->skb->len +
 				sizeof(struct b43legacy_txhdr_fw3));
 
+	info = IEEE80211_SKB_CB(packet->skb);
+
+	/* preserve the confiured retry limit before clearing the status
+	 * The xmit function has overwritten the rc's value with the actual
+	 * retry limit done by the hardware */
+	retry_limit = info->status.rates[0].count;
+	ieee80211_tx_info_clear_status(info);
+
 	if (status->acked)
-		packet->txstat.flags |= IEEE80211_TX_STATUS_ACK;
-	packet->txstat.retry_count = status->frame_count - 1;
-	ieee80211_tx_status_irqsafe(dev->wl->hw, packet->skb,
-				    &(packet->txstat));
+		info->flags |= IEEE80211_TX_STAT_ACK;
+
+	if (status->rts_count > dev->wl->hw->conf.short_frame_max_tx_count) {
+		/*
+		 * If the short retries (RTS, not data frame) have exceeded
+		 * the limit, the hw will not have tried the selected rate,
+		 * but will have used the fallback rate instead.
+		 * Don't let the rate control count attempts for the selected
+		 * rate in this case, otherwise the statistics will be off.
+		 */
+		info->status.rates[0].count = 0;
+		info->status.rates[1].count = status->frame_count;
+	} else {
+		if (status->frame_count > retry_limit) {
+			info->status.rates[0].count = retry_limit;
+			info->status.rates[1].count = status->frame_count -
+					retry_limit;
+
+		} else {
+			info->status.rates[0].count = status->frame_count;
+			info->status.rates[1].idx = -1;
+		}
+	}
+	ieee80211_tx_status_irqsafe(dev->wl->hw, packet->skb);
 	packet->skb = NULL;
 
 	free_txpacket(packet, 1);
@@ -510,13 +551,11 @@ void b43legacy_pio_get_tx_stats(struct b43legacy_wldev *dev,
 {
 	struct b43legacy_pio *pio = &dev->pio;
 	struct b43legacy_pioqueue *queue;
-	struct ieee80211_tx_queue_stats_data *data;
 
 	queue = pio->queue1;
-	data = &(stats->data[0]);
-	data->len = B43legacy_PIO_MAXTXPACKETS - queue->nr_txfree;
-	data->limit = B43legacy_PIO_MAXTXPACKETS;
-	data->count = queue->nr_tx_packets;
+	stats[0].len = B43legacy_PIO_MAXTXPACKETS - queue->nr_txfree;
+	stats[0].limit = B43legacy_PIO_MAXTXPACKETS;
+	stats[0].count = queue->nr_tx_packets;
 }
 
 static void pio_rx_error(struct b43legacy_pioqueue *queue,

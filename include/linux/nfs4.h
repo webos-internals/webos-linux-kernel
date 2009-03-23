@@ -65,9 +65,6 @@
 #define NFS4_ACE_SUCCESSFUL_ACCESS_ACE_FLAG   0x00000010
 #define NFS4_ACE_FAILED_ACCESS_ACE_FLAG       0x00000020
 #define NFS4_ACE_IDENTIFIER_GROUP             0x00000040
-#define NFS4_ACE_OWNER                        0x00000080
-#define NFS4_ACE_GROUP                        0x00000100
-#define NFS4_ACE_EVERYONE                     0x00000200
 
 #define NFS4_ACE_READ_DATA                    0x00000001
 #define NFS4_ACE_LIST_DIRECTORY               0x00000001
@@ -90,6 +87,8 @@
 #define NFS4_ACE_GENERIC_WRITE                0x00160106
 #define NFS4_ACE_GENERIC_EXECUTE              0x001200A0
 #define NFS4_ACE_MASK_ALL                     0x001F01FF
+
+#define NFS4_MAX_UINT64	(~(u64)0)
 
 enum nfs4_acl_whotype {
 	NFS4_ACL_WHO_NAMED = 0,

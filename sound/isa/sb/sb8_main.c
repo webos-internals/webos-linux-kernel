@@ -30,7 +30,6 @@
  *   Cleaned up and rewrote lowlevel routines.
  */
 
-#include <sound/driver.h>
 #include <asm/io.h>
 #include <asm/dma.h>
 #include <linux/init.h>
@@ -112,7 +111,9 @@ static int snd_sb8_playback_prepare(struct snd_pcm_substream *substream)
 	switch (chip->hardware) {
 	case SB_HW_PRO:
 		if (runtime->channels > 1) {
-			snd_assert(rate == SB8_RATE(11025) || rate == SB8_RATE(22050), return -EINVAL);
+			if (snd_BUG_ON(rate != SB8_RATE(11025) &&
+				       rate != SB8_RATE(22050)))
+				return -EINVAL;
 			chip->playback_format = SB_DSP_HI_OUTPUT_AUTO;
 			break;
 		}
@@ -238,7 +239,9 @@ static int snd_sb8_capture_prepare(struct snd_pcm_substream *substream)
 	switch (chip->hardware) {
 	case SB_HW_PRO:
 		if (runtime->channels > 1) {
-			snd_assert(rate == SB8_RATE(11025) || rate == SB8_RATE(22050), return -EINVAL);
+			if (snd_BUG_ON(rate != SB8_RATE(11025) &&
+				       rate != SB8_RATE(22050)))
+				return -EINVAL;
 			chip->capture_format = SB_DSP_HI_INPUT_AUTO;
 			break;
 		}
@@ -278,7 +281,7 @@ static int snd_sb8_capture_prepare(struct snd_pcm_substream *substream)
 	} else {
 		snd_sbdsp_command(chip, 256 - runtime->rate_den);
 	}
-	if (chip->capture_format != SB_DSP_OUTPUT) {
+	if (chip->capture_format != SB_DSP_INPUT) {
 		count--;
 		snd_sbdsp_command(chip, SB_DSP_BLOCK_SIZE);
 		snd_sbdsp_command(chip, count & 0xff);

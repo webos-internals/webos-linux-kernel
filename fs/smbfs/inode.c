@@ -67,7 +67,7 @@ static void smb_destroy_inode(struct inode *inode)
 	kmem_cache_free(smb_inode_cachep, SMB_I(inode));
 }
 
-static void init_once(struct kmem_cache *cachep, void *foo)
+static void init_once(void *foo)
 {
 	struct smb_inode_info *ei = (struct smb_inode_info *) foo;
 
@@ -500,6 +500,13 @@ static int smb_fill_super(struct super_block *sb, void *raw_data, int silent)
 	struct smb_fattr root;
 	int ver;
 	void *mem;
+	static int warn_count;
+
+	if (warn_count < 5) {
+		warn_count++;
+		printk(KERN_EMERG "smbfs is deprecated and will be removed"
+			" from the 2.6.27 kernel. Please migrate to cifs\n");
+	}
 
 	if (!raw_data)
 		goto out_no_data;
@@ -579,7 +586,7 @@ static int smb_fill_super(struct super_block *sb, void *raw_data, int silent)
 		if (parse_options(mnt, raw_data))
 			goto out_bad_option;
 	}
-	mnt->mounted_uid = current->uid;
+	mnt->mounted_uid = current_uid();
 	smb_setcodepage(server, &mnt->codepage);
 
 	/*

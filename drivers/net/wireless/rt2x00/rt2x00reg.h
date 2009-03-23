@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2007 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -27,14 +27,13 @@
 #define RT2X00REG_H
 
 /*
- * TX result flags.
+ * RX crypto status
  */
-enum TX_STATUS {
-	TX_SUCCESS = 0,
-	TX_SUCCESS_RETRY = 1,
-	TX_FAIL_RETRY = 2,
-	TX_FAIL_INVALID = 3,
-	TX_FAIL_OTHER = 4,
+enum rx_crypto {
+	RX_CRYPTO_SUCCESS = 0,
+	RX_CRYPTO_FAIL_ICV = 1,
+	RX_CRYPTO_FAIL_MIC = 2,
+	RX_CRYPTO_FAIL_KEY = 3,
 };
 
 /*
@@ -85,6 +84,8 @@ enum dev_state {
 	STATE_RADIO_OFF,
 	STATE_RADIO_RX_ON,
 	STATE_RADIO_RX_OFF,
+	STATE_RADIO_RX_ON_LINK,
+	STATE_RADIO_RX_OFF_LINK,
 	STATE_RADIO_IRQ_ON,
 	STATE_RADIO_IRQ_OFF,
 };
@@ -113,7 +114,14 @@ enum cipher {
  */
 	CIPHER_CKIP64 = 5,
 	CIPHER_CKIP128 = 6,
-	CIPHER_TKIP_NO_MIC = 7,
+	CIPHER_TKIP_NO_MIC = 7, /* Don't send to device */
+
+/*
+ * Max cipher type.
+ * Note that CIPHER_NONE isn't counted, and CKIP64 and CKIP128
+ * are excluded due to limitations in mac80211.
+ */
+	CIPHER_MAX = 4,
 };
 
 /*
@@ -139,154 +147,106 @@ struct rt2x00_field32 {
 
 /*
  * Power of two check, this will check
- * if the mask that has been given contains
- * and contiguous set of bits.
+ * if the mask that has been given contains and contiguous set of bits.
+ * Note that we cannot use the is_power_of_2() function since this
+ * check must be done at compile-time.
  */
 #define is_power_of_two(x)	( !((x) & ((x)-1)) )
 #define low_bit_mask(x)		( ((x)-1) & ~(x) )
-#define is_valid_mask(x)	is_power_of_two(1 + (x) + low_bit_mask(x))
+#define is_valid_mask(x)	is_power_of_two(1LU + (x) + low_bit_mask(x))
+
+/*
+ * Macro's to find first set bit in a variable.
+ * These macro's behaves the same as the __ffs() function with
+ * the most important difference that this is done during
+ * compile-time rather then run-time.
+ */
+#define compile_ffs2(__x) \
+	__builtin_choose_expr(((__x) & 0x1), 0, 1)
+
+#define compile_ffs4(__x) \
+	__builtin_choose_expr(((__x) & 0x3), \
+			      (compile_ffs2((__x))), \
+			      (compile_ffs2((__x) >> 2) + 2))
+
+#define compile_ffs8(__x) \
+	__builtin_choose_expr(((__x) & 0xf), \
+			      (compile_ffs4((__x))), \
+			      (compile_ffs4((__x) >> 4) + 4))
+
+#define compile_ffs16(__x) \
+	__builtin_choose_expr(((__x) & 0xff), \
+			      (compile_ffs8((__x))), \
+			      (compile_ffs8((__x) >> 8) + 8))
+
+#define compile_ffs32(__x) \
+	__builtin_choose_expr(((__x) & 0xffff), \
+			      (compile_ffs16((__x))), \
+			      (compile_ffs16((__x) >> 16) + 16))
+
+/*
+ * This macro will check the requirements for the FIELD{8,16,32} macros
+ * The mask should be a constant non-zero contiguous set of bits which
+ * does not exceed the given typelimit.
+ */
+#define FIELD_CHECK(__mask, __type)			\
+	BUILD_BUG_ON(!(__mask) ||			\
+		     !is_valid_mask(__mask) ||		\
+		     (__mask) != (__type)(__mask))	\
 
 #define FIELD8(__mask)				\
 ({						\
-	BUILD_BUG_ON(!(__mask) ||		\
-		     !is_valid_mask(__mask) ||	\
-		     (__mask) != (u8)(__mask));	\
+	FIELD_CHECK(__mask, u8);		\
 	(struct rt2x00_field8) {		\
-		__ffs(__mask), (__mask)		\
+		compile_ffs8(__mask), (__mask)	\
 	};					\
 })
 
 #define FIELD16(__mask)				\
 ({						\
-	BUILD_BUG_ON(!(__mask) ||		\
-		     !is_valid_mask(__mask) ||	\
-		     (__mask) != (u16)(__mask));\
+	FIELD_CHECK(__mask, u16);		\
 	(struct rt2x00_field16) {		\
-		__ffs(__mask), (__mask)		\
+		compile_ffs16(__mask), (__mask)	\
 	};					\
 })
 
 #define FIELD32(__mask)				\
 ({						\
-	BUILD_BUG_ON(!(__mask) ||		\
-		     !is_valid_mask(__mask) ||	\
-		     (__mask) != (u32)(__mask));\
+	FIELD_CHECK(__mask, u32);		\
 	(struct rt2x00_field32) {		\
-		__ffs(__mask), (__mask)		\
+		compile_ffs32(__mask), (__mask)	\
 	};					\
 })
 
-static inline void rt2x00_set_field32(u32 *reg,
-				      const struct rt2x00_field32 field,
-				      const u32 value)
-{
-	*reg &= ~(field.bit_mask);
-	*reg |= (value << field.bit_offset) & field.bit_mask;
-}
+#define SET_FIELD(__reg, __type, __field, __value)\
+({						\
+	typecheck(__type, __field);		\
+	*(__reg) &= ~((__field).bit_mask);	\
+	*(__reg) |= ((__value) <<		\
+	    ((__field).bit_offset)) &		\
+	    ((__field).bit_mask);		\
+})
 
-static inline u32 rt2x00_get_field32(const u32 reg,
-				     const struct rt2x00_field32 field)
-{
-	return (reg & field.bit_mask) >> field.bit_offset;
-}
+#define GET_FIELD(__reg, __type, __field)	\
+({						\
+	typecheck(__type, __field);		\
+	((__reg) & ((__field).bit_mask)) >>	\
+	    ((__field).bit_offset);		\
+})
 
-static inline void rt2x00_set_field16(u16 *reg,
-				      const struct rt2x00_field16 field,
-				      const u16 value)
-{
-	*reg &= ~(field.bit_mask);
-	*reg |= (value << field.bit_offset) & field.bit_mask;
-}
+#define rt2x00_set_field32(__reg, __field, __value) \
+	SET_FIELD(__reg, struct rt2x00_field32, __field, __value)
+#define rt2x00_get_field32(__reg, __field) \
+	GET_FIELD(__reg, struct rt2x00_field32, __field)
 
-static inline u16 rt2x00_get_field16(const u16 reg,
-				     const struct rt2x00_field16 field)
-{
-	return (reg & field.bit_mask) >> field.bit_offset;
-}
+#define rt2x00_set_field16(__reg, __field, __value) \
+	SET_FIELD(__reg, struct rt2x00_field16, __field, __value)
+#define rt2x00_get_field16(__reg, __field) \
+	GET_FIELD(__reg, struct rt2x00_field16, __field)
 
-static inline void rt2x00_set_field8(u8 *reg,
-				     const struct rt2x00_field8 field,
-				     const u8 value)
-{
-	*reg &= ~(field.bit_mask);
-	*reg |= (value << field.bit_offset) & field.bit_mask;
-}
-
-static inline u8 rt2x00_get_field8(const u8 reg,
-				   const struct rt2x00_field8 field)
-{
-	return (reg & field.bit_mask) >> field.bit_offset;
-}
-
-/*
- * Device specific rate value.
- * We will have to create the device specific rate value
- * passed to the ieee80211 kernel. We need to make it a consist of
- * multiple fields because we want to store more then 1 device specific
- * values inside the value.
- *	1 - rate, stored as 100 kbit/s.
- *	2 - preamble, short_preamble enabled flag.
- *	3 - MASK_RATE, which rates are enabled in this mode, this mask
- *	corresponds with the TX register format for the current device.
- *	4 - plcp, 802.11b rates are device specific,
- *	802.11g rates are set according to the ieee802.11a-1999 p.14.
- * The bit to enable preamble is set in a seperate define.
- */
-#define DEV_RATE	FIELD32(0x000007ff)
-#define DEV_PREAMBLE	FIELD32(0x00000800)
-#define DEV_RATEMASK	FIELD32(0x00fff000)
-#define DEV_PLCP	FIELD32(0xff000000)
-
-/*
- * Bitfields
- */
-#define DEV_RATEBIT_1MB		( 1 << 0 )
-#define DEV_RATEBIT_2MB		( 1 << 1 )
-#define DEV_RATEBIT_5_5MB	( 1 << 2 )
-#define DEV_RATEBIT_11MB	( 1 << 3 )
-#define DEV_RATEBIT_6MB		( 1 << 4 )
-#define DEV_RATEBIT_9MB		( 1 << 5 )
-#define DEV_RATEBIT_12MB	( 1 << 6 )
-#define DEV_RATEBIT_18MB	( 1 << 7 )
-#define DEV_RATEBIT_24MB	( 1 << 8 )
-#define DEV_RATEBIT_36MB	( 1 << 9 )
-#define DEV_RATEBIT_48MB	( 1 << 10 )
-#define DEV_RATEBIT_54MB	( 1 << 11 )
-
-/*
- * Bitmasks for DEV_RATEMASK
- */
-#define DEV_RATEMASK_1MB	( (DEV_RATEBIT_1MB << 1) -1 )
-#define DEV_RATEMASK_2MB	( (DEV_RATEBIT_2MB << 1) -1 )
-#define DEV_RATEMASK_5_5MB	( (DEV_RATEBIT_5_5MB << 1) -1 )
-#define DEV_RATEMASK_11MB	( (DEV_RATEBIT_11MB << 1) -1 )
-#define DEV_RATEMASK_6MB	( (DEV_RATEBIT_6MB << 1) -1 )
-#define DEV_RATEMASK_9MB	( (DEV_RATEBIT_9MB << 1) -1 )
-#define DEV_RATEMASK_12MB	( (DEV_RATEBIT_12MB << 1) -1 )
-#define DEV_RATEMASK_18MB	( (DEV_RATEBIT_18MB << 1) -1 )
-#define DEV_RATEMASK_24MB	( (DEV_RATEBIT_24MB << 1) -1 )
-#define DEV_RATEMASK_36MB	( (DEV_RATEBIT_36MB << 1) -1 )
-#define DEV_RATEMASK_48MB	( (DEV_RATEBIT_48MB << 1) -1 )
-#define DEV_RATEMASK_54MB	( (DEV_RATEBIT_54MB << 1) -1 )
-
-/*
- * Bitmask groups of bitrates
- */
-#define DEV_BASIC_RATEMASK \
-	( DEV_RATEMASK_11MB | \
-	  DEV_RATEBIT_6MB | DEV_RATEBIT_12MB | DEV_RATEBIT_24MB )
-
-#define DEV_CCK_RATEMASK	( DEV_RATEMASK_11MB )
-#define DEV_OFDM_RATEMASK	( DEV_RATEMASK_54MB & ~DEV_CCK_RATEMASK )
-
-/*
- * Macro's to set and get specific fields from the device specific val and val2
- * fields inside the ieee80211_rate entry.
- */
-#define DEVICE_SET_RATE_FIELD(__value, __mask) \
-	(int)( ((__value) << DEV_##__mask.bit_offset) & DEV_##__mask.bit_mask )
-
-#define DEVICE_GET_RATE_FIELD(__value, __mask) \
-	(int)( ((__value) & DEV_##__mask.bit_mask) >> DEV_##__mask.bit_offset )
+#define rt2x00_set_field8(__reg, __field, __value) \
+	SET_FIELD(__reg, struct rt2x00_field8, __field, __value)
+#define rt2x00_get_field8(__reg, __field) \
+	GET_FIELD(__reg, struct rt2x00_field8, __field)
 
 #endif /* RT2X00REG_H */

@@ -22,8 +22,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: amba.c,v 1.41 2002/07/28 10:03:27 rmk Exp $
- *
  * This is a generic driver for ARM AMBA-type serial ports.  They
  * have a lot of 16550-like features, but are not register compatible.
  * Note that although they do have CTS, DCD and DSR inputs, they do
@@ -109,7 +107,7 @@ static void pl011_enable_ms(struct uart_port *port)
 
 static void pl011_rx_chars(struct uart_amba_port *uap)
 {
-	struct tty_struct *tty = uap->port.info->tty;
+	struct tty_struct *tty = uap->port.info->port.tty;
 	unsigned int status, ch, flag, max_count = 256;
 
 	status = readw(uap->port.membase + UART01x_FR);
@@ -313,6 +311,32 @@ static void pl011_break_ctl(struct uart_port *port, int break_state)
 	writew(lcr_h, uap->port.membase + UART011_LCRH);
 	spin_unlock_irqrestore(&uap->port.lock, flags);
 }
+
+#ifdef CONFIG_CONSOLE_POLL
+static int pl010_get_poll_char(struct uart_port *port)
+{
+	struct uart_amba_port *uap = (struct uart_amba_port *)port;
+	unsigned int status;
+
+	do {
+		status = readw(uap->port.membase + UART01x_FR);
+	} while (status & UART01x_FR_RXFE);
+
+	return readw(uap->port.membase + UART01x_DR);
+}
+
+static void pl010_put_poll_char(struct uart_port *port,
+			 unsigned char ch)
+{
+	struct uart_amba_port *uap = (struct uart_amba_port *)port;
+
+	while (readw(uap->port.membase + UART01x_FR) & UART01x_FR_TXFF)
+		barrier();
+
+	writew(ch, uap->port.membase + UART01x_DR);
+}
+
+#endif /* CONFIG_CONSOLE_POLL */
 
 static int pl011_startup(struct uart_port *port)
 {
@@ -548,7 +572,7 @@ static int pl010_verify_port(struct uart_port *port, struct serial_struct *ser)
 	int ret = 0;
 	if (ser->type != PORT_UNKNOWN && ser->type != PORT_AMBA)
 		ret = -EINVAL;
-	if (ser->irq < 0 || ser->irq >= NR_IRQS)
+	if (ser->irq < 0 || ser->irq >= nr_irqs)
 		ret = -EINVAL;
 	if (ser->baud_base < 9600)
 		ret = -EINVAL;
@@ -572,6 +596,10 @@ static struct uart_ops amba_pl011_pops = {
 	.request_port	= pl010_request_port,
 	.config_port	= pl010_config_port,
 	.verify_port	= pl010_verify_port,
+#ifdef CONFIG_CONSOLE_POLL
+	.poll_get_char = pl010_get_poll_char,
+	.poll_put_char = pl010_put_poll_char,
+#endif
 };
 
 static struct uart_amba_port *amba_ports[UART_NR];
@@ -728,7 +756,7 @@ static int pl011_probe(struct amba_device *dev, void *id)
 		goto free;
 	}
 
-	uap->clk = clk_get(&dev->dev, "UARTCLK");
+	uap->clk = clk_get(&dev->dev, NULL);
 	if (IS_ERR(uap->clk)) {
 		ret = PTR_ERR(uap->clk);
 		goto unmap;

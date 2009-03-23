@@ -10,8 +10,7 @@
 #include <linux/acpi.h>
 #include <linux/bitmap.h>
 #include <asm/e820.h>
-
-#include "pci.h"
+#include <asm/pci_x86.h>
 
 /* Static virtual mapping of the MMCONFIG aperture */
 struct mmcfg_virt {
@@ -40,9 +39,7 @@ static char __iomem *get_virt(unsigned int seg, unsigned bus)
 static char __iomem *pci_dev_base(unsigned int seg, unsigned int bus, unsigned int devfn)
 {
 	char __iomem *addr;
-	if (seg == 0 && bus < PCI_MMCFG_MAX_CHECK_BUS &&
-		test_bit(32*bus + PCI_SLOT(devfn), pci_mmcfg_fallback_slots))
-		return NULL;
+
 	addr = get_virt(seg, bus);
 	if (!addr)
 		return NULL;
@@ -56,13 +53,13 @@ static int pci_mmcfg_read(unsigned int seg, unsigned int bus,
 
 	/* Why do we have this when nobody checks it. How about a BUG()!? -AK */
 	if (unlikely((bus > 255) || (devfn > 255) || (reg > 4095))) {
-		*value = -1;
+err:		*value = -1;
 		return -EINVAL;
 	}
 
 	addr = pci_dev_base(seg, bus, devfn);
 	if (!addr)
-		return pci_conf1_read(seg,bus,devfn,reg,len,value);
+		goto err;
 
 	switch (len) {
 	case 1:
@@ -90,7 +87,7 @@ static int pci_mmcfg_write(unsigned int seg, unsigned int bus,
 
 	addr = pci_dev_base(seg, bus, devfn);
 	if (!addr)
-		return pci_conf1_write(seg,bus,devfn,reg,len,value);
+		return -EINVAL;
 
 	switch (len) {
 	case 1:
@@ -126,16 +123,10 @@ static void __iomem * __init mcfg_ioremap(struct acpi_mcfg_allocation *cfg)
 	return addr;
 }
 
-int __init pci_mmcfg_arch_reachable(unsigned int seg, unsigned int bus,
-				    unsigned int devfn)
-{
-	return pci_dev_base(seg, bus, devfn) != NULL;
-}
-
 int __init pci_mmcfg_arch_init(void)
 {
 	int i;
-	pci_mmcfg_virt = kmalloc(sizeof(*pci_mmcfg_virt) *
+	pci_mmcfg_virt = kzalloc(sizeof(*pci_mmcfg_virt) *
 				 pci_mmcfg_config_num, GFP_KERNEL);
 	if (pci_mmcfg_virt == NULL) {
 		printk(KERN_ERR "PCI: Can not allocate memory for mmconfig structures\n");
@@ -149,9 +140,29 @@ int __init pci_mmcfg_arch_init(void)
 			printk(KERN_ERR "PCI: Cannot map mmconfig aperture for "
 					"segment %d\n",
 				pci_mmcfg_config[i].pci_segment);
+			pci_mmcfg_arch_free();
 			return 0;
 		}
 	}
-	raw_pci_ops = &pci_mmcfg;
+	raw_pci_ext_ops = &pci_mmcfg;
 	return 1;
+}
+
+void __init pci_mmcfg_arch_free(void)
+{
+	int i;
+
+	if (pci_mmcfg_virt == NULL)
+		return;
+
+	for (i = 0; i < pci_mmcfg_config_num; ++i) {
+		if (pci_mmcfg_virt[i].virt) {
+			iounmap(pci_mmcfg_virt[i].virt);
+			pci_mmcfg_virt[i].virt = NULL;
+			pci_mmcfg_virt[i].cfg = NULL;
+		}
+	}
+
+	kfree(pci_mmcfg_virt);
+	pci_mmcfg_virt = NULL;
 }

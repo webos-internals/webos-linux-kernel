@@ -1,5 +1,3 @@
-/*	$Id: ppp_defs.h,v 1.2 1994/09/21 01:31:06 paulus Exp $	*/
-
 /*
  * ppp_defs.h - PPP definitions.
  *
@@ -26,6 +24,8 @@
  * OBLIGATION TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS,
  * OR MODIFICATIONS.
  */
+
+#include <linux/types.h>
 
 /*
  *  ==FILEVERSION 20000114==

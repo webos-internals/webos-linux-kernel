@@ -36,30 +36,12 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Harald Welte <laforge@gnumonks.org>");
 MODULE_DESCRIPTION("Netfilter NAT protocol helper module for GRE");
 
-/* is key in given range between min and max */
-static int
-gre_in_range(const struct nf_conntrack_tuple *tuple,
-	     enum nf_nat_manip_type maniptype,
-	     const union nf_conntrack_man_proto *min,
-	     const union nf_conntrack_man_proto *max)
-{
-	__be16 key;
-
-	if (maniptype == IP_NAT_MANIP_SRC)
-		key = tuple->src.u.gre.key;
-	else
-		key = tuple->dst.u.gre.key;
-
-	return ntohs(key) >= ntohs(min->gre.key) &&
-	       ntohs(key) <= ntohs(max->gre.key);
-}
-
 /* generate unique tuple ... */
-static int
+static bool
 gre_unique_tuple(struct nf_conntrack_tuple *tuple,
 		 const struct nf_nat_range *range,
 		 enum nf_nat_manip_type maniptype,
-		 const struct nf_conn *conntrack)
+		 const struct nf_conn *ct)
 {
 	static u_int16_t key;
 	__be16 *keyptr;
@@ -67,8 +49,8 @@ gre_unique_tuple(struct nf_conntrack_tuple *tuple,
 
 	/* If there is no master conntrack we are not PPTP,
 	   do not change tuples */
-	if (!conntrack->master)
-		return 0;
+	if (!ct->master)
+		return false;
 
 	if (maniptype == IP_NAT_MANIP_SRC)
 		keyptr = &tuple->src.u.gre.key;
@@ -76,7 +58,7 @@ gre_unique_tuple(struct nf_conntrack_tuple *tuple,
 		keyptr = &tuple->dst.u.gre.key;
 
 	if (!(range->flags & IP_NAT_RANGE_PROTO_SPECIFIED)) {
-		pr_debug("%p: NATing GRE PPTP\n", conntrack);
+		pr_debug("%p: NATing GRE PPTP\n", ct);
 		min = 1;
 		range_size = 0xffff;
 	} else {
@@ -88,29 +70,29 @@ gre_unique_tuple(struct nf_conntrack_tuple *tuple,
 
 	for (i = 0; i < range_size; i++, key++) {
 		*keyptr = htons(min + key % range_size);
-		if (!nf_nat_used_tuple(tuple, conntrack))
-			return 1;
+		if (!nf_nat_used_tuple(tuple, ct))
+			return true;
 	}
 
-	pr_debug("%p: no NAT mapping\n", conntrack);
-	return 0;
+	pr_debug("%p: no NAT mapping\n", ct);
+	return false;
 }
 
 /* manipulate a GRE packet according to maniptype */
-static int
+static bool
 gre_manip_pkt(struct sk_buff *skb, unsigned int iphdroff,
 	      const struct nf_conntrack_tuple *tuple,
 	      enum nf_nat_manip_type maniptype)
 {
-	struct gre_hdr *greh;
+	const struct gre_hdr *greh;
 	struct gre_hdr_pptp *pgreh;
-	struct iphdr *iph = (struct iphdr *)(skb->data + iphdroff);
+	const struct iphdr *iph = (struct iphdr *)(skb->data + iphdroff);
 	unsigned int hdroff = iphdroff + iph->ihl * 4;
 
 	/* pgreh includes two optional 32bit fields which are not required
 	 * to be there.  That's where the magic '8' comes from */
 	if (!skb_make_writable(skb, hdroff + sizeof(*pgreh) - 8))
-		return 0;
+		return false;
 
 	greh = (void *)skb->data + hdroff;
 	pgreh = (struct gre_hdr_pptp *)greh;
@@ -118,7 +100,7 @@ gre_manip_pkt(struct sk_buff *skb, unsigned int iphdroff,
 	/* we only have destination manip of a packet, since 'source key'
 	 * is not present in the packet itself */
 	if (maniptype != IP_NAT_MANIP_DST)
-		return 1;
+		return true;
 	switch (greh->version) {
 	case GRE_VERSION_1701:
 		/* We do not currently NAT any GREv0 packets.
@@ -130,29 +112,29 @@ gre_manip_pkt(struct sk_buff *skb, unsigned int iphdroff,
 		break;
 	default:
 		pr_debug("can't nat unknown GRE version\n");
-		return 0;
+		return false;
 	}
-	return 1;
+	return true;
 }
 
-static struct nf_nat_protocol gre __read_mostly = {
-	.name			= "GRE",
+static const struct nf_nat_protocol gre = {
 	.protonum		= IPPROTO_GRE,
+	.me			= THIS_MODULE,
 	.manip_pkt		= gre_manip_pkt,
-	.in_range		= gre_in_range,
+	.in_range		= nf_nat_proto_in_range,
 	.unique_tuple		= gre_unique_tuple,
 #if defined(CONFIG_NF_CT_NETLINK) || defined(CONFIG_NF_CT_NETLINK_MODULE)
-	.range_to_nlattr	= nf_nat_port_range_to_nlattr,
-	.nlattr_to_range	= nf_nat_port_nlattr_to_range,
+	.range_to_nlattr	= nf_nat_proto_range_to_nlattr,
+	.nlattr_to_range	= nf_nat_proto_nlattr_to_range,
 #endif
 };
 
-int __init nf_nat_proto_gre_init(void)
+static int __init nf_nat_proto_gre_init(void)
 {
 	return nf_nat_protocol_register(&gre);
 }
 
-void __exit nf_nat_proto_gre_fini(void)
+static void __exit nf_nat_proto_gre_fini(void)
 {
 	nf_nat_protocol_unregister(&gre);
 }

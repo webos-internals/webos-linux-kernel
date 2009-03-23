@@ -21,9 +21,9 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/spi_bitbang.h>
 
-#include <asm/arch/regs-gpio.h>
-#include <asm/arch/spi-gpio.h>
-#include <asm/hardware.h>
+#include <mach/regs-gpio.h>
+#include <mach/spi-gpio.h>
+#include <mach/hardware.h>
 
 struct s3c2410_spigpio {
 	struct spi_bitbang		 bitbang;
@@ -34,7 +34,7 @@ struct s3c2410_spigpio {
 
 static inline struct s3c2410_spigpio *spidev_to_sg(struct spi_device *spi)
 {
-	return spi->controller_data;
+	return spi_master_get_devdata(spi->master);
 }
 
 static inline void setsck(struct spi_device *dev, int on)
@@ -100,7 +100,6 @@ static int s3c2410_spigpio_probe(struct platform_device *dev)
 	struct spi_master	*master;
 	struct s3c2410_spigpio  *sp;
 	int ret;
-	int i;
 
 	master = spi_alloc_master(&dev->dev, sizeof(struct s3c2410_spigpio));
 	if (master == NULL) {
@@ -119,6 +118,7 @@ static int s3c2410_spigpio_probe(struct platform_device *dev)
 	/* setup spi bitbang adaptor */
 	sp->bitbang.master = spi_master_get(master);
 	sp->bitbang.master->bus_num = info->bus_num;
+	sp->bitbang.master->num_chipselect = info->num_chipselect;
 	sp->bitbang.chipselect = s3c2410_spigpio_chipselect;
 
 	sp->bitbang.txrx_word[SPI_MODE_0] = s3c2410_spigpio_txrx_mode0;
@@ -142,17 +142,6 @@ static int s3c2410_spigpio_probe(struct platform_device *dev)
 	ret = spi_bitbang_start(&sp->bitbang);
 	if (ret)
 		goto err_no_bitbang;
-
-	/* register the chips to go with the board */
-
-	for (i = 0; i < sp->info->board_size; i++) {
-		dev_info(&dev->dev, "registering %p: %s\n",
-			 &sp->info->board_info[i],
-			 sp->info->board_info[i].modalias);
-
-		sp->info->board_info[i].controller_data = sp;
-		spi_new_device(master, sp->info->board_info + i);
-	}
 
 	return 0;
 
@@ -180,6 +169,8 @@ static int s3c2410_spigpio_remove(struct platform_device *dev)
 #define s3c2410_spigpio_suspend NULL
 #define s3c2410_spigpio_resume NULL
 
+/* work with hotplug and coldplug */
+MODULE_ALIAS("platform:spi_s3c24xx_gpio");
 
 static struct platform_driver s3c2410_spigpio_drv = {
 	.probe		= s3c2410_spigpio_probe,

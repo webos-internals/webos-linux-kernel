@@ -30,9 +30,10 @@
 #include <linux/linkage.h>
 #include <asm/thread_info.h>
 #include <asm/errno.h>
+#include <asm/blackfin.h>
 #include <asm/asm-offsets.h>
 
-#include <asm/mach-common/context.S>
+#include <asm/context.S>
 
 #ifdef CONFIG_EXCPT_IRQ_SYSC_L1
 .section .l1.text
@@ -41,6 +42,10 @@
 #endif
 
 ENTRY(_ret_from_fork)
+#ifdef CONFIG_IPIPE
+	[--sp] = reti; 		/* IRQs on. */
+	SP += 4;
+#endif /* CONFIG_IPIPE */
 	SP += -12;
 	call _schedule_tail;
 	SP += 12;
@@ -64,6 +69,11 @@ ENDPROC(_ret_from_fork)
 
 ENTRY(_sys_fork)
 	r0 = -EINVAL;
+#if (ANOMALY_05000371)
+	nop;
+	nop;
+	nop;
+#endif
 	rts;
 ENDPROC(_sys_fork)
 

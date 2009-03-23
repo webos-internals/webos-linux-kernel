@@ -41,6 +41,11 @@ unsigned long clockevent_delta2ns(unsigned long latch,
 {
 	u64 clc = ((u64) latch << evt->shift);
 
+	if (unlikely(!evt->mult)) {
+		evt->mult = 1;
+		WARN_ON(1);
+	}
+
 	do_div(clc, evt->mult);
 	if (clc < 1000)
 		clc = 1000;
@@ -64,6 +69,16 @@ void clockevents_set_mode(struct clock_event_device *dev,
 		dev->set_mode(mode, dev);
 		dev->mode = mode;
 	}
+}
+
+/**
+ * clockevents_shutdown - shutdown the device and clear next_event
+ * @dev:	device to shutdown
+ */
+void clockevents_shutdown(struct clock_event_device *dev)
+{
+	clockevents_set_mode(dev, CLOCK_EVT_MODE_SHUTDOWN);
+	dev->next_event.tv64 = KTIME_MAX;
 }
 
 /**
@@ -128,7 +143,7 @@ static void clockevents_do_notify(unsigned long reason, void *dev)
 }
 
 /*
- * Called after a notify add to make devices availble which were
+ * Called after a notify add to make devices available which were
  * released from the notifier call.
  */
 static void clockevents_notify_released(void)
@@ -151,6 +166,16 @@ static void clockevents_notify_released(void)
 void clockevents_register_device(struct clock_event_device *dev)
 {
 	BUG_ON(dev->mode != CLOCK_EVT_MODE_UNUSED);
+	BUG_ON(!dev->cpumask);
+
+	/*
+	 * A nsec2cyc multiplicator of 0 is invalid and we'd crash
+	 * on it, so fix it up and emit a warning:
+	 */
+	if (unlikely(!dev->mult)) {
+		dev->mult = 1;
+		WARN_ON(1);
+	}
 
 	spin_lock(&clockevents_lock);
 
@@ -164,7 +189,7 @@ void clockevents_register_device(struct clock_event_device *dev)
 /*
  * Noop handler when we shut down an event device
  */
-static void clockevents_handle_noop(struct clock_event_device *dev)
+void clockevents_handle_noop(struct clock_event_device *dev)
 {
 }
 
@@ -186,7 +211,6 @@ void clockevents_exchange_device(struct clock_event_device *old,
 	 * released list and do a notify add later.
 	 */
 	if (old) {
-		old->event_handler = clockevents_handle_noop;
 		clockevents_set_mode(old, CLOCK_EVT_MODE_UNUSED);
 		list_del(&old->list);
 		list_add(&old->list, &clockevents_released);
@@ -194,7 +218,7 @@ void clockevents_exchange_device(struct clock_event_device *old,
 
 	if (new) {
 		BUG_ON(new->mode != CLOCK_EVT_MODE_UNUSED);
-		clockevents_set_mode(new, CLOCK_EVT_MODE_SHUTDOWN);
+		clockevents_shutdown(new);
 	}
 	local_irq_restore(flags);
 }
@@ -205,6 +229,8 @@ void clockevents_exchange_device(struct clock_event_device *old,
  */
 void clockevents_notify(unsigned long reason, void *arg)
 {
+	struct list_head *node, *tmp;
+
 	spin_lock(&clockevents_lock);
 	clockevents_do_notify(reason, arg);
 
@@ -214,13 +240,8 @@ void clockevents_notify(unsigned long reason, void *arg)
 		 * Unregister the clock event devices which were
 		 * released from the users in the notify chain.
 		 */
-		while (!list_empty(&clockevents_released)) {
-			struct clock_event_device *dev;
-
-			dev = list_entry(clockevents_released.next,
-					 struct clock_event_device, list);
-			list_del(&dev->list);
-		}
+		list_for_each_safe(node, tmp, &clockevents_released)
+			list_del(node);
 		break;
 	default:
 		break;

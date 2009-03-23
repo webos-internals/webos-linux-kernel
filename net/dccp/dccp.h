@@ -23,9 +23,9 @@
  * 	DCCP - specific warning and debugging macros.
  */
 #define DCCP_WARN(fmt, a...) LIMIT_NETDEBUG(KERN_WARNING "%s: " fmt,       \
-							__FUNCTION__, ##a)
+							__func__, ##a)
 #define DCCP_CRIT(fmt, a...) printk(KERN_CRIT fmt " at %s:%d/%s()\n", ##a, \
-					 __FILE__, __LINE__, __FUNCTION__)
+					 __FILE__, __LINE__, __func__)
 #define DCCP_BUG(a...)       do { DCCP_CRIT("BUG: " a); dump_stack(); } while(0)
 #define DCCP_BUG_ON(cond)    do { if (unlikely((cond) != 0))		   \
 				     DCCP_BUG("\"%s\" holds (exception!)", \
@@ -36,7 +36,7 @@
 							printk(fmt, ##args); \
 						} while(0)
 #define DCCP_PR_DEBUG(enable, fmt, a...)	DCCP_PRINTK(enable, KERN_DEBUG \
-						  "%s: " fmt, __FUNCTION__, ##a)
+						  "%s: " fmt, __func__, ##a)
 
 #ifdef CONFIG_IP_DCCP_DEBUG
 extern int dccp_debug;
@@ -49,7 +49,7 @@ extern int dccp_debug;
 
 extern struct inet_hashinfo dccp_hashinfo;
 
-extern atomic_t dccp_orphan_count;
+extern struct percpu_counter dccp_orphan_count;
 
 extern void dccp_time_wait(struct sock *sk, int state, int timeo);
 
@@ -72,11 +72,21 @@ extern void dccp_time_wait(struct sock *sk, int state, int timeo);
 /* RFC 1122, 4.2.3.1 initial RTO value */
 #define DCCP_TIMEOUT_INIT ((unsigned)(3 * HZ))
 
-#define DCCP_RTO_MAX ((unsigned)(120 * HZ)) /* FIXME: using TCP value */
+/*
+ * The maximum back-off value for retransmissions. This is needed for
+ *  - retransmitting client-Requests (sec. 8.1.1),
+ *  - retransmitting Close/CloseReq when closing (sec. 8.3),
+ *  - feature-negotiation retransmission (sec. 6.6.3),
+ *  - Acks in client-PARTOPEN state (sec. 8.1.5).
+ */
+#define DCCP_RTO_MAX ((unsigned)(64 * HZ))
 
-/* bounds for sampled RTT values from packet exchanges (in usec) */
+/*
+ * RTT sampling: sanity bounds and fallback RTT value from RFC 4340, section 3.4
+ */
 #define DCCP_SANE_RTT_MIN	100
-#define DCCP_SANE_RTT_MAX	(4 * USEC_PER_SEC)
+#define DCCP_FALLBACK_RTT	(USEC_PER_SEC / 5)
+#define DCCP_SANE_RTT_MAX	(3 * USEC_PER_SEC)
 
 /* Maximal interval between probes for local resources.  */
 #define DCCP_RESOURCE_PROBE_INTERVAL ((unsigned)(HZ / 2U))
@@ -88,9 +98,6 @@ extern int  sysctl_dccp_retries2;
 extern int  sysctl_dccp_feat_sequence_window;
 extern int  sysctl_dccp_feat_rx_ccid;
 extern int  sysctl_dccp_feat_tx_ccid;
-extern int  sysctl_dccp_feat_ack_ratio;
-extern int  sysctl_dccp_feat_send_ack_vector;
-extern int  sysctl_dccp_feat_send_ndp_count;
 extern int  sysctl_dccp_tx_qlen;
 extern int  sysctl_dccp_sync_ratelimit;
 
@@ -143,10 +150,19 @@ static inline u64 max48(const u64 seq1, const u64 seq2)
 	return after48(seq1, seq2) ? seq1 : seq2;
 }
 
-/* is seq1 next seqno after seq2 */
-static inline int follows48(const u64 seq1, const u64 seq2)
+/**
+ * dccp_loss_free  -  Evaluates condition for data loss from RFC 4340, 7.7.1
+ * @s1:	 start sequence number
+ * @s2:  end sequence number
+ * @ndp: NDP count on packet with sequence number @s2
+ * Returns true if the sequence range s1...s2 has no data loss.
+ */
+static inline bool dccp_loss_free(const u64 s1, const u64 s2, const u64 ndp)
 {
-	return dccp_delta_seqno(seq2, seq1) == 1;
+	s64 delta = dccp_delta_seqno(s1, s2);
+
+	WARN_ON(delta < 0);
+	return (u64)delta <= ndp + 1;
 }
 
 enum {
@@ -207,10 +223,11 @@ static inline void dccp_csum_outgoing(struct sk_buff *skb)
 
 extern void dccp_v4_send_check(struct sock *sk, int len, struct sk_buff *skb);
 
-extern int  dccp_retransmit_skb(struct sock *sk, struct sk_buff *skb);
+extern int  dccp_retransmit_skb(struct sock *sk);
 
 extern void dccp_send_ack(struct sock *sk);
-extern void dccp_reqsk_send_ack(struct sk_buff *sk, struct request_sock *rsk);
+extern void dccp_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
+				struct request_sock *rsk);
 
 extern void dccp_send_sync(struct sock *sk, const u64 seq,
 			   const enum dccp_pkt_type pkt_type);
@@ -232,7 +249,8 @@ extern const char *dccp_state_name(const int state);
 extern void dccp_set_state(struct sock *sk, const int state);
 extern void dccp_done(struct sock *sk);
 
-extern void dccp_reqsk_init(struct request_sock *req, struct sk_buff *skb);
+extern int  dccp_reqsk_init(struct request_sock *rq, struct dccp_sock const *dp,
+			    struct sk_buff const *skb);
 
 extern int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb);
 
@@ -258,7 +276,7 @@ extern int dccp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				const struct dccp_hdr *dh, const unsigned len);
 
 extern int dccp_init_sock(struct sock *sk, const __u8 ctl_sock_initialized);
-extern int dccp_destroy_sock(struct sock *sk);
+extern void dccp_destroy_sock(struct sock *sk);
 
 extern void		dccp_close(struct sock *sk, long timeout);
 extern struct sk_buff	*dccp_make_response(struct sock *sk,
@@ -267,8 +285,6 @@ extern struct sk_buff	*dccp_make_response(struct sock *sk,
 
 extern int	   dccp_connect(struct sock *sk);
 extern int	   dccp_disconnect(struct sock *sk, int flags);
-extern void	   dccp_hash(struct sock *sk);
-extern void	   dccp_unhash(struct sock *sk);
 extern int	   dccp_getsockopt(struct sock *sk, int level, int optname,
 				   char __user *optval, int __user *optlen);
 extern int	   dccp_setsockopt(struct sock *sk, int level, int optname,
@@ -294,7 +310,7 @@ extern unsigned int dccp_poll(struct file *file, struct socket *sock,
 extern int	   dccp_v4_connect(struct sock *sk, struct sockaddr *uaddr,
 				   int addr_len);
 
-extern struct sk_buff *dccp_ctl_make_reset(struct socket *ctl,
+extern struct sk_buff *dccp_ctl_make_reset(struct sock *sk,
 					   struct sk_buff *skb);
 extern int	   dccp_send_reset(struct sock *sk, enum dccp_reset_codes code);
 extern void	   dccp_send_close(struct sock *sk, const int active);
@@ -323,6 +339,12 @@ static inline int dccp_bad_service_code(const struct sock *sk,
  * This is used for transmission as well as for reception.
  */
 struct dccp_skb_cb {
+	union {
+		struct inet_skb_parm	h4;
+#if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
+		struct inet6_skb_parm	h6;
+#endif
+	} header;
 	__u8  dccpd_type:4;
 	__u8  dccpd_ccval:4;
 	__u8  dccpd_reset_code,
@@ -334,6 +356,7 @@ struct dccp_skb_cb {
 
 #define DCCP_SKB_CB(__skb) ((struct dccp_skb_cb *)&((__skb)->cb[0]))
 
+/* RFC 4340, sec. 7.7 */
 static inline int dccp_non_data_packet(const struct sk_buff *skb)
 {
 	const __u8 type = DCCP_SKB_CB(skb)->dccpd_type;
@@ -344,6 +367,17 @@ static inline int dccp_non_data_packet(const struct sk_buff *skb)
 	       type == DCCP_PKT_RESET	 ||
 	       type == DCCP_PKT_SYNC	 ||
 	       type == DCCP_PKT_SYNCACK;
+}
+
+/* RFC 4340, sec. 7.7 */
+static inline int dccp_data_packet(const struct sk_buff *skb)
+{
+	const __u8 type = DCCP_SKB_CB(skb)->dccpd_type;
+
+	return type == DCCP_PKT_DATA	 ||
+	       type == DCCP_PKT_DATAACK  ||
+	       type == DCCP_PKT_REQUEST  ||
+	       type == DCCP_PKT_RESPONSE;
 }
 
 static inline int dccp_packet_without_ack(const struct sk_buff *skb)
@@ -398,14 +432,20 @@ static inline int dccp_ack_pending(const struct sock *sk)
 {
 	const struct dccp_sock *dp = dccp_sk(sk);
 	return dp->dccps_timestamp_echo != 0 ||
-#ifdef CONFIG_IP_DCCP_ACKVEC
-	       (dccp_msk(sk)->dccpms_send_ack_vector &&
+	       (dp->dccps_hc_rx_ackvec != NULL &&
 		dccp_ackvec_pending(dp->dccps_hc_rx_ackvec)) ||
-#endif
 	       inet_csk_ack_scheduled(sk);
 }
 
+extern int  dccp_feat_finalise_settings(struct dccp_sock *dp);
+extern int  dccp_feat_server_ccid_dependencies(struct dccp_request_sock *dreq);
+extern int  dccp_feat_insert_opts(struct dccp_sock*, struct dccp_request_sock*,
+				  struct sk_buff *skb);
+extern int  dccp_feat_activate_values(struct sock *sk, struct list_head *fn);
+extern void dccp_feat_list_purge(struct list_head *fn_list);
+
 extern int dccp_insert_options(struct sock *sk, struct sk_buff *skb);
+extern int dccp_insert_options_rsk(struct dccp_request_sock*, struct sk_buff*);
 extern int dccp_insert_option_elapsed_time(struct sock *sk,
 					    struct sk_buff *skb,
 					    u32 elapsed_time);

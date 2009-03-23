@@ -301,7 +301,7 @@ static int pppoe_device_event(struct notifier_block *this,
 {
 	struct net_device *dev = (struct net_device *) ptr;
 
-	if (dev->nd_net != &init_net)
+	if (dev_net(dev) != &init_net)
 		return NOTIFY_DONE;
 
 	/* Only look at sockets that are using this specific device. */
@@ -341,12 +341,6 @@ static int pppoe_rcv_core(struct sock *sk, struct sk_buff *skb)
 	struct pppox_sock *relay_po;
 
 	if (sk->sk_state & PPPOX_BOUND) {
-		struct pppoe_hdr *ph = pppoe_hdr(skb);
-		int len = ntohs(ph->length);
-		skb_pull_rcsum(skb, sizeof(struct pppoe_hdr));
-		if (pskb_trim_rcsum(skb, len))
-			goto abort_kfree;
-
 		ppp_input(&po->chan, skb);
 	} else if (sk->sk_state & PPPOX_RELAY) {
 		relay_po = get_item_by_addr(&po->pppoe_relay);
@@ -357,7 +351,6 @@ static int pppoe_rcv_core(struct sock *sk, struct sk_buff *skb)
 		if ((sk_pppox(relay_po)->sk_state & PPPOX_CONNECTED) == 0)
 			goto abort_put;
 
-		skb_pull(skb, sizeof(struct pppoe_hdr));
 		if (!__pppoe_xmit(sk_pppox(relay_po), skb))
 			goto abort_put;
 	} else {
@@ -388,21 +381,33 @@ static int pppoe_rcv(struct sk_buff *skb,
 {
 	struct pppoe_hdr *ph;
 	struct pppox_sock *po;
+	int len;
 
 	if (!(skb = skb_share_check(skb, GFP_ATOMIC)))
 		goto out;
 
-	if (dev->nd_net != &init_net)
+	if (dev_net(dev) != &init_net)
 		goto drop;
 
 	if (!pskb_may_pull(skb, sizeof(struct pppoe_hdr)))
 		goto drop;
 
 	ph = pppoe_hdr(skb);
+	len = ntohs(ph->length);
+
+	skb_pull_rcsum(skb, sizeof(*ph));
+	if (skb->len < len)
+		goto drop;
+
+	if (pskb_trim_rcsum(skb, len))
+		goto drop;
 
 	po = get_item(ph->sid, eth_hdr(skb)->h_source, dev->ifindex);
-	if (po != NULL)
-		return sk_receive_skb(sk_pppox(po), skb, 0);
+	if (!po)
+		goto drop;
+
+	return sk_receive_skb(sk_pppox(po), skb, 0);
+
 drop:
 	kfree_skb(skb);
 out:
@@ -424,14 +429,14 @@ static int pppoe_disc_rcv(struct sk_buff *skb,
 	struct pppoe_hdr *ph;
 	struct pppox_sock *po;
 
-	if (dev->nd_net != &init_net)
-		goto abort;
-
-	if (!pskb_may_pull(skb, sizeof(struct pppoe_hdr)))
+	if (dev_net(dev) != &init_net)
 		goto abort;
 
 	if (!(skb = skb_share_check(skb, GFP_ATOMIC)))
 		goto out;
+
+	if (!pskb_may_pull(skb, sizeof(struct pppoe_hdr)))
+		goto abort;
 
 	ph = pppoe_hdr(skb);
 	if (ph->code != PADT_CODE)
@@ -937,12 +942,10 @@ static int pppoe_recvmsg(struct kiocb *iocb, struct socket *sock,
 	m->msg_namelen = 0;
 
 	if (skb) {
-		struct pppoe_hdr *ph = pppoe_hdr(skb);
-		const int len = ntohs(ph->length);
-
-		error = memcpy_toiovec(m->msg_iov, (unsigned char *) &ph->tag[0], len);
+		total_len = min_t(size_t, total_len, skb->len);
+		error = skb_copy_datagram_iovec(skb, 0, m->msg_iov, total_len);
 		if (error == 0)
-			error = len;
+			error = total_len;
 	}
 
 	kfree_skb(skb);
@@ -955,7 +958,6 @@ static int pppoe_seq_show(struct seq_file *seq, void *v)
 {
 	struct pppox_sock *po;
 	char *dev_name;
-	DECLARE_MAC_BUF(mac);
 
 	if (v == SEQ_START_TOKEN) {
 		seq_puts(seq, "Id       Address              Device\n");
@@ -965,8 +967,8 @@ static int pppoe_seq_show(struct seq_file *seq, void *v)
 	po = v;
 	dev_name = po->pppoe_pa.dev;
 
-	seq_printf(seq, "%08X %s %8s\n",
-		   po->pppoe_pa.sid, print_mac(mac, po->pppoe_pa.remote), dev_name);
+	seq_printf(seq, "%08X %pM %8s\n",
+		   po->pppoe_pa.sid, po->pppoe_pa.remote, dev_name);
 out:
 	return 0;
 }
@@ -989,6 +991,7 @@ out:
 }
 
 static void *pppoe_seq_start(struct seq_file *seq, loff_t *pos)
+	__acquires(pppoe_hash_lock)
 {
 	loff_t l = *pos;
 
@@ -1022,6 +1025,7 @@ out:
 }
 
 static void pppoe_seq_stop(struct seq_file *seq, void *v)
+	__releases(pppoe_hash_lock)
 {
 	read_unlock_bh(&pppoe_hash_lock);
 }
@@ -1050,11 +1054,9 @@ static int __init pppoe_proc_init(void)
 {
 	struct proc_dir_entry *p;
 
-	p = create_proc_entry("pppoe", S_IRUGO, init_net.proc_net);
+	p = proc_net_fops_create(&init_net, "pppoe", S_IRUGO, &pppoe_seq_fops);
 	if (!p)
 		return -ENOMEM;
-
-	p->proc_fops = &pppoe_seq_fops;
 	return 0;
 }
 #else /* CONFIG_PROC_FS */

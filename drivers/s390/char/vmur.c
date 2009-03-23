@@ -8,7 +8,11 @@
  *	    Frank Munzert <munzert@de.ibm.com>
  */
 
+#define KMSG_COMPONENT "vmur"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
 #include <linux/cdev.h>
+#include <linux/smp_lock.h>
 
 #include <asm/uaccess.h>
 #include <asm/cio.h>
@@ -38,8 +42,6 @@ static char ur_banner[] = "z/VM virtual unit record device driver";
 MODULE_AUTHOR("IBM Corporation");
 MODULE_DESCRIPTION("s390 z/VM virtual unit record device driver");
 MODULE_LICENSE("GPL");
-
-#define PRINTK_HEADER "vmur: "
 
 static dev_t ur_first_dev_maj_min;
 static struct class *vmur_class;
@@ -100,7 +102,8 @@ static struct urdev *urdev_alloc(struct ccw_device *cdev)
 	urd->reclen = cdev->id.driver_info;
 	ccw_device_get_id(cdev, &urd->dev_id);
 	mutex_init(&urd->io_mutex);
-	mutex_init(&urd->open_mutex);
+	init_waitqueue_head(&urd->wait);
+	spin_lock_init(&urd->open_lock);
 	atomic_set(&urd->ref_count,  1);
 	urd->cdev = cdev;
 	get_device(&cdev->dev);
@@ -276,7 +279,8 @@ static void ur_int_handler(struct ccw_device *cdev, unsigned long intparm,
 	struct urdev *urd;
 
 	TRACE("ur_int_handler: intparm=0x%lx cstat=%02x dstat=%02x res=%u\n",
-	      intparm, irb->scsw.cstat, irb->scsw.dstat, irb->scsw.count);
+	      intparm, irb->scsw.cmd.cstat, irb->scsw.cmd.dstat,
+	      irb->scsw.cmd.count);
 
 	if (!intparm) {
 		TRACE("ur_int_handler: unsolicited interrupt\n");
@@ -287,7 +291,7 @@ static void ur_int_handler(struct ccw_device *cdev, unsigned long intparm,
 	/* On special conditions irb is an error pointer */
 	if (IS_ERR(irb))
 		urd->io_request_rc = PTR_ERR(irb);
-	else if (irb->scsw.dstat == (DEV_STAT_CHN_END | DEV_STAT_DEV_END))
+	else if (irb->scsw.cmd.dstat == (DEV_STAT_CHN_END | DEV_STAT_DEV_END))
 		urd->io_request_rc = 0;
 	else
 		urd->io_request_rc = -EIO;
@@ -342,7 +346,7 @@ static int get_urd_class(struct urdev *urd)
 	cc = diag210(&ur_diag210);
 	switch (cc) {
 	case 0:
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	case 2:
 		return ur_diag210.vrdcvcla; /* virtual device class */
 	case 3:
@@ -618,7 +622,7 @@ static int verify_device(struct urdev *urd)
 	case DEV_CLASS_UR_I:
 		return verify_uri_device(urd);
 	default:
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	}
 }
 
@@ -651,7 +655,7 @@ static int get_file_reclen(struct urdev *urd)
 	case DEV_CLASS_UR_I:
 		return get_uri_file_reclen(urd);
 	default:
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	}
 }
 
@@ -667,7 +671,7 @@ static int ur_open(struct inode *inode, struct file *file)
 
 	if (accmode == O_RDWR)
 		return -EACCES;
-
+	lock_kernel();
 	/*
 	 * We treat the minor number as the devno of the ur device
 	 * to find in the driver tree.
@@ -675,20 +679,26 @@ static int ur_open(struct inode *inode, struct file *file)
 	devno = MINOR(file->f_dentry->d_inode->i_rdev);
 
 	urd = urdev_get_from_devno(devno);
-	if (!urd)
-		return -ENXIO;
+	if (!urd) {
+		rc = -ENXIO;
+		goto out;
+	}
 
-	if (file->f_flags & O_NONBLOCK) {
-		if (!mutex_trylock(&urd->open_mutex)) {
+	spin_lock(&urd->open_lock);
+	while (urd->open_flag) {
+		spin_unlock(&urd->open_lock);
+		if (file->f_flags & O_NONBLOCK) {
 			rc = -EBUSY;
 			goto fail_put;
 		}
-	} else {
-		if (mutex_lock_interruptible(&urd->open_mutex)) {
+		if (wait_event_interruptible(urd->wait, urd->open_flag == 0)) {
 			rc = -ERESTARTSYS;
 			goto fail_put;
 		}
+		spin_lock(&urd->open_lock);
 	}
+	urd->open_flag++;
+	spin_unlock(&urd->open_lock);
 
 	TRACE("ur_open\n");
 
@@ -715,14 +725,19 @@ static int ur_open(struct inode *inode, struct file *file)
 		goto fail_urfile_free;
 	urf->file_reclen = rc;
 	file->private_data = urf;
+	unlock_kernel();
 	return 0;
 
 fail_urfile_free:
 	urfile_free(urf);
 fail_unlock:
-	mutex_unlock(&urd->open_mutex);
+	spin_lock(&urd->open_lock);
+	urd->open_flag--;
+	spin_unlock(&urd->open_lock);
 fail_put:
 	urdev_put(urd);
+out:
+	unlock_kernel();
 	return rc;
 }
 
@@ -731,7 +746,10 @@ static int ur_release(struct inode *inode, struct file *file)
 	struct urfile *urf = file->private_data;
 
 	TRACE("ur_release\n");
-	mutex_unlock(&urf->urd->open_mutex);
+	spin_lock(&urf->urd->open_lock);
+	urf->urd->open_flag--;
+	spin_unlock(&urf->urd->open_lock);
+	wake_up_interruptible(&urf->urd->wait);
 	urdev_put(urf->urd);
 	urfile_free(urf);
 	return 0;
@@ -759,7 +777,7 @@ static loff_t ur_llseek(struct file *file, loff_t offset, int whence)
 	return newpos;
 }
 
-static struct file_operations ur_fops = {
+static const struct file_operations ur_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = ur_open,
 	.release = ur_release,
@@ -810,7 +828,7 @@ static int ur_probe(struct ccw_device *cdev)
 		goto fail_remove_attr;
 	}
 	if ((urd->class != DEV_CLASS_UR_I) && (urd->class != DEV_CLASS_UR_O)) {
-		rc = -ENOTSUPP;
+		rc = -EOPNOTSUPP;
 		goto fail_remove_attr;
 	}
 	spin_lock_irq(get_ccwdev_lock(cdev));
@@ -869,18 +887,18 @@ static int ur_set_online(struct ccw_device *cdev)
 		goto fail_free_cdev;
 	if (urd->cdev->id.cu_type == READER_PUNCH_DEVTYPE) {
 		if (urd->class == DEV_CLASS_UR_I)
-			sprintf(node_id, "vmrdr-%s", cdev->dev.bus_id);
+			sprintf(node_id, "vmrdr-%s", dev_name(&cdev->dev));
 		if (urd->class == DEV_CLASS_UR_O)
-			sprintf(node_id, "vmpun-%s", cdev->dev.bus_id);
+			sprintf(node_id, "vmpun-%s", dev_name(&cdev->dev));
 	} else if (urd->cdev->id.cu_type == PRINTER_DEVTYPE) {
-		sprintf(node_id, "vmprt-%s", cdev->dev.bus_id);
+		sprintf(node_id, "vmprt-%s", dev_name(&cdev->dev));
 	} else {
-		rc = -ENOTSUPP;
+		rc = -EOPNOTSUPP;
 		goto fail_free_cdev;
 	}
 
 	urd->device = device_create(vmur_class, NULL, urd->char_device->dev,
-					"%s", node_id);
+				    NULL, "%s", node_id);
 	if (IS_ERR(urd->device)) {
 		rc = PTR_ERR(urd->device);
 		TRACE("ur_set_online: device_create rc=%d\n", rc);
@@ -970,7 +988,8 @@ static int __init ur_init(void)
 	dev_t dev;
 
 	if (!MACHINE_IS_VM) {
-		PRINT_ERR("%s is only available under z/VM.\n", ur_banner);
+		pr_err("The %s cannot be loaded without z/VM\n",
+		       ur_banner);
 		return -ENODEV;
 	}
 
@@ -989,7 +1008,8 @@ static int __init ur_init(void)
 
 	rc = alloc_chrdev_region(&dev, 0, NUM_MINORS, "vmur");
 	if (rc) {
-		PRINT_ERR("alloc_chrdev_region failed: err = %d\n", rc);
+		pr_err("Kernel function alloc_chrdev_region failed with "
+		       "error code %d\n", rc);
 		goto fail_unregister_driver;
 	}
 	ur_first_dev_maj_min = MKDEV(MAJOR(dev), 0);
@@ -999,7 +1019,7 @@ static int __init ur_init(void)
 		rc = PTR_ERR(vmur_class);
 		goto fail_unregister_region;
 	}
-	PRINT_INFO("%s loaded.\n", ur_banner);
+	pr_info("%s loaded.\n", ur_banner);
 	return 0;
 
 fail_unregister_region:
@@ -1017,7 +1037,7 @@ static void __exit ur_exit(void)
 	unregister_chrdev_region(ur_first_dev_maj_min, NUM_MINORS);
 	ccw_driver_unregister(&ur_driver);
 	debug_unregister(vmur_dbf);
-	PRINT_INFO("%s unloaded.\n", ur_banner);
+	pr_info("%s unloaded.\n", ur_banner);
 }
 
 module_init(ur_init);

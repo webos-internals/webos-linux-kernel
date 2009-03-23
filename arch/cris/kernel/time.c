@@ -1,5 +1,4 @@
-/* $Id: time.c,v 1.18 2005/03/04 08:16:17 starvik Exp $
- *
+/*
  *  linux/arch/cris/kernel/time.c
  *
  *  Copyright (C) 1991, 1992, 1995  Linus Torvalds
@@ -18,7 +17,7 @@
  * Linux/CRIS specific code:
  *
  * Authors:    Bjorn Wesen
- *             Johan Adolfsson  
+ *             Johan Adolfsson
  *
  */
 
@@ -128,7 +127,7 @@ int set_rtc_mmss(unsigned long nowtime)
 		return 0;
 
 	cmos_minutes = CMOS_READ(RTC_MINUTES);
-	BCD_TO_BIN(cmos_minutes);
+	cmos_minutes = bcd2bin(cmos_minutes);
 
 	/*
 	 * since we're only adjusting minutes and seconds,
@@ -143,8 +142,8 @@ int set_rtc_mmss(unsigned long nowtime)
 	real_minutes %= 60;
 
 	if (abs(real_minutes - cmos_minutes) < 30) {
-		BIN_TO_BCD(real_seconds);
-		BIN_TO_BCD(real_minutes);
+		real_seconds = bin2bcd(real_seconds);
+		real_minutes = bin2bcd(real_minutes);
 		CMOS_WRITE(real_seconds,RTC_SECONDS);
 		CMOS_WRITE(real_minutes,RTC_MINUTES);
 	} else {
@@ -171,12 +170,12 @@ get_cmos_time(void)
 	mon = CMOS_READ(RTC_MONTH);
 	year = CMOS_READ(RTC_YEAR);
 
-	BCD_TO_BIN(sec);
-	BCD_TO_BIN(min);
-	BCD_TO_BIN(hour);
-	BCD_TO_BIN(day);
-	BCD_TO_BIN(mon);
-	BCD_TO_BIN(year);
+	sec = bcd2bin(sec);
+	min = bcd2bin(min);
+	hour = bcd2bin(hour);
+	day = bcd2bin(day);
+	mon = bcd2bin(mon);
+	year = bcd2bin(year);
 
 	if ((year += 1900) < 1970)
 		year += 100;
@@ -208,8 +207,14 @@ cris_do_profile(struct pt_regs* regs)
 #endif
 
 #ifdef CONFIG_PROFILING
-        profile_tick(CPU_PROFILING);
+	profile_tick(CPU_PROFILING);
 #endif
+}
+
+unsigned long long sched_clock(void)
+{
+	return (unsigned long long)jiffies * (1000000000 / HZ) +
+		get_ns_in_jiffie();
 }
 
 static int

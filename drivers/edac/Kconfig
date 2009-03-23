@@ -67,7 +67,7 @@ config EDAC_E7XXX
 	  E7205, E7500, E7501 and E7505 server chipsets.
 
 config EDAC_E752X
-	tristate "Intel e752x (e7520, e7525, e7320)"
+	tristate "Intel e752x (e7520, e7525, e7320) and 3100"
 	depends on EDAC_MM_EDAC && PCI && X86 && HOTPLUG
 	help
 	  Support for error detection and correction on the Intel
@@ -97,10 +97,24 @@ config EDAC_I82975X
 
 config EDAC_I3000
 	tristate "Intel 3000/3010"
-	depends on EDAC_MM_EDAC && PCI && X86_32
+	depends on EDAC_MM_EDAC && PCI && X86
 	help
 	  Support for error detection and correction on the Intel
 	  3000 and 3010 server chipsets.
+
+config EDAC_X38
+	tristate "Intel X38"
+	depends on EDAC_MM_EDAC && PCI && X86
+	help
+	  Support for error detection and correction on the Intel
+	  X38 server chipsets.
+
+config EDAC_I5400
+	tristate "Intel 5400 (Seaburg) chipsets"
+	depends on EDAC_MM_EDAC && PCI && X86
+	help
+	  Support for error detection and correction the Intel
+	  i5400 MCH chipset (Seaburg).
 
 config EDAC_I82860
 	tristate "Intel 82860"
@@ -123,6 +137,27 @@ config EDAC_I5000
 	  Support for error detection and correction the Intel
 	  Greekcreek/Blackford chipsets.
 
+config EDAC_I5100
+	tristate "Intel San Clemente MCH"
+	depends on EDAC_MM_EDAC && X86 && PCI
+	help
+	  Support for error detection and correction the Intel
+	  San Clemente MCH.
+
+config EDAC_MPC85XX
+	tristate "Freescale MPC85xx"
+	depends on EDAC_MM_EDAC && FSL_SOC && MPC85xx
+	help
+	  Support for error detection and correction on the Freescale
+	  MPC8560, MPC8540, MPC8548
+
+config EDAC_MV64X60
+	tristate "Marvell MV64x60"
+	depends on EDAC_MM_EDAC && MV64X60
+	help
+	  Support for error detection and correction on the Marvell
+	  MV64360 and MV64460 chipsets.
+
 config EDAC_PASEMI
 	tristate "PA Semi PWRficient"
 	depends on EDAC_MM_EDAC && PCI
@@ -131,5 +166,12 @@ config EDAC_PASEMI
 	  Support for error detection and correction on PA Semi
 	  PWRficient.
 
+config EDAC_CELL
+	tristate "Cell Broadband Engine memory controller"
+	depends on EDAC_MM_EDAC && PPC_CELL_COMMON
+	help
+	  Support for error detection and correction on the
+	  Cell Broadband Engine internal memory controller
+	  on platform without a hypervisor
 
 endif # EDAC

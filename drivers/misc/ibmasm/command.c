@@ -26,11 +26,6 @@
 #include "lowlevel.h"
 
 static void exec_next_command(struct service_processor *sp);
-static void free_command(struct kobject *kobj);
-
-static struct kobj_type ibmasm_cmd_kobj_type = {
-	.release = free_command,
-};
 
 static atomic_t command_count = ATOMIC_INIT(0);
 
@@ -53,8 +48,7 @@ struct command *ibmasm_new_command(struct service_processor *sp, size_t buffer_s
 	}
 	cmd->buffer_size = buffer_size;
 
-	kobject_init(&cmd->kobj);
-	cmd->kobj.ktype = &ibmasm_cmd_kobj_type;
+	kref_init(&cmd->kref);
 	cmd->lock = &sp->lock;
 
 	cmd->status = IBMASM_CMD_PENDING;
@@ -67,9 +61,9 @@ struct command *ibmasm_new_command(struct service_processor *sp, size_t buffer_s
 	return cmd;
 }
 
-static void free_command(struct kobject *kobj)
+void ibmasm_free_command(struct kref *kref)
 {
-	struct command *cmd = to_command(kobj);
+	struct command *cmd = to_command(kref);
 
 	list_del(&cmd->queue_node);
 	atomic_dec(&command_count);
@@ -102,7 +96,7 @@ static inline void do_exec_command(struct service_processor *sp)
 {
 	char tsbuf[32];
 
-	dbg("%s:%d at %s\n", __FUNCTION__, __LINE__, get_timestamp(tsbuf));
+	dbg("%s:%d at %s\n", __func__, __LINE__, get_timestamp(tsbuf));
 
 	if (ibmasm_send_i2o_message(sp)) {
 		sp->current_command->status = IBMASM_CMD_FAILED;
@@ -125,7 +119,7 @@ void ibmasm_exec_command(struct service_processor *sp, struct command *cmd)
 	unsigned long flags;
 	char tsbuf[32];
 
-	dbg("%s:%d at %s\n", __FUNCTION__, __LINE__, get_timestamp(tsbuf));
+	dbg("%s:%d at %s\n", __func__, __LINE__, get_timestamp(tsbuf));
 
 	spin_lock_irqsave(&sp->lock, flags);
 
@@ -145,7 +139,7 @@ static void exec_next_command(struct service_processor *sp)
 	unsigned long flags;
 	char tsbuf[32];
 
-	dbg("%s:%d at %s\n", __FUNCTION__, __LINE__, get_timestamp(tsbuf));
+	dbg("%s:%d at %s\n", __func__, __LINE__, get_timestamp(tsbuf));
 
 	spin_lock_irqsave(&sp->lock, flags);
 	sp->current_command = dequeue_command(sp);

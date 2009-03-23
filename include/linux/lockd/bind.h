@@ -27,24 +27,33 @@ struct nlmsvc_binding {
 						struct nfs_fh *,
 						struct file **);
 	void			(*fclose)(struct file *);
-	unsigned long		(*get_grace_period)(void);
 };
 
 extern struct nlmsvc_binding *	nlmsvc_ops;
 
 /*
+ * Similar to nfs_client_initdata, but without the NFS-specific
+ * rpc_ops field.
+ */
+struct nlmclnt_initdata {
+	const char		*hostname;
+	const struct sockaddr	*address;
+	size_t			addrlen;
+	unsigned short		protocol;
+	u32			nfs_version;
+	int			noresvport;
+};
+
+/*
  * Functions exported by the lockd module
  */
-extern int	nlmclnt_proc(struct inode *, int, struct file_lock *);
-extern int	lockd_up(int proto);
+
+extern struct nlm_host *nlmclnt_init(const struct nlmclnt_initdata *nlm_init);
+extern void	nlmclnt_done(struct nlm_host *host);
+
+extern int	nlmclnt_proc(struct nlm_host *host, int cmd,
+					struct file_lock *fl);
+extern int	lockd_up(void);
 extern void	lockd_down(void);
-
-unsigned long get_nfs_grace_period(void);
-
-#ifdef CONFIG_NFSD_V4
-unsigned long get_nfs4_grace_period(void);
-#else
-static inline unsigned long get_nfs4_grace_period(void) {return 0;}
-#endif
 
 #endif /* LINUX_LOCKD_BIND_H */

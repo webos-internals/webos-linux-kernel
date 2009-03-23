@@ -18,6 +18,7 @@
 
 #include <linux/stddef.h>
 #include <linux/kernel.h>
+#include <linux/compiler.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/reboot.h>
@@ -29,9 +30,9 @@
 #include <linux/seq_file.h>
 #include <linux/root_dev.h>
 #include <linux/initrd.h>
+#include <linux/of_platform.h>
+#include <linux/of_device.h>
 
-#include <asm/of_device.h>
-#include <asm/of_platform.h>
 #include <asm/system.h>
 #include <asm/atomic.h>
 #include <asm/time.h>
@@ -42,6 +43,8 @@
 #include <asm/prom.h>
 #include <asm/udbg.h>
 #include <sysdev/fsl_soc.h>
+#include <sysdev/fsl_pci.h>
+#include <sysdev/simple_gpio.h>
 #include <asm/qe.h>
 #include <asm/qe_ic.h>
 
@@ -54,8 +57,6 @@
 #define DBG(fmt...)
 #endif
 
-static u8 *bcsr_regs = NULL;
-
 /* ************************************************************************
  *
  * Setup the architecture
@@ -64,13 +65,14 @@ static u8 *bcsr_regs = NULL;
 static void __init mpc836x_mds_setup_arch(void)
 {
 	struct device_node *np;
+	u8 __iomem *bcsr_regs = NULL;
 
 	if (ppc_md.progress)
 		ppc_md.progress("mpc836x_mds_setup_arch()", 0);
 
 	/* Map BCSR area */
 	np = of_find_node_by_name(NULL, "bcsr");
-	if (np != 0) {
+	if (np) {
 		struct resource res;
 
 		of_address_to_resource(np, 0, &res);
@@ -92,6 +94,16 @@ static void __init mpc836x_mds_setup_arch(void)
 
 		for (np = NULL; (np = of_find_node_by_name(np, "ucc")) != NULL;)
 			par_io_of_config(np);
+#ifdef CONFIG_QE_USB
+		/* Must fixup Par IO before QE GPIO chips are registered. */
+		par_io_config_pin(1,  2, 1, 0, 3, 0); /* USBOE  */
+		par_io_config_pin(1,  3, 1, 0, 3, 0); /* USBTP  */
+		par_io_config_pin(1,  8, 1, 0, 1, 0); /* USBTN  */
+		par_io_config_pin(1, 10, 2, 0, 3, 0); /* USBRXD */
+		par_io_config_pin(1,  9, 2, 1, 3, 0); /* USBRP  */
+		par_io_config_pin(1, 11, 2, 1, 3, 0); /* USBRN  */
+		par_io_config_pin(2, 20, 2, 0, 1, 0); /* CLK21  */
+#endif /* CONFIG_QE_USB */
 	}
 
 	if ((np = of_find_compatible_node(NULL, "network", "ucc_geth"))
@@ -135,21 +147,84 @@ static void __init mpc836x_mds_setup_arch(void)
 static struct of_device_id mpc836x_ids[] = {
 	{ .type = "soc", },
 	{ .compatible = "soc", },
+	{ .compatible = "simple-bus", },
 	{ .type = "qe", },
+	{ .compatible = "fsl,qe", },
 	{},
 };
 
 static int __init mpc836x_declare_of_platform_devices(void)
 {
-	if (!machine_is(mpc836x_mds))
-		return 0;
-
 	/* Publish the QE devices */
 	of_platform_bus_probe(NULL, mpc836x_ids, NULL);
 
 	return 0;
 }
-device_initcall(mpc836x_declare_of_platform_devices);
+machine_device_initcall(mpc836x_mds, mpc836x_declare_of_platform_devices);
+
+#ifdef CONFIG_QE_USB
+static int __init mpc836x_usb_cfg(void)
+{
+	u8 __iomem *bcsr;
+	struct device_node *np;
+	const char *mode;
+	int ret = 0;
+
+	np = of_find_compatible_node(NULL, NULL, "fsl,mpc8360mds-bcsr");
+	if (!np)
+		return -ENODEV;
+
+	bcsr = of_iomap(np, 0);
+	of_node_put(np);
+	if (!bcsr)
+		return -ENOMEM;
+
+	np = of_find_compatible_node(NULL, NULL, "fsl,mpc8323-qe-usb");
+	if (!np) {
+		ret = -ENODEV;
+		goto err;
+	}
+
+#define BCSR8_TSEC1M_MASK	(0x3 << 6)
+#define BCSR8_TSEC1M_RGMII	(0x0 << 6)
+#define BCSR8_TSEC2M_MASK	(0x3 << 4)
+#define BCSR8_TSEC2M_RGMII	(0x0 << 4)
+	/*
+	 * Default is GMII (2), but we should set it to RGMII (0) if we use
+	 * USB (Eth PHY is in RGMII mode anyway).
+	 */
+	clrsetbits_8(&bcsr[8], BCSR8_TSEC1M_MASK | BCSR8_TSEC2M_MASK,
+			       BCSR8_TSEC1M_RGMII | BCSR8_TSEC2M_RGMII);
+
+#define BCSR13_USBMASK	0x0f
+#define BCSR13_nUSBEN	0x08 /* 1 - Disable, 0 - Enable			*/
+#define BCSR13_USBSPEED	0x04 /* 1 - Full, 0 - Low			*/
+#define BCSR13_USBMODE	0x02 /* 1 - Host, 0 - Function			*/
+#define BCSR13_nUSBVCC	0x01 /* 1 - gets VBUS, 0 - supplies VBUS 	*/
+
+	clrsetbits_8(&bcsr[13], BCSR13_USBMASK, BCSR13_USBSPEED);
+
+	mode = of_get_property(np, "mode", NULL);
+	if (mode && !strcmp(mode, "peripheral")) {
+		setbits8(&bcsr[13], BCSR13_nUSBVCC);
+		qe_usb_clock_set(QE_CLK21, 48000000);
+	} else {
+		setbits8(&bcsr[13], BCSR13_USBMODE);
+		/*
+		 * The BCSR GPIOs are used to control power and
+		 * speed of the USB transceiver. This is needed for
+		 * the USB Host only.
+		 */
+		simple_gpiochip_init("fsl,mpc8360mds-bcsr-gpio");
+	}
+
+	of_node_put(np);
+err:
+	iounmap(bcsr);
+	return ret;
+}
+machine_arch_initcall(mpc836x_mds, mpc836x_usb_cfg);
+#endif /* CONFIG_QE_USB */
 
 static void __init mpc836x_mds_init_IRQ(void)
 {
@@ -168,10 +243,12 @@ static void __init mpc836x_mds_init_IRQ(void)
 	of_node_put(np);
 
 #ifdef CONFIG_QUICC_ENGINE
-	np = of_find_node_by_type(NULL, "qeic");
-	if (!np)
-		return;
-
+	np = of_find_compatible_node(NULL, NULL, "fsl,qe-ic");
+	if (!np) {
+		np = of_find_node_by_type(NULL, "qeic");
+		if (!np)
+			return;
+	}
 	qe_ic_init(np, 0, qe_ic_cascade_low_ipic, qe_ic_cascade_high_ipic);
 	of_node_put(np);
 #endif				/* CONFIG_QUICC_ENGINE */

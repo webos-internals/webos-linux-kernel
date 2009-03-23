@@ -26,6 +26,9 @@
 
 #include <linux/fs.h>
 #include <linux/mm.h>
+#include <linux/ramfs.h>
+
+#include "internal.h"
 
 const struct address_space_operations ramfs_aops = {
 	.readpage	= simple_readpage,
@@ -42,6 +45,7 @@ const struct file_operations ramfs_file_operations = {
 	.mmap		= generic_file_mmap,
 	.fsync		= simple_sync_file,
 	.splice_read	= generic_file_splice_read,
+	.splice_write	= generic_file_splice_write,
 	.llseek		= generic_file_llseek,
 };
 

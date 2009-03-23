@@ -111,8 +111,8 @@ struct qs_port_priv {
 	qs_state_t		state;
 };
 
-static int qs_scr_read(struct ata_port *ap, unsigned int sc_reg, u32 *val);
-static int qs_scr_write(struct ata_port *ap, unsigned int sc_reg, u32 val);
+static int qs_scr_read(struct ata_link *link, unsigned int sc_reg, u32 *val);
+static int qs_scr_write(struct ata_link *link, unsigned int sc_reg, u32 val);
 static int qs_ata_init_one(struct pci_dev *pdev, const struct pci_device_id *ent);
 static int qs_port_start(struct ata_port *ap);
 static void qs_host_stop(struct ata_host *host);
@@ -121,50 +121,38 @@ static unsigned int qs_qc_issue(struct ata_queued_cmd *qc);
 static int qs_check_atapi_dma(struct ata_queued_cmd *qc);
 static void qs_bmdma_stop(struct ata_queued_cmd *qc);
 static u8 qs_bmdma_status(struct ata_port *ap);
-static void qs_irq_clear(struct ata_port *ap);
 static void qs_freeze(struct ata_port *ap);
 static void qs_thaw(struct ata_port *ap);
+static int qs_prereset(struct ata_link *link, unsigned long deadline);
 static void qs_error_handler(struct ata_port *ap);
 
 static struct scsi_host_template qs_ata_sht = {
-	.module			= THIS_MODULE,
-	.name			= DRV_NAME,
-	.ioctl			= ata_scsi_ioctl,
-	.queuecommand		= ata_scsi_queuecmd,
-	.can_queue		= ATA_DEF_QUEUE,
-	.this_id		= ATA_SHT_THIS_ID,
+	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= QS_MAX_PRD,
-	.cmd_per_lun		= ATA_SHT_CMD_PER_LUN,
-	.emulated		= ATA_SHT_EMULATED,
-	.use_clustering		= ENABLE_CLUSTERING,
-	.proc_name		= DRV_NAME,
 	.dma_boundary		= QS_DMA_BOUNDARY,
-	.slave_configure	= ata_scsi_slave_config,
-	.slave_destroy		= ata_scsi_slave_destroy,
-	.bios_param		= ata_std_bios_param,
 };
 
-static const struct ata_port_operations qs_ata_ops = {
-	.tf_load		= ata_tf_load,
-	.tf_read		= ata_tf_read,
-	.check_status		= ata_check_status,
+static struct ata_port_operations qs_ata_ops = {
+	.inherits		= &ata_sff_port_ops,
+
 	.check_atapi_dma	= qs_check_atapi_dma,
-	.exec_command		= ata_exec_command,
-	.dev_select		= ata_std_dev_select,
-	.qc_prep		= qs_qc_prep,
-	.qc_issue		= qs_qc_issue,
-	.data_xfer		= ata_data_xfer,
-	.freeze			= qs_freeze,
-	.thaw			= qs_thaw,
-	.error_handler		= qs_error_handler,
-	.irq_clear		= qs_irq_clear,
-	.irq_on			= ata_irq_on,
-	.scr_read		= qs_scr_read,
-	.scr_write		= qs_scr_write,
-	.port_start		= qs_port_start,
-	.host_stop		= qs_host_stop,
 	.bmdma_stop		= qs_bmdma_stop,
 	.bmdma_status		= qs_bmdma_status,
+	.qc_prep		= qs_qc_prep,
+	.qc_issue		= qs_qc_issue,
+
+	.freeze			= qs_freeze,
+	.thaw			= qs_thaw,
+	.prereset		= qs_prereset,
+	.softreset		= ATA_OP_NULL,
+	.error_handler		= qs_error_handler,
+	.post_internal_cmd	= ATA_OP_NULL,
+
+	.scr_read		= qs_scr_read,
+	.scr_write		= qs_scr_write,
+
+	.port_start		= qs_port_start,
+	.host_stop		= qs_host_stop,
 };
 
 static const struct ata_port_info qs_port_info[] = {
@@ -211,11 +199,6 @@ static u8 qs_bmdma_status(struct ata_port *ap)
 	return 0;
 }
 
-static void qs_irq_clear(struct ata_port *ap)
-{
-	/* nothing */
-}
-
 static inline void qs_enter_reg_mode(struct ata_port *ap)
 {
 	u8 __iomem *chan = qs_mmio_base(ap->host) + (ap->port_no * 0x4000);
@@ -256,29 +239,28 @@ static int qs_prereset(struct ata_link *link, unsigned long deadline)
 	struct ata_port *ap = link->ap;
 
 	qs_reset_channel_logic(ap);
-	return ata_std_prereset(link, deadline);
+	return ata_sff_prereset(link, deadline);
 }
 
-static int qs_scr_read(struct ata_port *ap, unsigned int sc_reg, u32 *val)
+static int qs_scr_read(struct ata_link *link, unsigned int sc_reg, u32 *val)
 {
 	if (sc_reg > SCR_CONTROL)
 		return -EINVAL;
-	*val = readl(ap->ioaddr.scr_addr + (sc_reg * 8));
+	*val = readl(link->ap->ioaddr.scr_addr + (sc_reg * 8));
 	return 0;
 }
 
 static void qs_error_handler(struct ata_port *ap)
 {
 	qs_enter_reg_mode(ap);
-	ata_do_eh(ap, qs_prereset, NULL, sata_std_hardreset,
-		  ata_std_postreset);
+	ata_std_error_handler(ap);
 }
 
-static int qs_scr_write(struct ata_port *ap, unsigned int sc_reg, u32 val)
+static int qs_scr_write(struct ata_link *link, unsigned int sc_reg, u32 val)
 {
 	if (sc_reg > SCR_CONTROL)
 		return -EINVAL;
-	writel(val, ap->ioaddr.scr_addr + (sc_reg * 8));
+	writel(val, link->ap->ioaddr.scr_addr + (sc_reg * 8));
 	return 0;
 }
 
@@ -287,14 +269,10 @@ static unsigned int qs_fill_sg(struct ata_queued_cmd *qc)
 	struct scatterlist *sg;
 	struct ata_port *ap = qc->ap;
 	struct qs_port_priv *pp = ap->private_data;
-	unsigned int nelem;
 	u8 *prd = pp->pkt + QS_CPB_BYTES;
+	unsigned int si;
 
-	WARN_ON(qc->__sg == NULL);
-	WARN_ON(qc->n_elem == 0 && qc->pad_len == 0);
-
-	nelem = 0;
-	ata_for_each_sg(sg, qc) {
+	for_each_sg(qc->sg, sg, qc->n_elem, si) {
 		u64 addr;
 		u32 len;
 
@@ -306,12 +284,11 @@ static unsigned int qs_fill_sg(struct ata_queued_cmd *qc)
 		*(__le32 *)prd = cpu_to_le32(len);
 		prd += sizeof(u64);
 
-		VPRINTK("PRD[%u] = (0x%llX, 0x%X)\n", nelem,
+		VPRINTK("PRD[%u] = (0x%llX, 0x%X)\n", si,
 					(unsigned long long)addr, len);
-		nelem++;
 	}
 
-	return nelem;
+	return si;
 }
 
 static void qs_qc_prep(struct ata_queued_cmd *qc)
@@ -326,7 +303,7 @@ static void qs_qc_prep(struct ata_queued_cmd *qc)
 
 	qs_enter_reg_mode(qc->ap);
 	if (qc->tf.protocol != ATA_PROT_DMA) {
-		ata_qc_prep(qc);
+		ata_sff_qc_prep(qc);
 		return;
 	}
 
@@ -376,7 +353,7 @@ static unsigned int qs_qc_issue(struct ata_queued_cmd *qc)
 		qs_packet_start(qc);
 		return 0;
 
-	case ATA_PROT_ATAPI_DMA:
+	case ATAPI_PROT_DMA:
 		BUG();
 		break;
 
@@ -385,7 +362,7 @@ static unsigned int qs_qc_issue(struct ata_queued_cmd *qc)
 	}
 
 	pp->state = qs_state_mmio;
-	return ata_qc_issue_prot(qc);
+	return ata_sff_qc_issue(qc);
 }
 
 static void qs_do_or_die(struct ata_queued_cmd *qc, u8 status)
@@ -474,7 +451,7 @@ static inline unsigned int qs_intr_mmio(struct ata_host *host)
 				 * and pretend we knew it was ours.. (ugh).
 				 * This does not affect packet mode.
 				 */
-				ata_check_status(ap);
+				ata_sff_check_status(ap);
 				handled = 1;
 				continue;
 			}
@@ -482,7 +459,7 @@ static inline unsigned int qs_intr_mmio(struct ata_host *host)
 			if (!pp || pp->state != qs_state_mmio)
 				continue;
 			if (!(qc->tf.flags & ATA_TFLAG_POLLING))
-				handled |= ata_host_intr(ap, qc);
+				handled |= ata_sff_host_intr(ap, qc);
 		}
 	}
 	return handled;

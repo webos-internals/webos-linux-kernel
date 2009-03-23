@@ -1,6 +1,4 @@
 /*
- * $Id: pc110pad.c,v 1.12 2001/09/25 10:12:07 vojtech Exp $
- *
  *  Copyright (c) 2000-2001 Vojtech Pavlik
  *
  *  Based on the work of:
@@ -39,6 +37,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
+#include <linux/delay.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -62,8 +61,10 @@ static irqreturn_t pc110pad_interrupt(int irq, void *ptr)
 	int value     = inb_p(pc110pad_io);
 	int handshake = inb_p(pc110pad_io + 2);
 
-	outb_p(handshake |  1, pc110pad_io + 2);
-	outb_p(handshake & ~1, pc110pad_io + 2);
+	outb(handshake |  1, pc110pad_io + 2);
+	udelay(2);
+	outb(handshake & ~1, pc110pad_io + 2);
+	udelay(2);
 	inb_p(0x64);
 
 	pc110pad_data[pc110pad_count++] = value;

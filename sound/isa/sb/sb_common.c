@@ -20,7 +20,6 @@
  *
  */
 
-#include <sound/driver.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -52,7 +51,7 @@ int snd_sbdsp_command(struct snd_sb *chip, unsigned char val)
 			outb(val, SBP(chip, COMMAND));
 			return 1;
 		}
-	snd_printd("%s [0x%lx]: timeout (0x%x)\n", __FUNCTION__, chip->port, val);
+	snd_printd("%s [0x%lx]: timeout (0x%x)\n", __func__, chip->port, val);
 	return 0;
 }
 
@@ -69,7 +68,7 @@ int snd_sbdsp_get_byte(struct snd_sb *chip)
 			return val;
 		}
 	}
-	snd_printd("%s [0x%lx]: timeout\n", __FUNCTION__, chip->port);
+	snd_printd("%s [0x%lx]: timeout\n", __func__, chip->port);
 	return -ENODEV;
 }
 
@@ -88,7 +87,7 @@ int snd_sbdsp_reset(struct snd_sb *chip)
 			else
 				break;
 		}
-	snd_printdd("%s [0x%lx] failed...\n", __FUNCTION__, chip->port);
+	snd_printdd("%s [0x%lx] failed...\n", __func__, chip->port);
 	return -ENODEV;
 }
 
@@ -220,7 +219,8 @@ int snd_sbdsp_create(struct snd_card *card,
 		.dev_free =	snd_sbdsp_dev_free,
 	};
 
-	snd_assert(r_chip != NULL, return -EINVAL);
+	if (snd_BUG_ON(!r_chip))
+		return -EINVAL;
 	*r_chip = NULL;
 	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
 	if (chip == NULL)

@@ -20,7 +20,11 @@ kernel patches.
 4: ppc64 is a good architecture for cross-compilation checking because it
    tends to use `unsigned long' for 64-bit quantities.
 
-5: Matches kernel coding style(!)
+5: Check your patch for general style as detailed in
+   Documentation/CodingStyle.  Check for trivial violations with the
+   patch style checker prior to submission (scripts/checkpatch.pl).
+   You should be able to justify all violations that remain in
+   your patch.
 
 6: Any new or modified CONFIG options don't muck up the config menu.
 
@@ -63,6 +67,8 @@ kernel patches.
 
 19: All new userspace interfaces are documented in Documentation/ABI/.
     See Documentation/ABI/README for more information.
+    Patches that change userspace interfaces should be CCed to
+    linux-api@vger.kernel.org.
 
 20: Check that it all passes `make headers_check'.
 
@@ -80,12 +86,5 @@ kernel patches.
     that it still works with all of the other queued patches and various
     changes in the VM, VFS, and other subsystems.
 
-24: Avoid whitespace damage such as indenting with spaces or whitespace
-    at the end of lines.  You can test this by feeding the patch to
-    "git apply --check --whitespace=error-all"
-
-25: Check your patch for general style as detailed in
-    Documentation/CodingStyle.  Check for trivial violations with the
-    patch style checker prior to submission (scripts/checkpatch.pl).
-    You should be able to justify all violations that remain in
-    your patch.
+24: All memory barriers {e.g., barrier(), rmb(), wmb()} need a comment in the
+    source code that explains the logic of what they are doing and why.

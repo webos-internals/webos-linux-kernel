@@ -15,20 +15,25 @@
 extern const struct inode_operations affs_symlink_inode_operations;
 extern struct timezone sys_tz;
 
-void
-affs_read_inode(struct inode *inode)
+struct inode *affs_iget(struct super_block *sb, unsigned long ino)
 {
-	struct super_block	*sb = inode->i_sb;
 	struct affs_sb_info	*sbi = AFFS_SB(sb);
 	struct buffer_head	*bh;
 	struct affs_head	*head;
 	struct affs_tail	*tail;
+	struct inode		*inode;
 	u32			 block;
 	u32			 size;
 	u32			 prot;
 	u16			 id;
 
-	pr_debug("AFFS: read_inode(%lu)\n",inode->i_ino);
+	inode = iget_locked(sb, ino);
+	if (!inode)
+		return ERR_PTR(-ENOMEM);
+	if (!(inode->i_state & I_NEW))
+		return inode;
+
+	pr_debug("AFFS: affs_iget(%lu)\n", inode->i_ino);
 
 	block = inode->i_ino;
 	bh = affs_bread(sb, block);
@@ -53,7 +58,7 @@ affs_read_inode(struct inode *inode)
 	AFFS_I(inode)->i_extcnt = 1;
 	AFFS_I(inode)->i_ext_last = ~1;
 	AFFS_I(inode)->i_protect = prot;
-	AFFS_I(inode)->i_opencnt = 0;
+	atomic_set(&AFFS_I(inode)->i_opencnt, 0);
 	AFFS_I(inode)->i_blkcnt = 0;
 	AFFS_I(inode)->i_lc = NULL;
 	AFFS_I(inode)->i_lc_size = 0;
@@ -103,8 +108,6 @@ affs_read_inode(struct inode *inode)
 			inode->i_mode |= S_IFDIR;
 		} else
 			inode->i_mode = S_IRUGO | S_IXUGO | S_IWUSR | S_IFDIR;
-		if (tail->link_chain)
-			inode->i_nlink = 2;
 		/* Maybe it should be controlled by mount parameter? */
 		//inode->i_mode |= S_ISVTX;
 		inode->i_op = &affs_dir_inode_operations;
@@ -116,8 +119,7 @@ affs_read_inode(struct inode *inode)
 		goto bad_inode;
 #else
 		inode->i_mode |= S_IFDIR;
-		inode->i_op = NULL;
-		inode->i_fop = NULL;
+		/* ... and leave ->i_op and ->i_fop pointing to empty */
 		break;
 #endif
 	case ST_LINKFILE:
@@ -154,12 +156,13 @@ affs_read_inode(struct inode *inode)
 			 sys_tz.tz_minuteswest * 60;
 	inode->i_mtime.tv_nsec = inode->i_ctime.tv_nsec = inode->i_atime.tv_nsec = 0;
 	affs_brelse(bh);
-	return;
+	unlock_new_inode(inode);
+	return inode;
 
 bad_inode:
-	make_bad_inode(inode);
 	affs_brelse(bh);
-	return;
+	iget_failed(inode);
+	return ERR_PTR(-EIO);
 }
 
 int
@@ -239,31 +242,12 @@ out:
 }
 
 void
-affs_put_inode(struct inode *inode)
-{
-	pr_debug("AFFS: put_inode(ino=%lu, nlink=%u)\n", inode->i_ino, inode->i_nlink);
-	affs_free_prealloc(inode);
-}
-
-void
-affs_drop_inode(struct inode *inode)
-{
-	mutex_lock(&inode->i_mutex);
-	if (inode->i_size != AFFS_I(inode)->mmu_private)
-		affs_truncate(inode);
-	mutex_unlock(&inode->i_mutex);
-
-	generic_drop_inode(inode);
-}
-
-void
 affs_delete_inode(struct inode *inode)
 {
 	pr_debug("AFFS: delete_inode(ino=%lu, nlink=%u)\n", inode->i_ino, inode->i_nlink);
 	truncate_inode_pages(&inode->i_data, 0);
 	inode->i_size = 0;
-	if (S_ISREG(inode->i_mode))
-		affs_truncate(inode);
+	affs_truncate(inode);
 	clear_inode(inode);
 	affs_free_block(inode->i_sb, inode->i_ino);
 }
@@ -271,9 +255,12 @@ affs_delete_inode(struct inode *inode)
 void
 affs_clear_inode(struct inode *inode)
 {
-	unsigned long cache_page = (unsigned long) AFFS_I(inode)->i_lc;
+	unsigned long cache_page;
 
 	pr_debug("AFFS: clear_inode(ino=%lu, nlink=%u)\n", inode->i_ino, inode->i_nlink);
+
+	affs_free_prealloc(inode);
+	cache_page = (unsigned long)AFFS_I(inode)->i_lc;
 	if (cache_page) {
 		pr_debug("AFFS: freeing ext cache\n");
 		AFFS_I(inode)->i_lc = NULL;
@@ -305,12 +292,12 @@ affs_new_inode(struct inode *dir)
 	mark_buffer_dirty_inode(bh, inode);
 	affs_brelse(bh);
 
-	inode->i_uid     = current->fsuid;
-	inode->i_gid     = current->fsgid;
+	inode->i_uid     = current_fsuid();
+	inode->i_gid     = current_fsgid();
 	inode->i_ino     = block;
 	inode->i_nlink   = 1;
 	inode->i_mtime   = inode->i_atime = inode->i_ctime = CURRENT_TIME_SEC;
-	AFFS_I(inode)->i_opencnt = 0;
+	atomic_set(&AFFS_I(inode)->i_opencnt, 0);
 	AFFS_I(inode)->i_blkcnt = 0;
 	AFFS_I(inode)->i_lc = NULL;
 	AFFS_I(inode)->i_lc_size = 0;
@@ -363,12 +350,12 @@ affs_add_entry(struct inode *dir, struct inode *inode, struct dentry *dentry, s3
 	switch (type) {
 	case ST_LINKFILE:
 	case ST_LINKDIR:
-		inode_bh = bh;
 		retval = -ENOSPC;
 		block = affs_alloc_block(dir, dir->i_ino);
 		if (!block)
 			goto err;
 		retval = -EIO;
+		inode_bh = bh;
 		bh = affs_getzeroblk(sb, block);
 		if (!bh)
 			goto err;

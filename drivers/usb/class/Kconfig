@@ -29,3 +29,24 @@ config USB_PRINTER
 	  To compile this driver as a module, choose M here: the
 	  module will be called usblp.
 
+config USB_WDM
+	tristate "USB Wireless Device Management support"
+	depends on USB
+	---help---
+	  This driver supports the WMC Device Management functionality
+	  of cell phones compliant to the CDC WMC specification. You can use
+	  AT commands over this device.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called cdc-wdm.
+
+config USB_TMC
+	tristate "USB Test and Measurement Class support"
+	depends on USB
+	help
+	  Say Y here if you want to connect a USB device that follows
+	  the USB.org specification for USB Test and Measurement devices
+	  to your computer's USB port.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called usbtmc.

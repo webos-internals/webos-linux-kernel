@@ -19,7 +19,6 @@
  *
  */
   
-#include <sound/driver.h>
 #include <linux/time.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -75,7 +74,7 @@ static struct pcm_format_data pcm_formats[SNDRV_PCM_FORMAT_LAST+1] = {
 	},
 	[SNDRV_PCM_FORMAT_U24_BE] = {
 		.width = 24, .phys = 32, .le = 0, .signd = 0,
-		.silence = { 0x80, 0x00, 0x00 },
+		.silence = { 0x00, 0x80, 0x00, 0x00 },
 	},
 	[SNDRV_PCM_FORMAT_S32_LE] = {
 		.width = 32, .phys = 32, .le = 1, .signd = 1,
@@ -320,6 +319,7 @@ EXPORT_SYMBOL(snd_pcm_format_physical_width);
 /**
  * snd_pcm_format_size - return the byte size of samples on the given format
  * @format: the format to check
+ * @samples: sampling rate
  *
  * Returns the byte size of the given samples for the format, or a
  * negative error code if unknown format.

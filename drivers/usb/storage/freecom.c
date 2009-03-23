@@ -1,7 +1,5 @@
 /* Driver for Freecom USB/IDE adaptor
  *
- * $Id: freecom.c,v 1.22 2002/04/22 03:39:43 mdharm Exp $
- *
  * Freecom v0.1:
  *
  * First release
@@ -27,8 +25,6 @@
  * Programmers Reference Guide.  For further information contact Freecom
  * (http://www.freecom.de/)
  */
-
-#include <linux/hdreg.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -132,8 +128,7 @@ freecom_readdata (struct scsi_cmnd *srb, struct us_data *us,
 
 	/* Now transfer all of our blocks. */
 	US_DEBUGP("Start of read\n");
-	result = usb_stor_bulk_transfer_sg(us, ipipe, srb->request_buffer,
-			count, srb->use_sg, &srb->resid);
+	result = usb_stor_bulk_srb(us, ipipe, srb);
 	US_DEBUGP("freecom_readdata done!\n");
 
 	if (result > USB_STOR_XFER_SHORT)
@@ -166,8 +161,7 @@ freecom_writedata (struct scsi_cmnd *srb, struct us_data *us,
 
 	/* Now transfer all of our blocks. */
 	US_DEBUGP("Start of write\n");
-	result = usb_stor_bulk_transfer_sg(us, opipe, srb->request_buffer,
-			count, srb->use_sg, &srb->resid);
+	result = usb_stor_bulk_srb(us, opipe, srb);
 
 	US_DEBUGP("freecom_writedata done!\n");
 	if (result > USB_STOR_XFER_SHORT)
@@ -281,7 +275,7 @@ int freecom_transport(struct scsi_cmnd *srb, struct us_data *us)
 	 * and such will hang. */
 	US_DEBUGP("Device indicates that it has %d bytes available\n",
 			le16_to_cpu (fst->Count));
-	US_DEBUGP("SCSI requested %d\n", srb->request_bufflen);
+	US_DEBUGP("SCSI requested %d\n", scsi_bufflen(srb));
 
 	/* Find the length we desire to read. */
 	switch (srb->cmnd[0]) {
@@ -292,12 +286,12 @@ int freecom_transport(struct scsi_cmnd *srb, struct us_data *us)
 			length = le16_to_cpu(fst->Count);
 			break;
 		default:
- 			length = srb->request_bufflen;
+			length = scsi_bufflen(srb);
 	}
 
 	/* verify that this amount is legal */
-	if (length > srb->request_bufflen) {
-		length = srb->request_bufflen;
+	if (length > scsi_bufflen(srb)) {
+		length = scsi_bufflen(srb);
 		US_DEBUGP("Truncating request to match buffer length: %d\n", length);
 	}
 

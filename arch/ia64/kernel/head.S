@@ -26,11 +26,14 @@
 #include <asm/mmu_context.h>
 #include <asm/asm-offsets.h>
 #include <asm/pal.h>
+#include <asm/paravirt.h>
 #include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/system.h>
 #include <asm/mca_asm.h>
+#include <linux/init.h>
+#include <linux/linkage.h>
 
 #ifdef CONFIG_HOTPLUG_CPU
 #define SAL_PSR_BITS_TO_SET				\
@@ -257,7 +260,7 @@ start_ap:
 	 * Switch into virtual mode:
 	 */
 	movl r16=(IA64_PSR_IT|IA64_PSR_IC|IA64_PSR_DT|IA64_PSR_RT|IA64_PSR_DFH|IA64_PSR_BN \
-		  |IA64_PSR_DI)
+		  |IA64_PSR_DI|IA64_PSR_AC)
 	;;
 	mov cr.ipsr=r16
 	movl r17=1f
@@ -356,7 +359,32 @@ start_ap:
 	mov ar.rsc=0		// place RSE in enforced lazy mode
 	;;
 	loadrs			// clear the dirty partition
-	mov IA64_KR(PER_CPU_DATA)=r0	// clear physical per-CPU base
+	movl r19=__phys_per_cpu_start
+	mov r18=PERCPU_PAGE_SIZE
+	;;
+#ifndef CONFIG_SMP
+	add r19=r19,r18
+	;;
+#else
+(isAP)	br.few 2f
+	movl r20=__cpu0_per_cpu
+	;;
+	shr.u r18=r18,3
+1:
+	ld8 r21=[r19],8;;
+	st8[r20]=r21,8
+	adds r18=-1,r18;;
+	cmp4.lt p7,p6=0,r18
+(p7)	br.cond.dptk.few 1b
+	mov r19=r20
+	;;
+2:
+#endif
+	tpa r19=r19
+	;;
+	.pred.rel.mutex isBP,isAP
+(isBP)	mov IA64_KR(PER_CPU_DATA)=r19	// per-CPU base for cpu0
+(isAP)	mov IA64_KR(PER_CPU_DATA)=r0	// clear physical per-CPU base
 	;;
 	mov ar.bspstore=r2	// establish the new RSE stack
 	;;
@@ -366,6 +394,44 @@ start_ap:
 (isBP)	movl r2=ia64_boot_param
 	;;
 (isBP)	st8 [r2]=r28		// save the address of the boot param area passed by the bootloader
+
+#ifdef CONFIG_PARAVIRT
+
+	movl r14=hypervisor_setup_hooks
+	movl r15=hypervisor_type
+	mov r16=num_hypervisor_hooks
+	;;
+	ld8 r2=[r15]
+	;;
+	cmp.ltu p7,p0=r2,r16	// array size check
+	shladd r8=r2,3,r14
+	;;
+(p7)	ld8 r9=[r8]
+	;;
+(p7)	mov b1=r9
+(p7)	cmp.ne.unc p7,p0=r9,r0	// no actual branch to NULL
+	;;
+(p7)	br.call.sptk.many rp=b1
+
+	__INITDATA
+
+default_setup_hook = 0		// Currently nothing needs to be done.
+
+	.weak xen_setup_hook
+
+	.global hypervisor_type
+hypervisor_type:
+	data8		PARAVIRT_HYPERVISOR_TYPE_DEFAULT
+
+	// must have the same order with PARAVIRT_HYPERVISOR_TYPE_xxx
+
+hypervisor_setup_hooks:
+	data8		default_setup_hook
+	data8		xen_setup_hook
+num_hypervisor_hooks = (. - hypervisor_setup_hooks) / 8
+	.previous
+
+#endif
 
 #ifdef CONFIG_SMP
 (isAP)	br.call.sptk.many rp=start_secondary
@@ -1002,6 +1068,26 @@ GLOBAL_ENTRY(sched_clock)
 	br.ret.sptk.many rp
 END(sched_clock)
 
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING
+GLOBAL_ENTRY(cycle_to_cputime)
+	alloc r16=ar.pfs,1,0,0,0
+	addl r8=THIS_CPU(cpu_info) + IA64_CPUINFO_NSEC_PER_CYC_OFFSET,r0
+	;;
+	ldf8 f8=[r8]
+	;;
+	setf.sig f9=r32
+	;;
+	xmpy.lu f10=f9,f8	// calculate low 64 bits of 128-bit product	(4 cyc)
+	xmpy.hu f11=f9,f8	// calculate high 64 bits of 128-bit product
+	;;
+	getf.sig r8=f10		//						(5 cyc)
+	getf.sig r9=f11
+	;;
+	shrp r8=r9,r8,IA64_NSEC_PER_CYC_SHIFT
+	br.ret.sptk.many rp
+END(cycle_to_cputime)
+#endif /* CONFIG_VIRT_CPU_ACCOUNTING */
+
 GLOBAL_ENTRY(start_kernel_thread)
 	.prologue
 	.save rp, r0				// this is the end of the call-chain
@@ -1062,7 +1148,7 @@ SET_REG(b5);
 	 *   p15    - used to track flag status.
 	 *
 	 * If you patch this code to use more registers, do not forget to update
-	 * the clobber lists for spin_lock() in include/asm-ia64/spinlock.h.
+	 * the clobber lists for spin_lock() in arch/ia64/include/asm/spinlock.h.
 	 */
 
 #if (__GNUC__ == 3 && __GNUC_MINOR__ < 3)

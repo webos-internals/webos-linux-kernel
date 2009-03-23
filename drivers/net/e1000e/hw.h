@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel PRO/1000 Linux driver
-  Copyright(c) 1999 - 2007 Intel Corporation.
+  Copyright(c) 1999 - 2008 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -65,15 +65,19 @@ enum e1e_registers {
 	E1000_ICS      = 0x000C8, /* Interrupt Cause Set - WO */
 	E1000_IMS      = 0x000D0, /* Interrupt Mask Set - RW */
 	E1000_IMC      = 0x000D8, /* Interrupt Mask Clear - WO */
+	E1000_EIAC_82574 = 0x000DC, /* Ext. Interrupt Auto Clear - RW */
 	E1000_IAM      = 0x000E0, /* Interrupt Acknowledge Auto Mask */
-	E1000_RCTL     = 0x00100, /* RX Control - RW */
+	E1000_IVAR     = 0x000E4, /* Interrupt Vector Allocation - RW */
+	E1000_EITR_82574_BASE = 0x000E8, /* Interrupt Throttling - RW */
+#define E1000_EITR_82574(_n) (E1000_EITR_82574_BASE + (_n << 2))
+	E1000_RCTL     = 0x00100, /* Rx Control - RW */
 	E1000_FCTTV    = 0x00170, /* Flow Control Transmit Timer Value - RW */
-	E1000_TXCW     = 0x00178, /* TX Configuration Word - RW */
-	E1000_RXCW     = 0x00180, /* RX Configuration Word - RO */
-	E1000_TCTL     = 0x00400, /* TX Control - RW */
-	E1000_TCTL_EXT = 0x00404, /* Extended TX Control - RW */
-	E1000_TIPG     = 0x00410, /* TX Inter-packet gap -RW */
-	E1000_AIT      = 0x00458, /* Adaptive Interframe Spacing Throttle - RW */
+	E1000_TXCW     = 0x00178, /* Tx Configuration Word - RW */
+	E1000_RXCW     = 0x00180, /* Rx Configuration Word - RO */
+	E1000_TCTL     = 0x00400, /* Tx Control - RW */
+	E1000_TCTL_EXT = 0x00404, /* Extended Tx Control - RW */
+	E1000_TIPG     = 0x00410, /* Tx Inter-packet gap -RW */
+	E1000_AIT      = 0x00458, /* Adaptive Interframe Spacing Throttle -RW */
 	E1000_LEDCTL   = 0x00E00, /* LED Control - RW */
 	E1000_EXTCNF_CTRL  = 0x00F00, /* Extended Configuration Control */
 	E1000_EXTCNF_SIZE  = 0x00F08, /* Extended Configuration Size */
@@ -83,16 +87,19 @@ enum e1e_registers {
 	E1000_EEMNGCTL = 0x01010, /* MNG EEprom Control */
 	E1000_EEWR     = 0x0102C, /* EEPROM Write Register - RW */
 	E1000_FLOP     = 0x0103C, /* FLASH Opcode Register */
+	E1000_PBA_ECC  = 0x01100, /* PBA ECC Register */
 	E1000_ERT      = 0x02008, /* Early Rx Threshold - RW */
 	E1000_FCRTL    = 0x02160, /* Flow Control Receive Threshold Low - RW */
 	E1000_FCRTH    = 0x02168, /* Flow Control Receive Threshold High - RW */
 	E1000_PSRCTL   = 0x02170, /* Packet Split Receive Control - RW */
-	E1000_RDBAL    = 0x02800, /* RX Descriptor Base Address Low - RW */
-	E1000_RDBAH    = 0x02804, /* RX Descriptor Base Address High - RW */
-	E1000_RDLEN    = 0x02808, /* RX Descriptor Length - RW */
-	E1000_RDH      = 0x02810, /* RX Descriptor Head - RW */
-	E1000_RDT      = 0x02818, /* RX Descriptor Tail - RW */
-	E1000_RDTR     = 0x02820, /* RX Delay Timer - RW */
+	E1000_RDBAL    = 0x02800, /* Rx Descriptor Base Address Low - RW */
+	E1000_RDBAH    = 0x02804, /* Rx Descriptor Base Address High - RW */
+	E1000_RDLEN    = 0x02808, /* Rx Descriptor Length - RW */
+	E1000_RDH      = 0x02810, /* Rx Descriptor Head - RW */
+	E1000_RDT      = 0x02818, /* Rx Descriptor Tail - RW */
+	E1000_RDTR     = 0x02820, /* Rx Delay Timer - RW */
+	E1000_RXDCTL_BASE = 0x02828, /* Rx Descriptor Control - RW */
+#define E1000_RXDCTL(_n)   (E1000_RXDCTL_BASE + (_n << 8))
 	E1000_RADV     = 0x0282C, /* RX Interrupt Absolute Delay Timer - RW */
 
 /* Convenience macros
@@ -105,17 +112,17 @@ enum e1e_registers {
  */
 #define E1000_RDBAL_REG(_n)   (E1000_RDBAL + (_n << 8))
 	E1000_KABGTXD  = 0x03004, /* AFE Band Gap Transmit Ref Data */
-	E1000_TDBAL    = 0x03800, /* TX Descriptor Base Address Low - RW */
-	E1000_TDBAH    = 0x03804, /* TX Descriptor Base Address High - RW */
-	E1000_TDLEN    = 0x03808, /* TX Descriptor Length - RW */
-	E1000_TDH      = 0x03810, /* TX Descriptor Head - RW */
-	E1000_TDT      = 0x03818, /* TX Descriptor Tail - RW */
-	E1000_TIDV     = 0x03820, /* TX Interrupt Delay Value - RW */
-	E1000_TXDCTL   = 0x03828, /* TX Descriptor Control - RW */
-	E1000_TADV     = 0x0382C, /* TX Interrupt Absolute Delay Val - RW */
-	E1000_TARC0    = 0x03840, /* TX Arbitration Count (0) */
-	E1000_TXDCTL1  = 0x03928, /* TX Descriptor Control (1) - RW */
-	E1000_TARC1    = 0x03940, /* TX Arbitration Count (1) */
+	E1000_TDBAL    = 0x03800, /* Tx Descriptor Base Address Low - RW */
+	E1000_TDBAH    = 0x03804, /* Tx Descriptor Base Address High - RW */
+	E1000_TDLEN    = 0x03808, /* Tx Descriptor Length - RW */
+	E1000_TDH      = 0x03810, /* Tx Descriptor Head - RW */
+	E1000_TDT      = 0x03818, /* Tx Descriptor Tail - RW */
+	E1000_TIDV     = 0x03820, /* Tx Interrupt Delay Value - RW */
+	E1000_TXDCTL_BASE = 0x03828, /* Tx Descriptor Control - RW */
+#define E1000_TXDCTL(_n)   (E1000_TXDCTL_BASE + (_n << 8))
+	E1000_TADV     = 0x0382C, /* Tx Interrupt Absolute Delay Val - RW */
+	E1000_TARC_BASE = 0x03840, /* Tx Arbitration Count (0) */
+#define E1000_TARC(_n)   (E1000_TARC_BASE + (_n << 8))
 	E1000_CRCERRS  = 0x04000, /* CRC Error Count - R/clr */
 	E1000_ALGNERRC = 0x04004, /* Alignment Error Count - R/clr */
 	E1000_SYMERRS  = 0x04008, /* Symbol Error Count - R/clr */
@@ -127,53 +134,53 @@ enum e1e_registers {
 	E1000_LATECOL  = 0x04020, /* Late Collision Count - R/clr */
 	E1000_COLC     = 0x04028, /* Collision Count - R/clr */
 	E1000_DC       = 0x04030, /* Defer Count - R/clr */
-	E1000_TNCRS    = 0x04034, /* TX-No CRS - R/clr */
+	E1000_TNCRS    = 0x04034, /* Tx-No CRS - R/clr */
 	E1000_SEC      = 0x04038, /* Sequence Error Count - R/clr */
 	E1000_CEXTERR  = 0x0403C, /* Carrier Extension Error Count - R/clr */
 	E1000_RLEC     = 0x04040, /* Receive Length Error Count - R/clr */
-	E1000_XONRXC   = 0x04048, /* XON RX Count - R/clr */
-	E1000_XONTXC   = 0x0404C, /* XON TX Count - R/clr */
-	E1000_XOFFRXC  = 0x04050, /* XOFF RX Count - R/clr */
-	E1000_XOFFTXC  = 0x04054, /* XOFF TX Count - R/clr */
-	E1000_FCRUC    = 0x04058, /* Flow Control RX Unsupported Count- R/clr */
-	E1000_PRC64    = 0x0405C, /* Packets RX (64 bytes) - R/clr */
-	E1000_PRC127   = 0x04060, /* Packets RX (65-127 bytes) - R/clr */
-	E1000_PRC255   = 0x04064, /* Packets RX (128-255 bytes) - R/clr */
-	E1000_PRC511   = 0x04068, /* Packets RX (255-511 bytes) - R/clr */
-	E1000_PRC1023  = 0x0406C, /* Packets RX (512-1023 bytes) - R/clr */
-	E1000_PRC1522  = 0x04070, /* Packets RX (1024-1522 bytes) - R/clr */
-	E1000_GPRC     = 0x04074, /* Good Packets RX Count - R/clr */
-	E1000_BPRC     = 0x04078, /* Broadcast Packets RX Count - R/clr */
-	E1000_MPRC     = 0x0407C, /* Multicast Packets RX Count - R/clr */
-	E1000_GPTC     = 0x04080, /* Good Packets TX Count - R/clr */
-	E1000_GORCL    = 0x04088, /* Good Octets RX Count Low - R/clr */
-	E1000_GORCH    = 0x0408C, /* Good Octets RX Count High - R/clr */
-	E1000_GOTCL    = 0x04090, /* Good Octets TX Count Low - R/clr */
-	E1000_GOTCH    = 0x04094, /* Good Octets TX Count High - R/clr */
-	E1000_RNBC     = 0x040A0, /* RX No Buffers Count - R/clr */
-	E1000_RUC      = 0x040A4, /* RX Undersize Count - R/clr */
-	E1000_RFC      = 0x040A8, /* RX Fragment Count - R/clr */
-	E1000_ROC      = 0x040AC, /* RX Oversize Count - R/clr */
-	E1000_RJC      = 0x040B0, /* RX Jabber Count - R/clr */
-	E1000_MGTPRC   = 0x040B4, /* Management Packets RX Count - R/clr */
+	E1000_XONRXC   = 0x04048, /* XON Rx Count - R/clr */
+	E1000_XONTXC   = 0x0404C, /* XON Tx Count - R/clr */
+	E1000_XOFFRXC  = 0x04050, /* XOFF Rx Count - R/clr */
+	E1000_XOFFTXC  = 0x04054, /* XOFF Tx Count - R/clr */
+	E1000_FCRUC    = 0x04058, /* Flow Control Rx Unsupported Count- R/clr */
+	E1000_PRC64    = 0x0405C, /* Packets Rx (64 bytes) - R/clr */
+	E1000_PRC127   = 0x04060, /* Packets Rx (65-127 bytes) - R/clr */
+	E1000_PRC255   = 0x04064, /* Packets Rx (128-255 bytes) - R/clr */
+	E1000_PRC511   = 0x04068, /* Packets Rx (255-511 bytes) - R/clr */
+	E1000_PRC1023  = 0x0406C, /* Packets Rx (512-1023 bytes) - R/clr */
+	E1000_PRC1522  = 0x04070, /* Packets Rx (1024-1522 bytes) - R/clr */
+	E1000_GPRC     = 0x04074, /* Good Packets Rx Count - R/clr */
+	E1000_BPRC     = 0x04078, /* Broadcast Packets Rx Count - R/clr */
+	E1000_MPRC     = 0x0407C, /* Multicast Packets Rx Count - R/clr */
+	E1000_GPTC     = 0x04080, /* Good Packets Tx Count - R/clr */
+	E1000_GORCL    = 0x04088, /* Good Octets Rx Count Low - R/clr */
+	E1000_GORCH    = 0x0408C, /* Good Octets Rx Count High - R/clr */
+	E1000_GOTCL    = 0x04090, /* Good Octets Tx Count Low - R/clr */
+	E1000_GOTCH    = 0x04094, /* Good Octets Tx Count High - R/clr */
+	E1000_RNBC     = 0x040A0, /* Rx No Buffers Count - R/clr */
+	E1000_RUC      = 0x040A4, /* Rx Undersize Count - R/clr */
+	E1000_RFC      = 0x040A8, /* Rx Fragment Count - R/clr */
+	E1000_ROC      = 0x040AC, /* Rx Oversize Count - R/clr */
+	E1000_RJC      = 0x040B0, /* Rx Jabber Count - R/clr */
+	E1000_MGTPRC   = 0x040B4, /* Management Packets Rx Count - R/clr */
 	E1000_MGTPDC   = 0x040B8, /* Management Packets Dropped Count - R/clr */
-	E1000_MGTPTC   = 0x040BC, /* Management Packets TX Count - R/clr */
-	E1000_TORL     = 0x040C0, /* Total Octets RX Low - R/clr */
-	E1000_TORH     = 0x040C4, /* Total Octets RX High - R/clr */
-	E1000_TOTL     = 0x040C8, /* Total Octets TX Low - R/clr */
-	E1000_TOTH     = 0x040CC, /* Total Octets TX High - R/clr */
-	E1000_TPR      = 0x040D0, /* Total Packets RX - R/clr */
-	E1000_TPT      = 0x040D4, /* Total Packets TX - R/clr */
-	E1000_PTC64    = 0x040D8, /* Packets TX (64 bytes) - R/clr */
-	E1000_PTC127   = 0x040DC, /* Packets TX (65-127 bytes) - R/clr */
-	E1000_PTC255   = 0x040E0, /* Packets TX (128-255 bytes) - R/clr */
-	E1000_PTC511   = 0x040E4, /* Packets TX (256-511 bytes) - R/clr */
-	E1000_PTC1023  = 0x040E8, /* Packets TX (512-1023 bytes) - R/clr */
-	E1000_PTC1522  = 0x040EC, /* Packets TX (1024-1522 Bytes) - R/clr */
-	E1000_MPTC     = 0x040F0, /* Multicast Packets TX Count - R/clr */
-	E1000_BPTC     = 0x040F4, /* Broadcast Packets TX Count - R/clr */
-	E1000_TSCTC    = 0x040F8, /* TCP Segmentation Context TX - R/clr */
-	E1000_TSCTFC   = 0x040FC, /* TCP Segmentation Context TX Fail - R/clr */
+	E1000_MGTPTC   = 0x040BC, /* Management Packets Tx Count - R/clr */
+	E1000_TORL     = 0x040C0, /* Total Octets Rx Low - R/clr */
+	E1000_TORH     = 0x040C4, /* Total Octets Rx High - R/clr */
+	E1000_TOTL     = 0x040C8, /* Total Octets Tx Low - R/clr */
+	E1000_TOTH     = 0x040CC, /* Total Octets Tx High - R/clr */
+	E1000_TPR      = 0x040D0, /* Total Packets Rx - R/clr */
+	E1000_TPT      = 0x040D4, /* Total Packets Tx - R/clr */
+	E1000_PTC64    = 0x040D8, /* Packets Tx (64 bytes) - R/clr */
+	E1000_PTC127   = 0x040DC, /* Packets Tx (65-127 bytes) - R/clr */
+	E1000_PTC255   = 0x040E0, /* Packets Tx (128-255 bytes) - R/clr */
+	E1000_PTC511   = 0x040E4, /* Packets Tx (256-511 bytes) - R/clr */
+	E1000_PTC1023  = 0x040E8, /* Packets Tx (512-1023 bytes) - R/clr */
+	E1000_PTC1522  = 0x040EC, /* Packets Tx (1024-1522 Bytes) - R/clr */
+	E1000_MPTC     = 0x040F0, /* Multicast Packets Tx Count - R/clr */
+	E1000_BPTC     = 0x040F4, /* Broadcast Packets Tx Count - R/clr */
+	E1000_TSCTC    = 0x040F8, /* TCP Segmentation Context Tx - R/clr */
+	E1000_TSCTFC   = 0x040FC, /* TCP Segmentation Context Tx Fail - R/clr */
 	E1000_IAC      = 0x04100, /* Interrupt Assertion Count */
 	E1000_ICRXPTC  = 0x04104, /* Irq Cause Rx Packet Timer Expire Count */
 	E1000_ICRXATC  = 0x04108, /* Irq Cause Rx Abs Timer Expire Count */
@@ -183,8 +190,8 @@ enum e1e_registers {
 	E1000_ICTXQMTC = 0x0411C, /* Irq Cause Tx Queue MinThreshold Count */
 	E1000_ICRXDMTC = 0x04120, /* Irq Cause Rx Desc MinThreshold Count */
 	E1000_ICRXOC   = 0x04124, /* Irq Cause Receiver Overrun Count */
-	E1000_RXCSUM   = 0x05000, /* RX Checksum Control - RW */
-	E1000_RFCTL    = 0x05008, /* Receive Filter Control*/
+	E1000_RXCSUM   = 0x05000, /* Rx Checksum Control - RW */
+	E1000_RFCTL    = 0x05008, /* Receive Filter Control */
 	E1000_MTA      = 0x05200, /* Multicast Table Array - RW Array */
 	E1000_RA       = 0x05400, /* Receive Address - RW Array */
 	E1000_VFTA     = 0x05600, /* VLAN Filter Table Array - RW Array */
@@ -199,10 +206,11 @@ enum e1e_registers {
 	E1000_MANC2H    = 0x05860, /* Management Control To Host - RW */
 	E1000_SW_FW_SYNC = 0x05B5C, /* Software-Firmware Synchronization - RW */
 	E1000_GCR	= 0x05B00, /* PCI-Ex Control */
+	E1000_GCR2      = 0x05B64, /* PCI-Ex Control #2 */
 	E1000_FACTPS    = 0x05B30, /* Function Active and Power State to MNG */
 	E1000_SWSM      = 0x05B50, /* SW Semaphore */
 	E1000_FWSM      = 0x05B54, /* FW Semaphore */
-	E1000_HICR      = 0x08F00, /* Host Inteface Control */
+	E1000_HICR      = 0x08F00, /* Host Interface Control */
 };
 
 /* RSS registers */
@@ -214,6 +222,21 @@ enum e1e_registers {
 #define IGP01E1000_PHY_LINK_HEALTH	0x13 /* PHY Link Health */
 #define IGP02E1000_PHY_POWER_MGMT	0x19 /* Power Management */
 #define IGP01E1000_PHY_PAGE_SELECT	0x1F /* Page Select */
+#define BM_PHY_PAGE_SELECT		22   /* Page Select for BM */
+#define IGP_PAGE_SHIFT			5
+#define PHY_REG_MASK			0x1F
+
+#define BM_WUC_PAGE			800
+#define BM_WUC_ADDRESS_OPCODE		0x11
+#define BM_WUC_DATA_OPCODE		0x12
+#define BM_WUC_ENABLE_PAGE		769
+#define BM_WUC_ENABLE_REG		17
+#define BM_WUC_ENABLE_BIT		(1 << 2)
+#define BM_WUC_HOST_WU_BIT		(1 << 4)
+
+#define BM_WUC	PHY_REG(BM_WUC_PAGE, 1)
+#define BM_WUFC PHY_REG(BM_WUC_PAGE, 2)
+#define BM_WUS	PHY_REG(BM_WUC_PAGE, 3)
 
 #define IGP01E1000_PHY_PCS_INIT_REG	0x00B4
 #define IGP01E1000_PHY_POLARITY_MASK	0x0078
@@ -250,8 +273,8 @@ enum e1e_registers {
 #define E1000_VFTA_ENTRY_BIT_SHIFT_MASK	0x1F
 
 #define E1000_HICR_EN			0x01  /* Enable bit - RO */
-#define E1000_HICR_C			0x02  /* Driver sets this bit when done
-					       * to put command in RAM */
+/* Driver sets this bit when done to put command in RAM */
+#define E1000_HICR_C			0x02
 #define E1000_HICR_FW_RESET_ENABLE	0x40
 #define E1000_HICR_FW_RESET		0x80
 
@@ -303,8 +326,11 @@ enum e1e_registers {
 #define E1000_DEV_ID_82571EB_FIBER		0x105F
 #define E1000_DEV_ID_82571EB_SERDES		0x1060
 #define E1000_DEV_ID_82571EB_QUAD_COPPER	0x10A4
+#define E1000_DEV_ID_82571PT_QUAD_COPPER	0x10D5
 #define E1000_DEV_ID_82571EB_QUAD_FIBER		0x10A5
 #define E1000_DEV_ID_82571EB_QUAD_COPPER_LP	0x10BC
+#define E1000_DEV_ID_82571EB_SERDES_DUAL	0x10D9
+#define E1000_DEV_ID_82571EB_SERDES_QUAD	0x10DA
 #define E1000_DEV_ID_82572EI_COPPER		0x107D
 #define E1000_DEV_ID_82572EI_FIBER		0x107E
 #define E1000_DEV_ID_82572EI_SERDES		0x107F
@@ -312,6 +338,7 @@ enum e1e_registers {
 #define E1000_DEV_ID_82573E			0x108B
 #define E1000_DEV_ID_82573E_IAMT		0x108C
 #define E1000_DEV_ID_82573L			0x109A
+#define E1000_DEV_ID_82574L			0x10D3
 
 #define E1000_DEV_ID_80003ES2LAN_COPPER_DPT	0x1096
 #define E1000_DEV_ID_80003ES2LAN_SERDES_DPT	0x1098
@@ -326,10 +353,21 @@ enum e1e_registers {
 #define E1000_DEV_ID_ICH8_IFE_G			0x10C5
 #define E1000_DEV_ID_ICH8_IGP_M			0x104D
 #define E1000_DEV_ID_ICH9_IGP_AMT		0x10BD
+#define E1000_DEV_ID_ICH9_BM			0x10E5
+#define E1000_DEV_ID_ICH9_IGP_M_AMT		0x10F5
+#define E1000_DEV_ID_ICH9_IGP_M			0x10BF
+#define E1000_DEV_ID_ICH9_IGP_M_V		0x10CB
 #define E1000_DEV_ID_ICH9_IGP_C			0x294C
 #define E1000_DEV_ID_ICH9_IFE			0x10C0
 #define E1000_DEV_ID_ICH9_IFE_GT		0x10C3
 #define E1000_DEV_ID_ICH9_IFE_G			0x10C2
+#define E1000_DEV_ID_ICH10_R_BM_LM		0x10CC
+#define E1000_DEV_ID_ICH10_R_BM_LF		0x10CD
+#define E1000_DEV_ID_ICH10_R_BM_V		0x10CE
+#define E1000_DEV_ID_ICH10_D_BM_LM		0x10DE
+#define E1000_DEV_ID_ICH10_D_BM_LF		0x10DF
+
+#define E1000_REVISION_4 4
 
 #define E1000_FUNC_1 1
 
@@ -337,9 +375,11 @@ enum e1000_mac_type {
 	e1000_82571,
 	e1000_82572,
 	e1000_82573,
+	e1000_82574,
 	e1000_80003es2lan,
 	e1000_ich8lan,
 	e1000_ich9lan,
+	e1000_ich10lan,
 };
 
 enum e1000_media_type {
@@ -373,6 +413,7 @@ enum e1000_phy_type {
 	e1000_phy_gg82563,
 	e1000_phy_igp_3,
 	e1000_phy_ife,
+	e1000_phy_bm,
 };
 
 enum e1000_bus_width {
@@ -420,35 +461,35 @@ enum e1000_smart_speed {
 
 /* Receive Descriptor */
 struct e1000_rx_desc {
-	u64 buffer_addr; /* Address of the descriptor's data buffer */
-	u16 length;      /* Length of data DMAed into data buffer */
-	u16 csum;	/* Packet checksum */
+	__le64 buffer_addr; /* Address of the descriptor's data buffer */
+	__le16 length;      /* Length of data DMAed into data buffer */
+	__le16 csum;	/* Packet checksum */
 	u8  status;      /* Descriptor status */
 	u8  errors;      /* Descriptor Errors */
-	u16 special;
+	__le16 special;
 };
 
 /* Receive Descriptor - Extended */
 union e1000_rx_desc_extended {
 	struct {
-		u64 buffer_addr;
-		u64 reserved;
+		__le64 buffer_addr;
+		__le64 reserved;
 	} read;
 	struct {
 		struct {
-			u32 mrq;	      /* Multiple Rx Queues */
+			__le32 mrq;	      /* Multiple Rx Queues */
 			union {
-				u32 rss;	    /* RSS Hash */
+				__le32 rss;	    /* RSS Hash */
 				struct {
-					u16 ip_id;  /* IP id */
-					u16 csum;   /* Packet Checksum */
+					__le16 ip_id;  /* IP id */
+					__le16 csum;   /* Packet Checksum */
 				} csum_ip;
 			} hi_dword;
 		} lower;
 		struct {
-			u32 status_error;     /* ext status/error */
-			u16 length;
-			u16 vlan;	     /* VLAN tag */
+			__le32 status_error;     /* ext status/error */
+			__le16 length;
+			__le16 vlan;	     /* VLAN tag */
 		} upper;
 	} wb;  /* writeback */
 };
@@ -458,49 +499,49 @@ union e1000_rx_desc_extended {
 union e1000_rx_desc_packet_split {
 	struct {
 		/* one buffer for protocol header(s), three data buffers */
-		u64 buffer_addr[MAX_PS_BUFFERS];
+		__le64 buffer_addr[MAX_PS_BUFFERS];
 	} read;
 	struct {
 		struct {
-			u32 mrq;	      /* Multiple Rx Queues */
+			__le32 mrq;	      /* Multiple Rx Queues */
 			union {
-				u32 rss;	      /* RSS Hash */
+				__le32 rss;	      /* RSS Hash */
 				struct {
-					u16 ip_id;    /* IP id */
-					u16 csum;     /* Packet Checksum */
+					__le16 ip_id;    /* IP id */
+					__le16 csum;     /* Packet Checksum */
 				} csum_ip;
 			} hi_dword;
 		} lower;
 		struct {
-			u32 status_error;     /* ext status/error */
-			u16 length0;	  /* length of buffer 0 */
-			u16 vlan;	     /* VLAN tag */
+			__le32 status_error;     /* ext status/error */
+			__le16 length0;	  /* length of buffer 0 */
+			__le16 vlan;	     /* VLAN tag */
 		} middle;
 		struct {
-			u16 header_status;
-			u16 length[3];	/* length of buffers 1-3 */
+			__le16 header_status;
+			__le16 length[3];	/* length of buffers 1-3 */
 		} upper;
-		u64 reserved;
+		__le64 reserved;
 	} wb; /* writeback */
 };
 
 /* Transmit Descriptor */
 struct e1000_tx_desc {
-	u64 buffer_addr;      /* Address of the descriptor's data buffer */
+	__le64 buffer_addr;      /* Address of the descriptor's data buffer */
 	union {
-		u32 data;
+		__le32 data;
 		struct {
-			u16 length;    /* Data buffer length */
+			__le16 length;    /* Data buffer length */
 			u8 cso;	/* Checksum offset */
 			u8 cmd;	/* Descriptor control */
 		} flags;
 	} lower;
 	union {
-		u32 data;
+		__le32 data;
 		struct {
 			u8 status;     /* Descriptor status */
 			u8 css;	/* Checksum start */
-			u16 special;
+			__le16 special;
 		} fields;
 	} upper;
 };
@@ -508,49 +549,49 @@ struct e1000_tx_desc {
 /* Offload Context Descriptor */
 struct e1000_context_desc {
 	union {
-		u32 ip_config;
+		__le32 ip_config;
 		struct {
 			u8 ipcss;      /* IP checksum start */
 			u8 ipcso;      /* IP checksum offset */
-			u16 ipcse;     /* IP checksum end */
+			__le16 ipcse;     /* IP checksum end */
 		} ip_fields;
 	} lower_setup;
 	union {
-		u32 tcp_config;
+		__le32 tcp_config;
 		struct {
 			u8 tucss;      /* TCP checksum start */
 			u8 tucso;      /* TCP checksum offset */
-			u16 tucse;     /* TCP checksum end */
+			__le16 tucse;     /* TCP checksum end */
 		} tcp_fields;
 	} upper_setup;
-	u32 cmd_and_length;
+	__le32 cmd_and_length;
 	union {
-		u32 data;
+		__le32 data;
 		struct {
 			u8 status;     /* Descriptor status */
 			u8 hdr_len;    /* Header length */
-			u16 mss;       /* Maximum segment size */
+			__le16 mss;       /* Maximum segment size */
 		} fields;
 	} tcp_seg_setup;
 };
 
 /* Offload data descriptor */
 struct e1000_data_desc {
-	u64 buffer_addr;   /* Address of the descriptor's buffer address */
+	__le64 buffer_addr;   /* Address of the descriptor's buffer address */
 	union {
-		u32 data;
+		__le32 data;
 		struct {
-			u16 length;    /* Data buffer length */
+			__le16 length;    /* Data buffer length */
 			u8 typ_len_ext;
 			u8 cmd;
 		} flags;
 	} lower;
 	union {
-		u32 data;
+		__le32 data;
 		struct {
 			u8 status;     /* Descriptor status */
 			u8 popts;      /* Packet Options */
-			u16 special;   /* */
+			__le16 special;   /* */
 		} fields;
 	} upper;
 };
@@ -587,10 +628,8 @@ struct e1000_hw_stats {
 	u64 bprc;
 	u64 mprc;
 	u64 gptc;
-	u64 gorcl;
-	u64 gorch;
-	u64 gotcl;
-	u64 gotch;
+	u64 gorc;
+	u64 gotc;
 	u64 rnbc;
 	u64 ruc;
 	u64 rfc;
@@ -599,10 +638,8 @@ struct e1000_hw_stats {
 	u64 mgprc;
 	u64 mgpdc;
 	u64 mgptc;
-	u64 torl;
-	u64 torh;
-	u64 totl;
-	u64 toth;
+	u64 tor;
+	u64 tot;
 	u64 tpr;
 	u64 tpt;
 	u64 ptc64;
@@ -673,8 +710,7 @@ struct e1000_host_mng_command_info {
 
 /* Function pointers and static data for the MAC. */
 struct e1000_mac_operations {
-	u32			mng_mode_enab;
-
+	bool (*check_mng_mode)(struct e1000_hw *);
 	s32  (*check_for_link)(struct e1000_hw *);
 	s32  (*cleanup_led)(struct e1000_hw *);
 	void (*clear_hw_cntrs)(struct e1000_hw *);
@@ -682,8 +718,7 @@ struct e1000_mac_operations {
 	s32  (*get_link_up_info)(struct e1000_hw *, u16 *, u16 *);
 	s32  (*led_on)(struct e1000_hw *);
 	s32  (*led_off)(struct e1000_hw *);
-	void (*mc_addr_list_update)(struct e1000_hw *, u8 *, u32, u32,
-					 u32);
+	void (*update_mc_addr_list)(struct e1000_hw *, u8 *, u32, u32, u32);
 	s32  (*reset_hw)(struct e1000_hw *);
 	s32  (*init_hw)(struct e1000_hw *);
 	s32  (*setup_link)(struct e1000_hw *);
@@ -705,6 +740,7 @@ struct e1000_phy_operations {
 	s32  (*set_d0_lplu_state)(struct e1000_hw *, bool);
 	s32  (*set_d3_lplu_state)(struct e1000_hw *, bool);
 	s32  (*write_phy_reg)(struct e1000_hw *, u32, u16);
+	s32  (*cfg_on_link_up)(struct e1000_hw *);
 };
 
 /* Function pointers for the NVM. */
@@ -725,16 +761,12 @@ struct e1000_mac_info {
 	u8 perm_addr[6];
 
 	enum e1000_mac_type type;
-	enum e1000_fc_mode  fc;
-	enum e1000_fc_mode  original_fc;
 
 	u32 collision_delta;
 	u32 ledctl_default;
 	u32 ledctl_mode1;
 	u32 ledctl_mode2;
-	u32 max_frame_size;
 	u32 mc_filter_type;
-	u32 min_frame_size;
 	u32 tx_packet_delta;
 	u32 txcw;
 
@@ -745,9 +777,6 @@ struct e1000_mac_info {
 	u16 ifs_step_size;
 	u16 mta_reg_count;
 	u16 rar_entry_count;
-	u16 fc_high_water;
-	u16 fc_low_water;
-	u16 fc_pause_time;
 
 	u8  forced_speed_duplex;
 
@@ -777,6 +806,8 @@ struct e1000_phy_info {
 	u32 reset_delay_us; /* in usec */
 	u32 revision;
 
+	enum e1000_media_type media_type;
+
 	u16 autoneg_advertised;
 	u16 autoneg_mask;
 	u16 cable_length;
@@ -789,7 +820,7 @@ struct e1000_phy_info {
 	bool is_mdix;
 	bool polarity_correction;
 	bool speed_downgraded;
-	bool wait_for_link;
+	bool autoneg_wait_to_complete;
 };
 
 struct e1000_nvm_info {
@@ -814,8 +845,19 @@ struct e1000_bus_info {
 	u16 func;
 };
 
+struct e1000_fc_info {
+	u32 high_water;          /* Flow control high-water mark */
+	u32 low_water;           /* Flow control low-water mark */
+	u16 pause_time;          /* Flow control pause timer */
+	bool send_xon;           /* Flow control send XON */
+	bool strict_ieee;        /* Strict IEEE mode */
+	enum e1000_fc_mode current_mode; /* FC mode in effect */
+	enum e1000_fc_mode requested_mode; /* FC mode requested by caller */
+};
+
 struct e1000_dev_spec_82571 {
 	bool laa_is_present;
+	bool alt_mac_addr_is_present;
 };
 
 struct e1000_shadow_ram {
@@ -837,6 +879,7 @@ struct e1000_hw {
 	u8 __iomem *flash_address;
 
 	struct e1000_mac_info  mac;
+	struct e1000_fc_info   fc;
 	struct e1000_phy_info  phy;
 	struct e1000_nvm_info  nvm;
 	struct e1000_bus_info  bus;
@@ -846,8 +889,6 @@ struct e1000_hw {
 		struct e1000_dev_spec_82571	e82571;
 		struct e1000_dev_spec_ich8lan	ich8lan;
 	} dev_spec;
-
-	enum e1000_media_type media_type;
 };
 
 #ifdef DEBUG

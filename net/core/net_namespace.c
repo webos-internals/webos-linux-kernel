@@ -5,7 +5,9 @@
 #include <linux/list.h>
 #include <linux/delay.h>
 #include <linux/sched.h>
+#include <linux/idr.h>
 #include <net/net_namespace.h>
+#include <net/netns/generic.h>
 
 /*
  *	Our network namespace constructor/destructor lists
@@ -16,9 +18,12 @@ static struct list_head *first_device = &pernet_list;
 static DEFINE_MUTEX(net_mutex);
 
 LIST_HEAD(net_namespace_list);
+EXPORT_SYMBOL_GPL(net_namespace_list);
 
 struct net init_net;
 EXPORT_SYMBOL(init_net);
+
+#define INITIAL_NET_GEN_PTRS	13 /* +1 for len +2 for rcu_head */
 
 /*
  * setup_net runs the initializers for the network namespace object.
@@ -27,12 +32,14 @@ static __net_init int setup_net(struct net *net)
 {
 	/* Must be called with net_mutex held */
 	struct pernet_operations *ops;
-	int error;
+	int error = 0;
 
 	atomic_set(&net->count, 1);
-	atomic_set(&net->use_count, 0);
 
-	error = 0;
+#ifdef NETNS_REFCNT_DEBUG
+	atomic_set(&net->use_count, 0);
+#endif
+
 	list_for_each_entry(ops, &pernet_list, list) {
 		if (ops->init) {
 			error = ops->init(net);
@@ -56,25 +63,55 @@ out_undo:
 	goto out;
 }
 
+static struct net_generic *net_alloc_generic(void)
+{
+	struct net_generic *ng;
+	size_t generic_size = sizeof(struct net_generic) +
+		INITIAL_NET_GEN_PTRS * sizeof(void *);
+
+	ng = kzalloc(generic_size, GFP_KERNEL);
+	if (ng)
+		ng->len = INITIAL_NET_GEN_PTRS;
+
+	return ng;
+}
+
 #ifdef CONFIG_NET_NS
 static struct kmem_cache *net_cachep;
+static struct workqueue_struct *netns_wq;
 
 static struct net *net_alloc(void)
 {
-	return kmem_cache_zalloc(net_cachep, GFP_KERNEL);
+	struct net *net = NULL;
+	struct net_generic *ng;
+
+	ng = net_alloc_generic();
+	if (!ng)
+		goto out;
+
+	net = kmem_cache_zalloc(net_cachep, GFP_KERNEL);
+	if (!net)
+		goto out_free;
+
+	rcu_assign_pointer(net->gen, ng);
+out:
+	return net;
+
+out_free:
+	kfree(ng);
+	goto out;
 }
 
 static void net_free(struct net *net)
 {
-	if (!net)
-		return;
-
+#ifdef NETNS_REFCNT_DEBUG
 	if (unlikely(atomic_read(&net->use_count) != 0)) {
 		printk(KERN_EMERG "network namespace not free! Usage: %d\n",
 			atomic_read(&net->use_count));
 		return;
 	}
-
+#endif
+	kfree(net->gen);
 	kmem_cache_free(net_cachep, net);
 }
 
@@ -91,27 +128,28 @@ struct net *copy_net_ns(unsigned long flags, struct net *old_net)
 	err = -ENOMEM;
 	new_net = net_alloc();
 	if (!new_net)
-		goto out;
+		goto out_err;
 
 	mutex_lock(&net_mutex);
 	err = setup_net(new_net);
-	if (err)
-		goto out_unlock;
-
-	rtnl_lock();
-	list_add_tail(&new_net->list, &net_namespace_list);
-	rtnl_unlock();
-
-
-out_unlock:
+	if (!err) {
+		rtnl_lock();
+		list_add_tail(&new_net->list, &net_namespace_list);
+		rtnl_unlock();
+	}
 	mutex_unlock(&net_mutex);
+
+	if (err)
+		goto out_free;
 out:
 	put_net(old_net);
-	if (err) {
-		net_free(new_net);
-		new_net = ERR_PTR(err);
-	}
 	return new_net;
+
+out_free:
+	net_free(new_net);
+out_err:
+	new_net = ERR_PTR(err);
+	goto out;
 }
 
 static void cleanup_net(struct work_struct *work)
@@ -149,7 +187,7 @@ void __put_net(struct net *net)
 {
 	/* Cleanup the network namespace in process context */
 	INIT_WORK(&net->work, cleanup_net);
-	schedule_work(&net->work);
+	queue_work(netns_wq, &net->work);
 }
 EXPORT_SYMBOL_GPL(__put_net);
 
@@ -164,6 +202,7 @@ struct net *copy_net_ns(unsigned long flags, struct net *old_net)
 
 static int __init net_ns_init(void)
 {
+	struct net_generic *ng;
 	int err;
 
 	printk(KERN_INFO "net_namespace: %zd bytes\n", sizeof(struct net));
@@ -171,7 +210,19 @@ static int __init net_ns_init(void)
 	net_cachep = kmem_cache_create("net_namespace", sizeof(struct net),
 					SMP_CACHE_BYTES,
 					SLAB_PANIC, NULL);
+
+	/* Create workqueue for cleanup */
+	netns_wq = create_singlethread_workqueue("netns");
+	if (!netns_wq)
+		panic("Could not create netns workq");
 #endif
+
+	ng = net_alloc_generic();
+	if (!ng)
+		panic("Could not allocate generic netns");
+
+	rcu_assign_pointer(init_net.gen, ng);
+
 	mutex_lock(&net_mutex);
 	err = setup_net(&init_net);
 
@@ -246,6 +297,8 @@ static void unregister_pernet_operations(struct pernet_operations *ops)
 }
 #endif
 
+static DEFINE_IDA(net_generic_ids);
+
 /**
  *      register_pernet_subsys - register a network namespace subsystem
  *	@ops:  pernet operations structure for the subsystem
@@ -280,7 +333,7 @@ EXPORT_SYMBOL_GPL(register_pernet_subsys);
  *	@ops: pernet operations structure to manipulate
  *
  *	Remove the pernet operations structure from the list to be
- *	used when network namespaces are created or destoryed.  In
+ *	used when network namespaces are created or destroyed.  In
  *	addition run the exit method for all existing network
  *	namespaces.
  */
@@ -291,6 +344,38 @@ void unregister_pernet_subsys(struct pernet_operations *module)
 	mutex_unlock(&net_mutex);
 }
 EXPORT_SYMBOL_GPL(unregister_pernet_subsys);
+
+int register_pernet_gen_subsys(int *id, struct pernet_operations *ops)
+{
+	int rv;
+
+	mutex_lock(&net_mutex);
+again:
+	rv = ida_get_new_above(&net_generic_ids, 1, id);
+	if (rv < 0) {
+		if (rv == -EAGAIN) {
+			ida_pre_get(&net_generic_ids, GFP_KERNEL);
+			goto again;
+		}
+		goto out;
+	}
+	rv = register_pernet_operations(first_device, ops);
+	if (rv < 0)
+		ida_remove(&net_generic_ids, *id);
+out:
+	mutex_unlock(&net_mutex);
+	return rv;
+}
+EXPORT_SYMBOL_GPL(register_pernet_gen_subsys);
+
+void unregister_pernet_gen_subsys(int id, struct pernet_operations *ops)
+{
+	mutex_lock(&net_mutex);
+	unregister_pernet_operations(ops);
+	ida_remove(&net_generic_ids, id);
+	mutex_unlock(&net_mutex);
+}
+EXPORT_SYMBOL_GPL(unregister_pernet_gen_subsys);
 
 /**
  *      register_pernet_device - register a network namespace device
@@ -323,12 +408,36 @@ int register_pernet_device(struct pernet_operations *ops)
 }
 EXPORT_SYMBOL_GPL(register_pernet_device);
 
+int register_pernet_gen_device(int *id, struct pernet_operations *ops)
+{
+	int error;
+	mutex_lock(&net_mutex);
+again:
+	error = ida_get_new_above(&net_generic_ids, 1, id);
+	if (error) {
+		if (error == -EAGAIN) {
+			ida_pre_get(&net_generic_ids, GFP_KERNEL);
+			goto again;
+		}
+		goto out;
+	}
+	error = register_pernet_operations(&pernet_list, ops);
+	if (error)
+		ida_remove(&net_generic_ids, *id);
+	else if (first_device == &pernet_list)
+		first_device = &ops->list;
+out:
+	mutex_unlock(&net_mutex);
+	return error;
+}
+EXPORT_SYMBOL_GPL(register_pernet_gen_device);
+
 /**
  *      unregister_pernet_device - unregister a network namespace netdevice
  *	@ops: pernet operations structure to manipulate
  *
  *	Remove the pernet operations structure from the list to be
- *	used when network namespaces are created or destoryed.  In
+ *	used when network namespaces are created or destroyed.  In
  *	addition run the exit method for all existing network
  *	namespaces.
  */
@@ -341,3 +450,60 @@ void unregister_pernet_device(struct pernet_operations *ops)
 	mutex_unlock(&net_mutex);
 }
 EXPORT_SYMBOL_GPL(unregister_pernet_device);
+
+void unregister_pernet_gen_device(int id, struct pernet_operations *ops)
+{
+	mutex_lock(&net_mutex);
+	if (&ops->list == first_device)
+		first_device = first_device->next;
+	unregister_pernet_operations(ops);
+	ida_remove(&net_generic_ids, id);
+	mutex_unlock(&net_mutex);
+}
+EXPORT_SYMBOL_GPL(unregister_pernet_gen_device);
+
+static void net_generic_release(struct rcu_head *rcu)
+{
+	struct net_generic *ng;
+
+	ng = container_of(rcu, struct net_generic, rcu);
+	kfree(ng);
+}
+
+int net_assign_generic(struct net *net, int id, void *data)
+{
+	struct net_generic *ng, *old_ng;
+
+	BUG_ON(!mutex_is_locked(&net_mutex));
+	BUG_ON(id == 0);
+
+	ng = old_ng = net->gen;
+	if (old_ng->len >= id)
+		goto assign;
+
+	ng = kzalloc(sizeof(struct net_generic) +
+			id * sizeof(void *), GFP_KERNEL);
+	if (ng == NULL)
+		return -ENOMEM;
+
+	/*
+	 * Some synchronisation notes:
+	 *
+	 * The net_generic explores the net->gen array inside rcu
+	 * read section. Besides once set the net->gen->ptr[x]
+	 * pointer never changes (see rules in netns/generic.h).
+	 *
+	 * That said, we simply duplicate this array and schedule
+	 * the old copy for kfree after a grace period.
+	 */
+
+	ng->len = id;
+	memcpy(&ng->ptr, &old_ng->ptr, old_ng->len);
+
+	rcu_assign_pointer(net->gen, ng);
+	call_rcu(&old_ng->rcu, net_generic_release);
+assign:
+	ng->ptr[id - 1] = data;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(net_assign_generic);

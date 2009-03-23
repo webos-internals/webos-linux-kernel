@@ -96,7 +96,7 @@ static int smp_execute_task(struct domain_device *dev, void *req, int req_size,
 		}
 
 		wait_for_completion(&task->completion);
-		res = -ETASK;
+		res = -ECOMM;
 		if ((task->task_state_flags & SAS_TASK_STATE_ABORTED)) {
 			SAS_DPRINTK("smp task timed out or aborted\n");
 			i->dft->lldd_abort_task(task);
@@ -109,9 +109,19 @@ static int smp_execute_task(struct domain_device *dev, void *req, int req_size,
 		    task->task_status.stat == SAM_GOOD) {
 			res = 0;
 			break;
+		} if (task->task_status.resp == SAS_TASK_COMPLETE &&
+		      task->task_status.stat == SAS_DATA_UNDERRUN) {
+			/* no error, but return the number of bytes of
+			 * underrun */
+			res = task->task_status.residual;
+			break;
+		} if (task->task_status.resp == SAS_TASK_COMPLETE &&
+		      task->task_status.stat == SAS_DATA_OVERRUN) {
+			res = -EMSGSIZE;
+			break;
 		} else {
 			SAS_DPRINTK("%s: task to dev %016llx response: 0x%x "
-				    "status 0x%x\n", __FUNCTION__,
+				    "status 0x%x\n", __func__,
 				    SAS_ADDR(dev->sas_addr),
 				    task->task_status.resp,
 				    task->task_status.stat);
@@ -656,9 +666,9 @@ static struct domain_device *sas_ex_discover_end_dev(
 	sas_ex_get_linkrate(parent, child, phy);
 
 #ifdef CONFIG_SCSI_SAS_ATA
-	if ((phy->attached_tproto & SAS_PROTO_STP) || phy->attached_sata_dev) {
+	if ((phy->attached_tproto & SAS_PROTOCOL_STP) || phy->attached_sata_dev) {
 		child->dev_type = SATA_DEV;
-		if (phy->attached_tproto & SAS_PROTO_STP)
+		if (phy->attached_tproto & SAS_PROTOCOL_STP)
 			child->tproto = phy->attached_tproto;
 		if (phy->attached_sata_dev)
 			child->tproto |= SATA_DEV;
@@ -695,7 +705,7 @@ static struct domain_device *sas_ex_discover_end_dev(
 		}
 	} else
 #endif
-	  if (phy->attached_tproto & SAS_PROTO_SSP) {
+	  if (phy->attached_tproto & SAS_PROTOCOL_SSP) {
 		child->dev_type = SAS_END_DEV;
 		rphy = sas_end_device_alloc(phy->port);
 		/* FIXME: error handling */
@@ -1269,7 +1279,7 @@ static int sas_configure_present(struct domain_device *dev, int phy_id,
 			goto out;
 		} else if (res != SMP_RESP_FUNC_ACC) {
 			SAS_DPRINTK("%s: dev %016llx phy 0x%x index 0x%x "
-				    "result 0x%x\n", __FUNCTION__,
+				    "result 0x%x\n", __func__,
 				    SAS_ADDR(dev->sas_addr), phy_id, i, res);
 			goto out;
 		}
@@ -1891,41 +1901,48 @@ int sas_smp_handler(struct Scsi_Host *shost, struct sas_rphy *rphy,
 
 	if (!rsp) {
 		printk("%s: space for a smp response is missing\n",
-		       __FUNCTION__);
+		       __func__);
 		return -EINVAL;
 	}
 
 	/* no rphy means no smp target support (ie aic94xx host) */
-	if (!rphy) {
-		printk("%s: can we send a smp request to a host?\n",
-		       __FUNCTION__);
-		return -EINVAL;
-	}
+	if (!rphy)
+		return sas_smp_host_handler(shost, req, rsp);
+
 	type = rphy->identify.device_type;
 
 	if (type != SAS_EDGE_EXPANDER_DEVICE &&
 	    type != SAS_FANOUT_EXPANDER_DEVICE) {
 		printk("%s: can we send a smp request to a device?\n",
-		       __FUNCTION__);
+		       __func__);
 		return -EINVAL;
 	}
 
 	dev = sas_find_dev_by_rphy(rphy);
 	if (!dev) {
-		printk("%s: fail to find a domain_device?\n", __FUNCTION__);
+		printk("%s: fail to find a domain_device?\n", __func__);
 		return -EINVAL;
 	}
 
 	/* do we need to support multiple segments? */
 	if (req->bio->bi_vcnt > 1 || rsp->bio->bi_vcnt > 1) {
 		printk("%s: multiple segments req %u %u, rsp %u %u\n",
-		       __FUNCTION__, req->bio->bi_vcnt, req->data_len,
+		       __func__, req->bio->bi_vcnt, req->data_len,
 		       rsp->bio->bi_vcnt, rsp->data_len);
 		return -EINVAL;
 	}
 
 	ret = smp_execute_task(dev, bio_data(req->bio), req->data_len,
 			       bio_data(rsp->bio), rsp->data_len);
+	if (ret > 0) {
+		/* positive number is the untransferred residual */
+		rsp->data_len = ret;
+		req->data_len = 0;
+		ret = 0;
+	} else if (ret == 0) {
+		rsp->data_len = 0;
+		req->data_len = 0;
+	}
 
 	return ret;
 }

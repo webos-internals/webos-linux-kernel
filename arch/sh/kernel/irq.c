@@ -15,7 +15,7 @@
 #include <asm/machvec.h>
 #include <asm/uaccess.h>
 #include <asm/thread_info.h>
-#include <asm/cpu/mmu_context.h>
+#include <cpu/mmu_context.h>
 
 atomic_t irq_err_count;
 
@@ -200,8 +200,6 @@ void irq_ctx_exit(int cpu)
 	hardirq_ctx[cpu] = NULL;
 }
 
-extern asmlinkage void __do_softirq(void);
-
 asmlinkage void do_softirq(void)
 {
 	unsigned long flags;
@@ -248,9 +246,6 @@ asmlinkage void do_softirq(void)
 
 void __init init_IRQ(void)
 {
-#ifdef CONFIG_CPU_HAS_PINT_IRQ
-	init_IRQ_pint();
-#endif
 	plat_irq_setup();
 
 	/* Perform the machine specific initialisation */

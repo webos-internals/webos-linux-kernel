@@ -3,8 +3,6 @@
  *
  *  This source is covered by the GNU GPL, the same as all kernel sources.
  *
- *  Version:	$Id: inetpeer.c,v 1.7 2001/09/20 21:22:50 davem Exp $
- *
  *  Authors:	Andrey V. Savochkin <saw@msu.ru>
  */
 
@@ -146,7 +144,7 @@ static void unlink_from_unused(struct inet_peer *p)
  * _stack is known to be NULL or not at compile time,
  * so compiler will optimize the if (_stack) tests.
  */
-#define lookup(_daddr,_stack) 					\
+#define lookup(_daddr, _stack) 					\
 ({								\
 	struct inet_peer *u, **v;				\
 	if (_stack != NULL) {					\

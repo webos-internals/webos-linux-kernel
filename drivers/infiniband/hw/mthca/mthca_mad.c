@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: mthca_mad.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/string.h>
@@ -125,7 +123,7 @@ static void smp_snoop(struct ib_device *ibdev,
 			event.device           = ibdev;
 			event.element.port_num = port_num;
 
-			if(pinfo->clientrereg_resv_subnetto & 0x80)
+			if (pinfo->clientrereg_resv_subnetto & 0x80)
 				event.event    = IB_EVENT_CLIENT_REREGISTER;
 			else
 				event.event    = IB_EVENT_LID_CHANGE;

@@ -21,18 +21,12 @@
 #include <linux/types.h>
 
 /*
- * Some types are conditional depending on the target system.
  * XFS_BIG_BLKNOS needs block layer disk addresses to be 64 bits.
- * XFS_BIG_INUMS needs the VFS inode number to be 64 bits, as well
- * as requiring XFS_BIG_BLKNOS to be set.
+ * XFS_BIG_INUMS requires XFS_BIG_BLKNOS to be set.
  */
 #if defined(CONFIG_LBD) || (BITS_PER_LONG == 64)
 # define XFS_BIG_BLKNOS	1
-# if BITS_PER_LONG == 64
-#  define XFS_BIG_INUMS	1
-# else
-#  define XFS_BIG_INUMS	0
-# endif
+# define XFS_BIG_INUMS	1
 #else
 # define XFS_BIG_BLKNOS	0
 # define XFS_BIG_INUMS	0
@@ -43,16 +37,15 @@
 
 #include <kmem.h>
 #include <mrlock.h>
-#include <spin.h>
 #include <sv.h>
 #include <mutex.h>
-#include <sema.h>
 #include <time.h>
 
 #include <support/ktrace.h>
 #include <support/debug.h>
 #include <support/uuid.h>
 
+#include <linux/semaphore.h>
 #include <linux/mm.h>
 #include <linux/kernel.h>
 #include <linux/blkdev.h>
@@ -75,6 +68,10 @@
 #include <linux/notifier.h>
 #include <linux/delay.h>
 #include <linux/log2.h>
+#include <linux/spinlock.h>
+#include <linux/random.h>
+#include <linux/ctype.h>
+#include <linux/writeback.h>
 
 #include <asm/page.h>
 #include <asm/div64.h>
@@ -83,7 +80,6 @@
 #include <asm/byteorder.h>
 #include <asm/unaligned.h>
 
-#include <xfs_vfs.h>
 #include <xfs_cred.h>
 #include <xfs_vnode.h>
 #include <xfs_stats.h>
@@ -99,15 +95,12 @@
 /*
  * Feature macros (disable/enable)
  */
-#undef  HAVE_REFCACHE	/* reference cache not needed for NFS in 2.6 */
-#define HAVE_SPLICE	/* a splice(2) exists in 2.6, but not in 2.4 */
 #ifdef CONFIG_SMP
 #define HAVE_PERCPU_SB	/* per cpu superblock counters are a 2.6 feature */
 #else
 #undef  HAVE_PERCPU_SB	/* per cpu superblock counters are a 2.6 feature */
 #endif
 
-#define restricted_chown	xfs_params.restrict_chown.val
 #define irix_sgid_inherit	xfs_params.sgid_inherit.val
 #define irix_symlink_mode	xfs_params.symlink_mode.val
 #define xfs_panic_mask		xfs_params.panic_mask.val
@@ -126,8 +119,6 @@
 
 #define current_cpu()		(raw_smp_processor_id())
 #define current_pid()		(current->pid)
-#define current_fsuid(cred)	(current->fsuid)
-#define current_fsgid(cred)	(current->fsgid)
 #define current_test_flags(f)	(current->flags & (f))
 #define current_set_flags_nested(sp, f)		\
 		(*(sp) = current->flags, current->flags |= (f))
@@ -136,42 +127,18 @@
 #define current_restore_flags_nested(sp, f)	\
 		(current->flags = ((current->flags & ~(f)) | (*(sp) & (f))))
 
-#define NBPP		PAGE_SIZE
-#define NDPP		(1 << (PAGE_SHIFT - 9))
+#define spinlock_destroy(lock)
 
 #define NBBY		8		/* number of bits per byte */
-#define	NBPC		PAGE_SIZE	/* Number of bytes per click */
-#define	BPCSHIFT	PAGE_SHIFT	/* LOG2(NBPC) if exact */
 
 /*
  * Size of block device i/o is parameterized here.
  * Currently the system supports page-sized i/o.
  */
-#define	BLKDEV_IOSHIFT		BPCSHIFT
+#define	BLKDEV_IOSHIFT		PAGE_CACHE_SHIFT
 #define	BLKDEV_IOSIZE		(1<<BLKDEV_IOSHIFT)
 /* number of BB's per block device block */
 #define	BLKDEV_BB		BTOBB(BLKDEV_IOSIZE)
-
-/* bytes to clicks */
-#define	btoc(x)		(((__psunsigned_t)(x)+(NBPC-1))>>BPCSHIFT)
-#define	btoct(x)	((__psunsigned_t)(x)>>BPCSHIFT)
-#define	btoc64(x)	(((__uint64_t)(x)+(NBPC-1))>>BPCSHIFT)
-#define	btoct64(x)	((__uint64_t)(x)>>BPCSHIFT)
-
-/* off_t bytes to clicks */
-#define offtoc(x)       (((__uint64_t)(x)+(NBPC-1))>>BPCSHIFT)
-#define offtoct(x)      ((xfs_off_t)(x)>>BPCSHIFT)
-
-/* clicks to off_t bytes */
-#define	ctooff(x)	((xfs_off_t)(x)<<BPCSHIFT)
-
-/* clicks to bytes */
-#define	ctob(x)		((__psunsigned_t)(x)<<BPCSHIFT)
-#define btoct(x)        ((__psunsigned_t)(x)>>BPCSHIFT)
-#define	ctob64(x)	((__uint64_t)(x)<<BPCSHIFT)
-
-/* bytes to clicks */
-#define btoc(x)         (((__psunsigned_t)(x)+(NBPC-1))>>BPCSHIFT)
 
 #define ENOATTR		ENODATA		/* Attribute not found */
 #define EWRONGFS	EINVAL		/* Mount with wrong filesystem type */
@@ -204,11 +171,7 @@
 #define xfs_sort(a,n,s,fn)	sort(a,n,s,fn,NULL)
 #define xfs_stack_trace()	dump_stack()
 #define xfs_itruncate_data(ip, off)	\
-	(-vmtruncate(vn_to_inode(XFS_ITOV(ip)), (off)))
-#define xfs_statvfs_fsid(statp, mp)	\
-	({ u64 id = huge_encode_dev((mp)->m_ddev_targp->bt_dev); \
-	   __kernel_fsid_t *fsid = &(statp)->f_fsid;	\
-	(fsid->val[0] = (u32)id, fsid->val[1] = (u32)(id >> 32)); })
+	(-vmtruncate(VFS_I(ip), (off)))
 
 
 /* Move the kernel do_div definition off to one side */
@@ -327,5 +290,12 @@ static inline __uint64_t howmany_64(__uint64_t x, __uint32_t y)
 	do_div(x, y);
 	return x;
 }
+
+/* ARM old ABI has some weird alignment/padding */
+#if defined(__arm__) && !defined(__ARM_EABI__)
+#define __arch_pack __attribute__((packed))
+#else
+#define __arch_pack
+#endif
 
 #endif /* __XFS_LINUX__ */

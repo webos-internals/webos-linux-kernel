@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2006-2007 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2006-2008 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -24,9 +24,10 @@
 #include "lvb_table.h"
 #include "user.h"
 
-static const char *name_prefix="dlm";
-static struct miscdevice ctl_device;
+static const char name_prefix[] = "dlm";
 static const struct file_operations device_fops;
+static atomic_t dlm_monitor_opened;
+static int dlm_monitor_unused = 1;
 
 #ifdef CONFIG_COMPAT
 
@@ -82,7 +83,8 @@ struct dlm_lock_result32 {
 };
 
 static void compat_input(struct dlm_write_request *kb,
-			 struct dlm_write_request32 *kb32)
+			 struct dlm_write_request32 *kb32,
+			 size_t count)
 {
 	kb->version[0] = kb32->version[0];
 	kb->version[1] = kb32->version[1];
@@ -94,7 +96,8 @@ static void compat_input(struct dlm_write_request *kb,
 	    kb->cmd == DLM_USER_REMOVE_LOCKSPACE) {
 		kb->i.lspace.flags = kb32->i.lspace.flags;
 		kb->i.lspace.minor = kb32->i.lspace.minor;
-		strcpy(kb->i.lspace.name, kb32->i.lspace.name);
+		memcpy(kb->i.lspace.name, kb32->i.lspace.name, count -
+			offsetof(struct dlm_write_request32, i.lspace.name));
 	} else if (kb->cmd == DLM_USER_PURGE) {
 		kb->i.purge.nodeid = kb32->i.purge.nodeid;
 		kb->i.purge.pid = kb32->i.purge.pid;
@@ -112,7 +115,8 @@ static void compat_input(struct dlm_write_request *kb,
 		kb->i.lock.bastaddr = (void *)(long)kb32->i.lock.bastaddr;
 		kb->i.lock.lksb = (void *)(long)kb32->i.lock.lksb;
 		memcpy(kb->i.lock.lvb, kb32->i.lock.lvb, DLM_USER_LVB_LEN);
-		memcpy(kb->i.lock.name, kb32->i.lock.name, kb->i.lock.namelen);
+		memcpy(kb->i.lock.name, kb32->i.lock.name, count -
+			offsetof(struct dlm_write_request32, i.lock.name));
 	}
 }
 
@@ -171,7 +175,7 @@ static int lkb_is_endoflife(struct dlm_lkb *lkb, int sb_status, int type)
 /* we could possibly check if the cancel of an orphan has resulted in the lkb
    being removed and then remove that lkb from the orphans list and free it */
 
-void dlm_user_add_ast(struct dlm_lkb *lkb, int type)
+void dlm_user_add_ast(struct dlm_lkb *lkb, int type, int bastmode)
 {
 	struct dlm_ls *ls;
 	struct dlm_user_args *ua;
@@ -193,8 +197,8 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, int type)
 	if (lkb->lkb_flags & (DLM_IFL_ORPHAN | DLM_IFL_DEAD))
 		goto out;
 
-	DLM_ASSERT(lkb->lkb_astparam, dlm_print_lkb(lkb););
-	ua = (struct dlm_user_args *)lkb->lkb_astparam;
+	DLM_ASSERT(lkb->lkb_ua, dlm_print_lkb(lkb););
+	ua = lkb->lkb_ua;
 	proc = ua->proc;
 
 	if (type == AST_BAST && ua->bastaddr == NULL)
@@ -204,6 +208,8 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, int type)
 
 	ast_type = lkb->lkb_ast_type;
 	lkb->lkb_ast_type |= type;
+	if (bastmode)
+		lkb->lkb_bastmode = bastmode;
 
 	if (!ast_type) {
 		kref_get(&lkb->lkb_ref);
@@ -236,12 +242,12 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, int type)
 	spin_unlock(&proc->asts_spin);
 
 	if (eol) {
-		spin_lock(&ua->proc->locks_spin);
+		spin_lock(&proc->locks_spin);
 		if (!list_empty(&lkb->lkb_ownqueue)) {
 			list_del_init(&lkb->lkb_ownqueue);
 			dlm_put_lkb(lkb);
 		}
-		spin_unlock(&ua->proc->locks_spin);
+		spin_unlock(&proc->locks_spin);
 	}
  out:
 	mutex_unlock(&ls->ls_clear_proc_locks);
@@ -337,9 +343,14 @@ static int device_user_deadlock(struct dlm_user_proc *proc,
 	return error;
 }
 
-static int create_misc_device(struct dlm_ls *ls, char *name)
+static int dlm_device_register(struct dlm_ls *ls, char *name)
 {
 	int error, len;
+
+	/* The device is already registered.  This happens when the
+	   lockspace is created multiple times from userspace. */
+	if (ls->ls_device.name)
+		return 0;
 
 	error = -ENOMEM;
 	len = strlen(name) + strlen(name_prefix) + 2;
@@ -357,6 +368,22 @@ static int create_misc_device(struct dlm_ls *ls, char *name)
 		kfree(ls->ls_device.name);
 	}
 fail:
+	return error;
+}
+
+int dlm_device_deregister(struct dlm_ls *ls)
+{
+	int error;
+
+	/* The device is not registered.  This happens when the lockspace
+	   was never used from userspace, or when device_create_lockspace()
+	   calls dlm_release_lockspace() after the register fails. */
+	if (!ls->ls_device.name)
+		return 0;
+
+	error = misc_deregister(&ls->ls_device);
+	if (!error)
+		kfree(ls->ls_device.name);
 	return error;
 }
 
@@ -394,7 +421,7 @@ static int device_create_lockspace(struct dlm_lspace_params *params)
 	if (!ls)
 		return -ENOENT;
 
-	error = create_misc_device(ls, params->name);
+	error = dlm_device_register(ls, params->name);
 	dlm_put_lockspace(ls);
 
 	if (error)
@@ -418,31 +445,22 @@ static int device_remove_lockspace(struct dlm_lspace_params *params)
 	if (!ls)
 		return -ENOENT;
 
-	/* Deregister the misc device first, so we don't have
-	 * a device that's not attached to a lockspace. If
-	 * dlm_release_lockspace fails then we can recreate it
-	 */
-	error = misc_deregister(&ls->ls_device);
-	if (error) {
-		dlm_put_lockspace(ls);
-		goto out;
-	}
-	kfree(ls->ls_device.name);
-
 	if (params->flags & DLM_USER_LSFLG_FORCEFREE)
 		force = 2;
 
 	lockspace = ls->ls_local_handle;
-
-	/* dlm_release_lockspace waits for references to go to zero,
-	   so all processes will need to close their device for the ls
-	   before the release will procede */
-
 	dlm_put_lockspace(ls);
+
+	/* The final dlm_release_lockspace waits for references to go to
+	   zero, so all processes will need to close their device for the
+	   ls before the release will proceed.  release also calls the
+	   device_deregister above.  Converting a positive return value
+	   from release to zero means that userspace won't know when its
+	   release was the final one, but it shouldn't need to know. */
+
 	error = dlm_release_lockspace(lockspace, force);
-	if (error)
-		create_misc_device(ls, ls->ls_name);
- out:
+	if (error > 0)
+		error = 0;
 	return error;
 }
 
@@ -504,7 +522,7 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 #endif
 		return -EINVAL;
 
-	kbuf = kmalloc(count, GFP_KERNEL);
+	kbuf = kzalloc(count + 1, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
 
@@ -522,22 +540,26 @@ static ssize_t device_write(struct file *file, const char __user *buf,
 	if (!kbuf->is64bit) {
 		struct dlm_write_request32 *k32buf;
 		k32buf = (struct dlm_write_request32 *)kbuf;
-		kbuf = kmalloc(count + (sizeof(struct dlm_write_request) -
+		kbuf = kmalloc(count + 1 + (sizeof(struct dlm_write_request) -
 			       sizeof(struct dlm_write_request32)), GFP_KERNEL);
-		if (!kbuf)
+		if (!kbuf) {
+			kfree(k32buf);
 			return -ENOMEM;
+		}
 
 		if (proc)
 			set_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags);
-		compat_input(kbuf, k32buf);
+		compat_input(kbuf, k32buf, count + 1);
 		kfree(k32buf);
 	}
 #endif
 
 	/* do we really need this? can a write happen after a close? */
 	if ((kbuf->cmd == DLM_USER_LOCK || kbuf->cmd == DLM_USER_UNLOCK) &&
-	    test_bit(DLM_PROC_FLAGS_CLOSING, &proc->flags))
-		return -EINVAL;
+	    (proc && test_bit(DLM_PROC_FLAGS_CLOSING, &proc->flags))) {
+		error = -EINVAL;
+		goto out_free;
+	}
 
 	sigfillset(&allsigs);
 	sigprocmask(SIG_BLOCK, &allsigs, &tmpsig);
@@ -769,7 +791,6 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 {
 	struct dlm_user_proc *proc = file->private_data;
 	struct dlm_lkb *lkb;
-	struct dlm_user_args *ua;
 	DECLARE_WAITQUEUE(wait, current);
 	int error, type=0, bmode=0, removed = 0;
 
@@ -840,8 +861,7 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 	}
 	spin_unlock(&proc->asts_spin);
 
-	ua = (struct dlm_user_args *)lkb->lkb_astparam;
-	error = copy_result_to_user(ua,
+	error = copy_result_to_user(lkb->lkb_ua,
 			 	test_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags),
 				type, bmode, buf, count);
 
@@ -868,6 +888,26 @@ static unsigned int device_poll(struct file *file, poll_table *wait)
 	return 0;
 }
 
+int dlm_user_daemon_available(void)
+{
+	/* dlm_controld hasn't started (or, has started, but not
+	   properly populated configfs) */
+
+	if (!dlm_our_nodeid())
+		return 0;
+
+	/* This is to deal with versions of dlm_controld that don't
+	   know about the monitor device.  We assume that if the
+	   dlm_controld was started (above), but the monitor device
+	   was never opened, that it's an old version.  dlm_controld
+	   should open the monitor device before populating configfs. */
+
+	if (dlm_monitor_unused)
+		return 1;
+
+	return atomic_read(&dlm_monitor_opened) ? 1 : 0;
+}
+
 static int ctl_device_open(struct inode *inode, struct file *file)
 {
 	file->private_data = NULL;
@@ -876,6 +916,20 @@ static int ctl_device_open(struct inode *inode, struct file *file)
 
 static int ctl_device_close(struct inode *inode, struct file *file)
 {
+	return 0;
+}
+
+static int monitor_device_open(struct inode *inode, struct file *file)
+{
+	atomic_inc(&dlm_monitor_opened);
+	dlm_monitor_unused = 0;
+	return 0;
+}
+
+static int monitor_device_close(struct inode *inode, struct file *file)
+{
+	if (atomic_dec_and_test(&dlm_monitor_opened))
+		dlm_stop_lockspaces();
 	return 0;
 }
 
@@ -896,23 +950,48 @@ static const struct file_operations ctl_device_fops = {
 	.owner   = THIS_MODULE,
 };
 
-int dlm_user_init(void)
+static struct miscdevice ctl_device = {
+	.name  = "dlm-control",
+	.fops  = &ctl_device_fops,
+	.minor = MISC_DYNAMIC_MINOR,
+};
+
+static const struct file_operations monitor_device_fops = {
+	.open    = monitor_device_open,
+	.release = monitor_device_close,
+	.owner   = THIS_MODULE,
+};
+
+static struct miscdevice monitor_device = {
+	.name  = "dlm-monitor",
+	.fops  = &monitor_device_fops,
+	.minor = MISC_DYNAMIC_MINOR,
+};
+
+int __init dlm_user_init(void)
 {
 	int error;
 
-	ctl_device.name = "dlm-control";
-	ctl_device.fops = &ctl_device_fops;
-	ctl_device.minor = MISC_DYNAMIC_MINOR;
+	atomic_set(&dlm_monitor_opened, 0);
 
 	error = misc_register(&ctl_device);
-	if (error)
+	if (error) {
 		log_print("misc_register failed for control device");
+		goto out;
+	}
 
+	error = misc_register(&monitor_device);
+	if (error) {
+		log_print("misc_register failed for monitor device");
+		misc_deregister(&ctl_device);
+	}
+ out:
 	return error;
 }
 
 void dlm_user_exit(void)
 {
 	misc_deregister(&ctl_device);
+	misc_deregister(&monitor_device);
 }
 

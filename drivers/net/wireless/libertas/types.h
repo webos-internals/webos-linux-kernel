@@ -1,11 +1,12 @@
 /**
   * This header file contains definition for global types
   */
-#ifndef _WLAN_TYPES_
-#define _WLAN_TYPES_
+#ifndef _LBS_TYPES_H_
+#define _LBS_TYPES_H_
 
 #include <linux/if_ether.h>
 #include <asm/byteorder.h>
+#include <linux/wireless.h>
 
 struct ieeetypes_cfparamset {
 	u8 elementid;
@@ -201,22 +202,11 @@ struct mrvlietypes_powercapability {
 	s8 maxpower;
 } __attribute__ ((packed));
 
-struct mrvlietypes_rssithreshold {
+/* used in CMD_802_11_SUBSCRIBE_EVENT for SNR, RSSI and Failure */
+struct mrvlietypes_thresholds {
 	struct mrvlietypesheader header;
-	u8 rssivalue;
-	u8 rssifreq;
-} __attribute__ ((packed));
-
-struct mrvlietypes_snrthreshold {
-	struct mrvlietypesheader header;
-	u8 snrvalue;
-	u8 snrfreq;
-} __attribute__ ((packed));
-
-struct mrvlietypes_failurecount {
-	struct mrvlietypesheader header;
-	u8 failvalue;
-	u8 Failfreq;
+	u8 value;
+	u8 freq;
 } __attribute__ ((packed));
 
 struct mrvlietypes_beaconsmissed {
@@ -250,4 +240,45 @@ struct mrvlietypes_ledgpio {
 	struct led_pin ledpin[1];
 } __attribute__ ((packed));
 
-#endif				/* _WLAN_TYPES_ */
+struct led_bhv {
+	uint8_t	firmwarestate;
+	uint8_t	led;
+	uint8_t	ledstate;
+	uint8_t	ledarg;
+} __attribute__ ((packed));
+
+
+struct mrvlietypes_ledbhv {
+	struct mrvlietypesheader header;
+	struct led_bhv ledbhv[1];
+} __attribute__ ((packed));
+
+/* Meant to be packed as the value member of a struct ieee80211_info_element.
+ * Note that the len member of the ieee80211_info_element varies depending on
+ * the mesh_id_len */
+struct mrvl_meshie_val {
+	uint8_t oui[3];
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t version;
+	uint8_t active_protocol_id;
+	uint8_t active_metric_id;
+	uint8_t mesh_capability;
+	uint8_t mesh_id_len;
+	uint8_t mesh_id[IW_ESSID_MAX_SIZE];
+} __attribute__ ((packed));
+
+struct mrvl_meshie {
+	u8 id, len;
+	struct mrvl_meshie_val val;
+} __attribute__ ((packed));
+
+struct mrvl_mesh_defaults {
+	__le32 bootflag;
+	uint8_t boottime;
+	uint8_t reserved;
+	__le16 channel;
+	struct mrvl_meshie meshie;
+} __attribute__ ((packed));
+
+#endif

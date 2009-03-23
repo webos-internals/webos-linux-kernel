@@ -3,7 +3,7 @@
   Broadcom B43legacy wireless driver
 
   Copyright (c) 2005 Martin Langer <martin-langer@gmx.de>,
-		     Stefano Brivio <st3@riseup.net>
+		     Stefano Brivio <stefano.brivio@polimi.it>
 		     Michael Buesch <mbuesch@freenet.de>
 		     Danny van Dyk <kugelfang@gentoo.org>
      Andreas Jaggi <andreas.jaggi@waterwave.ch>
@@ -91,40 +91,36 @@ void b43legacy_voluntary_preempt(void)
 #endif /* CONFIG_PREEMPT */
 }
 
-void b43legacy_raw_phy_lock(struct b43legacy_wldev *dev)
+/* Lock the PHY registers against concurrent access from the microcode.
+ * This lock is nonrecursive. */
+void b43legacy_phy_lock(struct b43legacy_wldev *dev)
 {
-	struct b43legacy_phy *phy = &dev->phy;
+#if B43legacy_DEBUG
+	B43legacy_WARN_ON(dev->phy.phy_locked);
+	dev->phy.phy_locked = 1;
+#endif
 
-	B43legacy_WARN_ON(!irqs_disabled());
-	if (b43legacy_read32(dev, B43legacy_MMIO_STATUS_BITFIELD) == 0) {
-		phy->locked = 0;
-		return;
-	}
 	if (dev->dev->id.revision < 3) {
 		b43legacy_mac_suspend(dev);
-		spin_lock(&phy->lock);
 	} else {
-		if (!b43legacy_is_mode(dev->wl, IEEE80211_IF_TYPE_AP))
+		if (!b43legacy_is_mode(dev->wl, NL80211_IFTYPE_AP))
 			b43legacy_power_saving_ctl_bits(dev, -1, 1);
 	}
-	phy->locked = 1;
 }
 
-void b43legacy_raw_phy_unlock(struct b43legacy_wldev *dev)
+void b43legacy_phy_unlock(struct b43legacy_wldev *dev)
 {
-	struct b43legacy_phy *phy = &dev->phy;
+#if B43legacy_DEBUG
+	B43legacy_WARN_ON(!dev->phy.phy_locked);
+	dev->phy.phy_locked = 0;
+#endif
 
-	B43legacy_WARN_ON(!irqs_disabled());
 	if (dev->dev->id.revision < 3) {
-		if (phy->locked) {
-			spin_unlock(&phy->lock);
-			b43legacy_mac_enable(dev);
-		}
+		b43legacy_mac_enable(dev);
 	} else {
-		if (!b43legacy_is_mode(dev->wl, IEEE80211_IF_TYPE_AP))
+		if (!b43legacy_is_mode(dev->wl, NL80211_IFTYPE_AP))
 			b43legacy_power_saving_ctl_bits(dev, -1, -1);
 	}
-	phy->locked = 0;
 }
 
 u16 b43legacy_phy_read(struct b43legacy_wldev *dev, u16 offset)
@@ -144,7 +140,7 @@ void b43legacy_phy_calibrate(struct b43legacy_wldev *dev)
 {
 	struct b43legacy_phy *phy = &dev->phy;
 
-	b43legacy_read32(dev, B43legacy_MMIO_STATUS_BITFIELD); /* Dummy read. */
+	b43legacy_read32(dev, B43legacy_MMIO_MACCTL); /* Dummy read. */
 	if (phy->calibrated)
 		return;
 	if (phy->type == B43legacy_PHYTYPE_G && phy->rev == 1) {
@@ -441,7 +437,7 @@ static void b43legacy_phy_inita(struct b43legacy_wldev *dev)
 	might_sleep();
 
 	b43legacy_phy_setupg(dev);
-	if (dev->dev->bus->sprom.r1.boardflags_lo & B43legacy_BFL_PACTRL)
+	if (dev->dev->bus->sprom.boardflags_lo & B43legacy_BFL_PACTRL)
 		b43legacy_phy_write(dev, 0x046E, 0x03CF);
 }
 
@@ -543,7 +539,7 @@ static void b43legacy_phy_initb4(struct b43legacy_wldev *dev)
 	if (phy->radio_ver == 0x2050)
 		b43legacy_phy_write(dev, 0x002A, 0x88C2);
 	b43legacy_radio_set_txpower_bg(dev, 0xFFFF, 0xFFFF, 0xFFFF);
-	if (dev->dev->bus->sprom.r1.boardflags_lo & B43legacy_BFL_RSSI) {
+	if (dev->dev->bus->sprom.boardflags_lo & B43legacy_BFL_RSSI) {
 		b43legacy_calc_nrssi_slope(dev);
 		b43legacy_calc_nrssi_threshold(dev);
 	}
@@ -599,12 +595,14 @@ static void b43legacy_phy_initb5(struct b43legacy_wldev *dev)
 				    0x0035) & 0xFFC0) | 0x0064);
 		b43legacy_phy_write(dev, 0x005D, (b43legacy_phy_read(dev,
 				    0x005D) & 0xFF80) | 0x000A);
+		b43legacy_phy_write(dev, 0x5B, 0x0000);
+		b43legacy_phy_write(dev, 0x5C, 0x0000);
 	}
 
 	if (dev->bad_frames_preempt)
 		b43legacy_phy_write(dev, B43legacy_PHY_RADIO_BITFIELD,
 				    b43legacy_phy_read(dev,
-				    B43legacy_PHY_RADIO_BITFIELD) | (1 << 11));
+				    B43legacy_PHY_RADIO_BITFIELD) | (1 << 12));
 
 	if (phy->analog == 1) {
 		b43legacy_phy_write(dev, 0x0026, 0xCE00);
@@ -699,7 +697,7 @@ static void b43legacy_phy_initb6(struct b43legacy_wldev *dev)
 		b43legacy_radio_write16(dev, 0x005A, 0x0088);
 		b43legacy_radio_write16(dev, 0x005B, 0x006B);
 		b43legacy_radio_write16(dev, 0x005C, 0x000F);
-		if (dev->dev->bus->sprom.r1.boardflags_lo & 0x8000) {
+		if (dev->dev->bus->sprom.boardflags_lo & 0x8000) {
 			b43legacy_radio_write16(dev, 0x005D, 0x00FA);
 			b43legacy_radio_write16(dev, 0x005E, 0x00D8);
 		} else {
@@ -757,7 +755,7 @@ static void b43legacy_phy_initb6(struct b43legacy_wldev *dev)
 		b43legacy_radio_write16(dev, 0x0050, 0x0020);
 	}
 	if (phy->radio_rev <= 2) {
-		b43legacy_radio_write16(dev, 0x007C, 0x0020);
+		b43legacy_radio_write16(dev, 0x0050, 0x0020);
 		b43legacy_radio_write16(dev, 0x005A, 0x0070);
 		b43legacy_radio_write16(dev, 0x005B, 0x007B);
 		b43legacy_radio_write16(dev, 0x005C, 0x00B0);
@@ -775,7 +773,7 @@ static void b43legacy_phy_initb6(struct b43legacy_wldev *dev)
 		b43legacy_phy_write(dev, 0x002A, 0x8AC0);
 	b43legacy_phy_write(dev, 0x0038, 0x0668);
 	b43legacy_radio_set_txpower_bg(dev, 0xFFFF, 0xFFFF, 0xFFFF);
-	if (phy->radio_rev <= 5)
+	if (phy->radio_rev == 4 || phy->radio_rev == 5)
 		b43legacy_phy_write(dev, 0x005D, (b43legacy_phy_read(dev,
 				    0x005D) & 0xFF80) | 0x0003);
 	if (phy->radio_rev <= 2)
@@ -797,7 +795,7 @@ static void b43legacy_phy_initb6(struct b43legacy_wldev *dev)
 		b43legacy_phy_write(dev, 0x0062, 0x0007);
 		b43legacy_radio_init2050(dev);
 		b43legacy_phy_lo_g_measure(dev);
-		if (dev->dev->bus->sprom.r1.boardflags_lo &
+		if (dev->dev->bus->sprom.boardflags_lo &
 		    B43legacy_BFL_RSSI) {
 			b43legacy_calc_nrssi_slope(dev);
 			b43legacy_calc_nrssi_threshold(dev);
@@ -921,7 +919,7 @@ static void b43legacy_calc_loopback_gain(struct b43legacy_wldev *dev)
 			    b43legacy_phy_read(dev, 0x0811) | 0x0100);
 	b43legacy_phy_write(dev, 0x0812,
 			    b43legacy_phy_read(dev, 0x0812) & 0xCFFF);
-	if (dev->dev->bus->sprom.r1.boardflags_lo & B43legacy_BFL_EXTLNA) {
+	if (dev->dev->bus->sprom.boardflags_lo & B43legacy_BFL_EXTLNA) {
 		if (phy->rev >= 7) {
 			b43legacy_phy_write(dev, 0x0811,
 					    b43legacy_phy_read(dev, 0x0811)
@@ -1014,7 +1012,7 @@ static void b43legacy_phy_initg(struct b43legacy_wldev *dev)
 		b43legacy_phy_initb5(dev);
 	else
 		b43legacy_phy_initb6(dev);
-	if (phy->rev >= 2 || phy->gmode)
+	if (phy->rev >= 2 && phy->gmode)
 		b43legacy_phy_inita(dev);
 
 	if (phy->rev >= 2) {
@@ -1029,18 +1027,22 @@ static void b43legacy_phy_initg(struct b43legacy_wldev *dev)
 		b43legacy_phy_write(dev, 0x0811, 0x0400);
 		b43legacy_phy_write(dev, 0x0015, 0x00C0);
 	}
-	if (phy->rev >= 2 || phy->gmode) {
+	if (phy->gmode) {
 		tmp = b43legacy_phy_read(dev, 0x0400) & 0xFF;
-		if (tmp == 3 || tmp == 5) {
+		if (tmp == 3) {
+			b43legacy_phy_write(dev, 0x04C2, 0x1816);
+			b43legacy_phy_write(dev, 0x04C3, 0x8606);
+		}
+		if (tmp == 4 || tmp == 5) {
 			b43legacy_phy_write(dev, 0x04C2, 0x1816);
 			b43legacy_phy_write(dev, 0x04C3, 0x8006);
-			if (tmp == 5)
-				b43legacy_phy_write(dev, 0x04CC,
-						    (b43legacy_phy_read(dev,
-						     0x04CC) & 0x00FF) |
-						     0x1F00);
+			b43legacy_phy_write(dev, 0x04CC,
+					    (b43legacy_phy_read(dev,
+					     0x04CC) & 0x00FF) |
+					     0x1F00);
 		}
-		b43legacy_phy_write(dev, 0x047E, 0x0078);
+		if (phy->rev >= 2)
+			b43legacy_phy_write(dev, 0x047E, 0x0078);
 	}
 	if (phy->radio_rev == 8) {
 		b43legacy_phy_write(dev, 0x0801, b43legacy_phy_read(dev, 0x0801)
@@ -1072,7 +1074,7 @@ static void b43legacy_phy_initg(struct b43legacy_wldev *dev)
 			b43legacy_phy_write(dev, 0x0036,
 					    (b43legacy_phy_read(dev, 0x0036)
 					     & 0x0FFF) | (phy->txctl2 << 12));
-		if (dev->dev->bus->sprom.r1.boardflags_lo &
+		if (dev->dev->bus->sprom.boardflags_lo &
 		    B43legacy_BFL_PACTRL)
 			b43legacy_phy_write(dev, 0x002E, 0x8075);
 		else
@@ -1082,17 +1084,17 @@ static void b43legacy_phy_initg(struct b43legacy_wldev *dev)
 		else
 			b43legacy_phy_write(dev, 0x002F, 0x0202);
 	}
-	if (phy->gmode || phy->rev >= 2) {
+	if (phy->gmode) {
 		b43legacy_phy_lo_adjust(dev, 0);
 		b43legacy_phy_write(dev, 0x080F, 0x8078);
 	}
 
-	if (!(dev->dev->bus->sprom.r1.boardflags_lo & B43legacy_BFL_RSSI)) {
+	if (!(dev->dev->bus->sprom.boardflags_lo & B43legacy_BFL_RSSI)) {
 		/* The specs state to update the NRSSI LT with
 		 * the value 0x7FFFFFFF here. I think that is some weird
 		 * compiler optimization in the original driver.
 		 * Essentially, what we do here is resetting all NRSSI LT
-		 * entries to -32 (see the limit_value() in nrssi_hw_update())
+		 * entries to -32 (see the clamp_val() in nrssi_hw_update())
 		 */
 		b43legacy_nrssi_hw_update(dev, 0xFFFF);
 		b43legacy_calc_nrssi_threshold(dev);
@@ -1294,12 +1296,10 @@ void b43legacy_lo_write(struct b43legacy_wldev *dev,
 	/* Sanity check. */
 	if (pair->low < -8 || pair->low > 8 ||
 	    pair->high < -8 || pair->high > 8) {
-		struct b43legacy_phy *phy = &dev->phy;
 		b43legacydbg(dev->wl,
 		       "WARNING: Writing invalid LOpair "
-		       "(low: %d, high: %d, index: %lu)\n",
-		       pair->low, pair->high,
-		       (unsigned long)(pair - phy->_lo_pairs));
+		       "(low: %d, high: %d)\n",
+		       pair->low, pair->high);
 		dump_stack();
 	}
 #endif
@@ -1760,7 +1760,7 @@ static s8 b43legacy_phy_estimate_power_out(struct b43legacy_wldev *dev, s8 tssi)
 	switch (phy->type) {
 	case B43legacy_PHYTYPE_B:
 	case B43legacy_PHYTYPE_G:
-		tmp = limit_value(tmp, 0x00, 0x3F);
+		tmp = clamp_val(tmp, 0x00, 0x3F);
 		dbm = phy->tssi2dbm[tmp];
 		break;
 	default:
@@ -1789,7 +1789,6 @@ void b43legacy_phy_xmitpower(struct b43legacy_wldev *dev)
 	s16 baseband_att_delta;
 	s16 radio_attenuation;
 	s16 baseband_attenuation;
-	unsigned long phylock_flags;
 
 	if (phy->savedpctlreg == 0xFFFF)
 		return;
@@ -1838,9 +1837,9 @@ void b43legacy_phy_xmitpower(struct b43legacy_wldev *dev)
 
 	estimated_pwr = b43legacy_phy_estimate_power_out(dev, average);
 
-	max_pwr = dev->dev->bus->sprom.r1.maxpwr_bg;
+	max_pwr = dev->dev->bus->sprom.maxpwr_bg;
 
-	if ((dev->dev->bus->sprom.r1.boardflags_lo
+	if ((dev->dev->bus->sprom.boardflags_lo
 	     & B43legacy_BFL_PACTRL) &&
 	    (phy->type == B43legacy_PHYTYPE_G))
 		max_pwr -= 0x3;
@@ -1848,7 +1847,7 @@ void b43legacy_phy_xmitpower(struct b43legacy_wldev *dev)
 		b43legacywarn(dev->wl, "Invalid max-TX-power value in SPROM."
 			"\n");
 		max_pwr = 74; /* fake it */
-		dev->dev->bus->sprom.r1.maxpwr_bg = max_pwr;
+		dev->dev->bus->sprom.maxpwr_bg = max_pwr;
 	}
 
 	/* Use regulatory information to get the maximum power.
@@ -1858,12 +1857,13 @@ void b43legacy_phy_xmitpower(struct b43legacy_wldev *dev)
 	 * and 1.5 dBm (a safety factor??). The result is in Q5.2 format
 	 * which accounts for the factor of 4 */
 #define REG_MAX_PWR 20
-	max_pwr = min(REG_MAX_PWR * 4 - dev->dev->bus->sprom.r1.antenna_gain_bg
+	max_pwr = min(REG_MAX_PWR * 4
+		      - dev->dev->bus->sprom.antenna_gain.ghz24.a0
 		      - 0x6, max_pwr);
 
 	/* find the desired power in Q5.2 - power_level is in dBm
 	 * and limit it - max_pwr is already in Q5.2 */
-	desired_pwr = limit_value(phy->power_level << 2, 0, max_pwr);
+	desired_pwr = clamp_val(phy->power_level << 2, 0, max_pwr);
 	if (b43legacy_debug(dev, B43legacy_DBG_XMITPOWER))
 		b43legacydbg(dev->wl, "Current TX power output: " Q52_FMT
 		       " dBm, Desired TX power output: " Q52_FMT
@@ -1909,7 +1909,7 @@ void b43legacy_phy_xmitpower(struct b43legacy_wldev *dev)
 			radio_attenuation++;
 		}
 	}
-	baseband_attenuation = limit_value(baseband_attenuation, 0, 11);
+	baseband_attenuation = clamp_val(baseband_attenuation, 0, 11);
 
 	txpower = phy->txctl1;
 	if ((phy->radio_ver == 0x2050) && (phy->radio_rev == 2)) {
@@ -1918,7 +1918,7 @@ void b43legacy_phy_xmitpower(struct b43legacy_wldev *dev)
 				txpower = 3;
 				radio_attenuation += 2;
 				baseband_attenuation += 2;
-			} else if (dev->dev->bus->sprom.r1.boardflags_lo
+			} else if (dev->dev->bus->sprom.boardflags_lo
 				   & B43legacy_BFL_PACTRL) {
 				baseband_attenuation += 4 *
 						     (radio_attenuation - 2);
@@ -1937,19 +1937,19 @@ void b43legacy_phy_xmitpower(struct b43legacy_wldev *dev)
 	}
 	/* Save the control values */
 	phy->txctl1 = txpower;
-	baseband_attenuation = limit_value(baseband_attenuation, 0, 11);
-	radio_attenuation = limit_value(radio_attenuation, 0, 9);
+	baseband_attenuation = clamp_val(baseband_attenuation, 0, 11);
+	radio_attenuation = clamp_val(radio_attenuation, 0, 9);
 	phy->rfatt = radio_attenuation;
 	phy->bbatt = baseband_attenuation;
 
 	/* Adjust the hardware */
-	b43legacy_phy_lock(dev, phylock_flags);
+	b43legacy_phy_lock(dev);
 	b43legacy_radio_lock(dev);
 	b43legacy_radio_set_txpower_bg(dev, baseband_attenuation,
 				       radio_attenuation, txpower);
 	b43legacy_phy_lo_mark_current_used(dev);
 	b43legacy_radio_unlock(dev);
-	b43legacy_phy_unlock(dev, phylock_flags);
+	b43legacy_phy_unlock(dev);
 }
 
 static inline
@@ -1983,7 +1983,7 @@ s8 b43legacy_tssi2dbm_entry(s8 entry [], u8 index, s16 pab0, s16 pab1, s16 pab2)
 		f = q;
 		i++;
 	} while (delta >= 2);
-	entry[index] = limit_value(b43legacy_tssi2dbm_ad(m1 * f, 8192),
+	entry[index] = clamp_val(b43legacy_tssi2dbm_ad(m1 * f, 8192),
 				   -127, 128);
 	return 0;
 }
@@ -2000,9 +2000,9 @@ int b43legacy_phy_init_tssi2dbm_table(struct b43legacy_wldev *dev)
 
 	B43legacy_WARN_ON(!(phy->type == B43legacy_PHYTYPE_B ||
 			  phy->type == B43legacy_PHYTYPE_G));
-	pab0 = (s16)(dev->dev->bus->sprom.r1.pa0b0);
-	pab1 = (s16)(dev->dev->bus->sprom.r1.pa0b1);
-	pab2 = (s16)(dev->dev->bus->sprom.r1.pa0b2);
+	pab0 = (s16)(dev->dev->bus->sprom.pa0b0);
+	pab1 = (s16)(dev->dev->bus->sprom.pa0b1);
+	pab2 = (s16)(dev->dev->bus->sprom.pa0b2);
 
 	if ((dev->dev->bus->chip_id == 0x4301) && (phy->radio_ver != 0x2050)) {
 		phy->idle_tssi = 0x34;
@@ -2013,9 +2013,10 @@ int b43legacy_phy_init_tssi2dbm_table(struct b43legacy_wldev *dev)
 	if (pab0 != 0 && pab1 != 0 && pab2 != 0 &&
 	    pab0 != -1 && pab1 != -1 && pab2 != -1) {
 		/* The pabX values are set in SPROM. Use them. */
-		if ((s8)dev->dev->bus->sprom.r1.itssi_bg != 0 &&
-		    (s8)dev->dev->bus->sprom.r1.itssi_bg != -1)
-			phy->idle_tssi = (s8)(dev->dev->bus->sprom.r1.itssi_bg);
+		if ((s8)dev->dev->bus->sprom.itssi_bg != 0 &&
+		    (s8)dev->dev->bus->sprom.itssi_bg != -1)
+			phy->idle_tssi = (s8)(dev->dev->bus->sprom.
+					  itssi_bg);
 		else
 			phy->idle_tssi = 62;
 		dyn_tssi2dbm = kmalloc(64, GFP_KERNEL);
@@ -2234,16 +2235,16 @@ bit26 = 1;
 		 *	or the latest PS-Poll packet sent was successful,
 		 *	set bit26  */
 	}
-	status = b43legacy_read32(dev, B43legacy_MMIO_STATUS_BITFIELD);
+	status = b43legacy_read32(dev, B43legacy_MMIO_MACCTL);
 	if (bit25)
-		status |= B43legacy_SBF_PS1;
+		status |= B43legacy_MACCTL_HWPS;
 	else
-		status &= ~B43legacy_SBF_PS1;
+		status &= ~B43legacy_MACCTL_HWPS;
 	if (bit26)
-		status |= B43legacy_SBF_PS2;
+		status |= B43legacy_MACCTL_AWAKE;
 	else
-		status &= ~B43legacy_SBF_PS2;
-	b43legacy_write32(dev, B43legacy_MMIO_STATUS_BITFIELD, status);
+		status &= ~B43legacy_MACCTL_AWAKE;
+	b43legacy_write32(dev, B43legacy_MMIO_MACCTL, status);
 	if (bit26 && dev->dev->id.revision >= 5) {
 		for (i = 0; i < 100; i++) {
 			if (b43legacy_shm_read32(dev, B43legacy_SHM_SHARED,

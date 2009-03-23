@@ -14,7 +14,7 @@
 #include <net/af_rxrpc.h>
 #include "ar-internal.h"
 
-static const char *rxrpc_conn_states[] = {
+static const char *const rxrpc_conn_states[] = {
 	[RXRPC_CONN_UNUSED]		= "Unused  ",
 	[RXRPC_CONN_CLIENT]		= "Client  ",
 	[RXRPC_CONN_SERVER_UNSECURED]	= "SvUnsec ",
@@ -61,12 +61,12 @@ static int rxrpc_call_seq_show(struct seq_file *seq, void *v)
 	call = list_entry(v, struct rxrpc_call, link);
 	trans = call->conn->trans;
 
-	sprintf(lbuff, NIPQUAD_FMT":%u",
-		NIPQUAD(trans->local->srx.transport.sin.sin_addr),
+	sprintf(lbuff, "%pI4:%u",
+		&trans->local->srx.transport.sin.sin_addr,
 		ntohs(trans->local->srx.transport.sin.sin_port));
 
-	sprintf(rbuff, NIPQUAD_FMT":%u",
-		NIPQUAD(trans->peer->srx.transport.sin.sin_addr),
+	sprintf(rbuff, "%pI4:%u",
+		&trans->peer->srx.transport.sin.sin_addr,
 		ntohs(trans->peer->srx.transport.sin.sin_port));
 
 	seq_printf(seq,
@@ -98,12 +98,12 @@ static int rxrpc_call_seq_open(struct inode *inode, struct file *file)
 	return seq_open(file, &rxrpc_call_seq_ops);
 }
 
-struct file_operations rxrpc_call_seq_fops = {
+const struct file_operations rxrpc_call_seq_fops = {
 	.owner		= THIS_MODULE,
 	.open		= rxrpc_call_seq_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
-	.release	= seq_release_private,
+	.release	= seq_release,
 };
 
 /*
@@ -144,12 +144,12 @@ static int rxrpc_connection_seq_show(struct seq_file *seq, void *v)
 	conn = list_entry(v, struct rxrpc_connection, link);
 	trans = conn->trans;
 
-	sprintf(lbuff, NIPQUAD_FMT":%u",
-		NIPQUAD(trans->local->srx.transport.sin.sin_addr),
+	sprintf(lbuff, "%pI4:%u",
+		&trans->local->srx.transport.sin.sin_addr,
 		ntohs(trans->local->srx.transport.sin.sin_port));
 
-	sprintf(rbuff, NIPQUAD_FMT":%u",
-		NIPQUAD(trans->peer->srx.transport.sin.sin_addr),
+	sprintf(rbuff, "%pI4:%u",
+		&trans->peer->srx.transport.sin.sin_addr,
 		ntohs(trans->peer->srx.transport.sin.sin_port));
 
 	seq_printf(seq,
@@ -183,10 +183,10 @@ static int rxrpc_connection_seq_open(struct inode *inode, struct file *file)
 	return seq_open(file, &rxrpc_connection_seq_ops);
 }
 
-struct file_operations rxrpc_connection_seq_fops = {
+const struct file_operations rxrpc_connection_seq_fops = {
 	.owner		= THIS_MODULE,
 	.open		= rxrpc_connection_seq_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
-	.release	= seq_release_private,
+	.release	= seq_release,
 };

@@ -35,10 +35,12 @@
 #include <linux/init.h>		/* Initdata                       */
 #include <linux/ioport.h>	/* request_region		  */
 #include <linux/proc_fs.h>	/* radio card status report	  */
+#include <linux/seq_file.h>
 #include <asm/io.h>		/* outb, outb_p                   */
 #include <asm/uaccess.h>	/* copy to/from user              */
 #include <linux/videodev2.h>	/* kernel radio structs           */
 #include <media/v4l2-common.h>
+#include <media/v4l2-ioctl.h>
 
 #include <linux/version.h>      /* for KERNEL_VERSION MACRO     */
 #define RADIO_VERSION KERNEL_VERSION(0,1,1)
@@ -77,7 +79,7 @@ static struct v4l2_queryctrl radio_qctrl[] = {
 #endif
 
 struct typhoon_device {
-	int users;
+	unsigned long in_use;
 	int iobase;
 	int curvol;
 	int muted;
@@ -93,9 +95,6 @@ static int typhoon_setfreq(struct typhoon_device *dev, unsigned long frequency);
 static void typhoon_mute(struct typhoon_device *dev);
 static void typhoon_unmute(struct typhoon_device *dev);
 static int typhoon_setvol(struct typhoon_device *dev, int vol);
-#ifdef CONFIG_RADIO_TYPHOON_PROC_FS
-static int typhoon_get_info(char *buf, char **start, off_t offset, int len);
-#endif
 
 static void typhoon_setvol_generic(struct typhoon_device *dev, int vol)
 {
@@ -224,8 +223,7 @@ static int vidioc_s_tuner(struct file *file, void *priv,
 static int vidioc_s_frequency(struct file *file, void *priv,
 					struct v4l2_frequency *f)
 {
-	struct video_device *dev = video_devdata(file);
-	struct typhoon_device *typhoon = dev->priv;
+	struct typhoon_device *typhoon = video_drvdata(file);
 
 	typhoon->curfreq = f->frequency;
 	typhoon_setfreq(typhoon, typhoon->curfreq);
@@ -235,8 +233,7 @@ static int vidioc_s_frequency(struct file *file, void *priv,
 static int vidioc_g_frequency(struct file *file, void *priv,
 					struct v4l2_frequency *f)
 {
-	struct video_device *dev = video_devdata(file);
-	struct typhoon_device *typhoon = dev->priv;
+	struct typhoon_device *typhoon = video_drvdata(file);
 
 	f->type = V4L2_TUNER_RADIO;
 	f->frequency = typhoon->curfreq;
@@ -262,8 +259,7 @@ static int vidioc_queryctrl(struct file *file, void *priv,
 static int vidioc_g_ctrl(struct file *file, void *priv,
 					struct v4l2_control *ctrl)
 {
-	struct video_device *dev = video_devdata(file);
-	struct typhoon_device *typhoon = dev->priv;
+	struct typhoon_device *typhoon = video_drvdata(file);
 
 	switch (ctrl->id) {
 	case V4L2_CID_AUDIO_MUTE:
@@ -279,8 +275,7 @@ static int vidioc_g_ctrl(struct file *file, void *priv,
 static int vidioc_s_ctrl (struct file *file, void *priv,
 					struct v4l2_control *ctrl)
 {
-	struct video_device *dev = video_devdata(file);
-	struct typhoon_device *typhoon = dev->priv;
+	struct typhoon_device *typhoon = video_drvdata(file);
 
 	switch (ctrl->id) {
 	case V4L2_CID_AUDIO_MUTE:
@@ -335,21 +330,25 @@ static struct typhoon_device typhoon_unit =
 	.mutefreq	= CONFIG_RADIO_TYPHOON_MUTEFREQ,
 };
 
-static const struct file_operations typhoon_fops = {
+static int typhoon_exclusive_open(struct file *file)
+{
+	return test_and_set_bit(0, &typhoon_unit.in_use) ? -EBUSY : 0;
+}
+
+static int typhoon_exclusive_release(struct file *file)
+{
+	clear_bit(0, &typhoon_unit.in_use);
+	return 0;
+}
+
+static const struct v4l2_file_operations typhoon_fops = {
 	.owner		= THIS_MODULE,
-	.open           = video_exclusive_open,
-	.release        = video_exclusive_release,
+	.open           = typhoon_exclusive_open,
+	.release        = typhoon_exclusive_release,
 	.ioctl		= video_ioctl2,
-	.compat_ioctl	= v4l_compat_ioctl32,
-	.llseek         = no_llseek,
 };
 
-static struct video_device typhoon_radio =
-{
-	.owner		= THIS_MODULE,
-	.name		= "Typhoon Radio",
-	.type		= VID_TYPE_TUNER,
-	.fops           = &typhoon_fops,
+static const struct v4l2_ioctl_ops typhoon_ioctl_ops = {
 	.vidioc_querycap    = vidioc_querycap,
 	.vidioc_g_tuner     = vidioc_g_tuner,
 	.vidioc_s_tuner     = vidioc_s_tuner,
@@ -364,32 +363,48 @@ static struct video_device typhoon_radio =
 	.vidioc_s_ctrl      = vidioc_s_ctrl,
 };
 
+static struct video_device typhoon_radio = {
+	.name		= "Typhoon Radio",
+	.fops           = &typhoon_fops,
+	.ioctl_ops 	= &typhoon_ioctl_ops,
+	.release	= video_device_release_empty,
+};
+
 #ifdef CONFIG_RADIO_TYPHOON_PROC_FS
 
-static int typhoon_get_info(char *buf, char **start, off_t offset, int len)
+static int typhoon_proc_show(struct seq_file *m, void *v)
 {
-	char *out = buf;
-
 	#ifdef MODULE
 	    #define MODULEPROCSTRING "Driver loaded as a module"
 	#else
 	    #define MODULEPROCSTRING "Driver compiled into kernel"
 	#endif
 
-	/* output must be kept under PAGE_SIZE */
-	out += sprintf(out, BANNER);
-	out += sprintf(out, "Load type: " MODULEPROCSTRING "\n\n");
-	out += sprintf(out, "frequency = %lu kHz\n",
+	seq_puts(m, BANNER);
+	seq_puts(m, "Load type: " MODULEPROCSTRING "\n\n");
+	seq_printf(m, "frequency = %lu kHz\n",
 		typhoon_unit.curfreq >> 4);
-	out += sprintf(out, "volume = %d\n", typhoon_unit.curvol);
-	out += sprintf(out, "mute = %s\n", typhoon_unit.muted ?
+	seq_printf(m, "volume = %d\n", typhoon_unit.curvol);
+	seq_printf(m, "mute = %s\n", typhoon_unit.muted ?
 		"on" : "off");
-	out += sprintf(out, "iobase = 0x%x\n", typhoon_unit.iobase);
-	out += sprintf(out, "mute frequency = %lu kHz\n",
+	seq_printf(m, "iobase = 0x%x\n", typhoon_unit.iobase);
+	seq_printf(m, "mute frequency = %lu kHz\n",
 		typhoon_unit.mutefreq >> 4);
-	return out - buf;
+	return 0;
 }
 
+static int typhoon_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, typhoon_proc_show, NULL);
+}
+
+static const struct file_operations typhoon_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= typhoon_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 #endif /* CONFIG_RADIO_TYPHOON_PROC_FS */
 
 MODULE_AUTHOR("Dr. Henrik Seidel");
@@ -404,7 +419,7 @@ MODULE_PARM_DESC(io, "I/O address of the Typhoon card (0x316 or 0x336)");
 module_param(radio_nr, int, 0);
 
 #ifdef MODULE
-static unsigned long mutefreq = 0;
+static unsigned long mutefreq;
 module_param(mutefreq, ulong, 0);
 MODULE_PARM_DESC(mutefreq, "Frequency used when muting the card (in kHz)");
 #endif
@@ -435,9 +450,8 @@ static int __init typhoon_init(void)
 		return -EBUSY;
 	}
 
-	typhoon_radio.priv = &typhoon_unit;
-	if (video_register_device(&typhoon_radio, VFL_TYPE_RADIO, radio_nr) == -1)
-	{
+	video_set_drvdata(&typhoon_radio, &typhoon_unit);
+	if (video_register_device(&typhoon_radio, VFL_TYPE_RADIO, radio_nr) < 0) {
 		release_region(io, 8);
 		return -EINVAL;
 	}
@@ -450,8 +464,7 @@ static int __init typhoon_init(void)
 	typhoon_mute(&typhoon_unit);
 
 #ifdef CONFIG_RADIO_TYPHOON_PROC_FS
-	if (!create_proc_info_entry("driver/radio-typhoon", 0, NULL,
-				    typhoon_get_info))
+	if (!proc_create("driver/radio-typhoon", 0, NULL, &typhoon_proc_fops))
 		printk(KERN_ERR "radio-typhoon: registering /proc/driver/radio-typhoon failed\n");
 #endif
 

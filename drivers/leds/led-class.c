@@ -24,17 +24,21 @@
 
 static struct class *leds_class;
 
+static void led_update_brightness(struct led_classdev *led_cdev)
+{
+	if (led_cdev->brightness_get)
+		led_cdev->brightness = led_cdev->brightness_get(led_cdev);
+}
+
 static ssize_t led_brightness_show(struct device *dev, 
 		struct device_attribute *attr, char *buf)
 {
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
-	ssize_t ret = 0;
 
 	/* no lock needed for this */
-	sprintf(buf, "%u\n", led_cdev->brightness);
-	ret = strlen(buf) + 1;
+	led_update_brightness(led_cdev);
 
-	return ret;
+	return sprintf(buf, "%u\n", led_cdev->brightness);
 }
 
 static ssize_t led_brightness_store(struct device *dev,
@@ -51,6 +55,9 @@ static ssize_t led_brightness_store(struct device *dev,
 
 	if (count == size) {
 		ret = count;
+
+		if (state == LED_OFF)
+			led_trigger_remove(led_cdev);
 		led_set_brightness(led_cdev, state);
 	}
 
@@ -84,35 +91,56 @@ void led_classdev_resume(struct led_classdev *led_cdev)
 }
 EXPORT_SYMBOL_GPL(led_classdev_resume);
 
+static int led_suspend(struct device *dev, pm_message_t state)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+
+	if (led_cdev->flags & LED_CORE_SUSPENDRESUME)
+		led_classdev_suspend(led_cdev);
+
+	return 0;
+}
+
+static int led_resume(struct device *dev)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+
+	if (led_cdev->flags & LED_CORE_SUSPENDRESUME)
+		led_classdev_resume(led_cdev);
+
+	return 0;
+}
+
 /**
  * led_classdev_register - register a new object of led_classdev class.
- * @dev: The device to register.
+ * @parent: The device to register.
  * @led_cdev: the led_classdev structure for this device.
  */
 int led_classdev_register(struct device *parent, struct led_classdev *led_cdev)
 {
 	int rc;
 
-	led_cdev->dev = device_create(leds_class, parent, 0, "%s",
-					    led_cdev->name);
-	if (unlikely(IS_ERR(led_cdev->dev)))
+	led_cdev->dev = device_create(leds_class, parent, 0, led_cdev,
+				      "%s", led_cdev->name);
+	if (IS_ERR(led_cdev->dev))
 		return PTR_ERR(led_cdev->dev);
-
-	dev_set_drvdata(led_cdev->dev, led_cdev);
 
 	/* register the attributes */
 	rc = device_create_file(led_cdev->dev, &dev_attr_brightness);
 	if (rc)
 		goto err_out;
 
+#ifdef CONFIG_LEDS_TRIGGERS
+	init_rwsem(&led_cdev->trigger_lock);
+#endif
 	/* add to the list of leds */
 	down_write(&leds_list_lock);
 	list_add_tail(&led_cdev->node, &leds_list);
 	up_write(&leds_list_lock);
 
-#ifdef CONFIG_LEDS_TRIGGERS
-	init_rwsem(&led_cdev->trigger_lock);
+	led_update_brightness(led_cdev);
 
+#ifdef CONFIG_LEDS_TRIGGERS
 	rc = device_create_file(led_cdev->dev, &dev_attr_trigger);
 	if (rc)
 		goto err_out_led_list;
@@ -166,6 +194,8 @@ static int __init leds_init(void)
 	leds_class = class_create(THIS_MODULE, "leds");
 	if (IS_ERR(leds_class))
 		return PTR_ERR(leds_class);
+	leds_class->suspend = led_suspend;
+	leds_class->resume = led_resume;
 	return 0;
 }
 

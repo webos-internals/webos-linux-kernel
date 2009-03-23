@@ -1,4 +1,4 @@
-/*
+ /*
  * arch/arm/plat-omap/usb.c -- platform level USB initialization
  *
  * Copyright (C) 2004 Texas Instruments, Inc.
@@ -27,15 +27,16 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/usb/otg.h>
+#include <linux/io.h>
 
-#include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/system.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 
-#include <asm/arch/mux.h>
-#include <asm/arch/usb.h>
-#include <asm/arch/board.h>
+#include <mach/control.h>
+#include <mach/mux.h>
+#include <mach/usb.h>
+#include <mach/board.h>
 
 #ifdef CONFIG_ARCH_OMAP1
 
@@ -76,51 +77,59 @@
 
 /*-------------------------------------------------------------------------*/
 
-#ifdef	CONFIG_ARCH_OMAP_OTG
-
-static struct otg_transceiver *xceiv;
-
-/**
- * otg_get_transceiver - find the (single) OTG transceiver driver
- *
- * Returns the transceiver driver, after getting a refcount to it; or
- * null if there is no such transceiver.  The caller is responsible for
- * releasing that count.
- */
-struct otg_transceiver *otg_get_transceiver(void)
-{
-	if (xceiv)
-		get_device(xceiv->dev);
-	return xceiv;
-}
-EXPORT_SYMBOL(otg_get_transceiver);
-
-int otg_set_transceiver(struct otg_transceiver *x)
-{
-	if (xceiv && x)
-		return -EBUSY;
-	xceiv = x;
-	return 0;
-}
-EXPORT_SYMBOL(otg_set_transceiver);
-
-#endif
-
-/*-------------------------------------------------------------------------*/
-
 #if defined(CONFIG_ARCH_OMAP_OTG) || defined(CONFIG_ARCH_OMAP15XX)
+
+static void omap2_usb_devconf_clear(u8 port, u32 mask)
+{
+	u32 r;
+
+	r = omap_ctrl_readl(OMAP2_CONTROL_DEVCONF0);
+	r &= ~USBTXWRMODEI(port, mask);
+	omap_ctrl_writel(r, OMAP2_CONTROL_DEVCONF0);
+}
+
+static void omap2_usb_devconf_set(u8 port, u32 mask)
+{
+	u32 r;
+
+	r = omap_ctrl_readl(OMAP2_CONTROL_DEVCONF0);
+	r |= USBTXWRMODEI(port, mask);
+	omap_ctrl_writel(r, OMAP2_CONTROL_DEVCONF0);
+}
+
+static void omap2_usb2_disable_5pinbitll(void)
+{
+	u32 r;
+
+	r = omap_ctrl_readl(OMAP2_CONTROL_DEVCONF0);
+	r &= ~(USBTXWRMODEI(2, USB_BIDIR_TLL) | USBT2TLL5PI);
+	omap_ctrl_writel(r, OMAP2_CONTROL_DEVCONF0);
+}
+
+static void omap2_usb2_enable_5pinunitll(void)
+{
+	u32 r;
+
+	r = omap_ctrl_readl(OMAP2_CONTROL_DEVCONF0);
+	r |= USBTXWRMODEI(2, USB_UNIDIR_TLL) | USBT2TLL5PI;
+	omap_ctrl_writel(r, OMAP2_CONTROL_DEVCONF0);
+}
 
 static u32 __init omap_usb0_init(unsigned nwires, unsigned is_device)
 {
 	u32	syscon1 = 0;
 
 	if (cpu_is_omap24xx())
-		CONTROL_DEVCONF_REG &= ~USBT0WRMODEI(USB_BIDIR_TLL);
+		omap2_usb_devconf_clear(0, USB_BIDIR_TLL);
 
 	if (nwires == 0) {
 		if (cpu_class_is_omap1() && !cpu_is_omap15xx()) {
+			u32 l;
+
 			/* pulldown D+/D- */
-			USB_TRANSCEIVER_CTRL_REG &= ~(3 << 1);
+			l = omap_readl(USB_TRANSCEIVER_CTRL);
+			l &= ~(3 << 1);
+			omap_writel(l, USB_TRANSCEIVER_CTRL);
 		}
 		return 0;
 	}
@@ -134,6 +143,8 @@ static u32 __init omap_usb0_init(unsigned nwires, unsigned is_device)
 
 	/* internal transceiver (unavailable on 17xx, 24xx) */
 	if (!cpu_class_is_omap2() && nwires == 2) {
+		u32 l;
+
 		// omap_cfg_reg(P9_USB_DP);
 		// omap_cfg_reg(R8_USB_DM);
 
@@ -148,9 +159,11 @@ static u32 __init omap_usb0_init(unsigned nwires, unsigned is_device)
 		 *  - OTG support on this port not yet written
 		 */
 
-		USB_TRANSCEIVER_CTRL_REG &= ~(7 << 4);
+		l = omap_readl(USB_TRANSCEIVER_CTRL);
+		l &= ~(7 << 4);
 		if (!is_device)
-			USB_TRANSCEIVER_CTRL_REG |= (3 << 1);
+			l |= (3 << 1);
+		omap_writel(l, USB_TRANSCEIVER_CTRL);
 
 		return 3 << 16;
 	}
@@ -180,30 +193,39 @@ static u32 __init omap_usb0_init(unsigned nwires, unsigned is_device)
 	 * with VBUS switching and overcurrent detection.
 	 */
 
-	if (cpu_class_is_omap1() && nwires != 6)
-		USB_TRANSCEIVER_CTRL_REG &= ~CONF_USB2_UNI_R;
+	if (cpu_class_is_omap1() && nwires != 6) {
+		u32 l;
+
+		l = omap_readl(USB_TRANSCEIVER_CTRL);
+		l &= ~CONF_USB2_UNI_R;
+		omap_writel(l, USB_TRANSCEIVER_CTRL);
+	}
 
 	switch (nwires) {
 	case 3:
 		syscon1 = 2;
 		if (cpu_is_omap24xx())
-			CONTROL_DEVCONF_REG |= USBT0WRMODEI(USB_BIDIR);
+			omap2_usb_devconf_set(0, USB_BIDIR);
 		break;
 	case 4:
 		syscon1 = 1;
 		if (cpu_is_omap24xx())
-			CONTROL_DEVCONF_REG |= USBT0WRMODEI(USB_BIDIR);
+			omap2_usb_devconf_set(0, USB_BIDIR);
 		break;
 	case 6:
 		syscon1 = 3;
 		if (cpu_is_omap24xx()) {
 			omap_cfg_reg(J19_24XX_USB0_VP);
 			omap_cfg_reg(K20_24XX_USB0_VM);
-			CONTROL_DEVCONF_REG |= USBT0WRMODEI(USB_UNIDIR);
+			omap2_usb_devconf_set(0, USB_UNIDIR);
 		} else {
+			u32 l;
+
 			omap_cfg_reg(AA9_USB0_VP);
 			omap_cfg_reg(R9_USB0_VM);
-			USB_TRANSCEIVER_CTRL_REG |= CONF_USB2_UNI_R;
+			l = omap_readl(USB_TRANSCEIVER_CTRL);
+			l |= CONF_USB2_UNI_R;
+			omap_writel(l, USB_TRANSCEIVER_CTRL);
 		}
 		break;
 	default:
@@ -217,10 +239,15 @@ static u32 __init omap_usb1_init(unsigned nwires)
 {
 	u32	syscon1 = 0;
 
-	if (cpu_class_is_omap1() && !cpu_is_omap15xx() && nwires != 6)
-		USB_TRANSCEIVER_CTRL_REG &= ~CONF_USB1_UNI_R;
+	if (cpu_class_is_omap1() && !cpu_is_omap15xx() && nwires != 6) {
+		u32 l;
+
+		l = omap_readl(USB_TRANSCEIVER_CTRL);
+		l &= ~CONF_USB1_UNI_R;
+		omap_writel(l, USB_TRANSCEIVER_CTRL);
+	}
 	if (cpu_is_omap24xx())
-		CONTROL_DEVCONF_REG &= ~USBT1WRMODEI(USB_BIDIR_TLL);
+		omap2_usb_devconf_clear(1, USB_BIDIR_TLL);
 
 	if (nwires == 0)
 		return 0;
@@ -261,17 +288,17 @@ static u32 __init omap_usb1_init(unsigned nwires)
 		 * this TLL link is not using DP/DM
 		 */
 		syscon1 = 1;
-		CONTROL_DEVCONF_REG |= USBT1WRMODEI(USB_BIDIR_TLL);
+		omap2_usb_devconf_set(1, USB_BIDIR_TLL);
 		break;
 	case 3:
 		syscon1 = 2;
 		if (cpu_is_omap24xx())
-			CONTROL_DEVCONF_REG |= USBT1WRMODEI(USB_BIDIR);
+			omap2_usb_devconf_set(1, USB_BIDIR);
 		break;
 	case 4:
 		syscon1 = 1;
 		if (cpu_is_omap24xx())
-			CONTROL_DEVCONF_REG |= USBT1WRMODEI(USB_BIDIR);
+			omap2_usb_devconf_set(1, USB_BIDIR);
 		break;
 	case 6:
 		if (cpu_is_omap24xx())
@@ -279,8 +306,13 @@ static u32 __init omap_usb1_init(unsigned nwires)
 		syscon1 = 3;
 		omap_cfg_reg(USB1_VP);
 		omap_cfg_reg(USB1_VM);
-		if (!cpu_is_omap15xx())
-			USB_TRANSCEIVER_CTRL_REG |= CONF_USB1_UNI_R;
+		if (!cpu_is_omap15xx()) {
+			u32 l;
+
+			l = omap_readl(USB_TRANSCEIVER_CTRL);
+			l |= CONF_USB1_UNI_R;
+			omap_writel(l, USB_TRANSCEIVER_CTRL);
+		}
 		break;
 	default:
 bad:
@@ -295,8 +327,7 @@ static u32 __init omap_usb2_init(unsigned nwires, unsigned alt_pingroup)
 	u32	syscon1 = 0;
 
 	if (cpu_is_omap24xx()) {
-		CONTROL_DEVCONF_REG &= ~(USBT2WRMODEI(USB_BIDIR_TLL)
-					| USBT2TLL5PI);
+		omap2_usb2_disable_5pinbitll();
 		alt_pingroup = 0;
 	}
 
@@ -304,8 +335,13 @@ static u32 __init omap_usb2_init(unsigned nwires, unsigned alt_pingroup)
 	if (alt_pingroup || nwires == 0)
 		return 0;
 
-	if (cpu_class_is_omap1() && !cpu_is_omap15xx() && nwires != 6)
-		USB_TRANSCEIVER_CTRL_REG &= ~CONF_USB2_UNI_R;
+	if (cpu_class_is_omap1() && !cpu_is_omap15xx() && nwires != 6) {
+		u32 l;
+
+		l = omap_readl(USB_TRANSCEIVER_CTRL);
+		l &= ~CONF_USB2_UNI_R;
+		omap_writel(l, USB_TRANSCEIVER_CTRL);
+	}
 
 	/* external transceiver */
 	if (cpu_is_omap15xx()) {
@@ -343,17 +379,17 @@ static u32 __init omap_usb2_init(unsigned nwires, unsigned alt_pingroup)
 		 * this TLL link is not using DP/DM
 		 */
 		syscon1 = 1;
-		CONTROL_DEVCONF_REG |= USBT2WRMODEI(USB_BIDIR_TLL);
+		omap2_usb_devconf_set(2, USB_BIDIR_TLL);
 		break;
 	case 3:
 		syscon1 = 2;
 		if (cpu_is_omap24xx())
-			CONTROL_DEVCONF_REG |= USBT2WRMODEI(USB_BIDIR);
+			omap2_usb_devconf_set(2, USB_BIDIR);
 		break;
 	case 4:
 		syscon1 = 1;
 		if (cpu_is_omap24xx())
-			CONTROL_DEVCONF_REG |= USBT2WRMODEI(USB_BIDIR);
+			omap2_usb_devconf_set(2, USB_BIDIR);
 		break;
 	case 5:
 		if (!cpu_is_omap24xx())
@@ -364,8 +400,7 @@ static u32 __init omap_usb2_init(unsigned nwires, unsigned alt_pingroup)
 		 * set up OTG_SYSCON2.HMC_TLL{ATTACH,SPEED}
 		 */
 		syscon1 = 3;
-		CONTROL_DEVCONF_REG |= USBT2WRMODEI(USB_UNIDIR_TLL)
-					| USBT2TLL5PI;
+		omap2_usb2_enable_5pinunitll();
 		break;
 	case 6:
 		if (cpu_is_omap24xx())
@@ -375,9 +410,13 @@ static u32 __init omap_usb2_init(unsigned nwires, unsigned alt_pingroup)
 			omap_cfg_reg(USB2_VP);
 			omap_cfg_reg(USB2_VM);
 		} else {
+			u32 l;
+
 			omap_cfg_reg(AA9_USB2_VP);
 			omap_cfg_reg(R9_USB2_VM);
-			USB_TRANSCEIVER_CTRL_REG |= CONF_USB2_UNI_R;
+			l = omap_readl(USB_TRANSCEIVER_CTRL);
+			l |= CONF_USB2_UNI_R;
+			omap_writel(l, USB_TRANSCEIVER_CTRL);
 		}
 		break;
 	default:
@@ -391,15 +430,6 @@ bad:
 #endif
 
 /*-------------------------------------------------------------------------*/
-
-#if	defined(CONFIG_USB_GADGET_OMAP) || \
-	defined(CONFIG_USB_OHCI_HCD) || defined(CONFIG_USB_OHCI_HCD_MODULE) || \
-	(defined(CONFIG_USB_OTG) && defined(CONFIG_ARCH_OMAP_OTG))
-static void usb_release(struct device *dev)
-{
-	/* normally not freed */
-}
-#endif
 
 #ifdef	CONFIG_USB_GADGET_OMAP
 
@@ -427,7 +457,6 @@ static struct platform_device udc_device = {
 	.name		= "omap_udc",
 	.id		= -1,
 	.dev = {
-		.release		= usb_release,
 		.dma_mask		= &udc_dmamask,
 		.coherent_dma_mask	= 0xffffffff,
 	},
@@ -458,7 +487,6 @@ static struct platform_device ohci_device = {
 	.name			= "ohci",
 	.id			= -1,
 	.dev = {
-		.release		= usb_release,
 		.dma_mask		= &ohci_dmamask,
 		.coherent_dma_mask	= 0xffffffff,
 	},
@@ -485,9 +513,6 @@ static struct resource otg_resources[] = {
 static struct platform_device otg_device = {
 	.name		= "omap_otg",
 	.id		= -1,
-	.dev = {
-		.release		= usb_release,
-	},
 	.num_resources	= ARRAY_SIZE(otg_resources),
 	.resource	= otg_resources,
 };
@@ -495,10 +520,6 @@ static struct platform_device otg_device = {
 #endif
 
 /*-------------------------------------------------------------------------*/
-
-#define ULPD_CLOCK_CTRL_REG	__REG16(ULPD_CLOCK_CTRL)
-#define ULPD_SOFT_REQ_REG	__REG16(ULPD_SOFT_REQ)
-
 
 // FIXME correct answer depends on hmc_mode,
 // as does (on omap1) any nonzero value for config->otg port number
@@ -515,17 +536,17 @@ static struct platform_device otg_device = {
 void __init
 omap_otg_init(struct omap_usb_config *config)
 {
-	u32		syscon = OTG_SYSCON_1_REG & 0xffff;
+	u32		syscon;
 	int		status;
 	int		alt_pingroup = 0;
 
 	/* NOTE:  no bus or clock setup (yet?) */
 
-	syscon = OTG_SYSCON_1_REG & 0xffff;
+	syscon = omap_readl(OTG_SYSCON_1) & 0xffff;
 	if (!(syscon & OTG_RESET_DONE))
 		pr_debug("USB resets not complete?\n");
 
-	// OTG_IRQ_EN_REG = 0;
+	//omap_writew(0, OTG_IRQ_EN);
 
 	/* pin muxing and transceiver pinouts */
 	if (config->pins[0] > 2)	/* alt pingroup 2 */
@@ -533,8 +554,8 @@ omap_otg_init(struct omap_usb_config *config)
 	syscon |= omap_usb0_init(config->pins[0], is_usb0_device(config));
 	syscon |= omap_usb1_init(config->pins[1]);
 	syscon |= omap_usb2_init(config->pins[2], alt_pingroup);
-	pr_debug("OTG_SYSCON_1_REG = %08x\n", syscon);
-	OTG_SYSCON_1_REG = syscon;
+	pr_debug("OTG_SYSCON_1 = %08x\n", omap_readl(OTG_SYSCON_1));
+	omap_writel(syscon, OTG_SYSCON_1);
 
 	syscon = config->hmc_mode;
 	syscon |= USBX_SYNCHRO | (4 << 16) /* B_ASE0_BRST */;
@@ -543,9 +564,10 @@ omap_otg_init(struct omap_usb_config *config)
 		syscon |= OTG_EN;
 #endif
 	if (cpu_class_is_omap1())
-		pr_debug("USB_TRANSCEIVER_CTRL_REG = %03x\n", USB_TRANSCEIVER_CTRL_REG);
-	pr_debug("OTG_SYSCON_2_REG = %08x\n", syscon);
-	OTG_SYSCON_2_REG = syscon;
+		pr_debug("USB_TRANSCEIVER_CTRL = %03x\n",
+			 omap_readl(USB_TRANSCEIVER_CTRL));
+	pr_debug("OTG_SYSCON_2 = %08x\n", omap_readl(OTG_SYSCON_2));
+	omap_writel(syscon, OTG_SYSCON_2);
 
 	printk("USB: hmc %d", config->hmc_mode);
 	if (!alt_pingroup)
@@ -562,12 +584,19 @@ omap_otg_init(struct omap_usb_config *config)
 	printk("\n");
 
 	if (cpu_class_is_omap1()) {
+		u16 w;
+
 		/* leave USB clocks/controllers off until needed */
-		ULPD_SOFT_REQ_REG &= ~SOFT_USB_CLK_REQ;
-		ULPD_CLOCK_CTRL_REG &= ~USB_MCLK_EN;
-		ULPD_CLOCK_CTRL_REG |= DIS_USB_PVCI_CLK;
+		w = omap_readw(ULPD_SOFT_REQ);
+		w &= ~SOFT_USB_CLK_REQ;
+		omap_writew(w, ULPD_SOFT_REQ);
+
+		w = omap_readw(ULPD_CLOCK_CTRL);
+		w &= ~USB_MCLK_EN;
+		w |= DIS_USB_PVCI_CLK;
+		omap_writew(w, ULPD_CLOCK_CTRL);
 	}
-	syscon = OTG_SYSCON_1_REG;
+	syscon = omap_readl(OTG_SYSCON_1);
 	syscon |= HST_IDLE_EN|DEV_IDLE_EN|OTG_IDLE_EN;
 
 #ifdef	CONFIG_USB_GADGET_OMAP
@@ -604,8 +633,8 @@ omap_otg_init(struct omap_usb_config *config)
 			pr_debug("can't register OTG device, %d\n", status);
 	}
 #endif
-	pr_debug("OTG_SYSCON_1_REG = %08x\n", syscon);
-	OTG_SYSCON_1_REG = syscon;
+	pr_debug("OTG_SYSCON_1 = %08x\n", omap_readl(OTG_SYSCON_1));
+	omap_writel(syscon, OTG_SYSCON_1);
 
 	status = 0;
 }
@@ -618,18 +647,19 @@ static inline void omap_otg_init(struct omap_usb_config *config) {}
 
 #ifdef	CONFIG_ARCH_OMAP15XX
 
-#define ULPD_DPLL_CTRL_REG	__REG16(ULPD_DPLL_CTRL)
+/* ULPD_DPLL_CTRL */
 #define DPLL_IOB		(1 << 13)
 #define DPLL_PLL_ENABLE		(1 << 4)
 #define DPLL_LOCK		(1 << 0)
 
-#define ULPD_APLL_CTRL_REG	__REG16(ULPD_APLL_CTRL)
+/* ULPD_APLL_CTRL */
 #define APLL_NDPLL_SWITCH	(1 << 0)
 
 
 static void __init omap_1510_usb_init(struct omap_usb_config *config)
 {
 	unsigned int val;
+	u16 w;
 
 	omap_usb0_init(config->pins[0], is_usb0_device(config));
 	omap_usb1_init(config->pins[1]);
@@ -650,12 +680,22 @@ static void __init omap_1510_usb_init(struct omap_usb_config *config)
 	printk("\n");
 
 	/* use DPLL for 48 MHz function clock */
-	pr_debug("APLL %04x DPLL %04x REQ %04x\n", ULPD_APLL_CTRL_REG,
-			ULPD_DPLL_CTRL_REG, ULPD_SOFT_REQ_REG);
-	ULPD_APLL_CTRL_REG &= ~APLL_NDPLL_SWITCH;
-	ULPD_DPLL_CTRL_REG |= DPLL_IOB | DPLL_PLL_ENABLE;
-	ULPD_SOFT_REQ_REG |= SOFT_UDC_REQ | SOFT_DPLL_REQ;
-	while (!(ULPD_DPLL_CTRL_REG & DPLL_LOCK))
+	pr_debug("APLL %04x DPLL %04x REQ %04x\n", omap_readw(ULPD_APLL_CTRL),
+			omap_readw(ULPD_DPLL_CTRL), omap_readw(ULPD_SOFT_REQ));
+
+	w = omap_readw(ULPD_APLL_CTRL);
+	w &= ~APLL_NDPLL_SWITCH;
+	omap_writew(w, ULPD_APLL_CTRL);
+
+	w = omap_readw(ULPD_DPLL_CTRL);
+	w |= DPLL_IOB | DPLL_PLL_ENABLE;
+	omap_writew(w, ULPD_DPLL_CTRL);
+
+	w = omap_readw(ULPD_SOFT_REQ);
+	w |= SOFT_UDC_REQ | SOFT_DPLL_REQ;
+	omap_writew(w, ULPD_SOFT_REQ);
+
+	while (!(omap_readw(ULPD_DPLL_CTRL) & DPLL_LOCK))
 		cpu_relax();
 
 #ifdef	CONFIG_USB_GADGET_OMAP

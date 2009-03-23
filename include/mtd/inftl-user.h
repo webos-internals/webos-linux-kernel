@@ -1,12 +1,12 @@
 /*
- * $Id: inftl-user.h,v 1.2 2005/11/07 11:14:56 gleixner Exp $
- *
  * Parts of INFTL headers shared with userspace
  *
  */
 
 #ifndef __MTD_INFTL_USER_H__
 #define __MTD_INFTL_USER_H__
+
+#include <linux/types.h>
 
 #define	OSAK_VERSION	0x5120
 #define	PERCENTUSED	98

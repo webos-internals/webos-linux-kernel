@@ -577,9 +577,6 @@ static void neo_parse_modem(struct jsm_channel *ch, u8 signals)
 	jsm_printk(MSIGS, INFO, &ch->ch_bd->pci_dev,
 			"neo_parse_modem: port: %d msignals: %x\n", ch->ch_portnum, msignals);
 
-	if (!ch)
-		return;
-
 	/* Scrub off lower bits. They signify delta's, which I don't care about */
 	/* Keep DDCD and DDSR though */
 	msignals &= 0xf8;
@@ -998,7 +995,7 @@ static void neo_param(struct jsm_channel *ch)
 			{     50, B50     },
 		};
 
-		cflag = C_BAUD(ch->uart_port.info->tty);
+		cflag = C_BAUD(ch->uart_port.info->port.tty);
 		baud = 9600;
 		for (i = 0; i < ARRAY_SIZE(baud_rates); i++) {
 			if (baud_rates[i].cflag == cflag) {

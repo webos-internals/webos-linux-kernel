@@ -2,7 +2,7 @@
 #define _ASM_GENERIC_ATOMIC_H
 /*
  * Copyright (C) 2005 Silicon Graphics, Inc.
- *	Christoph Lameter <clameter@sgi.com>
+ *	Christoph Lameter
  *
  * Allows to provide arch independent atomic definitions without the need to
  * edit all arch specific atomic.h files.
@@ -251,7 +251,7 @@ static inline long atomic_long_add_unless(atomic_long_t *l, long a, long u)
 #define atomic_long_cmpxchg(l, old, new) \
 	(atomic_cmpxchg((atomic_t *)(l), (old), (new)))
 #define atomic_long_xchg(v, new) \
-	(atomic_xchg((atomic_t *)(l), (new)))
+	(atomic_xchg((atomic_t *)(v), (new)))
 
 #endif  /*  BITS_PER_LONG == 64  */
 

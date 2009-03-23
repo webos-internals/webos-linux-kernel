@@ -13,8 +13,9 @@
 #include <linux/linkage.h>
 #include <asm/asm-offsets.h>
 #include <asm/thread_info.h>
-#include <asm/cpu/mmu_context.h>
 #include <asm/unistd.h>
+#include <cpu/mmu_context.h>
+#include <asm/page.h>
 
 ! NOTE:
 ! GNU as (as of 2.9.1) changes bf/s into bt/s and bra, when the address
@@ -51,7 +52,7 @@
  *	syscall #
  *
  */
-#if defined(CONFIG_KGDB_NMI)
+#if defined(CONFIG_KGDB)
 NMI_VEC = 0x1c0			! Must catch early for debounce
 #endif
 
@@ -306,7 +307,7 @@ skip_restore:
 6:	or	k0, k2			! Set the IMASK-bits
 	ldc	k2, ssr
 	!
-#if defined(CONFIG_KGDB_NMI)
+#if defined(CONFIG_KGDB)
 	! Clear in_nmi
 	mov.l	6f, k0
 	mov	#0, k1
@@ -319,7 +320,7 @@ skip_restore:
 
 	.align	2
 5:	.long	0x00001000	! DSP
-#ifdef CONFIG_KGDB_NMI
+#ifdef CONFIG_KGDB
 6:	.long	in_nmi
 #endif
 7:	.long	0x30000000
@@ -375,9 +376,9 @@ tlb_miss:
 !
 	.balign 	512,0,512
 interrupt:
-	mov.l	2f, k2
 	mov.l	3f, k3
-#if defined(CONFIG_KGDB_NMI)
+#if defined(CONFIG_KGDB)
+	mov.l	2f, k2
 	! Debounce (filter nested NMI)
 	mov.l	@k2, k0
 	mov.l	5f, k1
@@ -389,16 +390,16 @@ interrupt:
 	rte
 	 nop
 	.align	2
+2:	.long	INTEVT
 5:	.long	NMI_VEC
 6:	.long	in_nmi
 0:
-#endif /* defined(CONFIG_KGDB_NMI) */
+#endif /* defined(CONFIG_KGDB) */
 	bra	handle_exception
 	 mov	#-1, k2		! interrupt exception marker
 
 	.align	2
 1:	.long	EXPEVT
-2:	.long	INTEVT
 3:	.long	ret_from_irq
 4:	.long	ret_from_exception
 
@@ -409,6 +410,27 @@ ENTRY(handle_exception)
 	! Using k0, k1 for scratch registers (r0_bank1, r1_bank),
 	! save all registers onto stack.
 	!
+
+#ifdef CONFIG_GUSA
+	! Check for roll back gRB (User and Kernel)
+	mov	r15, k0
+	shll	k0
+	bf/s	1f
+	 shll	k0
+	bf/s	1f
+	 stc	spc, k1
+	stc	r0_bank, k0
+	cmp/hs	k0, k1		! test k1 (saved PC) >= k0 (saved r0)
+	bt/s	2f
+	 stc	r1_bank, k1
+
+	add	#-2, k0
+	add	r15, k0
+	ldc	k0, spc		! PC = saved r0 + r15 - 2
+2:	mov	k1, r15		! SP = r1
+1:
+#endif
+
 	stc	ssr, k0		! Is it from kernel space?
 	shll	k0		! Check MD bit (bit30) by shifting it into...
 	shll	k0		!       ...the T bit

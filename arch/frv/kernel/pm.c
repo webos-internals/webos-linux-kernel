@@ -14,7 +14,6 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/pm.h>
-#include <linux/pm_legacy.h>
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/sysctl.h>
@@ -163,14 +162,11 @@ static int sysctl_pm_do_suspend(ctl_table *ctl, int write, struct file *filp,
 	if ((mode != 1) && (mode != 5))
 		return -EINVAL;
 
-	retval = pm_send_all(PM_SUSPEND, (void *)3);
-
 	if (retval == 0) {
 		if (mode == 5)
 		    retval = pm_do_bus_sleep();
 		else
 		    retval = pm_do_suspend();
-		pm_send_all(PM_RESUME, (void *)0);
 	}
 
 	return retval;
@@ -182,9 +178,6 @@ static int try_set_cmode(int new_cmode)
 		return -EINVAL;
 	if (!(clock_cmodes_permitted & (1<<new_cmode)))
 		return -EINVAL;
-
-	/* tell all the drivers we're suspending */
-	pm_send_all(PM_SUSPEND, (void *)3);
 
 	/* now change cmode */
 	local_irq_disable();
@@ -201,8 +194,6 @@ static int try_set_cmode(int new_cmode)
 	frv_dma_resume_all();
 	local_irq_enable();
 
-	/* tell all the drivers we're resuming */
-	pm_send_all(PM_RESUME, (void *)0);
 	return 0;
 }
 
@@ -220,7 +211,7 @@ static int cmode_procctl(ctl_table *ctl, int write, struct file *filp,
 	return try_set_cmode(new_cmode)?:*lenp;
 }
 
-static int cmode_sysctl(ctl_table *table, int __user *name, int nlen,
+static int cmode_sysctl(ctl_table *table,
 			void __user *oldval, size_t __user *oldlenp,
 			void __user *newval, size_t newlen)
 {
@@ -323,7 +314,7 @@ static int p0_procctl(ctl_table *ctl, int write, struct file *filp,
 	return try_set_p0(new_p0)?:*lenp;
 }
 
-static int p0_sysctl(ctl_table *table, int __user *name, int nlen,
+static int p0_sysctl(ctl_table *table,
 		     void __user *oldval, size_t __user *oldlenp,
 		     void __user *newval, size_t newlen)
 {
@@ -367,7 +358,7 @@ static int cm_procctl(ctl_table *ctl, int write, struct file *filp,
 	return try_set_cm(new_cm)?:*lenp;
 }
 
-static int cm_sysctl(ctl_table *table, int __user *name, int nlen,
+static int cm_sysctl(ctl_table *table,
 		     void __user *oldval, size_t __user *oldlenp,
 		     void __user *newval, size_t newlen)
 {

@@ -64,7 +64,6 @@ extern void sn_timer_init(void);
 extern unsigned long last_time_offset;
 extern void (*ia64_mark_idle) (int);
 extern void snidle(int);
-extern unsigned long long (*ia64_printk_clock)(void);
 
 unsigned long sn_rtc_cycles_per_second;
 EXPORT_SYMBOL(sn_rtc_cycles_per_second);
@@ -201,7 +200,7 @@ static int __cpuinitdata shub_1_1_found;
  * Set flag for enabling shub specific wars
  */
 
-static inline int __init is_shub_1_1(int nasid)
+static inline int __cpuinit is_shub_1_1(int nasid)
 {
 	unsigned long id;
 	int rev;
@@ -213,7 +212,7 @@ static inline int __init is_shub_1_1(int nasid)
 	return rev <= 2;
 }
 
-static void __init sn_check_for_wars(void)
+static void __cpuinit sn_check_for_wars(void)
 {
 	int cnode;
 
@@ -360,14 +359,6 @@ sn_scan_pcdp(void)
 
 static unsigned long sn2_rtc_initial;
 
-static unsigned long long ia64_sn2_printk_clock(void)
-{
-	unsigned long rtc_now = rtc_time();
-
-	return (rtc_now - sn2_rtc_initial) *
-		(1000000000 / sn_rtc_cycles_per_second);
-}
-
 /**
  * sn_setup - SN platform setup routine
  * @cmdline_p: kernel command line
@@ -468,8 +459,6 @@ void __init sn_setup(char **cmdline_p)
 
 	platform_intr_list[ACPI_INTERRUPT_CPEI] = IA64_CPE_VECTOR;
 
-	ia64_printk_clock = ia64_sn2_printk_clock;
-
 	printk("SGI SAL version %x.%02x\n", version >> 8, version & 0x00FF);
 
 	/*
@@ -523,7 +512,6 @@ static void __init sn_init_pdas(char **cmdline_p)
 	for_each_online_node(cnode) {
 		nodepdaindr[cnode] =
 		    alloc_bootmem_node(NODE_DATA(cnode), sizeof(nodepda_t));
-		memset(nodepdaindr[cnode], 0, sizeof(nodepda_t));
 		memset(nodepdaindr[cnode]->phys_cpuid, -1,
 		    sizeof(nodepdaindr[cnode]->phys_cpuid));
 		spin_lock_init(&nodepdaindr[cnode]->ptc_lock);
@@ -532,11 +520,9 @@ static void __init sn_init_pdas(char **cmdline_p)
 	/*
 	 * Allocate & initialize nodepda for TIOs.  For now, put them on node 0.
 	 */
-	for (cnode = num_online_nodes(); cnode < num_cnodes; cnode++) {
+	for (cnode = num_online_nodes(); cnode < num_cnodes; cnode++)
 		nodepdaindr[cnode] =
 		    alloc_bootmem_node(NODE_DATA(0), sizeof(nodepda_t));
-		memset(nodepdaindr[cnode], 0, sizeof(nodepda_t));
-	}
 
 	/*
 	 * Now copy the array of nodepda pointers to each nodepda.

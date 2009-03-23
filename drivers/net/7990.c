@@ -277,8 +277,6 @@ static int lance_rx (struct net_device *dev)
         volatile struct lance_init_block *ib = lp->init_block;
         volatile struct lance_rx_desc *rd;
         unsigned char bits;
-        int len = 0;                    /* XXX shut up gcc warnings */
-        struct sk_buff *skb = 0;        /* XXX shut up gcc warnings */
 #ifdef TEST_HITS
         int i;
 #endif
@@ -318,10 +316,10 @@ static int lance_rx (struct net_device *dev)
                         if (bits & LE_R1_FRA) dev->stats.rx_frame_errors++;
                         if (bits & LE_R1_EOP) dev->stats.rx_errors++;
                 } else {
-                        len = (rd->mblength & 0xfff) - 4;
-                        skb = dev_alloc_skb (len+2);
+			int len = (rd->mblength & 0xfff) - 4;
+			struct sk_buff *skb = dev_alloc_skb (len+2);
 
-                        if (skb == 0) {
+                        if (!skb) {
                                 printk ("%s: Memory squeeze, deferring packet.\n",
                                         dev->name);
                                 dev->stats.rx_dropped++;
@@ -338,7 +336,6 @@ static int lance_rx (struct net_device *dev)
                                          len);
                         skb->protocol = eth_type_trans (skb, dev);
 			netif_rx (skb);
-			dev->last_rx = jiffies;
 			dev->stats.rx_packets++;
 			dev->stats.rx_bytes += len;
                 }
@@ -508,6 +505,7 @@ int lance_open (struct net_device *dev)
 
 	return res;
 }
+EXPORT_SYMBOL_GPL(lance_open);
 
 int lance_close (struct net_device *dev)
 {
@@ -523,6 +521,7 @@ int lance_close (struct net_device *dev)
 
         return 0;
 }
+EXPORT_SYMBOL_GPL(lance_close);
 
 void lance_tx_timeout(struct net_device *dev)
 {
@@ -531,7 +530,7 @@ void lance_tx_timeout(struct net_device *dev)
 	dev->trans_start = jiffies;
 	netif_wake_queue (dev);
 }
-
+EXPORT_SYMBOL_GPL(lance_tx_timeout);
 
 int lance_start_xmit (struct sk_buff *skb, struct net_device *dev)
 {
@@ -588,6 +587,7 @@ int lance_start_xmit (struct sk_buff *skb, struct net_device *dev)
 
         return 0;
 }
+EXPORT_SYMBOL_GPL(lance_start_xmit);
 
 /* taken from the depca driver via a2065.c */
 static void lance_load_multicast (struct net_device *dev)
@@ -656,6 +656,7 @@ void lance_set_multicast (struct net_device *dev)
 	if (!stopped)
 		netif_start_queue (dev);
 }
+EXPORT_SYMBOL_GPL(lance_set_multicast);
 
 #ifdef CONFIG_NET_POLL_CONTROLLER
 void lance_poll(struct net_device *dev)

@@ -59,7 +59,7 @@ struct mdk_rdev_s
 	int		sb_loaded;
 	__u64		sb_events;
 	sector_t	data_offset;	/* start of data in array */
-	sector_t	sb_offset;
+	sector_t 	sb_start;	/* offset of the super block (in 512byte sectors) */
 	int		sb_size;	/* bytes in the superblock */
 	int		preferred_minor;	/* autorun support */
 
@@ -81,6 +81,16 @@ struct mdk_rdev_s
 #define	In_sync		2		/* device is in_sync with rest of array */
 #define	WriteMostly	4		/* Avoid reading if at all possible */
 #define	BarriersNotsupp	5		/* BIO_RW_BARRIER is not supported */
+#define	AllReserved	6		/* If whole device is reserved for
+					 * one array */
+#define	AutoDetected	7		/* added by auto-detect */
+#define Blocked		8		/* An error occured on an externally
+					 * managed array, don't allow writes
+					 * until it is cleared */
+#define StateChanged	9		/* Faulty or Blocked has changed during
+					 * interrupt, so it needs to be
+					 * notified by the thread */
+	wait_queue_head_t blocked_wait;
 
 	int desc_nr;			/* descriptor index in the superblock */
 	int raid_disk;			/* role of device in array */
@@ -105,6 +115,9 @@ struct mdk_rdev_s
 					   * in superblock.
 					   */
 	struct work_struct del_work;	/* used for delayed sysfs removal */
+
+	struct sysfs_dirent *sysfs_state; /* handle for 'state'
+					   * sysfs entry */
 };
 
 struct mddev_s
@@ -124,12 +137,18 @@ struct mddev_s
 	struct gendisk			*gendisk;
 
 	struct kobject			kobj;
+	int				hold_active;
+#define	UNTIL_IOCTL	1
+#define	UNTIL_STOP	2
 
 	/* Superblock information */
 	int				major_version,
 					minor_version,
 					patch_version;
 	int				persistent;
+	int 				external;	/* metadata is
+							 * managed externally */
+	char				metadata_type[17]; /* externally set*/
 	int				chunk_size;
 	time_t				ctime, utime;
 	int				level, layout;
@@ -137,7 +156,7 @@ struct mddev_s
 	int				raid_disks;
 	int				max_disks;
 	sector_t			size; /* used size of component devices */
-	sector_t			array_size; /* exported array size */
+	sector_t			array_sectors; /* exported array size */
 	__u64				events;
 
 	char				uuid[16];
@@ -170,13 +189,16 @@ struct mddev_s
 	int				sync_speed_min;
 	int				sync_speed_max;
 
+	/* resync even though the same disks are shared among md-devices */
+	int				parallel_resync;
+
 	int				ok_start_degraded;
 	/* recovery/resync flags 
 	 * NEEDED:   we might need to start a resync/recover
 	 * RUNNING:  a thread is running, or about to be started
 	 * SYNC:     actually doing a resync, not a recovery
-	 * ERR:      and IO error was detected - abort the resync/recovery
-	 * INTR:     someone requested a (clean) early abort.
+	 * RECOVER:  doing recovery, or need to try it.
+	 * INTR:     resync needs to be aborted for some reason
 	 * DONE:     thread is done and is waiting to be reaped
 	 * REQUEST:  user-space has requested a sync (used with SYNC)
 	 * CHECK:    user-space request for for check-only, no repair
@@ -186,7 +208,7 @@ struct mddev_s
 	 */
 #define	MD_RECOVERY_RUNNING	0
 #define	MD_RECOVERY_SYNC	1
-#define	MD_RECOVERY_ERR		2
+#define	MD_RECOVERY_RECOVER	2
 #define	MD_RECOVERY_INTR	3
 #define	MD_RECOVERY_DONE	4
 #define	MD_RECOVERY_NEEDED	5
@@ -196,10 +218,14 @@ struct mddev_s
 #define	MD_RECOVERY_FROZEN	9
 
 	unsigned long			recovery;
+	int				recovery_disabled; /* if we detect that recovery
+							    * will always fail, set this
+							    * so we don't loop trying */
 
 	int				in_sync;	/* know to not need resync */
 	struct mutex			reconfig_mutex;
-	atomic_t			active;
+	atomic_t			active;		/* general refcount */
+	atomic_t			openers;	/* number of active opens */
 
 	int				changed;	/* true if we might need to reread partition info */
 	int				degraded;	/* whether md should consider
@@ -216,6 +242,17 @@ struct mddev_s
 	atomic_t			recovery_active; /* blocks scheduled, but not written */
 	wait_queue_head_t		recovery_wait;
 	sector_t			recovery_cp;
+	sector_t			resync_min;	/* user requested sync
+							 * starts here */
+	sector_t			resync_max;	/* resync should pause
+							 * when it gets here */
+
+	struct sysfs_dirent		*sysfs_state;	/* handle for 'array_state'
+							 * file in sysfs.
+							 */
+	struct sysfs_dirent		*sysfs_action;  /* handle for 'sync_action' */
+
+	struct work_struct del_work;	/* used for delayed sysfs removal */
 
 	spinlock_t			write_lock;
 	wait_queue_head_t		sb_wait;	/* for waiting on superblock updates */
@@ -306,23 +343,17 @@ static inline char * mdname (mddev_t * mddev)
  * iterates through some rdev ringlist. It's safe to remove the
  * current 'rdev'. Dont touch 'tmp' though.
  */
-#define ITERATE_RDEV_GENERIC(head,rdev,tmp)				\
-									\
-	for ((tmp) = (head).next;					\
-		(rdev) = (list_entry((tmp), mdk_rdev_t, same_set)),	\
-			(tmp) = (tmp)->next, (tmp)->prev != &(head)	\
-		; )
+#define rdev_for_each_list(rdev, tmp, head)				\
+	list_for_each_entry_safe(rdev, tmp, head, same_set)
+
 /*
  * iterates through the 'same array disks' ringlist
  */
-#define ITERATE_RDEV(mddev,rdev,tmp)					\
-	ITERATE_RDEV_GENERIC((mddev)->disks,rdev,tmp)
+#define rdev_for_each(rdev, tmp, mddev)				\
+	list_for_each_entry_safe(rdev, tmp, &((mddev)->disks), same_set)
 
-/*
- * Iterates through 'pending RAID disks'
- */
-#define ITERATE_RDEV_PENDING(rdev,tmp)					\
-	ITERATE_RDEV_GENERIC(pending_raid_disks,rdev,tmp)
+#define rdev_for_each_rcu(rdev, mddev)				\
+	list_for_each_entry_rcu(rdev, &((mddev)->disks), same_set)
 
 typedef struct mdk_thread_s {
 	void			(*run) (mddev_t *mddev);

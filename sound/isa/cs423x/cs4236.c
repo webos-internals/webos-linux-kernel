@@ -19,7 +19,6 @@
  *
  */
 
-#include <sound/driver.h>
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/isa.h>
@@ -27,7 +26,7 @@
 #include <linux/pnp.h>
 #include <linux/moduleparam.h>
 #include <sound/core.h>
-#include <sound/cs4231.h>
+#include <sound/wss.h>
 #include <sound/mpu401.h>
 #include <sound/opl3.h>
 #include <sound/initval.h>
@@ -135,7 +134,7 @@ static int pnp_registered;
 #endif /* CONFIG_PNP */
 
 struct snd_card_cs4236 {
-	struct snd_cs4231 *chip;
+	struct snd_wss *chip;
 	struct resource *res_sb_port;
 #ifdef CONFIG_PNP
 	struct pnp_dev *wss;
@@ -240,6 +239,8 @@ static struct pnp_card_device_id snd_cs423x_pnpids[] = {
 	{ .id = "CSC9836", .devs = { { "CSC0000" }, { "CSC0010" }, { "CSC0003" } } },
 	/* Gallant SC-70P */
 	{ .id = "CSC9837", .devs = { { "CSC0000" }, { "CSC0010" }, { "CSC0003" } } },
+	/* Techmakers MF-4236PW */
+	{ .id = "CSCa736", .devs = { { "CSC0000" }, { "CSC0010" }, { "CSC0003" } } },
 	/* TerraTec AudioSystem EWS64XL - CS4236B */
 	{ .id = "CSCa836", .devs = { { "CSCa800" }, { "CSCa810" }, { "CSCa803" } } },
 	/* TerraTec AudioSystem EWS64XL - CS4236B */
@@ -270,29 +271,9 @@ static struct pnp_card_device_id snd_cs423x_pnpids[] = {
 MODULE_DEVICE_TABLE(pnp_card, snd_cs423x_pnpids);
 
 /* WSS initialization */
-static int __devinit snd_cs423x_pnp_init_wss(int dev, struct pnp_dev *pdev,
-					     struct pnp_resource_table *cfg)
+static int __devinit snd_cs423x_pnp_init_wss(int dev, struct pnp_dev *pdev)
 {
-	int err;
-
-	pnp_init_resource_table(cfg);
-	if (port[dev] != SNDRV_AUTO_PORT)
-		pnp_resource_change(&cfg->port_resource[0], port[dev], 4);
-	if (fm_port[dev] != SNDRV_AUTO_PORT && fm_port[dev] > 0)
-		pnp_resource_change(&cfg->port_resource[1], fm_port[dev], 4);
-	if (sb_port[dev] != SNDRV_AUTO_PORT)
-		pnp_resource_change(&cfg->port_resource[2], sb_port[dev], 16);
-	if (irq[dev] != SNDRV_AUTO_IRQ)
-		pnp_resource_change(&cfg->irq_resource[0], irq[dev], 1);
-	if (dma1[dev] != SNDRV_AUTO_DMA)
-		pnp_resource_change(&cfg->dma_resource[0], dma1[dev], 1);
-	if (dma2[dev] != SNDRV_AUTO_DMA)
-		pnp_resource_change(&cfg->dma_resource[1], dma2[dev] < 0 ? 4 : dma2[dev], 1);
-	err = pnp_manual_config_dev(pdev, cfg, 0);
-	if (err < 0)
-		snd_printk(KERN_ERR IDENT " WSS PnP manual resources are invalid, using auto config\n");
-	err = pnp_activate_dev(pdev);
-	if (err < 0) {
+	if (pnp_activate_dev(pdev) < 0) {
 		printk(KERN_ERR IDENT " WSS PnP configure failed for WSS (out of resources?)\n");
 		return -EBUSY;
 	}
@@ -311,19 +292,9 @@ static int __devinit snd_cs423x_pnp_init_wss(int dev, struct pnp_dev *pdev,
 }
 
 /* CTRL initialization */
-static int __devinit snd_cs423x_pnp_init_ctrl(int dev, struct pnp_dev *pdev,
-					      struct pnp_resource_table *cfg)
+static int __devinit snd_cs423x_pnp_init_ctrl(int dev, struct pnp_dev *pdev)
 {
-	int err;
-
-	pnp_init_resource_table(cfg);
-	if (cport[dev] != SNDRV_AUTO_PORT)
-		pnp_resource_change(&cfg->port_resource[0], cport[dev], 8);
-	err = pnp_manual_config_dev(pdev, cfg, 0);
-	if (err < 0)
-		snd_printk(KERN_ERR IDENT " CTRL PnP manual resources are invalid, using auto config\n");
-	err = pnp_activate_dev(pdev);
-	if (err < 0) {
+	if (pnp_activate_dev(pdev) < 0) {
 		printk(KERN_ERR IDENT " CTRL PnP configure failed for WSS (out of resources?)\n");
 		return -EBUSY;
 	}
@@ -333,21 +304,9 @@ static int __devinit snd_cs423x_pnp_init_ctrl(int dev, struct pnp_dev *pdev,
 }
 
 /* MPU initialization */
-static int __devinit snd_cs423x_pnp_init_mpu(int dev, struct pnp_dev *pdev,
-					     struct pnp_resource_table *cfg)
+static int __devinit snd_cs423x_pnp_init_mpu(int dev, struct pnp_dev *pdev)
 {
-	int err;
-
-	pnp_init_resource_table(cfg);
-	if (mpu_port[dev] != SNDRV_AUTO_PORT)
-		pnp_resource_change(&cfg->port_resource[0], mpu_port[dev], 2);
-	if (mpu_irq[dev] != SNDRV_AUTO_IRQ && mpu_irq[dev] >= 0)
-		pnp_resource_change(&cfg->irq_resource[0], mpu_irq[dev], 1);
-	err = pnp_manual_config_dev(pdev, cfg, 0);
-	if (err < 0)
-		snd_printk(KERN_ERR IDENT " MPU401 PnP manual resources are invalid, using auto config\n");
-	err = pnp_activate_dev(pdev);
-	if (err < 0) {
+	if (pnp_activate_dev(pdev) < 0) {
 		printk(KERN_ERR IDENT " MPU401 PnP configure failed for WSS (out of resources?)\n");
 		mpu_port[dev] = SNDRV_AUTO_PORT;
 		mpu_irq[dev] = SNDRV_AUTO_IRQ;
@@ -368,15 +327,9 @@ static int __devinit snd_cs423x_pnp_init_mpu(int dev, struct pnp_dev *pdev,
 static int __devinit snd_card_cs4232_pnp(int dev, struct snd_card_cs4236 *acard,
 					 struct pnp_dev *pdev)
 {
-	struct pnp_resource_table *cfg = kmalloc(sizeof(*cfg), GFP_KERNEL);
-
-	if (!cfg)
-		return -ENOMEM;
-	if (snd_cs423x_pnp_init_wss(dev, acard->wss, cfg) < 0) {
-		kfree(cfg);
+	acard->wss = pdev;
+	if (snd_cs423x_pnp_init_wss(dev, acard->wss) < 0)
 		return -EBUSY;
-	}
-	kfree(cfg);
 	cport[dev] = -1;
 	return 0;
 }
@@ -386,43 +339,33 @@ static int __devinit snd_card_cs423x_pnpc(int dev, struct snd_card_cs4236 *acard
 					  struct pnp_card_link *card,
 					  const struct pnp_card_device_id *id)
 {
-	struct pnp_resource_table *cfg = kmalloc(sizeof(*cfg), GFP_KERNEL);
-
-	if (!cfg)
-		return -ENOMEM;
-
 	acard->wss = pnp_request_card_device(card, id->devs[0].id, NULL);
 	if (acard->wss == NULL)
-		goto error;
+		return -EBUSY;
 	acard->ctrl = pnp_request_card_device(card, id->devs[1].id, NULL);
 	if (acard->ctrl == NULL)
-		goto error;
+		return -EBUSY;
 	if (id->devs[2].id[0]) {
 		acard->mpu = pnp_request_card_device(card, id->devs[2].id, NULL);
 		if (acard->mpu == NULL)
-			goto error;
+			return -EBUSY;
 	}
 
 	/* WSS initialization */
-	if (snd_cs423x_pnp_init_wss(dev, acard->wss, cfg) < 0)
-		goto error;
+	if (snd_cs423x_pnp_init_wss(dev, acard->wss) < 0)
+		return -EBUSY;
 
 	/* CTRL initialization */
 	if (acard->ctrl && cport[dev] > 0) {
-		if (snd_cs423x_pnp_init_ctrl(dev, acard->ctrl, cfg) < 0)
-			goto error;
+		if (snd_cs423x_pnp_init_ctrl(dev, acard->ctrl) < 0)
+			return -EBUSY;
 	}
 	/* MPU initialization */
 	if (acard->mpu && mpu_port[dev] > 0) {
-		if (snd_cs423x_pnp_init_mpu(dev, acard->mpu, cfg) < 0)
-			goto error;
+		if (snd_cs423x_pnp_init_mpu(dev, acard->mpu) < 0)
+			return -EBUSY;
 	}
-	kfree(cfg);
 	return 0;
-
- error:
-	kfree(cfg);
-	return -EBUSY;
 }
 #endif /* CONFIG_PNP */
 
@@ -455,7 +398,7 @@ static int __devinit snd_cs423x_probe(struct snd_card *card, int dev)
 {
 	struct snd_card_cs4236 *acard;
 	struct snd_pcm *pcm;
-	struct snd_cs4231 *chip;
+	struct snd_wss *chip;
 	struct snd_opl3 *opl3;
 	int err;
 
@@ -467,41 +410,37 @@ static int __devinit snd_cs423x_probe(struct snd_card *card, int dev)
 		}
 
 #ifdef CS4232
-	if ((err = snd_cs4231_create(card,
-				     port[dev],
-				     cport[dev],
-				     irq[dev],
-				     dma1[dev],
-				     dma2[dev],
-				     CS4231_HW_DETECT,
-				     0,
-				     &chip)) < 0)
+	err = snd_wss_create(card, port[dev], cport[dev],
+			     irq[dev],
+			     dma1[dev], dma2[dev],
+			     WSS_HW_DETECT, 0, &chip);
+	if (err < 0)
 		return err;
 	acard->chip = chip;
 
-	if ((err = snd_cs4231_pcm(chip, 0, &pcm)) < 0)
+	err = snd_wss_pcm(chip, 0, &pcm);
+	if (err < 0)
 		return err;
 
-	if ((err = snd_cs4231_mixer(chip)) < 0)
+	err = snd_wss_mixer(chip);
+	if (err < 0)
 		return err;
 
 #else /* CS4236 */
-	if ((err = snd_cs4236_create(card,
-				     port[dev],
-				     cport[dev],
-				     irq[dev],
-				     dma1[dev],
-				     dma2[dev],
-				     CS4231_HW_DETECT,
-				     0,
-				     &chip)) < 0)
+	err = snd_cs4236_create(card,
+				port[dev], cport[dev],
+				irq[dev], dma1[dev], dma2[dev],
+				WSS_HW_DETECT, 0, &chip);
+	if (err < 0)
 		return err;
 	acard->chip = chip;
 
-	if ((err = snd_cs4236_pcm(chip, 0, &pcm)) < 0)
+	err = snd_cs4236_pcm(chip, 0, &pcm);
+	if (err < 0)
 		return err;
 
-	if ((err = snd_cs4236_mixer(chip)) < 0)
+	err = snd_cs4236_mixer(chip);
+	if (err < 0)
 		return err;
 #endif
 	strcpy(card->driver, pcm->name);
@@ -514,7 +453,8 @@ static int __devinit snd_cs423x_probe(struct snd_card *card, int dev)
 	if (dma2[dev] >= 0)
 		sprintf(card->longname + strlen(card->longname), "&%d", dma2[dev]);
 
-	if ((err = snd_cs4231_timer(chip, 0, NULL)) < 0)
+	err = snd_wss_timer(chip, 0, NULL);
+	if (err < 0)
 		return err;
 
 	if (fm_port[dev] > 0 && fm_port[dev] != SNDRV_AUTO_PORT) {
@@ -548,19 +488,19 @@ static int __devinit snd_cs423x_isa_match(struct device *pdev,
 		return 0;
 
 	if (port[dev] == SNDRV_AUTO_PORT) {
-		snd_printk(KERN_ERR "%s: please specify port\n", pdev->bus_id);
+		dev_err(pdev, "please specify port\n");
 		return 0;
 	}
 	if (cport[dev] == SNDRV_AUTO_PORT) {
-		snd_printk(KERN_ERR "%s: please specify cport\n", pdev->bus_id);
+		dev_err(pdev, "please specify cport\n");
 		return 0;
 	}
 	if (irq[dev] == SNDRV_AUTO_IRQ) {
-		snd_printk(KERN_ERR "%s: please specify irq\n", pdev->bus_id);
+		dev_err(pdev, "please specify irq\n");
 		return 0;
 	}
 	if (dma1[dev] == SNDRV_AUTO_DMA) {
-		snd_printk(KERN_ERR "%s: please specify dma1\n", pdev->bus_id);
+		dev_err(pdev, "please specify dma1\n");
 		return 0;
 	}
 	return 1;

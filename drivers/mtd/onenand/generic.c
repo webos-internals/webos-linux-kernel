@@ -63,7 +63,7 @@ static int __devinit generic_onenand_probe(struct device *dev)
 	info->onenand.mmcontrol = pdata->mmcontrol;
 	info->onenand.irq = platform_get_irq(pdev, 0);
 
-	info->mtd.name = pdev->dev.bus_id;
+	info->mtd.name = dev_name(&pdev->dev);
 	info->mtd.priv = &info->onenand;
 	info->mtd.owner = THIS_MODULE;
 
@@ -76,7 +76,7 @@ static int __devinit generic_onenand_probe(struct device *dev)
 	err = parse_mtd_partitions(&info->mtd, part_probes, &info->parts, 0);
 	if (err > 0)
 		add_mtd_partitions(&info->mtd, info->parts, err);
-	else if (err < 0 && pdata->parts)
+	else if (err <= 0 && pdata->parts)
 		add_mtd_partitions(&info->mtd, pdata->parts, pdata->nr_parts);
 	else
 #endif

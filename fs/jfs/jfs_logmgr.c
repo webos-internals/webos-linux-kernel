@@ -69,6 +69,7 @@
 #include <linux/freezer.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
+#include <linux/seq_file.h>
 #include "jfs_incore.h"
 #include "jfs_filsys.h"
 #include "jfs_metapage.h"
@@ -208,6 +209,17 @@ static struct lmStat {
 } lmStat;
 #endif
 
+static void write_special_inodes(struct jfs_log *log,
+				 int (*writer)(struct address_space *))
+{
+	struct jfs_sb_info *sbi;
+
+	list_for_each_entry(sbi, &log->sb_list, log_list) {
+		writer(sbi->ipbmap->i_mapping);
+		writer(sbi->ipimap->i_mapping);
+		writer(sbi->direct_inode->i_mapping);
+	}
+}
 
 /*
  * NAME:	lmLog()
@@ -935,22 +947,13 @@ static int lmLogSync(struct jfs_log * log, int hard_sync)
 	struct lrd lrd;
 	int lsn;
 	struct logsyncblk *lp;
-	struct jfs_sb_info *sbi;
 	unsigned long flags;
 
 	/* push dirty metapages out to disk */
 	if (hard_sync)
-		list_for_each_entry(sbi, &log->sb_list, log_list) {
-			filemap_fdatawrite(sbi->ipbmap->i_mapping);
-			filemap_fdatawrite(sbi->ipimap->i_mapping);
-			filemap_fdatawrite(sbi->direct_inode->i_mapping);
-		}
+		write_special_inodes(log, filemap_fdatawrite);
 	else
-		list_for_each_entry(sbi, &log->sb_list, log_list) {
-			filemap_flush(sbi->ipbmap->i_mapping);
-			filemap_flush(sbi->ipimap->i_mapping);
-			filemap_flush(sbi->direct_inode->i_mapping);
-		}
+		write_special_inodes(log, filemap_flush);
 
 	/*
 	 *	forward syncpt
@@ -1165,7 +1168,7 @@ journal_found:
 	bd_release(bdev);
 
       close:		/* close external log device */
-	blkdev_put(bdev);
+	blkdev_put(bdev, FMODE_READ|FMODE_WRITE);
 
       free:		/* free log descriptor */
 	mutex_unlock(&jfs_log_mutex);
@@ -1511,7 +1514,7 @@ int lmLogClose(struct super_block *sb)
 	rc = lmLogShutdown(log);
 
 	bd_release(bdev);
-	blkdev_put(bdev);
+	blkdev_put(bdev, FMODE_READ|FMODE_WRITE);
 
 	kfree(log);
 
@@ -1536,7 +1539,6 @@ void jfs_flush_journal(struct jfs_log *log, int wait)
 {
 	int i;
 	struct tblock *target = NULL;
-	struct jfs_sb_info *sbi;
 
 	/* jfs_write_inode may call us during read-only mount */
 	if (!log)
@@ -1598,11 +1600,7 @@ void jfs_flush_journal(struct jfs_log *log, int wait)
 	if (wait < 2)
 		return;
 
-	list_for_each_entry(sbi, &log->sb_list, log_list) {
-		filemap_fdatawrite(sbi->ipbmap->i_mapping);
-		filemap_fdatawrite(sbi->ipimap->i_mapping);
-		filemap_fdatawrite(sbi->direct_inode->i_mapping);
-	}
+	write_special_inodes(log, filemap_fdatawrite);
 
 	/*
 	 * If there was recent activity, we may need to wait
@@ -1611,6 +1609,7 @@ void jfs_flush_journal(struct jfs_log *log, int wait)
 	if ((!list_empty(&log->cqueue)) || !list_empty(&log->synclist)) {
 		for (i = 0; i < 200; i++) {	/* Too much? */
 			msleep(250);
+			write_special_inodes(log, filemap_fdatawrite);
 			if (list_empty(&log->cqueue) &&
 			    list_empty(&log->synclist))
 				break;
@@ -2347,7 +2346,7 @@ int jfsIOWait(void *arg)
 
 	do {
 		spin_lock_irq(&log_redrive_lock);
-		while ((bp = log_redrive_list) != 0) {
+		while ((bp = log_redrive_list)) {
 			log_redrive_list = bp->l_redrive_next;
 			bp->l_redrive_next = NULL;
 			spin_unlock_irq(&log_redrive_lock);
@@ -2505,13 +2504,9 @@ exit:
 }
 
 #ifdef CONFIG_JFS_STATISTICS
-int jfs_lmstats_read(char *buffer, char **start, off_t offset, int length,
-		      int *eof, void *data)
+static int jfs_lmstats_proc_show(struct seq_file *m, void *v)
 {
-	int len = 0;
-	off_t begin;
-
-	len += sprintf(buffer,
+	seq_printf(m,
 		       "JFS Logmgr stats\n"
 		       "================\n"
 		       "commits = %d\n"
@@ -2524,19 +2519,19 @@ int jfs_lmstats_read(char *buffer, char **start, off_t offset, int length,
 		       lmStat.pagedone,
 		       lmStat.full_page,
 		       lmStat.partial_page);
-
-	begin = offset;
-	*start = buffer + begin;
-	len -= begin;
-
-	if (len > length)
-		len = length;
-	else
-		*eof = 1;
-
-	if (len < 0)
-		len = 0;
-
-	return len;
+	return 0;
 }
+
+static int jfs_lmstats_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, jfs_lmstats_proc_show, NULL);
+}
+
+const struct file_operations jfs_lmstats_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= jfs_lmstats_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 #endif /* CONFIG_JFS_STATISTICS */

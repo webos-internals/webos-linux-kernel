@@ -23,7 +23,7 @@
 #include <linux/libata.h>
 
 #define DRV_NAME	"pata_hpt3x3"
-#define DRV_VERSION	"0.5.3"
+#define DRV_VERSION	"0.6.1"
 
 /**
  *	hpt3x3_set_piomode		-	PIO setup
@@ -80,14 +80,48 @@ static void hpt3x3_set_dmamode(struct ata_port *ap, struct ata_device *adev)
 	r2 &= ~(0x11 << dn);	/* Clear MWDMA and UDMA bits */
 
 	if (adev->dma_mode >= XFER_UDMA_0)
-		r2 |= (0x10 << dn);	/* Ultra mode */
+		r2 |= (0x01 << dn);	/* Ultra mode */
 	else
-		r2 |= (0x01 << dn);	/* MWDMA */
+		r2 |= (0x10 << dn);	/* MWDMA */
 
 	pci_write_config_dword(pdev, 0x44, r1);
 	pci_write_config_dword(pdev, 0x48, r2);
 }
-#endif /* CONFIG_PATA_HPT3X3_DMA */
+
+/**
+ *	hpt3x3_freeze		-	DMA workaround
+ *	@ap: port to freeze
+ *
+ *	When freezing an HPT3x3 we must stop any pending DMA before
+ *	writing to the control register or the chip will hang
+ */
+
+static void hpt3x3_freeze(struct ata_port *ap)
+{
+	void __iomem *mmio = ap->ioaddr.bmdma_addr;
+
+	iowrite8(ioread8(mmio + ATA_DMA_CMD) & ~ ATA_DMA_START,
+			mmio + ATA_DMA_CMD);
+	ata_sff_dma_pause(ap);
+	ata_sff_freeze(ap);
+}
+
+/**
+ *	hpt3x3_bmdma_setup	-	DMA workaround
+ *	@qc: Queued command
+ *
+ *	When issuing BMDMA we must clean up the error/active bits in
+ *	software on this device
+ */
+
+static void hpt3x3_bmdma_setup(struct ata_queued_cmd *qc)
+{
+	struct ata_port *ap = qc->ap;
+	u8 r = ioread8(ap->ioaddr.bmdma_addr + ATA_DMA_STATUS);
+	r |= ATA_DMA_INTR | ATA_DMA_ERR;
+	iowrite8(r, ap->ioaddr.bmdma_addr + ATA_DMA_STATUS);
+	return ata_bmdma_setup(qc);
+}
 
 /**
  *	hpt3x3_atapi_dma	-	ATAPI DMA check
@@ -101,59 +135,23 @@ static int hpt3x3_atapi_dma(struct ata_queued_cmd *qc)
 	return 1;
 }
 
+#endif /* CONFIG_PATA_HPT3X3_DMA */
+
 static struct scsi_host_template hpt3x3_sht = {
-	.module			= THIS_MODULE,
-	.name			= DRV_NAME,
-	.ioctl			= ata_scsi_ioctl,
-	.queuecommand		= ata_scsi_queuecmd,
-	.can_queue		= ATA_DEF_QUEUE,
-	.this_id		= ATA_SHT_THIS_ID,
-	.sg_tablesize		= LIBATA_MAX_PRD,
-	.cmd_per_lun		= ATA_SHT_CMD_PER_LUN,
-	.emulated		= ATA_SHT_EMULATED,
-	.use_clustering		= ATA_SHT_USE_CLUSTERING,
-	.proc_name		= DRV_NAME,
-	.dma_boundary		= ATA_DMA_BOUNDARY,
-	.slave_configure	= ata_scsi_slave_config,
-	.slave_destroy		= ata_scsi_slave_destroy,
-	.bios_param		= ata_std_bios_param,
+	ATA_BMDMA_SHT(DRV_NAME),
 };
 
 static struct ata_port_operations hpt3x3_port_ops = {
+	.inherits	= &ata_bmdma_port_ops,
+	.cable_detect	= ata_cable_40wire,
 	.set_piomode	= hpt3x3_set_piomode,
 #if defined(CONFIG_PATA_HPT3X3_DMA)
 	.set_dmamode	= hpt3x3_set_dmamode,
-#endif
-	.mode_filter	= ata_pci_default_filter,
-
-	.tf_load	= ata_tf_load,
-	.tf_read	= ata_tf_read,
-	.check_status 	= ata_check_status,
-	.exec_command	= ata_exec_command,
-	.dev_select 	= ata_std_dev_select,
-
-	.freeze		= ata_bmdma_freeze,
-	.thaw		= ata_bmdma_thaw,
-	.error_handler	= ata_bmdma_error_handler,
-	.post_internal_cmd = ata_bmdma_post_internal_cmd,
-	.cable_detect	= ata_cable_40wire,
-
-	.bmdma_setup 	= ata_bmdma_setup,
-	.bmdma_start 	= ata_bmdma_start,
-	.bmdma_stop	= ata_bmdma_stop,
-	.bmdma_status 	= ata_bmdma_status,
+	.bmdma_setup	= hpt3x3_bmdma_setup,
 	.check_atapi_dma= hpt3x3_atapi_dma,
-
-	.qc_prep 	= ata_qc_prep,
-	.qc_issue	= ata_qc_issue_prot,
-
-	.data_xfer	= ata_data_xfer,
-
-	.irq_handler	= ata_interrupt,
-	.irq_clear	= ata_bmdma_irq_clear,
-	.irq_on		= ata_irq_on,
-
-	.port_start	= ata_sff_port_start,
+	.freeze		= hpt3x3_freeze,
+#endif
+	
 };
 
 /**
@@ -189,7 +187,6 @@ static int hpt3x3_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	static int printed_version;
 	static const struct ata_port_info info = {
-		.sht = &hpt3x3_sht,
 		.flags = ATA_FLAG_SLAVE_POSS,
 		.pio_mask = 0x1f,
 #if defined(CONFIG_PATA_HPT3X3_DMA)
@@ -244,15 +241,15 @@ static int hpt3x3_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioaddr->altstatus_addr =
 		ioaddr->ctl_addr = base + offset_ctl[i];
 		ioaddr->scr_addr = NULL;
-		ata_std_ports(ioaddr);
+		ata_sff_std_ports(ioaddr);
 		ioaddr->bmdma_addr = base + 8 * i;
 
 		ata_port_pbar_desc(ap, 4, -1, "ioport");
 		ata_port_pbar_desc(ap, 4, offset_cmd[i], "cmd");
 	}
 	pci_set_master(pdev);
-	return ata_host_activate(host, pdev->irq, ata_interrupt, IRQF_SHARED,
-				 &hpt3x3_sht);
+	return ata_host_activate(host, pdev->irq, ata_sff_interrupt,
+				 IRQF_SHARED, &hpt3x3_sht);
 }
 
 #ifdef CONFIG_PM

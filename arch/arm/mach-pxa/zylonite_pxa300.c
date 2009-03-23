@@ -16,12 +16,15 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/i2c.h>
+#include <linux/i2c/pca953x.h>
 
 #include <asm/gpio.h>
-#include <asm/arch/mfp-pxa300.h>
-#include <asm/arch/zylonite.h>
+#include <mach/mfp-pxa300.h>
+#include <mach/i2c.h>
+#include <mach/zylonite.h>
 
-#define ARRAY_AND_SIZE(x)	(x), ARRAY_SIZE(x)
+#include "generic.h"
 
 /* PXA300/PXA310 common configurations */
 static mfp_cfg_t common_mfp_cfg[] __initdata = {
@@ -50,16 +53,17 @@ static mfp_cfg_t common_mfp_cfg[] __initdata = {
 	GPIO75_LCD_BIAS,
 	GPIO76_LCD_VSYNC,
 	GPIO127_LCD_CS_N,
+	GPIO20_PWM3_OUT,	/* backlight */
 
 	/* BTUART */
 	GPIO111_UART2_RTS,
-	GPIO112_UART2_RXD,
+	GPIO112_UART2_RXD | MFP_LPM_EDGE_FALL,
 	GPIO113_UART2_TXD,
-	GPIO114_UART2_CTS,
+	GPIO114_UART2_CTS | MFP_LPM_EDGE_BOTH,
 
 	/* STUART */
 	GPIO109_UART3_TXD,
-	GPIO110_UART3_RXD,
+	GPIO110_UART3_RXD | MFP_LPM_EDGE_FALL,
 
 	/* AC97 */
 	GPIO23_AC97_nACRESET,
@@ -69,17 +73,26 @@ static mfp_cfg_t common_mfp_cfg[] __initdata = {
 	GPIO27_AC97_SDATA_OUT,
 	GPIO28_AC97_SYNC,
 
+	/* SSP3 */
+	GPIO91_SSP3_SCLK,
+	GPIO92_SSP3_FRM,
+	GPIO93_SSP3_TXD,
+	GPIO94_SSP3_RXD,
+
+	/* WM9713 IRQ */
+	GPIO26_GPIO,
+
 	/* Keypad */
-	GPIO107_KP_DKIN_0,
-	GPIO108_KP_DKIN_1,
-	GPIO115_KP_MKIN_0,
-	GPIO116_KP_MKIN_1,
-	GPIO117_KP_MKIN_2,
-	GPIO118_KP_MKIN_3,
-	GPIO119_KP_MKIN_4,
-	GPIO120_KP_MKIN_5,
-	GPIO2_2_KP_MKIN_6,
-	GPIO3_2_KP_MKIN_7,
+	GPIO107_KP_DKIN_0 | MFP_LPM_EDGE_BOTH,
+	GPIO108_KP_DKIN_1 | MFP_LPM_EDGE_BOTH,
+	GPIO115_KP_MKIN_0 | MFP_LPM_EDGE_BOTH,
+	GPIO116_KP_MKIN_1 | MFP_LPM_EDGE_BOTH,
+	GPIO117_KP_MKIN_2 | MFP_LPM_EDGE_BOTH,
+	GPIO118_KP_MKIN_3 | MFP_LPM_EDGE_BOTH,
+	GPIO119_KP_MKIN_4 | MFP_LPM_EDGE_BOTH,
+	GPIO120_KP_MKIN_5 | MFP_LPM_EDGE_BOTH,
+	GPIO2_2_KP_MKIN_6 | MFP_LPM_EDGE_BOTH,
+	GPIO3_2_KP_MKIN_7 | MFP_LPM_EDGE_BOTH,
 	GPIO121_KP_MKOUT_0,
 	GPIO122_KP_MKOUT_1,
 	GPIO123_KP_MKOUT_2,
@@ -88,16 +101,41 @@ static mfp_cfg_t common_mfp_cfg[] __initdata = {
 	GPIO4_2_KP_MKOUT_5,
 	GPIO5_2_KP_MKOUT_6,
 	GPIO6_2_KP_MKOUT_7,
+
+	/* MMC1 */
+	GPIO3_MMC1_DAT0,
+	GPIO4_MMC1_DAT1 | MFP_LPM_EDGE_BOTH,
+	GPIO5_MMC1_DAT2,
+	GPIO6_MMC1_DAT3,
+	GPIO7_MMC1_CLK,
+	GPIO8_MMC1_CMD,	/* CMD0 for slot 0 */
+	GPIO15_GPIO,	/* CMD1 default as GPIO for slot 0 */
+
+	/* MMC2 */
+	GPIO9_MMC2_DAT0,
+	GPIO10_MMC2_DAT1 | MFP_LPM_EDGE_BOTH,
+	GPIO11_MMC2_DAT2,
+	GPIO12_MMC2_DAT3,
+	GPIO13_MMC2_CLK,
+	GPIO14_MMC2_CMD,
+
+	/* USB Host */
+	GPIO0_2_USBH_PEN,
+	GPIO1_2_USBH_PWR,
+
+	/* Standard I2C */
+	GPIO21_I2C_SCL,
+	GPIO22_I2C_SDA,
 };
 
 static mfp_cfg_t pxa300_mfp_cfg[] __initdata = {
 	/* FFUART */
-	GPIO30_UART1_RXD,
+	GPIO30_UART1_RXD | MFP_LPM_EDGE_FALL,
 	GPIO31_UART1_TXD,
 	GPIO32_UART1_CTS,
 	GPIO37_UART1_RTS,
 	GPIO33_UART1_DCD,
-	GPIO34_UART1_DSR,
+	GPIO34_UART1_DSR | MFP_LPM_EDGE_FALL,
 	GPIO35_UART1_RI,
 	GPIO36_UART1_DTR,
 
@@ -108,7 +146,7 @@ static mfp_cfg_t pxa300_mfp_cfg[] __initdata = {
 
 static mfp_cfg_t pxa310_mfp_cfg[] __initdata = {
 	/* FFUART */
-	GPIO99_UART1_RXD,
+	GPIO99_UART1_RXD | MFP_LPM_EDGE_FALL,
 	GPIO100_UART1_TXD,
 	GPIO101_UART1_CTS,
 	GPIO106_UART1_RTS,
@@ -116,6 +154,14 @@ static mfp_cfg_t pxa310_mfp_cfg[] __initdata = {
 	/* Ethernet */
 	GPIO2_nCS3,
 	GPIO102_GPIO,
+
+	/* MMC3 */
+	GPIO7_2_MMC3_DAT0,
+	GPIO8_2_MMC3_DAT1 | MFP_LPM_EDGE_BOTH,
+	GPIO9_2_MMC3_DAT2,
+	GPIO10_2_MMC3_DAT3,
+	GPIO103_MMC3_CLK,
+	GPIO105_MMC3_CMD,
 };
 
 #define NUM_LCD_DETECT_PINS	7
@@ -163,6 +209,39 @@ static void __init zylonite_detect_lcd_panel(void)
 		pxa3xx_mfp_write(lcd_detect_pins[i], mfpr_save[i]);
 }
 
+#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+static struct pca953x_platform_data gpio_exp[] = {
+	[0] = {
+		.gpio_base	= 128,
+	},
+	[1] = {
+		.gpio_base	= 144,
+	},
+};
+
+static struct i2c_board_info zylonite_i2c_board_info[] = {
+	{
+		.type		= "pca9539",
+		.addr		= 0x74,
+		.platform_data	= &gpio_exp[0],
+		.irq		= IRQ_GPIO(18),
+	}, {
+		.type		= "pca9539",
+		.addr		= 0x75,
+		.platform_data	= &gpio_exp[1],
+		.irq		= IRQ_GPIO(19),
+	},
+};
+
+static void __init zylonite_init_i2c(void)
+{
+	pxa_set_i2c_info(NULL);
+	i2c_register_board_info(0, ARRAY_AND_SIZE(zylonite_i2c_board_info));
+}
+#else
+static inline void zylonite_init_i2c(void) {}
+#endif
+
 void __init zylonite_pxa300_init(void)
 {
 	if (cpu_is_pxa300() || cpu_is_pxa310()) {
@@ -172,8 +251,14 @@ void __init zylonite_pxa300_init(void)
 		/* detect LCD panel */
 		zylonite_detect_lcd_panel();
 
-		/* GPIO pin assignment */
-		gpio_backlight = mfp_to_gpio(MFP_PIN_GPIO20);
+		/* MMC card detect & write protect for controller 0 */
+		zylonite_mmc_slot[0].gpio_cd  = EXT_GPIO(0);
+		zylonite_mmc_slot[0].gpio_wp  = EXT_GPIO(2);
+
+		/* WM9713 IRQ */
+		wm9713_irq = mfp_to_gpio(MFP_PIN_GPIO26);
+
+		zylonite_init_i2c();
 	}
 
 	if (cpu_is_pxa300()) {
@@ -184,5 +269,13 @@ void __init zylonite_pxa300_init(void)
 	if (cpu_is_pxa310()) {
 		pxa3xx_mfp_config(ARRAY_AND_SIZE(pxa310_mfp_cfg));
 		gpio_eth_irq = mfp_to_gpio(MFP_PIN_GPIO102);
+
+		/* MMC card detect & write protect for controller 2 */
+		zylonite_mmc_slot[2].gpio_cd = EXT_GPIO(30);
+		zylonite_mmc_slot[2].gpio_wp = EXT_GPIO(31);
 	}
+
+	/* GPIOs for Debug LEDs */
+	gpio_debug_led1 = EXT_GPIO(25);
+	gpio_debug_led2 = EXT_GPIO(26);
 }

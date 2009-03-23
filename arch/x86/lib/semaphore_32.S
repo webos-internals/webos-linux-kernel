@@ -29,90 +29,7 @@
  * registers (%eax, %edx and %ecx) except %eax whish is either a return
  * value or just clobbered..
  */
-	.section .sched.text
-ENTRY(__down_failed)
-	CFI_STARTPROC
-	FRAME
-	pushl %edx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET edx,0
-	pushl %ecx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET ecx,0
-	call __down
-	popl %ecx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE ecx
-	popl %edx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE edx
-	ENDFRAME
-	ret
-	CFI_ENDPROC
-	END(__down_failed)
-
-ENTRY(__down_failed_interruptible)
-	CFI_STARTPROC
-	FRAME
-	pushl %edx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET edx,0
-	pushl %ecx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET ecx,0
-	call __down_interruptible
-	popl %ecx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE ecx
-	popl %edx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE edx
-	ENDFRAME
-	ret
-	CFI_ENDPROC
-	END(__down_failed_interruptible)
-
-ENTRY(__down_failed_trylock)
-	CFI_STARTPROC
-	FRAME
-	pushl %edx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET edx,0
-	pushl %ecx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET ecx,0
-	call __down_trylock
-	popl %ecx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE ecx
-	popl %edx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE edx
-	ENDFRAME
-	ret
-	CFI_ENDPROC
-	END(__down_failed_trylock)
-
-ENTRY(__up_wakeup)
-	CFI_STARTPROC
-	FRAME
-	pushl %edx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET edx,0
-	pushl %ecx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET ecx,0
-	call __up
-	popl %ecx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE ecx
-	popl %edx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE edx
-	ENDFRAME
-	ret
-	CFI_ENDPROC
-	END(__up_wakeup)
+	.section .sched.text, "ax"
 
 /*
  * rw spinlock fallbacks
@@ -132,7 +49,7 @@ ENTRY(__write_lock_failed)
 	ENDFRAME
 	ret
 	CFI_ENDPROC
-	END(__write_lock_failed)
+	ENDPROC(__write_lock_failed)
 
 ENTRY(__read_lock_failed)
 	CFI_STARTPROC
@@ -148,7 +65,7 @@ ENTRY(__read_lock_failed)
 	ENDFRAME
 	ret
 	CFI_ENDPROC
-	END(__read_lock_failed)
+	ENDPROC(__read_lock_failed)
 
 #endif
 
@@ -170,7 +87,7 @@ ENTRY(call_rwsem_down_read_failed)
 	CFI_ADJUST_CFA_OFFSET -4
 	ret
 	CFI_ENDPROC
-	END(call_rwsem_down_read_failed)
+	ENDPROC(call_rwsem_down_read_failed)
 
 ENTRY(call_rwsem_down_write_failed)
 	CFI_STARTPROC
@@ -182,7 +99,7 @@ ENTRY(call_rwsem_down_write_failed)
 	CFI_ADJUST_CFA_OFFSET -4
 	ret
 	CFI_ENDPROC
-	END(call_rwsem_down_write_failed)
+	ENDPROC(call_rwsem_down_write_failed)
 
 ENTRY(call_rwsem_wake)
 	CFI_STARTPROC
@@ -196,7 +113,7 @@ ENTRY(call_rwsem_wake)
 	CFI_ADJUST_CFA_OFFSET -4
 1:	ret
 	CFI_ENDPROC
-	END(call_rwsem_wake)
+	ENDPROC(call_rwsem_wake)
 
 /* Fix up special calling conventions */
 ENTRY(call_rwsem_downgrade_wake)
@@ -214,6 +131,6 @@ ENTRY(call_rwsem_downgrade_wake)
 	CFI_ADJUST_CFA_OFFSET -4
 	ret
 	CFI_ENDPROC
-	END(call_rwsem_downgrade_wake)
+	ENDPROC(call_rwsem_downgrade_wake)
 
 #endif

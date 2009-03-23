@@ -59,7 +59,7 @@ unsigned long profile_pc(struct pt_regs *regs)
 
 	if (in_lock_functions(pc)) {
 		fp = regs->ARM_fp;
-		pc = pc_pointer(((unsigned long *)fp)[-1]);
+		pc = ((unsigned long *)fp)[-1];
 	}
 
 	return pc;
@@ -78,17 +78,6 @@ static unsigned long dummy_gettimeoffset(void)
 	return 0;
 }
 #endif
-
-/*
- * An implementation of printk_clock() independent from
- * sched_clock().  This avoids non-bootable kernels when
- * printk_clock is enabled.
- */
-unsigned long long printk_clock(void)
-{
-	return (unsigned long long)(jiffies - INITIAL_JIFFIES) *
-			(1000000000 / HZ);
-}
 
 static unsigned long next_rtc_update;
 
@@ -141,7 +130,9 @@ static const struct leds_evt_name evt_names[] = {
 	{ "red",   led_red_on,   led_red_off   },
 };
 
-static ssize_t leds_store(struct sys_device *dev, const char *buf, size_t size)
+static ssize_t leds_store(struct sys_device *dev,
+			struct sysdev_attribute *attr,
+			const char *buf, size_t size)
 {
 	int ret = -EINVAL, len = strcspn(buf, " ");
 
@@ -195,7 +186,7 @@ static int leds_shutdown(struct sys_device *dev)
 }
 
 static struct sysdev_class leds_sysclass = {
-	set_kset_name("leds"),
+	.name		= "leds",
 	.shutdown	= leds_shutdown,
 	.suspend	= leds_suspend,
 	.resume		= leds_resume,
@@ -336,7 +327,9 @@ void timer_tick(void)
 	profile_tick(CPU_PROFILING);
 	do_leds();
 	do_set_rtc();
+	write_seqlock(&xtime_lock);
 	do_timer(1);
+	write_sequnlock(&xtime_lock);
 #ifndef CONFIG_SMP
 	update_process_times(user_mode(get_irq_regs()));
 #endif
@@ -369,112 +362,10 @@ static int timer_resume(struct sys_device *dev)
 #endif
 
 static struct sysdev_class timer_sysclass = {
-	set_kset_name("timer"),
+	.name		= "timer",
 	.suspend	= timer_suspend,
 	.resume		= timer_resume,
 };
-
-#ifdef CONFIG_NO_IDLE_HZ
-static int timer_dyn_tick_enable(void)
-{
-	struct dyn_tick_timer *dyn_tick = system_timer->dyn_tick;
-	unsigned long flags;
-	int ret = -ENODEV;
-
-	if (dyn_tick) {
-		spin_lock_irqsave(&dyn_tick->lock, flags);
-		ret = 0;
-		if (!(dyn_tick->state & DYN_TICK_ENABLED)) {
-			ret = dyn_tick->enable();
-
-			if (ret == 0)
-				dyn_tick->state |= DYN_TICK_ENABLED;
-		}
-		spin_unlock_irqrestore(&dyn_tick->lock, flags);
-	}
-
-	return ret;
-}
-
-static int timer_dyn_tick_disable(void)
-{
-	struct dyn_tick_timer *dyn_tick = system_timer->dyn_tick;
-	unsigned long flags;
-	int ret = -ENODEV;
-
-	if (dyn_tick) {
-		spin_lock_irqsave(&dyn_tick->lock, flags);
-		ret = 0;
-		if (dyn_tick->state & DYN_TICK_ENABLED) {
-			ret = dyn_tick->disable();
-
-			if (ret == 0)
-				dyn_tick->state &= ~DYN_TICK_ENABLED;
-		}
-		spin_unlock_irqrestore(&dyn_tick->lock, flags);
-	}
-
-	return ret;
-}
-
-/*
- * Reprogram the system timer for at least the calculated time interval.
- * This function should be called from the idle thread with IRQs disabled,
- * immediately before sleeping.
- */
-void timer_dyn_reprogram(void)
-{
-	struct dyn_tick_timer *dyn_tick = system_timer->dyn_tick;
-	unsigned long next, seq, flags;
-
-	if (!dyn_tick)
-		return;
-
-	spin_lock_irqsave(&dyn_tick->lock, flags);
-	if (dyn_tick->state & DYN_TICK_ENABLED) {
-		next = next_timer_interrupt();
-		do {
-			seq = read_seqbegin(&xtime_lock);
-			dyn_tick->reprogram(next - jiffies);
-		} while (read_seqretry(&xtime_lock, seq));
-	}
-	spin_unlock_irqrestore(&dyn_tick->lock, flags);
-}
-
-static ssize_t timer_show_dyn_tick(struct sys_device *dev, char *buf)
-{
-	return sprintf(buf, "%i\n",
-		       (system_timer->dyn_tick->state & DYN_TICK_ENABLED) >> 1);
-}
-
-static ssize_t timer_set_dyn_tick(struct sys_device *dev, const char *buf,
-				  size_t count)
-{
-	unsigned int enable = simple_strtoul(buf, NULL, 2);
-
-	if (enable)
-		timer_dyn_tick_enable();
-	else
-		timer_dyn_tick_disable();
-
-	return count;
-}
-static SYSDEV_ATTR(dyn_tick, 0644, timer_show_dyn_tick, timer_set_dyn_tick);
-
-/*
- * dyntick=enable|disable
- */
-static char dyntick_str[4] __initdata = "";
-
-static int __init dyntick_setup(char *str)
-{
-	if (str)
-		strlcpy(dyntick_str, str, sizeof(dyntick_str));
-	return 1;
-}
-
-__setup("dyntick=", dyntick_setup);
-#endif
 
 static int __init timer_init_sysfs(void)
 {
@@ -483,19 +374,6 @@ static int __init timer_init_sysfs(void)
 		system_timer->dev.cls = &timer_sysclass;
 		ret = sysdev_register(&system_timer->dev);
 	}
-
-#ifdef CONFIG_NO_IDLE_HZ
-	if (ret == 0 && system_timer->dyn_tick) {
-		ret = sysdev_create_file(&system_timer->dev, &attr_dyn_tick);
-
-		/*
-		 * Turn on dynamic tick after calibrate delay
-		 * for correct bogomips
-		 */
-		if (ret == 0 && dyntick_str[0] == 'e')
-			ret = timer_dyn_tick_enable();
-	}
-#endif
 
 	return ret;
 }
@@ -509,10 +387,5 @@ void __init time_init(void)
 		system_timer->offset = dummy_gettimeoffset;
 #endif
 	system_timer->init();
-
-#ifdef CONFIG_NO_IDLE_HZ
-	if (system_timer->dyn_tick)
-		spin_lock_init(&system_timer->dyn_tick->lock);
-#endif
 }
 

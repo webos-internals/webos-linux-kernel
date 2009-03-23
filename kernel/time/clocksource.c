@@ -91,7 +91,6 @@ static void clocksource_ratewd(struct clocksource *cs, int64_t delta)
 	       cs->name, delta);
 	cs->flags &= ~(CLOCK_SOURCE_VALID_FOR_HRES | CLOCK_SOURCE_WATCHDOG);
 	clocksource_change_rating(cs, 0);
-	cs->flags &= ~CLOCK_SOURCE_WATCHDOG;
 	list_del(&cs->wd_list);
 }
 
@@ -142,8 +141,17 @@ static void clocksource_watchdog(unsigned long data)
 	}
 
 	if (!list_empty(&watchdog_list)) {
-		__mod_timer(&watchdog_timer,
-			    watchdog_timer.expires + WATCHDOG_INTERVAL);
+		/*
+		 * Cycle through CPUs to check if the CPUs stay
+		 * synchronized to each other.
+		 */
+		int next_cpu = cpumask_next(raw_smp_processor_id(),
+					    cpu_online_mask);
+
+		if (next_cpu >= nr_cpu_ids)
+			next_cpu = cpumask_first(cpu_online_mask);
+		watchdog_timer.expires += WATCHDOG_INTERVAL;
+		add_timer_on(&watchdog_timer, next_cpu);
 	}
 	spin_unlock(&watchdog_lock);
 }
@@ -165,7 +173,8 @@ static void clocksource_check_watchdog(struct clocksource *cs)
 		if (!started && watchdog) {
 			watchdog_last = watchdog->read();
 			watchdog_timer.expires = jiffies + WATCHDOG_INTERVAL;
-			add_timer(&watchdog_timer);
+			add_timer_on(&watchdog_timer,
+				     cpumask_first(cpu_online_mask));
 		}
 	} else {
 		if (cs->flags & CLOCK_SOURCE_IS_CONTINUOUS)
@@ -186,7 +195,8 @@ static void clocksource_check_watchdog(struct clocksource *cs)
 				watchdog_last = watchdog->read();
 				watchdog_timer.expires =
 					jiffies + WATCHDOG_INTERVAL;
-				add_timer(&watchdog_timer);
+				add_timer_on(&watchdog_timer,
+					     cpumask_first(cpu_online_mask));
 			}
 		}
 	}
@@ -220,6 +230,18 @@ void clocksource_resume(void)
 	clocksource_resume_watchdog();
 
 	spin_unlock_irqrestore(&clocksource_lock, flags);
+}
+
+/**
+ * clocksource_touch_watchdog - Update watchdog
+ *
+ * Update the watchdog after exception contexts such as kgdb so as not
+ * to incorrectly trip the watchdog.
+ *
+ */
+void clocksource_touch_watchdog(void)
+{
+	clocksource_resume_watchdog();
 }
 
 /**
@@ -304,6 +326,9 @@ int clocksource_register(struct clocksource *c)
 	unsigned long flags;
 	int ret;
 
+	/* save mult_orig on registration */
+	c->mult_orig = c->mult;
+
 	spin_lock_irqsave(&clocksource_lock, flags);
 	ret = clocksource_enqueue(c);
 	if (!ret)
@@ -331,6 +356,21 @@ void clocksource_change_rating(struct clocksource *cs, int rating)
 	spin_unlock_irqrestore(&clocksource_lock, flags);
 }
 
+/**
+ * clocksource_unregister - remove a registered clocksource
+ */
+void clocksource_unregister(struct clocksource *cs)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&clocksource_lock, flags);
+	list_del(&cs->list);
+	if (clocksource_override == cs)
+		clocksource_override = NULL;
+	next_clocksource = select_clocksource();
+	spin_unlock_irqrestore(&clocksource_lock, flags);
+}
+
 #ifdef CONFIG_SYSFS
 /**
  * sysfs_show_current_clocksources - sysfs interface for current clocksource
@@ -340,17 +380,16 @@ void clocksource_change_rating(struct clocksource *cs, int rating)
  * Provides sysfs interface for listing current clocksource.
  */
 static ssize_t
-sysfs_show_current_clocksources(struct sys_device *dev, char *buf)
+sysfs_show_current_clocksources(struct sys_device *dev,
+				struct sysdev_attribute *attr, char *buf)
 {
-	char *curr = buf;
+	ssize_t count = 0;
 
 	spin_lock_irq(&clocksource_lock);
-	curr += sprintf(curr, "%s ", curr_clocksource->name);
+	count = snprintf(buf, PAGE_SIZE, "%s\n", curr_clocksource->name);
 	spin_unlock_irq(&clocksource_lock);
 
-	curr += sprintf(curr, "\n");
-
-	return curr - buf;
+	return count;
 }
 
 /**
@@ -363,6 +402,7 @@ sysfs_show_current_clocksources(struct sys_device *dev, char *buf)
  * clocksource selction.
  */
 static ssize_t sysfs_override_clocksource(struct sys_device *dev,
+					  struct sysdev_attribute *attr,
 					  const char *buf, size_t count)
 {
 	struct clocksource *ovr = NULL;
@@ -415,33 +455,38 @@ static ssize_t sysfs_override_clocksource(struct sys_device *dev,
  * Provides sysfs interface for listing registered clocksources
  */
 static ssize_t
-sysfs_show_available_clocksources(struct sys_device *dev, char *buf)
+sysfs_show_available_clocksources(struct sys_device *dev,
+				  struct sysdev_attribute *attr,
+				  char *buf)
 {
 	struct clocksource *src;
-	char *curr = buf;
+	ssize_t count = 0;
 
 	spin_lock_irq(&clocksource_lock);
 	list_for_each_entry(src, &clocksource_list, list) {
-		curr += sprintf(curr, "%s ", src->name);
+		count += snprintf(buf + count,
+				  max((ssize_t)PAGE_SIZE - count, (ssize_t)0),
+				  "%s ", src->name);
 	}
 	spin_unlock_irq(&clocksource_lock);
 
-	curr += sprintf(curr, "\n");
+	count += snprintf(buf + count,
+			  max((ssize_t)PAGE_SIZE - count, (ssize_t)0), "\n");
 
-	return curr - buf;
+	return count;
 }
 
 /*
  * Sysfs setup bits:
  */
-static SYSDEV_ATTR(current_clocksource, 0600, sysfs_show_current_clocksources,
+static SYSDEV_ATTR(current_clocksource, 0644, sysfs_show_current_clocksources,
 		   sysfs_override_clocksource);
 
-static SYSDEV_ATTR(available_clocksource, 0600,
+static SYSDEV_ATTR(available_clocksource, 0444,
 		   sysfs_show_available_clocksources, NULL);
 
 static struct sysdev_class clocksource_sysclass = {
-	set_kset_name("clocksource"),
+	.name = "clocksource",
 };
 
 static struct sys_device device_clocksource = {

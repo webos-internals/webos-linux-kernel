@@ -29,15 +29,15 @@
 #include <linux/spi/spi.h>
 #include <linux/workqueue.h>
 #include <linux/delay.h>
+#include <linux/clk.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/hardware.h>
 #include <asm/delay.h>
 
-#include <asm/arch/hardware.h>
-#include <asm/arch/imx-dma.h>
-#include <asm/arch/spi_imx.h>
+#include <mach/hardware.h>
+#include <mach/imx-dma.h>
+#include <mach/spi_imx.h>
 
 /*-------------------------------------------------------------------------*/
 /* SPI Registers offsets from peripheral base address */
@@ -157,7 +157,7 @@
 #define SPI_FIFO_BYTE_WIDTH		(2)
 #define SPI_FIFO_OVERFLOW_MARGIN	(2)
 
-/* DMA burst lenght for half full/empty request trigger */
+/* DMA burst length for half full/empty request trigger */
 #define SPI_DMA_BLR			(SPI_FIFO_DEPTH * SPI_FIFO_BYTE_WIDTH / 2)
 
 /* Dummy char output to achieve reads.
@@ -250,6 +250,8 @@ struct driver_data {
 	int tx_dma_needs_unmap;
 	size_t tx_map_len;
 	u32 dummy_dma_buf ____cacheline_aligned;
+
+	struct clk *clk;
 };
 
 /* Runtime state */
@@ -270,19 +272,26 @@ struct chip_data {
 
 static void pump_messages(struct work_struct *work);
 
-static int flush(struct driver_data *drv_data)
+static void flush(struct driver_data *drv_data)
 {
-	unsigned long limit = loops_per_jiffy << 1;
 	void __iomem *regs = drv_data->regs;
-	volatile u32 d;
+	u32 control;
 
 	dev_dbg(&drv_data->pdev->dev, "flush\n");
-	do {
-		while (readl(regs + SPI_INT_STATUS) & SPI_STATUS_RR)
-			d = readl(regs + SPI_RXDATA);
-	} while ((readl(regs + SPI_CONTROL) & SPI_CONTROL_XCH) && limit--);
 
-	return limit;
+	/* Wait for end of transaction */
+	do {
+		control = readl(regs + SPI_CONTROL);
+	} while (control & SPI_CONTROL_XCH);
+
+	/* Release chip select if requested, transfer delays are
+	   handled in pump_transfers */
+	if (drv_data->cs_change)
+		drv_data->cs_control(SPI_CS_DEASSERT);
+
+	/* Disable SPI to flush FIFOs */
+	writel(control & ~SPI_CONTROL_SPIEN, regs + SPI_CONTROL);
+	writel(control, regs + SPI_CONTROL);
 }
 
 static void restore_state(struct driver_data *drv_data)
@@ -481,7 +490,7 @@ static int map_dma_buffers(struct driver_data *drv_data)
 							buf,
 							drv_data->tx_map_len,
 							DMA_TO_DEVICE);
-			if (dma_mapping_error(drv_data->tx_dma))
+			if (dma_mapping_error(dev, drv_data->tx_dma))
 				return -1;
 
 			drv_data->tx_dma_needs_unmap = 1;
@@ -497,20 +506,6 @@ static int map_dma_buffers(struct driver_data *drv_data)
 	if (!IS_DMA_ALIGNED(drv_data->rx) || !IS_DMA_ALIGNED(drv_data->tx))
 		return -1;
 
-	/* NULL rx means write-only transfer and no map needed
-	   since rx DMA will not be used */
-	if (drv_data->rx) {
-		buf = drv_data->rx;
-		drv_data->rx_dma = dma_map_single(
-					dev,
-					buf,
-					drv_data->len,
-					DMA_FROM_DEVICE);
-		if (dma_mapping_error(drv_data->rx_dma))
-			return -1;
-		drv_data->rx_dma_needs_unmap = 1;
-	}
-
 	if (drv_data->tx == NULL) {
 		/* Read only message --> use drv_data->dummy_dma_buf for dummy
 		   writes to achive reads */
@@ -524,17 +519,30 @@ static int map_dma_buffers(struct driver_data *drv_data)
 					buf,
 					drv_data->tx_map_len,
 					DMA_TO_DEVICE);
-	if (dma_mapping_error(drv_data->tx_dma)) {
-		if (drv_data->rx_dma) {
-			dma_unmap_single(dev,
-					drv_data->rx_dma,
-					drv_data->len,
-					DMA_FROM_DEVICE);
-			drv_data->rx_dma_needs_unmap = 0;
-		}
+	if (dma_mapping_error(dev, drv_data->tx_dma))
 		return -1;
-	}
 	drv_data->tx_dma_needs_unmap = 1;
+
+	/* NULL rx means write-only transfer and no map needed
+	 * since rx DMA will not be used */
+	if (drv_data->rx) {
+		buf = drv_data->rx;
+		drv_data->rx_dma = dma_map_single(dev,
+						buf,
+						drv_data->len,
+						DMA_FROM_DEVICE);
+		if (dma_mapping_error(dev, drv_data->rx_dma)) {
+			if (drv_data->tx_dma) {
+				dma_unmap_single(dev,
+						drv_data->tx_dma,
+						drv_data->tx_map_len,
+						DMA_TO_DEVICE);
+				drv_data->tx_dma_needs_unmap = 0;
+			}
+			return -1;
+		}
+		drv_data->rx_dma_needs_unmap = 1;
+	}
 
 	return 0;
 }
@@ -570,6 +578,7 @@ static void giveback(struct spi_message *message, struct driver_data *drv_data)
 	writel(0, regs + SPI_INT_STATUS);
 	writel(0, regs + SPI_DMA);
 
+	/* Unconditioned deselct */
 	drv_data->cs_control(SPI_CS_DEASSERT);
 
 	message->state = NULL;
@@ -592,12 +601,9 @@ static void dma_err_handler(int channel, void *data, int errcode)
 	/* Disable both rx and tx dma channels */
 	imx_dma_disable(drv_data->rx_channel);
 	imx_dma_disable(drv_data->tx_channel);
-
-	if (flush(drv_data) == 0)
-		dev_err(&drv_data->pdev->dev,
-				"dma_err_handler - flush failed\n");
-
 	unmap_dma_buffers(drv_data);
+
+	flush(drv_data);
 
 	msg->state = ERROR_STATE;
 	tasklet_schedule(&drv_data->pump_transfers);
@@ -612,8 +618,7 @@ static void dma_tx_handler(int channel, void *data)
 	imx_dma_disable(channel);
 
 	/* Now waits for TX FIFO empty */
-	writel(readl(drv_data->regs + SPI_INT_STATUS) | SPI_INTEN_TE,
-			drv_data->regs + SPI_INT_STATUS);
+	writel(SPI_INTEN_TE, drv_data->regs + SPI_INT_STATUS);
 }
 
 static irqreturn_t dma_transfer(struct driver_data *drv_data)
@@ -621,19 +626,18 @@ static irqreturn_t dma_transfer(struct driver_data *drv_data)
 	u32 status;
 	struct spi_message *msg = drv_data->cur_msg;
 	void __iomem *regs = drv_data->regs;
-	unsigned long limit;
 
 	status = readl(regs + SPI_INT_STATUS);
 
-	if ((status & SPI_INTEN_RO) && (status & SPI_STATUS_RO)) {
+	if ((status & (SPI_INTEN_RO | SPI_STATUS_RO))
+			== (SPI_INTEN_RO | SPI_STATUS_RO)) {
 		writel(status & ~SPI_INTEN, regs + SPI_INT_STATUS);
 
+		imx_dma_disable(drv_data->tx_channel);
 		imx_dma_disable(drv_data->rx_channel);
 		unmap_dma_buffers(drv_data);
 
-		if (flush(drv_data) == 0)
-			dev_err(&drv_data->pdev->dev,
-				"dma_transfer - flush failed\n");
+		flush(drv_data);
 
 		dev_warn(&drv_data->pdev->dev,
 				"dma_transfer - fifo overun\n");
@@ -649,19 +653,16 @@ static irqreturn_t dma_transfer(struct driver_data *drv_data)
 
 		if (drv_data->rx) {
 			/* Wait end of transfer before read trailing data */
-			limit = loops_per_jiffy << 1;
-			while ((readl(regs + SPI_CONTROL) & SPI_CONTROL_XCH) &&
-					limit--);
-
-			if (limit == 0)
-				dev_err(&drv_data->pdev->dev,
-					"dma_transfer - end of tx failed\n");
-			else
-				dev_dbg(&drv_data->pdev->dev,
-					"dma_transfer - end of tx\n");
+			while (readl(regs + SPI_CONTROL) & SPI_CONTROL_XCH)
+				cpu_relax();
 
 			imx_dma_disable(drv_data->rx_channel);
 			unmap_dma_buffers(drv_data);
+
+			/* Release chip select if requested, transfer delays are
+			   handled in pump_transfers() */
+			if (drv_data->cs_change)
+				drv_data->cs_control(SPI_CS_DEASSERT);
 
 			/* Calculate number of trailing data and read them */
 			dev_dbg(&drv_data->pdev->dev,
@@ -676,18 +677,11 @@ static irqreturn_t dma_transfer(struct driver_data *drv_data)
 			/* Write only transfer */
 			unmap_dma_buffers(drv_data);
 
-			if (flush(drv_data) == 0)
-				dev_err(&drv_data->pdev->dev,
-					"dma_transfer - flush failed\n");
+			flush(drv_data);
 		}
 
 		/* End of transfer, update total byte transfered */
 		msg->actual_length += drv_data->len;
-
-		/* Release chip select if requested, transfer delays are
-		   handled in pump_transfers() */
-		if (drv_data->cs_change)
-			drv_data->cs_control(SPI_CS_DEASSERT);
 
 		/* Move to next transfer */
 		msg->state = next_transfer(drv_data);
@@ -711,44 +705,43 @@ static irqreturn_t interrupt_wronly_transfer(struct driver_data *drv_data)
 
 	status = readl(regs + SPI_INT_STATUS);
 
-	while (status & SPI_STATUS_TH) {
+	if (status & SPI_INTEN_TE) {
+		/* TXFIFO Empty Interrupt on the last transfered word */
+		writel(status & ~SPI_INTEN, regs + SPI_INT_STATUS);
 		dev_dbg(&drv_data->pdev->dev,
-			"interrupt_wronly_transfer - status = 0x%08X\n", status);
+			"interrupt_wronly_transfer - end of tx\n");
 
-		/* Pump data */
-		if (write(drv_data)) {
-			writel(readl(regs + SPI_INT_STATUS) & ~SPI_INTEN,
-				regs + SPI_INT_STATUS);
+		flush(drv_data);
 
+		/* Update total byte transfered */
+		msg->actual_length += drv_data->len;
+
+		/* Move to next transfer */
+		msg->state = next_transfer(drv_data);
+
+		/* Schedule transfer tasklet */
+		tasklet_schedule(&drv_data->pump_transfers);
+
+		return IRQ_HANDLED;
+	} else {
+		while (status & SPI_STATUS_TH) {
 			dev_dbg(&drv_data->pdev->dev,
-				"interrupt_wronly_transfer - end of tx\n");
+				"interrupt_wronly_transfer - status = 0x%08X\n",
+				status);
 
-			if (flush(drv_data) == 0)
-				dev_err(&drv_data->pdev->dev,
-					"interrupt_wronly_transfer - "
-					"flush failed\n");
+			/* Pump data */
+			if (write(drv_data)) {
+				/* End of TXFIFO writes,
+				   now wait until TXFIFO is empty */
+				writel(SPI_INTEN_TE, regs + SPI_INT_STATUS);
+				return IRQ_HANDLED;
+			}
 
-			/* End of transfer, update total byte transfered */
-			msg->actual_length += drv_data->len;
+			status = readl(regs + SPI_INT_STATUS);
 
-			/* Release chip select if requested, transfer delays are
-			   handled in pump_transfers */
-			if (drv_data->cs_change)
-				drv_data->cs_control(SPI_CS_DEASSERT);
-
-			/* Move to next transfer */
-			msg->state = next_transfer(drv_data);
-
-			/* Schedule transfer tasklet */
-			tasklet_schedule(&drv_data->pump_transfers);
-
-			return IRQ_HANDLED;
+			/* We did something */
+			handled = IRQ_HANDLED;
 		}
-
-		status = readl(regs + SPI_INT_STATUS);
-
-		/* We did something */
-		handled = IRQ_HANDLED;
 	}
 
 	return handled;
@@ -758,45 +751,31 @@ static irqreturn_t interrupt_transfer(struct driver_data *drv_data)
 {
 	struct spi_message *msg = drv_data->cur_msg;
 	void __iomem *regs = drv_data->regs;
-	u32 status;
+	u32 status, control;
 	irqreturn_t handled = IRQ_NONE;
 	unsigned long limit;
 
 	status = readl(regs + SPI_INT_STATUS);
 
-	while (status & (SPI_STATUS_TH | SPI_STATUS_RO)) {
+	if (status & SPI_INTEN_TE) {
+		/* TXFIFO Empty Interrupt on the last transfered word */
+		writel(status & ~SPI_INTEN, regs + SPI_INT_STATUS);
 		dev_dbg(&drv_data->pdev->dev,
-			"interrupt_transfer - status = 0x%08X\n", status);
+			"interrupt_transfer - end of tx\n");
 
-		if (status & SPI_STATUS_RO) {
-			writel(readl(regs + SPI_INT_STATUS) & ~SPI_INTEN,
-				regs + SPI_INT_STATUS);
+		if (msg->state == ERROR_STATE) {
+			/* RXFIFO overrun was detected and message aborted */
+			flush(drv_data);
+		} else {
+			/* Wait for end of transaction */
+			do {
+				control = readl(regs + SPI_CONTROL);
+			} while (control & SPI_CONTROL_XCH);
 
-			dev_warn(&drv_data->pdev->dev,
-				"interrupt_transfer - fifo overun\n"
-				"    data not yet written = %d\n"
-				"    data not yet read    = %d\n",
-				data_to_write(drv_data),
-				data_to_read(drv_data));
-
-			if (flush(drv_data) == 0)
-				dev_err(&drv_data->pdev->dev,
-					"interrupt_transfer - flush failed\n");
-
-			msg->state = ERROR_STATE;
-			tasklet_schedule(&drv_data->pump_transfers);
-
-			return IRQ_HANDLED;
-		}
-
-		/* Pump data */
-		read(drv_data);
-		if (write(drv_data)) {
-			writel(readl(regs + SPI_INT_STATUS) & ~SPI_INTEN,
-				regs + SPI_INT_STATUS);
-
-			dev_dbg(&drv_data->pdev->dev,
-				"interrupt_transfer - end of tx\n");
+			/* Release chip select if requested, transfer delays are
+			   handled in pump_transfers */
+			if (drv_data->cs_change)
+				drv_data->cs_control(SPI_CS_DEASSERT);
 
 			/* Read trailing bytes */
 			limit = loops_per_jiffy << 1;
@@ -810,27 +789,54 @@ static irqreturn_t interrupt_transfer(struct driver_data *drv_data)
 				dev_dbg(&drv_data->pdev->dev,
 					"interrupt_transfer - end of rx\n");
 
-			/* End of transfer, update total byte transfered */
+			/* Update total byte transfered */
 			msg->actual_length += drv_data->len;
-
-			/* Release chip select if requested, transfer delays are
-			   handled in pump_transfers */
-			if (drv_data->cs_change)
-				drv_data->cs_control(SPI_CS_DEASSERT);
 
 			/* Move to next transfer */
 			msg->state = next_transfer(drv_data);
-
-			/* Schedule transfer tasklet */
-			tasklet_schedule(&drv_data->pump_transfers);
-
-			return IRQ_HANDLED;
 		}
 
-		status = readl(regs + SPI_INT_STATUS);
+		/* Schedule transfer tasklet */
+		tasklet_schedule(&drv_data->pump_transfers);
 
-		/* We did something */
-		handled = IRQ_HANDLED;
+		return IRQ_HANDLED;
+	} else {
+		while (status & (SPI_STATUS_TH | SPI_STATUS_RO)) {
+			dev_dbg(&drv_data->pdev->dev,
+				"interrupt_transfer - status = 0x%08X\n",
+				status);
+
+			if (status & SPI_STATUS_RO) {
+				/* RXFIFO overrun, abort message end wait
+				   until TXFIFO is empty */
+				writel(SPI_INTEN_TE, regs + SPI_INT_STATUS);
+
+				dev_warn(&drv_data->pdev->dev,
+					"interrupt_transfer - fifo overun\n"
+					"    data not yet written = %d\n"
+					"    data not yet read    = %d\n",
+					data_to_write(drv_data),
+					data_to_read(drv_data));
+
+				msg->state = ERROR_STATE;
+
+				return IRQ_HANDLED;
+			}
+
+			/* Pump data */
+			read(drv_data);
+			if (write(drv_data)) {
+				/* End of TXFIFO writes,
+				   now wait until TXFIFO is empty */
+				writel(SPI_INTEN_TE, regs + SPI_INT_STATUS);
+				return IRQ_HANDLED;
+			}
+
+			status = readl(regs + SPI_INT_STATUS);
+
+			/* We did something */
+			handled = IRQ_HANDLED;
+		}
 	}
 
 	return handled;
@@ -850,15 +856,15 @@ static irqreturn_t spi_int(int irq, void *dev_id)
 	return drv_data->transfer_handler(drv_data);
 }
 
-static inline u32 spi_speed_hz(u32 data_rate)
+static inline u32 spi_speed_hz(struct driver_data *drv_data, u32 data_rate)
 {
-	return imx_get_perclk2() / (4 << ((data_rate) >> 13));
+	return clk_get_rate(drv_data->clk) / (4 << ((data_rate) >> 13));
 }
 
-static u32 spi_data_rate(u32 speed_hz)
+static u32 spi_data_rate(struct driver_data *drv_data, u32 speed_hz)
 {
 	u32 div;
-	u32 quantized_hz = imx_get_perclk2() >> 2;
+	u32 quantized_hz = clk_get_rate(drv_data->clk) >> 2;
 
 	for (div = SPI_PERCLK2_DIV_MIN;
 		div <= SPI_PERCLK2_DIV_MAX;
@@ -942,7 +948,7 @@ static void pump_transfers(unsigned long data)
 	tmp = transfer->speed_hz;
 	if (tmp == 0)
 		tmp = chip->max_speed_hz;
-	tmp = spi_data_rate(tmp);
+	tmp = spi_data_rate(drv_data, tmp);
 	u32_EDIT(control, SPI_CONTROL_DATARATE, tmp);
 
 	writel(control, regs + SPI_CONTROL);
@@ -1104,7 +1110,7 @@ static int transfer(struct spi_device *spi, struct spi_message *msg)
 	msg->actual_length = 0;
 
 	/* Per transfer setup check */
-	min_speed_hz = spi_speed_hz(SPI_CONTROL_DATARATE_MIN);
+	min_speed_hz = spi_speed_hz(drv_data, SPI_CONTROL_DATARATE_MIN);
 	max_speed_hz = spi->max_speed_hz;
 	list_for_each_entry(trans, &msg->transfers, transfer_list) {
 		tmp = trans->bits_per_word;
@@ -1171,6 +1177,7 @@ msg_rejected:
    applied and notified to the calling driver. */
 static int setup(struct spi_device *spi)
 {
+	struct driver_data *drv_data = spi_master_get_devdata(spi->master);
 	struct spi_imx_chip *chip_info;
 	struct chip_data *chip;
 	int first_setup = 0;
@@ -1299,14 +1306,14 @@ static int setup(struct spi_device *spi)
 	chip->n_bytes = (tmp <= 8) ? 1 : 2;
 
 	/* SPI datarate */
-	tmp = spi_data_rate(spi->max_speed_hz);
+	tmp = spi_data_rate(drv_data, spi->max_speed_hz);
 	if (tmp == SPI_CONTROL_DATARATE_BAD) {
 		status = -EINVAL;
 		dev_err(&spi->dev,
 			"setup - "
 			"HW min speed (%d Hz) exceeds required "
 			"max speed (%d Hz)\n",
-			spi_speed_hz(SPI_CONTROL_DATARATE_MIN),
+			spi_speed_hz(drv_data, SPI_CONTROL_DATARATE_MIN),
 			spi->max_speed_hz);
 		if (first_setup)
 			goto err_first_setup;
@@ -1316,7 +1323,7 @@ static int setup(struct spi_device *spi)
 	} else {
 		u32_EDIT(chip->control, SPI_CONTROL_DATARATE, tmp);
 		/* Actual rounded max_speed_hz */
-		tmp = spi_speed_hz(tmp);
+		tmp = spi_speed_hz(drv_data, tmp);
 		spi->max_speed_hz = tmp;
 		chip->max_speed_hz = tmp;
 	}
@@ -1347,7 +1354,7 @@ static int setup(struct spi_device *spi)
 		chip->period & SPI_PERIOD_WAIT,
 		spi->mode,
 		spi->bits_per_word,
-		spi_speed_hz(SPI_CONTROL_DATARATE_MIN),
+		spi_speed_hz(drv_data, SPI_CONTROL_DATARATE_MIN),
 		spi->max_speed_hz);
 	return status;
 
@@ -1449,7 +1456,7 @@ static int __init spi_imx_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct spi_imx_master *platform_info;
 	struct spi_master *master;
-	struct driver_data *drv_data = NULL;
+	struct driver_data *drv_data;
 	struct resource *res;
 	int irq, status = 0;
 
@@ -1479,6 +1486,14 @@ static int __init spi_imx_probe(struct platform_device *pdev)
 	master->transfer = transfer;
 
 	drv_data->dummy_dma_buf = SPI_DUMMY_u32;
+
+	drv_data->clk = clk_get(&pdev->dev, "perclk2");
+	if (IS_ERR(drv_data->clk)) {
+		dev_err(&pdev->dev, "probe - cannot get clock\n");
+		status = PTR_ERR(drv_data->clk);
+		goto err_no_clk;
+	}
+	clk_enable(drv_data->clk);
 
 	/* Find and map resources */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -1521,24 +1536,24 @@ static int __init spi_imx_probe(struct platform_device *pdev)
 	drv_data->rx_channel = -1;
 	if (platform_info->enable_dma) {
 		/* Get rx DMA channel */
-		status = imx_dma_request_by_prio(&drv_data->rx_channel,
-			"spi_imx_rx", DMA_PRIO_HIGH);
-		if (status < 0) {
+		drv_data->rx_channel = imx_dma_request_by_prio("spi_imx_rx",
+							       DMA_PRIO_HIGH);
+		if (drv_data->rx_channel < 0) {
 			dev_err(dev,
 				"probe - problem (%d) requesting rx channel\n",
-				status);
+				drv_data->rx_channel);
 			goto err_no_rxdma;
 		} else
 			imx_dma_setup_handlers(drv_data->rx_channel, NULL,
 						dma_err_handler, drv_data);
 
 		/* Get tx DMA channel */
-		status = imx_dma_request_by_prio(&drv_data->tx_channel,
-						"spi_imx_tx", DMA_PRIO_MEDIUM);
-		if (status < 0) {
+		drv_data->tx_channel = imx_dma_request_by_prio("spi_imx_tx",
+							       DMA_PRIO_MEDIUM);
+		if (drv_data->tx_channel < 0) {
 			dev_err(dev,
 				"probe - problem (%d) requesting tx channel\n",
-				status);
+				drv_data->tx_channel);
 			imx_dma_free(drv_data->rx_channel);
 			goto err_no_txdma;
 		} else
@@ -1615,6 +1630,10 @@ err_no_iomap:
 	kfree(drv_data->ioarea);
 
 err_no_iores:
+	clk_disable(drv_data->clk);
+	clk_put(drv_data->clk);
+
+err_no_clk:
 	spi_master_put(master);
 
 err_no_pdata:
@@ -1657,6 +1676,9 @@ static int __exit spi_imx_remove(struct platform_device *pdev)
 	if (irq >= 0)
 		free_irq(irq, drv_data);
 
+	clk_disable(drv_data->clk);
+	clk_put(drv_data->clk);
+
 	/* Release map resources */
 	iounmap(drv_data->regs);
 	release_resource(drv_data->ioarea);
@@ -1686,17 +1708,6 @@ static void spi_imx_shutdown(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_PM
-static int suspend_devices(struct device *dev, void *pm_message)
-{
-	pm_message_t *state = pm_message;
-
-	if (dev->power.power_state.event != state->event) {
-		dev_warn(dev, "pm state does not match request\n");
-		return -1;
-	}
-
-	return 0;
-}
 
 static int spi_imx_suspend(struct platform_device *pdev, pm_message_t state)
 {
@@ -1733,10 +1744,12 @@ static int spi_imx_resume(struct platform_device *pdev)
 #define spi_imx_resume NULL
 #endif /* CONFIG_PM */
 
+/* work with hotplug and coldplug */
+MODULE_ALIAS("platform:spi_imx");
+
 static struct platform_driver driver = {
 	.driver = {
 		.name = "spi_imx",
-		.bus = &platform_bus_type,
 		.owner = THIS_MODULE,
 	},
 	.remove = __exit_p(spi_imx_remove),

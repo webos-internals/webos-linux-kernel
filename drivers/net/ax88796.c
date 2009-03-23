@@ -37,7 +37,10 @@ static int phy_debug = 0;
 #define __ei_open       ax_ei_open
 #define __ei_close      ax_ei_close
 #define __ei_poll	ax_ei_poll
+#define __ei_start_xmit ax_ei_start_xmit
 #define __ei_tx_timeout ax_ei_tx_timeout
+#define __ei_get_stats  ax_ei_get_stats
+#define __ei_set_multicast_list ax_ei_set_multicast_list
 #define __ei_interrupt  ax_ei_interrupt
 #define ____alloc_ei_netdev ax__alloc_ei_netdev
 #define __NS8390_init   ax_NS8390_init
@@ -137,11 +140,12 @@ static int ax_initial_check(struct net_device *dev)
 static void ax_reset_8390(struct net_device *dev)
 {
 	struct ei_device *ei_local = netdev_priv(dev);
+	struct ax_device  *ax = to_ax_dev(dev);
 	unsigned long reset_start_time = jiffies;
 	void __iomem *addr = (void __iomem *)dev->base_addr;
 
 	if (ei_debug > 1)
-		printk(KERN_DEBUG "resetting the 8390 t=%ld...", jiffies);
+		dev_dbg(&ax->dev->dev, "resetting the 8390 t=%ld\n", jiffies);
 
 	ei_outb(ei_inb(addr + NE_RESET), addr + NE_RESET);
 
@@ -151,8 +155,8 @@ static void ax_reset_8390(struct net_device *dev)
 	/* This check _should_not_ be necessary, omit eventually. */
 	while ((ei_inb(addr + EN0_ISR) & ENISR_RESET) == 0) {
 		if (jiffies - reset_start_time > 2*HZ/100) {
-			printk(KERN_WARNING "%s: %s did not complete.\n",
-			       __FUNCTION__, dev->name);
+			dev_warn(&ax->dev->dev, "%s: %s did not complete.\n",
+			       __func__, dev->name);
 			break;
 		}
 	}
@@ -165,13 +169,15 @@ static void ax_get_8390_hdr(struct net_device *dev, struct e8390_pkt_hdr *hdr,
 			    int ring_page)
 {
 	struct ei_device *ei_local = netdev_priv(dev);
+	struct ax_device  *ax = to_ax_dev(dev);
 	void __iomem *nic_base = ei_local->mem;
 
 	/* This *shouldn't* happen. If it does, it's the last thing you'll see */
 	if (ei_status.dmaing) {
-		printk(KERN_EMERG "%s: DMAing conflict in %s [DMAstat:%d][irqlock:%d].\n",
-			dev->name, __FUNCTION__,
-		       ei_status.dmaing, ei_status.irqlock);
+		dev_err(&ax->dev->dev, "%s: DMAing conflict in %s "
+			"[DMAstat:%d][irqlock:%d].\n",
+			dev->name, __func__,
+			ei_status.dmaing, ei_status.irqlock);
 		return;
 	}
 
@@ -204,13 +210,16 @@ static void ax_block_input(struct net_device *dev, int count,
 			   struct sk_buff *skb, int ring_offset)
 {
 	struct ei_device *ei_local = netdev_priv(dev);
+	struct ax_device  *ax = to_ax_dev(dev);
 	void __iomem *nic_base = ei_local->mem;
 	char *buf = skb->data;
 
 	if (ei_status.dmaing) {
-		printk(KERN_EMERG "%s: DMAing conflict in ax_block_input "
+		dev_err(&ax->dev->dev,
+			"%s: DMAing conflict in %s "
 			"[DMAstat:%d][irqlock:%d].\n",
-			dev->name, ei_status.dmaing, ei_status.irqlock);
+			dev->name, __func__,
+			ei_status.dmaing, ei_status.irqlock);
 		return;
 	}
 
@@ -239,6 +248,7 @@ static void ax_block_output(struct net_device *dev, int count,
 			    const unsigned char *buf, const int start_page)
 {
 	struct ei_device *ei_local = netdev_priv(dev);
+	struct ax_device  *ax = to_ax_dev(dev);
 	void __iomem *nic_base = ei_local->mem;
 	unsigned long dma_start;
 
@@ -251,9 +261,9 @@ static void ax_block_output(struct net_device *dev, int count,
 
 	/* This *shouldn't* happen. If it does, it's the last thing you'll see */
 	if (ei_status.dmaing) {
-		printk(KERN_EMERG "%s: DMAing conflict in %s."
+		dev_err(&ax->dev->dev, "%s: DMAing conflict in %s."
 			"[DMAstat:%d][irqlock:%d]\n",
-			dev->name, __FUNCTION__,
+			dev->name, __func__,
 		       ei_status.dmaing, ei_status.irqlock);
 		return;
 	}
@@ -281,7 +291,8 @@ static void ax_block_output(struct net_device *dev, int count,
 
 	while ((ei_inb(nic_base + EN0_ISR) & ENISR_RDC) == 0) {
 		if (jiffies - dma_start > 2*HZ/100) {		/* 20ms */
-			printk(KERN_WARNING "%s: timeout waiting for Tx RDC.\n", dev->name);
+			dev_warn(&ax->dev->dev,
+				 "%s: timeout waiting for Tx RDC.\n", dev->name);
 			ax_reset_8390(dev);
 			ax_NS8390_init(dev,1);
 			break;
@@ -388,7 +399,7 @@ ax_phy_issueaddr(struct net_device *dev, int phy_addr, int reg, int opc)
 {
 	if (phy_debug)
 		pr_debug("%s: dev %p, %04x, %04x, %d\n",
-			__FUNCTION__, dev, phy_addr, reg, opc);
+			__func__, dev, phy_addr, reg, opc);
 
 	ax_mii_ei_outbits(dev, 0x3f, 6);	/* pre-amble */
 	ax_mii_ei_outbits(dev, 1, 2);		/* frame-start */
@@ -414,7 +425,7 @@ ax_phy_read(struct net_device *dev, int phy_addr, int reg)
       	spin_unlock_irqrestore(&ei_local->page_lock, flags);
 
 	if (phy_debug)
-		pr_debug("%s: %04x.%04x => read %04x\n", __FUNCTION__,
+		pr_debug("%s: %04x.%04x => read %04x\n", __func__,
 			 phy_addr, reg, result);
 
 	return result;
@@ -424,10 +435,11 @@ static void
 ax_phy_write(struct net_device *dev, int phy_addr, int reg, int value)
 {
 	struct ei_device *ei = (struct ei_device *) netdev_priv(dev);
+	struct ax_device  *ax = to_ax_dev(dev);
 	unsigned long flags;
 
-	printk(KERN_DEBUG "%s: %p, %04x, %04x %04x\n",
-	       __FUNCTION__, dev, phy_addr, reg, value);
+	dev_dbg(&ax->dev->dev, "%s: %p, %04x, %04x %04x\n",
+		__func__, dev, phy_addr, reg, value);
 
       	spin_lock_irqsave(&ei->page_lock, flags);
 
@@ -545,7 +557,7 @@ static int ax_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 
 	spin_lock_irqsave(&ax->mii_lock, flags);
 	mii_ethtool_gset(&ax->mii, cmd);
-	spin_lock_irqsave(&ax->mii_lock, flags);
+	spin_unlock_irqrestore(&ax->mii_lock, flags);
 
 	return 0;
 }
@@ -558,7 +570,7 @@ static int ax_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 
 	spin_lock_irqsave(&ax->mii_lock, flags);
 	rc = mii_ethtool_sset(&ax->mii, cmd);
-	spin_lock_irqsave(&ax->mii_lock, flags);
+	spin_unlock_irqrestore(&ax->mii_lock, flags);
 
 	return rc;
 }
@@ -613,6 +625,23 @@ static void ax_eeprom_register_write(struct eeprom_93cx6 *eeprom)
 	udelay(10);
 }
 #endif
+
+static const struct net_device_ops ax_netdev_ops = {
+	.ndo_open		= ax_open,
+	.ndo_stop		= ax_close,
+	.ndo_do_ioctl		= ax_ioctl,
+
+	.ndo_start_xmit		= ax_ei_start_xmit,
+	.ndo_tx_timeout		= ax_ei_tx_timeout,
+	.ndo_get_stats		= ax_ei_get_stats,
+	.ndo_set_multicast_list = ax_ei_set_multicast_list,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_change_mtu		= eth_change_mtu,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	= ax_ei_poll,
+#endif
+};
 
 /* setup code */
 
@@ -729,9 +758,7 @@ static int ax_init_dev(struct net_device *dev, int first_init)
 	ei_status.get_8390_hdr	= &ax_get_8390_hdr;
 	ei_status.priv = 0;
 
-	dev->open		= ax_open;
-	dev->stop		= ax_close;
-	dev->do_ioctl		= ax_ioctl;
+	dev->netdev_ops		= &ax_netdev_ops;
 	dev->ethtool_ops	= &ax_ethtool_ops;
 
 	ax->msg_enable		= NETIF_MSG_LINK;
@@ -744,21 +771,12 @@ static int ax_init_dev(struct net_device *dev, int first_init)
 	ax->mii.mdio_write	= ax_phy_write;
 	ax->mii.dev		= dev;
 
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	dev->poll_controller = ax_ei_poll;
-#endif
 	ax_NS8390_init(dev, 0);
 
-	if (first_init) {
-		printk("AX88796: %dbit, irq %d, %lx, MAC: ",
-		       ei_status.word16 ? 16:8, dev->irq, dev->base_addr);
-
-		for (i = 0; i < ETHER_ADDR_LEN; i++)
-			printk("%2.2x%c", dev->dev_addr[i],
-			       (i < (ETHER_ADDR_LEN-1) ? ':' : ' '));
-
-		printk("\n");
-	}
+	if (first_init)
+		dev_info(&ax->dev->dev, "%dbit, irq %d, %lx, MAC: %pM\n",
+			 ei_status.word16 ? 16:8, dev->irq, dev->base_addr,
+			 dev->dev_addr);
 
 	ret = register_netdev(dev);
 	if (ret)
@@ -832,12 +850,12 @@ static int ax_probe(struct platform_device *pdev)
 
 	/* find the platform resources */
 
-	dev->irq  = platform_get_irq(pdev, 0);
-	if (dev->irq < 0) {
+	ret  = platform_get_irq(pdev, 0);
+	if (ret < 0) {
 		dev_err(&pdev->dev, "no IRQ specified\n");
-		ret = -ENXIO;
 		goto exit_mem;
 	}
+	dev->irq = ret;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (res == NULL) {
@@ -999,3 +1017,4 @@ module_exit(axdrv_exit);
 MODULE_DESCRIPTION("AX88796 10/100 Ethernet platform driver");
 MODULE_AUTHOR("Ben Dooks, <ben@simtec.co.uk>");
 MODULE_LICENSE("GPL v2");
+MODULE_ALIAS("platform:ax88796");

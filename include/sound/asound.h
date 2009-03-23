@@ -93,9 +93,10 @@ enum {
 	SNDRV_HWDEP_IFACE_PCXHR,	/* Digigram PCXHR */
 	SNDRV_HWDEP_IFACE_SB_RC,	/* SB Extigy/Audigy2NX remote control */
 	SNDRV_HWDEP_IFACE_HDA,		/* HD-audio */
+	SNDRV_HWDEP_IFACE_USB_STREAM,	/* direct access to usb stream */
 
 	/* Don't forget to change the following: */
-	SNDRV_HWDEP_IFACE_LAST = SNDRV_HWDEP_IFACE_SB_RC
+	SNDRV_HWDEP_IFACE_LAST = SNDRV_HWDEP_IFACE_USB_STREAM
 };
 
 struct snd_hwdep_info {
@@ -138,7 +139,7 @@ enum {
  *                                                                           *
  *****************************************************************************/
 
-#define SNDRV_PCM_VERSION		SNDRV_PROTOCOL_VERSION(2, 0, 8)
+#define SNDRV_PCM_VERSION		SNDRV_PROTOCOL_VERSION(2, 0, 9)
 
 typedef unsigned long snd_pcm_uframes_t;
 typedef signed long snd_pcm_sframes_t;
@@ -296,29 +297,39 @@ struct snd_pcm_info {
 	unsigned char reserved[64];	/* reserved for future... */
 };
 
-typedef int __bitwise snd_pcm_hw_param_t;
-#define	SNDRV_PCM_HW_PARAM_ACCESS	((__force snd_pcm_hw_param_t) 0) /* Access type */
-#define	SNDRV_PCM_HW_PARAM_FORMAT	((__force snd_pcm_hw_param_t) 1) /* Format */
-#define	SNDRV_PCM_HW_PARAM_SUBFORMAT	((__force snd_pcm_hw_param_t) 2) /* Subformat */
+typedef int snd_pcm_hw_param_t;
+#define	SNDRV_PCM_HW_PARAM_ACCESS	0	/* Access type */
+#define	SNDRV_PCM_HW_PARAM_FORMAT	1	/* Format */
+#define	SNDRV_PCM_HW_PARAM_SUBFORMAT	2	/* Subformat */
 #define	SNDRV_PCM_HW_PARAM_FIRST_MASK	SNDRV_PCM_HW_PARAM_ACCESS
 #define	SNDRV_PCM_HW_PARAM_LAST_MASK	SNDRV_PCM_HW_PARAM_SUBFORMAT
 
-#define	SNDRV_PCM_HW_PARAM_SAMPLE_BITS	((__force snd_pcm_hw_param_t) 8) /* Bits per sample */
-#define	SNDRV_PCM_HW_PARAM_FRAME_BITS	((__force snd_pcm_hw_param_t) 9) /* Bits per frame */
-#define	SNDRV_PCM_HW_PARAM_CHANNELS	((__force snd_pcm_hw_param_t) 10) /* Channels */
-#define	SNDRV_PCM_HW_PARAM_RATE		((__force snd_pcm_hw_param_t) 11) /* Approx rate */
-#define	SNDRV_PCM_HW_PARAM_PERIOD_TIME	((__force snd_pcm_hw_param_t) 12) /* Approx distance between interrupts in us */
-#define	SNDRV_PCM_HW_PARAM_PERIOD_SIZE	((__force snd_pcm_hw_param_t) 13) /* Approx frames between interrupts */
-#define	SNDRV_PCM_HW_PARAM_PERIOD_BYTES	((__force snd_pcm_hw_param_t) 14) /* Approx bytes between interrupts */
-#define	SNDRV_PCM_HW_PARAM_PERIODS	((__force snd_pcm_hw_param_t) 15) /* Approx interrupts per buffer */
-#define	SNDRV_PCM_HW_PARAM_BUFFER_TIME	((__force snd_pcm_hw_param_t) 16) /* Approx duration of buffer in us */
-#define	SNDRV_PCM_HW_PARAM_BUFFER_SIZE	((__force snd_pcm_hw_param_t) 17) /* Size of buffer in frames */
-#define	SNDRV_PCM_HW_PARAM_BUFFER_BYTES	((__force snd_pcm_hw_param_t) 18) /* Size of buffer in bytes */
-#define	SNDRV_PCM_HW_PARAM_TICK_TIME	((__force snd_pcm_hw_param_t) 19) /* Approx tick duration in us */
+#define	SNDRV_PCM_HW_PARAM_SAMPLE_BITS	8	/* Bits per sample */
+#define	SNDRV_PCM_HW_PARAM_FRAME_BITS	9	/* Bits per frame */
+#define	SNDRV_PCM_HW_PARAM_CHANNELS	10	/* Channels */
+#define	SNDRV_PCM_HW_PARAM_RATE		11	/* Approx rate */
+#define	SNDRV_PCM_HW_PARAM_PERIOD_TIME	12	/* Approx distance between
+						 * interrupts in us
+						 */
+#define	SNDRV_PCM_HW_PARAM_PERIOD_SIZE	13	/* Approx frames between
+						 * interrupts
+						 */
+#define	SNDRV_PCM_HW_PARAM_PERIOD_BYTES	14	/* Approx bytes between
+						 * interrupts
+						 */
+#define	SNDRV_PCM_HW_PARAM_PERIODS	15	/* Approx interrupts per
+						 * buffer
+						 */
+#define	SNDRV_PCM_HW_PARAM_BUFFER_TIME	16	/* Approx duration of buffer
+						 * in us
+						 */
+#define	SNDRV_PCM_HW_PARAM_BUFFER_SIZE	17	/* Size of buffer in frames */
+#define	SNDRV_PCM_HW_PARAM_BUFFER_BYTES	18	/* Size of buffer in bytes */
+#define	SNDRV_PCM_HW_PARAM_TICK_TIME	19	/* Approx tick duration in us */
 #define	SNDRV_PCM_HW_PARAM_FIRST_INTERVAL	SNDRV_PCM_HW_PARAM_SAMPLE_BITS
 #define	SNDRV_PCM_HW_PARAM_LAST_INTERVAL	SNDRV_PCM_HW_PARAM_TICK_TIME
 
-#define SNDRV_PCM_HW_PARAMS_NORESAMPLE		(1<<0)	/* avoid rate resampling */
+#define SNDRV_PCM_HW_PARAMS_NORESAMPLE	(1<<0)	/* avoid rate resampling */
 
 struct snd_interval {
 	unsigned int min, max;
@@ -354,8 +365,8 @@ struct snd_pcm_hw_params {
 
 enum {
 	SNDRV_PCM_TSTAMP_NONE = 0,
-	SNDRV_PCM_TSTAMP_MMAP,
-	SNDRV_PCM_TSTAMP_LAST = SNDRV_PCM_TSTAMP_MMAP,
+	SNDRV_PCM_TSTAMP_ENABLE,
+	SNDRV_PCM_TSTAMP_LAST = SNDRV_PCM_TSTAMP_ENABLE,
 };
 
 struct snd_pcm_sw_params {
@@ -363,7 +374,7 @@ struct snd_pcm_sw_params {
 	unsigned int period_step;
 	unsigned int sleep_min;			/* min ticks to sleep */
 	snd_pcm_uframes_t avail_min;		/* min avail frames for wakeup */
-	snd_pcm_uframes_t xfer_align;		/* xfer size need to be a multiple */
+	snd_pcm_uframes_t xfer_align;		/* obsolete: xfer size need to be a multiple */
 	snd_pcm_uframes_t start_threshold;	/* min hw_avail frames for automatic start */
 	snd_pcm_uframes_t stop_threshold;	/* min avail frames for automatic stop */
 	snd_pcm_uframes_t silence_threshold;	/* min distance from noise for silence filling */
@@ -435,9 +446,16 @@ struct snd_xfern {
 };
 
 enum {
+	SNDRV_PCM_TSTAMP_TYPE_GETTIMEOFDAY = 0,	/* gettimeofday equivalent */
+	SNDRV_PCM_TSTAMP_TYPE_MONOTONIC,	/* posix_clock_monotonic equivalent */
+	SNDRV_PCM_TSTAMP_TYPE_LAST = SNDRV_PCM_TSTAMP_TYPE_MONOTONIC,
+};
+
+enum {
 	SNDRV_PCM_IOCTL_PVERSION = _IOR('A', 0x00, int),
 	SNDRV_PCM_IOCTL_INFO = _IOR('A', 0x01, struct snd_pcm_info),
 	SNDRV_PCM_IOCTL_TSTAMP = _IOW('A', 0x02, int),
+	SNDRV_PCM_IOCTL_TTSTAMP = _IOW('A', 0x03, int),
 	SNDRV_PCM_IOCTL_HW_REFINE = _IOWR('A', 0x10, struct snd_pcm_hw_params),
 	SNDRV_PCM_IOCTL_HW_PARAMS = _IOWR('A', 0x11, struct snd_pcm_hw_params),
 	SNDRV_PCM_IOCTL_HW_FREE = _IO('A', 0x12),
@@ -557,6 +575,7 @@ enum {
 #define SNDRV_TIMER_GLOBAL_SYSTEM	0
 #define SNDRV_TIMER_GLOBAL_RTC		1
 #define SNDRV_TIMER_GLOBAL_HPET		2
+#define SNDRV_TIMER_GLOBAL_HRTIMER	3
 
 /* info flags */
 #define SNDRV_TIMER_FLG_SLAVE		(1<<0)	/* cannot be controlled */
@@ -689,7 +708,7 @@ struct snd_timer_tread {
  *                                                                          *
  ****************************************************************************/
 
-#define SNDRV_CTL_VERSION		SNDRV_PROTOCOL_VERSION(2, 0, 4)
+#define SNDRV_CTL_VERSION		SNDRV_PROTOCOL_VERSION(2, 0, 6)
 
 struct snd_ctl_card_info {
 	int card;			/* card number */
@@ -700,8 +719,7 @@ struct snd_ctl_card_info {
 	unsigned char longname[80];	/* name + info text about soundcard */
 	unsigned char reserved_[16];	/* reserved for future (was ID of mixer) */
 	unsigned char mixername[80];	/* visual mixer identification */
-	unsigned char components[80];	/* card components / fine identification, delimited with one space (AC97 etc..) */
-	unsigned char reserved[48];	/* reserved for future */
+	unsigned char components[128];	/* card components / fine identification, delimited with one space (AC97 etc..) */
 };
 
 typedef int __bitwise snd_ctl_elem_type_t;
@@ -738,8 +756,7 @@ typedef int __bitwise snd_ctl_elem_iface_t;
 #define SNDRV_CTL_ELEM_ACCESS_OWNER		(1<<10)	/* write lock owner */
 #define SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK	(1<<28)	/* kernel use a TLV callback */ 
 #define SNDRV_CTL_ELEM_ACCESS_USER		(1<<29) /* user space element */
-#define SNDRV_CTL_ELEM_ACCESS_DINDIRECT		(1<<30)	/* indirect access for matrix dimensions in the info structure */
-#define SNDRV_CTL_ELEM_ACCESS_INDIRECT		(1<<31)	/* indirect access for element value in the value structure */
+/* bits 30 and 31 are obsoleted (for indirect access) */
 
 /* for further details see the ACPI and PCI power management specification */
 #define SNDRV_CTL_POWER_D0		0x0000	/* full On */
@@ -793,30 +810,30 @@ struct snd_ctl_elem_info {
 	} value;
 	union {
 		unsigned short d[4];		/* dimensions */
-		unsigned short *d_ptr;		/* indirect */
+		unsigned short *d_ptr;		/* indirect - obsoleted */
 	} dimen;
 	unsigned char reserved[64-4*sizeof(unsigned short)];
 };
 
 struct snd_ctl_elem_value {
 	struct snd_ctl_elem_id id;	/* W: element ID */
-	unsigned int indirect: 1;	/* W: use indirect pointer (xxx_ptr member) */
+	unsigned int indirect: 1;	/* W: indirect access - obsoleted */
         union {
 		union {
 			long value[128];
-			long *value_ptr;
+			long *value_ptr;	/* obsoleted */
 		} integer;
 		union {
 			long long value[64];
-			long long *value_ptr;
+			long long *value_ptr;	/* obsoleted */
 		} integer64;
 		union {
 			unsigned int item[128];
-			unsigned int *item_ptr;
+			unsigned int *item_ptr;	/* obsoleted */
 		} enumerated;
 		union {
 			unsigned char data[512];
-			unsigned char *data_ptr;
+			unsigned char *data_ptr;	/* obsoleted */
 		} bytes;
 		struct snd_aes_iec958 iec958;
         } value;                /* RO */

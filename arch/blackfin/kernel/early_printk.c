@@ -35,6 +35,9 @@
 extern struct console *bfin_earlyserial_init(unsigned int port,
 						unsigned int cflag);
 #endif
+#ifdef CONFIG_BFIN_JTAG_COMM
+extern struct console *bfin_jc_early_init(void);
+#endif
 
 static struct console *early_console;
 
@@ -102,10 +105,10 @@ static struct console * __init earlyserial_init(char *buf)
 		cflag |= CS5;
 		break;
 	case 6:
-		cflag |= CS5;
+		cflag |= CS6;
 		break;
 	case 7:
-		cflag |= CS5;
+		cflag |= CS7;
 		break;
 	default:
 		cflag |= CS8;
@@ -142,6 +145,15 @@ int __init setup_early_printk(char *buf)
 		early_console = earlyserial_init(buf);
 	}
 #endif
+
+#ifdef CONFIG_BFIN_JTAG_COMM
+	/* Check for Blackfin JTAG */
+	if (!strncmp(buf, "jtag", 4)) {
+		buf += 4;
+		early_console = bfin_jc_early_init();
+	}
+#endif
+
 #ifdef CONFIG_FB
 		/* TODO: add framebuffer console support */
 #endif
@@ -187,7 +199,7 @@ asmlinkage void __init init_early_exception_vectors(void)
 	bfin_write_EVT15(early_trap);
 	CSYNC();
 
-	/* Set all the return from interupt, exception, NMI to a known place
+	/* Set all the return from interrupt, exception, NMI to a known place
 	 * so if we do a RETI, RETX or RETN by mistake - we go somewhere known
 	 * Note - don't change RETS - we are in a subroutine, or
 	 * RETE - since it might screw up if emulator is attached
@@ -205,7 +217,7 @@ asmlinkage void __init early_trap_c(struct pt_regs *fp, void *retaddr)
 	if (likely(early_console == NULL))
 		setup_early_printk(DEFAULT_EARLY_PORT);
 
-	dump_bfin_mem((void *)fp->retx);
+	dump_bfin_mem(fp);
 	show_regs(fp);
 	dump_bfin_trace_buffer();
 

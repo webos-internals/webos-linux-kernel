@@ -1,6 +1,6 @@
 /*
  * Copyright (C) Sistina Software, Inc.  1997-2003 All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc.  All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc.  All rights reserved.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
@@ -16,6 +16,9 @@
 #include <linux/crc32.h>
 #include <linux/lm_interface.h>
 #include <linux/delay.h>
+#include <linux/kthread.h>
+#include <linux/freezer.h>
+#include <linux/bio.h>
 
 #include "gfs2.h"
 #include "incore.h"
@@ -68,14 +71,12 @@ unsigned int gfs2_struct2blk(struct gfs2_sbd *sdp, unsigned int nstruct,
  *
  */
 
-void gfs2_remove_from_ail(struct address_space *mapping, struct gfs2_bufdata *bd)
+void gfs2_remove_from_ail(struct gfs2_bufdata *bd)
 {
 	bd->bd_ail = NULL;
 	list_del_init(&bd->bd_ail_st_list);
 	list_del_init(&bd->bd_ail_gl_list);
 	atomic_dec(&bd->bd_gl->gl_ail_count);
-	if (mapping)
-		gfs2_meta_cache_flush(GFS2_I(mapping->host));
 	brelse(bd->bd_bh);
 }
 
@@ -87,12 +88,12 @@ void gfs2_remove_from_ail(struct address_space *mapping, struct gfs2_bufdata *bd
  */
 
 static void gfs2_ail1_start_one(struct gfs2_sbd *sdp, struct gfs2_ail *ai)
+__releases(&sdp->sd_log_lock)
+__acquires(&sdp->sd_log_lock)
 {
 	struct gfs2_bufdata *bd, *s;
 	struct buffer_head *bh;
 	int retry;
-
-	BUG_ON(!spin_is_locked(&sdp->sd_log_lock));
 
 	do {
 		retry = 0;
@@ -210,7 +211,7 @@ static void gfs2_ail1_start(struct gfs2_sbd *sdp, int flags)
 	gfs2_log_unlock(sdp);
 }
 
-int gfs2_ail1_empty(struct gfs2_sbd *sdp, int flags)
+static int gfs2_ail1_empty(struct gfs2_sbd *sdp, int flags)
 {
 	struct gfs2_ail *ai, *s;
 	int ret;
@@ -248,7 +249,7 @@ static void gfs2_ail2_empty_one(struct gfs2_sbd *sdp, struct gfs2_ail *ai)
 		bd = list_entry(head->prev, struct gfs2_bufdata,
 				bd_ail_st_list);
 		gfs2_assert(sdp, bd->bd_ail == ai);
-		gfs2_remove_from_ail(bd->bd_bh->b_page->mapping, bd);
+		gfs2_remove_from_ail(bd);
 	}
 }
 
@@ -303,7 +304,7 @@ int gfs2_log_reserve(struct gfs2_sbd *sdp, unsigned int blks)
 
 	mutex_lock(&sdp->sd_log_reserve_mutex);
 	gfs2_log_lock(sdp);
-	while(sdp->sd_log_blks_free <= (blks + reserved_blks)) {
+	while(atomic_read(&sdp->sd_log_blks_free) <= (blks + reserved_blks)) {
 		gfs2_log_unlock(sdp);
 		gfs2_ail1_empty(sdp, 0);
 		gfs2_log_flush(sdp, NULL);
@@ -312,7 +313,7 @@ int gfs2_log_reserve(struct gfs2_sbd *sdp, unsigned int blks)
 			gfs2_ail1_start(sdp, 0);
 		gfs2_log_lock(sdp);
 	}
-	sdp->sd_log_blks_free -= blks;
+	atomic_sub(blks, &sdp->sd_log_blks_free);
 	gfs2_log_unlock(sdp);
 	mutex_unlock(&sdp->sd_log_reserve_mutex);
 
@@ -332,27 +333,23 @@ void gfs2_log_release(struct gfs2_sbd *sdp, unsigned int blks)
 {
 
 	gfs2_log_lock(sdp);
-	sdp->sd_log_blks_free += blks;
+	atomic_add(blks, &sdp->sd_log_blks_free);
 	gfs2_assert_withdraw(sdp,
-			     sdp->sd_log_blks_free <= sdp->sd_jdesc->jd_blocks);
+			     atomic_read(&sdp->sd_log_blks_free) <= sdp->sd_jdesc->jd_blocks);
 	gfs2_log_unlock(sdp);
 	up_read(&sdp->sd_log_flush_lock);
 }
 
 static u64 log_bmap(struct gfs2_sbd *sdp, unsigned int lbn)
 {
-	struct inode *inode = sdp->sd_jdesc->jd_inode;
-	int error;
-	struct buffer_head bh_map = { .b_state = 0, .b_blocknr = 0 };
+	struct gfs2_journal_extent *je;
 
-	bh_map.b_size = 1 << inode->i_blkbits;
-	error = gfs2_block_map(inode, lbn, 0, &bh_map);
-	if (error || !bh_map.b_blocknr)
-		printk(KERN_INFO "error=%d, dbn=%llu lbn=%u", error,
-		       (unsigned long long)bh_map.b_blocknr, lbn);
-	gfs2_assert_withdraw(sdp, !error && bh_map.b_blocknr);
+	list_for_each_entry(je, &sdp->sd_jdesc->extent_list, extent_list) {
+		if (lbn >= je->lblock && lbn < je->lblock + je->blocks)
+			return je->dblock + lbn - je->lblock;
+	}
 
-	return bh_map.b_blocknr;
+	return -1;
 }
 
 /**
@@ -561,8 +558,8 @@ static void log_pull_tail(struct gfs2_sbd *sdp, unsigned int new_tail)
 	ail2_empty(sdp, new_tail);
 
 	gfs2_log_lock(sdp);
-	sdp->sd_log_blks_free += dist;
-	gfs2_assert_withdraw(sdp, sdp->sd_log_blks_free <= sdp->sd_jdesc->jd_blocks);
+	atomic_add(dist, &sdp->sd_log_blks_free);
+	gfs2_assert_withdraw(sdp, atomic_read(&sdp->sd_log_blks_free) <= sdp->sd_jdesc->jd_blocks);
 	gfs2_log_unlock(sdp);
 
 	sdp->sd_log_tail = new_tail;
@@ -588,7 +585,6 @@ static void log_write_header(struct gfs2_sbd *sdp, u32 flags, int pull)
 	memset(bh->b_data, 0, bh->b_size);
 	set_buffer_uptodate(bh);
 	clear_buffer_dirty(bh);
-	unlock_buffer(bh);
 
 	gfs2_ail1_empty(sdp, 0);
 	tail = current_tail(sdp);
@@ -605,8 +601,23 @@ static void log_write_header(struct gfs2_sbd *sdp, u32 flags, int pull)
 	hash = gfs2_disk_hash(bh->b_data, sizeof(struct gfs2_log_header));
 	lh->lh_hash = cpu_to_be32(hash);
 
-	set_buffer_dirty(bh);
-	if (sync_dirty_buffer(bh))
+	bh->b_end_io = end_buffer_write_sync;
+	if (test_bit(SDF_NOBARRIERS, &sdp->sd_flags))
+		goto skip_barrier;
+	get_bh(bh);
+	submit_bh(WRITE_BARRIER | (1 << BIO_RW_META), bh);
+	wait_on_buffer(bh);
+	if (buffer_eopnotsupp(bh)) {
+		clear_buffer_eopnotsupp(bh);
+		set_buffer_uptodate(bh);
+		set_bit(SDF_NOBARRIERS, &sdp->sd_flags);
+		lock_buffer(bh);
+skip_barrier:
+		get_bh(bh);
+		submit_bh(WRITE_SYNC | (1 << BIO_RW_META), bh);
+		wait_on_buffer(bh);
+	}
+	if (!buffer_uptodate(bh))
 		gfs2_io_error_bh(sdp, bh);
 	brelse(bh);
 
@@ -652,7 +663,7 @@ static void gfs2_ordered_write(struct gfs2_sbd *sdp)
 		get_bh(bh);
 		gfs2_log_unlock(sdp);
 		lock_buffer(bh);
-		if (test_clear_buffer_dirty(bh)) {
+		if (buffer_mapped(bh) && test_clear_buffer_dirty(bh)) {
 			bh->b_end_io = end_buffer_write_sync;
 			submit_bh(WRITE, bh);
 		} else {
@@ -694,20 +705,16 @@ static void gfs2_ordered_wait(struct gfs2_sbd *sdp)
  *
  */
 
-void gfs2_log_flush(struct gfs2_sbd *sdp, struct gfs2_glock *gl)
+void __gfs2_log_flush(struct gfs2_sbd *sdp, struct gfs2_glock *gl)
 {
 	struct gfs2_ail *ai;
 
 	down_write(&sdp->sd_log_flush_lock);
 
-	if (gl) {
-		gfs2_log_lock(sdp);
-		if (list_empty(&gl->gl_le.le_list)) {
-			gfs2_log_unlock(sdp);
-			up_write(&sdp->sd_log_flush_lock);
-			return;
-		}
-		gfs2_log_unlock(sdp);
+	/* Log might have been flushed while we waited for the flush lock */
+	if (gl && !test_bit(GLF_LFLUSH, &gl->gl_flags)) {
+		up_write(&sdp->sd_log_flush_lock);
+		return;
 	}
 
 	ai = kzalloc(sizeof(struct gfs2_ail), GFP_NOFS | __GFP_NOFAIL);
@@ -739,7 +746,7 @@ void gfs2_log_flush(struct gfs2_sbd *sdp, struct gfs2_glock *gl)
 		log_flush_commit(sdp);
 	else if (sdp->sd_log_tail != current_tail(sdp) && !sdp->sd_log_idle){
 		gfs2_log_lock(sdp);
-		sdp->sd_log_blks_free--; /* Adjust for unreserved buffer */
+		atomic_dec(&sdp->sd_log_blks_free); /* Adjust for unreserved buffer */
 		gfs2_log_unlock(sdp);
 		log_write_header(sdp, 0, PULL);
 	}
@@ -767,7 +774,7 @@ void gfs2_log_flush(struct gfs2_sbd *sdp, struct gfs2_glock *gl)
 static void log_refund(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
 {
 	unsigned int reserved;
-	unsigned int old;
+	unsigned int unused;
 
 	gfs2_log_lock(sdp);
 
@@ -779,17 +786,29 @@ static void log_refund(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
 	sdp->sd_log_commited_revoke += tr->tr_num_revoke - tr->tr_num_revoke_rm;
 	gfs2_assert_withdraw(sdp, ((int)sdp->sd_log_commited_revoke) >= 0);
 	reserved = calc_reserved(sdp);
-	old = sdp->sd_log_blks_free;
-	sdp->sd_log_blks_free += tr->tr_reserved -
-				 (reserved - sdp->sd_log_blks_reserved);
-
-	gfs2_assert_withdraw(sdp, sdp->sd_log_blks_free >= old);
-	gfs2_assert_withdraw(sdp, sdp->sd_log_blks_free <=
+	gfs2_assert_withdraw(sdp, sdp->sd_log_blks_reserved + tr->tr_reserved >= reserved);
+	unused = sdp->sd_log_blks_reserved - reserved + tr->tr_reserved;
+	atomic_add(unused, &sdp->sd_log_blks_free);
+	gfs2_assert_withdraw(sdp, atomic_read(&sdp->sd_log_blks_free) <=
 			     sdp->sd_jdesc->jd_blocks);
-
 	sdp->sd_log_blks_reserved = reserved;
 
 	gfs2_log_unlock(sdp);
+}
+
+static void buf_lo_incore_commit(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
+{
+	struct list_head *head = &tr->tr_list_buf;
+	struct gfs2_bufdata *bd;
+
+	gfs2_log_lock(sdp);
+	while (!list_empty(head)) {
+		bd = list_entry(head->next, struct gfs2_bufdata, bd_list_tr);
+		list_del_init(&bd->bd_list_tr);
+		tr->tr_num_buf--;
+	}
+	gfs2_log_unlock(sdp);
+	gfs2_assert_warn(sdp, !tr->tr_num_buf);
 }
 
 /**
@@ -803,7 +822,7 @@ static void log_refund(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
 void gfs2_log_commit(struct gfs2_sbd *sdp, struct gfs2_trans *tr)
 {
 	log_refund(sdp, tr);
-	lops_incore_commit(sdp, tr);
+	buf_lo_incore_commit(sdp, tr);
 
 	sdp->sd_vfs->s_dirt = 1;
 	up_read(&sdp->sd_log_flush_lock);
@@ -825,7 +844,6 @@ void gfs2_log_shutdown(struct gfs2_sbd *sdp)
 	down_write(&sdp->sd_log_flush_lock);
 
 	gfs2_assert_withdraw(sdp, !sdp->sd_log_blks_reserved);
-	gfs2_assert_withdraw(sdp, !sdp->sd_log_num_gl);
 	gfs2_assert_withdraw(sdp, !sdp->sd_log_num_buf);
 	gfs2_assert_withdraw(sdp, !sdp->sd_log_num_revoke);
 	gfs2_assert_withdraw(sdp, !sdp->sd_log_num_rg);
@@ -838,7 +856,7 @@ void gfs2_log_shutdown(struct gfs2_sbd *sdp)
 	log_write_header(sdp, GFS2_LOG_HEAD_UNMOUNT,
 			 (sdp->sd_log_tail == current_tail(sdp)) ? 0 : PULL);
 
-	gfs2_assert_warn(sdp, sdp->sd_log_blks_free == sdp->sd_jdesc->jd_blocks);
+	gfs2_assert_warn(sdp, atomic_read(&sdp->sd_log_blks_free) == sdp->sd_jdesc->jd_blocks);
 	gfs2_assert_warn(sdp, sdp->sd_log_head == sdp->sd_log_tail);
 	gfs2_assert_warn(sdp, list_empty(&sdp->sd_ail2_list));
 
@@ -864,5 +882,44 @@ void gfs2_meta_syncfs(struct gfs2_sbd *sdp)
 			break;
 		msleep(10);
 	}
+}
+
+
+/**
+ * gfs2_logd - Update log tail as Active Items get flushed to in-place blocks
+ * @sdp: Pointer to GFS2 superblock
+ *
+ * Also, periodically check to make sure that we're using the most recent
+ * journal index.
+ */
+
+int gfs2_logd(void *data)
+{
+	struct gfs2_sbd *sdp = data;
+	unsigned long t;
+	int need_flush;
+
+	while (!kthread_should_stop()) {
+		/* Advance the log tail */
+
+		t = sdp->sd_log_flush_time +
+		    gfs2_tune_get(sdp, gt_log_flush_secs) * HZ;
+
+		gfs2_ail1_empty(sdp, DIO_ALL);
+		gfs2_log_lock(sdp);
+		need_flush = sdp->sd_log_num_buf > gfs2_tune_get(sdp, gt_incore_log_blocks);
+		gfs2_log_unlock(sdp);
+		if (need_flush || time_after_eq(jiffies, t)) {
+			gfs2_log_flush(sdp, NULL);
+			sdp->sd_log_flush_time = jiffies;
+		}
+
+		t = gfs2_tune_get(sdp, gt_logd_secs) * HZ;
+		if (freezing(current))
+			refrigerator();
+		schedule_timeout_interruptible(t);
+	}
+
+	return 0;
 }
 

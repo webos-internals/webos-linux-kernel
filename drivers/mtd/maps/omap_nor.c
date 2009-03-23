@@ -43,9 +43,9 @@
 #include <linux/mtd/partitions.h>
 
 #include <asm/io.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/mach/flash.h>
-#include <asm/arch/tc.h>
+#include <mach/tc.h>
 
 #ifdef CONFIG_MTD_PARTITIONS
 static const char *part_probes[] = { /* "RedBoot", */ "cmdlinepart", NULL };
@@ -60,17 +60,26 @@ struct omapflash_info {
 static void omap_set_vpp(struct map_info *map, int enable)
 {
 	static int	count;
+	u32 l;
 
-	if (enable) {
-		if (count++ == 0)
-			OMAP_EMIFS_CONFIG_REG |= OMAP_EMIFS_CONFIG_WP;
-	} else {
-		if (count && (--count == 0))
-			OMAP_EMIFS_CONFIG_REG &= ~OMAP_EMIFS_CONFIG_WP;
+	if (cpu_class_is_omap1()) {
+		if (enable) {
+			if (count++ == 0) {
+				l = omap_readl(EMIFS_CONFIG);
+				l |= OMAP_EMIFS_CONFIG_WP;
+				omap_writel(l, EMIFS_CONFIG);
+			}
+		} else {
+			if (count && (--count == 0)) {
+				l = omap_readl(EMIFS_CONFIG);
+				l &= ~OMAP_EMIFS_CONFIG_WP;
+				omap_writel(l, EMIFS_CONFIG);
+			}
+		}
 	}
 }
 
-static int __devinit omapflash_probe(struct platform_device *pdev)
+static int __init omapflash_probe(struct platform_device *pdev)
 {
 	int err;
 	struct omapflash_info *info;
@@ -92,7 +101,7 @@ static int __devinit omapflash_probe(struct platform_device *pdev)
 		err = -ENOMEM;
 		goto out_release_mem_region;
 	}
-	info->map.name		= pdev->dev.bus_id;
+	info->map.name		= dev_name(&pdev->dev);
 	info->map.phys		= res->start;
 	info->map.size		= size;
 	info->map.bankwidth	= pdata->width;
@@ -110,7 +119,7 @@ static int __devinit omapflash_probe(struct platform_device *pdev)
 	err = parse_mtd_partitions(info->mtd, part_probes, &info->parts, 0);
 	if (err > 0)
 		add_mtd_partitions(info->mtd, info->parts, err);
-	else if (err < 0 && pdata->parts)
+	else if (err <= 0 && pdata->parts)
 		add_mtd_partitions(info->mtd, pdata->parts, pdata->nr_parts);
 	else
 #endif
@@ -130,7 +139,7 @@ out_free_info:
 	return err;
 }
 
-static int __devexit omapflash_remove(struct platform_device *pdev)
+static int __exit omapflash_remove(struct platform_device *pdev)
 {
 	struct omapflash_info *info = platform_get_drvdata(pdev);
 
@@ -152,16 +161,16 @@ static int __devexit omapflash_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver omapflash_driver = {
-	.probe	= omapflash_probe,
-	.remove	= __devexit_p(omapflash_remove),
+	.remove	= __exit_p(omapflash_remove),
 	.driver = {
 		.name	= "omapflash",
+		.owner	= THIS_MODULE,
 	},
 };
 
 static int __init omapflash_init(void)
 {
-	return platform_driver_register(&omapflash_driver);
+	return platform_driver_probe(&omapflash_driver, omapflash_probe);
 }
 
 static void __exit omapflash_exit(void)
@@ -174,4 +183,4 @@ module_exit(omapflash_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MTD NOR map driver for TI OMAP boards");
-
+MODULE_ALIAS("platform:omapflash");

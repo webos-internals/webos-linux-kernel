@@ -17,7 +17,6 @@
 #include <linux/mmc/mmc.h>
 
 #include "core.h"
-#include "sysfs.h"
 #include "bus.h"
 #include "mmc_ops.h"
 
@@ -248,10 +247,48 @@ out:
 	return err;
 }
 
+MMC_DEV_ATTR(cid, "%08x%08x%08x%08x\n", card->raw_cid[0], card->raw_cid[1],
+	card->raw_cid[2], card->raw_cid[3]);
+MMC_DEV_ATTR(csd, "%08x%08x%08x%08x\n", card->raw_csd[0], card->raw_csd[1],
+	card->raw_csd[2], card->raw_csd[3]);
+MMC_DEV_ATTR(date, "%02d/%04d\n", card->cid.month, card->cid.year);
+MMC_DEV_ATTR(fwrev, "0x%x\n", card->cid.fwrev);
+MMC_DEV_ATTR(hwrev, "0x%x\n", card->cid.hwrev);
+MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
+MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
+MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
+MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
+
+static struct attribute *mmc_std_attrs[] = {
+	&dev_attr_cid.attr,
+	&dev_attr_csd.attr,
+	&dev_attr_date.attr,
+	&dev_attr_fwrev.attr,
+	&dev_attr_hwrev.attr,
+	&dev_attr_manfid.attr,
+	&dev_attr_name.attr,
+	&dev_attr_oemid.attr,
+	&dev_attr_serial.attr,
+	NULL,
+};
+
+static struct attribute_group mmc_std_attr_group = {
+	.attrs = mmc_std_attrs,
+};
+
+static struct attribute_group *mmc_attr_groups[] = {
+	&mmc_std_attr_group,
+	NULL,
+};
+
+static struct device_type mmc_type = {
+	.groups = mmc_attr_groups,
+};
+
 /*
  * Handle the detection and initialisation of a card.
  *
- * In the case of a resume, "curcard" will contain the card
+ * In the case of a resume, "oldcard" will contain the card
  * we're trying to reinitialise.
  */
 static int mmc_init_card(struct mmc_host *host, u32 ocr,
@@ -308,7 +345,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		/*
 		 * Allocate card structure.
 		 */
-		card = mmc_alloc_card(host);
+		card = mmc_alloc_card(host, &mmc_type);
 		if (IS_ERR(card)) {
 			err = PTR_ERR(card);
 			goto err;
@@ -397,13 +434,24 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	 * Activate wide bus (if supported).
 	 */
 	if ((card->csd.mmca_vsn >= CSD_SPEC_VER_4) &&
-		(host->caps & MMC_CAP_4_BIT_DATA)) {
+	    (host->caps & (MMC_CAP_4_BIT_DATA | MMC_CAP_8_BIT_DATA))) {
+		unsigned ext_csd_bit, bus_width;
+
+		if (host->caps & MMC_CAP_8_BIT_DATA) {
+			ext_csd_bit = EXT_CSD_BUS_WIDTH_8;
+			bus_width = MMC_BUS_WIDTH_8;
+		} else {
+			ext_csd_bit = EXT_CSD_BUS_WIDTH_4;
+			bus_width = MMC_BUS_WIDTH_4;
+		}
+
 		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
-			EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_4);
+				 EXT_CSD_BUS_WIDTH, ext_csd_bit);
+
 		if (err)
 			goto free_card;
 
-		mmc_set_bus_width(card->host, MMC_BUS_WIDTH_4);
+		mmc_set_bus_width(card->host, bus_width);
 	}
 
 	if (!oldcard)
@@ -457,53 +505,6 @@ static void mmc_detect(struct mmc_host *host)
 		mmc_detach_bus(host);
 		mmc_release_host(host);
 	}
-}
-
-MMC_ATTR_FN(cid, "%08x%08x%08x%08x\n", card->raw_cid[0], card->raw_cid[1],
-	card->raw_cid[2], card->raw_cid[3]);
-MMC_ATTR_FN(csd, "%08x%08x%08x%08x\n", card->raw_csd[0], card->raw_csd[1],
-	card->raw_csd[2], card->raw_csd[3]);
-MMC_ATTR_FN(date, "%02d/%04d\n", card->cid.month, card->cid.year);
-MMC_ATTR_FN(fwrev, "0x%x\n", card->cid.fwrev);
-MMC_ATTR_FN(hwrev, "0x%x\n", card->cid.hwrev);
-MMC_ATTR_FN(manfid, "0x%06x\n", card->cid.manfid);
-MMC_ATTR_FN(name, "%s\n", card->cid.prod_name);
-MMC_ATTR_FN(oemid, "0x%04x\n", card->cid.oemid);
-MMC_ATTR_FN(serial, "0x%08x\n", card->cid.serial);
-
-static struct device_attribute mmc_dev_attrs[] = {
-	MMC_ATTR_RO(cid),
-	MMC_ATTR_RO(csd),
-	MMC_ATTR_RO(date),
-	MMC_ATTR_RO(fwrev),
-	MMC_ATTR_RO(hwrev),
-	MMC_ATTR_RO(manfid),
-	MMC_ATTR_RO(name),
-	MMC_ATTR_RO(oemid),
-	MMC_ATTR_RO(serial),
-	__ATTR_NULL,
-};
-
-/*
- * Adds sysfs entries as relevant.
- */
-static int mmc_sysfs_add(struct mmc_host *host, struct mmc_card *card)
-{
-	int ret;
-
-	ret = mmc_add_attrs(card, mmc_dev_attrs);
-	if (ret < 0)
-		return ret;
-
-	return 0;
-}
-
-/*
- * Removes the sysfs entries added by mmc_sysfs_add().
- */
-static void mmc_sysfs_remove(struct mmc_host *host, struct mmc_card *card)
-{
-	mmc_remove_attrs(card, mmc_dev_attrs);
 }
 
 #ifdef CONFIG_MMC_UNSAFE_RESUME
@@ -560,8 +561,6 @@ static void mmc_resume(struct mmc_host *host)
 static const struct mmc_bus_ops mmc_ops = {
 	.remove = mmc_remove,
 	.detect = mmc_detect,
-	.sysfs_add = mmc_sysfs_add,
-	.sysfs_remove = mmc_sysfs_remove,
 	.suspend = mmc_suspend,
 	.resume = mmc_resume,
 };
@@ -636,4 +635,3 @@ err:
 
 	return err;
 }
-

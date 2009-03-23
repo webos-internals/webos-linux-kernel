@@ -1,6 +1,4 @@
 /*
- * $Id: mtdcore.c,v 1.47 2005/11/07 11:14:20 gleixner Exp $
- *
  * Core registration and callback routines for MTD
  * drivers and users.
  *
@@ -53,15 +51,28 @@ int add_mtd_device(struct mtd_info *mtd)
 
 	for (i=0; i < MAX_MTD_DEVICES; i++)
 		if (!mtd_table[i]) {
-			struct list_head *this;
+			struct mtd_notifier *not;
 
 			mtd_table[i] = mtd;
 			mtd->index = i;
 			mtd->usecount = 0;
 
+			if (is_power_of_2(mtd->erasesize))
+				mtd->erasesize_shift = ffs(mtd->erasesize) - 1;
+			else
+				mtd->erasesize_shift = 0;
+
+			if (is_power_of_2(mtd->writesize))
+				mtd->writesize_shift = ffs(mtd->writesize) - 1;
+			else
+				mtd->writesize_shift = 0;
+
+			mtd->erasesize_mask = (1 << mtd->erasesize_shift) - 1;
+			mtd->writesize_mask = (1 << mtd->writesize_shift) - 1;
+
 			/* Some chips always power up locked. Unlock them now */
 			if ((mtd->flags & MTD_WRITEABLE)
-			    && (mtd->flags & MTD_STUPID_LOCK) && mtd->unlock) {
+			    && (mtd->flags & MTD_POWERUP_LOCK) && mtd->unlock) {
 				if (mtd->unlock(mtd, 0, mtd->size))
 					printk(KERN_WARNING
 					       "%s: unlock failed, "
@@ -72,10 +83,8 @@ int add_mtd_device(struct mtd_info *mtd)
 			DEBUG(0, "mtd: Giving out device %d to %s\n",i, mtd->name);
 			/* No need to get a refcount on the module containing
 			   the notifier, since we hold the mtd_table_mutex */
-			list_for_each(this, &mtd_notifiers) {
-				struct mtd_notifier *not = list_entry(this, struct mtd_notifier, list);
+			list_for_each_entry(not, &mtd_notifiers, list)
 				not->add(mtd);
-			}
 
 			mutex_unlock(&mtd_table_mutex);
 			/* We _know_ we aren't being removed, because
@@ -113,14 +122,12 @@ int del_mtd_device (struct mtd_info *mtd)
 		       mtd->index, mtd->name, mtd->usecount);
 		ret = -EBUSY;
 	} else {
-		struct list_head *this;
+		struct mtd_notifier *not;
 
 		/* No need to get a refcount on the module containing
 		   the notifier, since we hold the mtd_table_mutex */
-		list_for_each(this, &mtd_notifiers) {
-			struct mtd_notifier *not = list_entry(this, struct mtd_notifier, list);
+		list_for_each_entry(not, &mtd_notifiers, list)
 			not->remove(mtd);
-		}
 
 		mtd_table[mtd->index] = NULL;
 
@@ -350,7 +357,8 @@ static inline int mtd_proc_info (char *buf, int i)
 	if (!this)
 		return 0;
 
-	return sprintf(buf, "mtd%d: %8.8x %8.8x \"%s\"\n", i, this->size,
+	return sprintf(buf, "mtd%d: %8.8llx %8.8x \"%s\"\n", i,
+		       (unsigned long long)this->size,
 		       this->erasesize, this->name);
 }
 

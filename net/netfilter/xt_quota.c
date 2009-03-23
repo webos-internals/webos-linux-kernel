@@ -11,19 +11,17 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sam Johnston <samj@samj.net>");
+MODULE_DESCRIPTION("Xtables: countdown quota match");
 MODULE_ALIAS("ipt_quota");
 MODULE_ALIAS("ip6t_quota");
 
 static DEFINE_SPINLOCK(quota_lock);
 
 static bool
-match(const struct sk_buff *skb,
-      const struct net_device *in, const struct net_device *out,
-      const struct xt_match *match, const void *matchinfo,
-      int offset, unsigned int protoff, bool *hotdrop)
+quota_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 {
 	struct xt_quota_info *q =
-		((const struct xt_quota_info *)matchinfo)->master;
+		((const struct xt_quota_info *)par->matchinfo)->master;
 	bool ret = q->flags & XT_QUOTA_INVERT;
 
 	spin_lock_bh(&quota_lock);
@@ -39,12 +37,9 @@ match(const struct sk_buff *skb,
 	return ret;
 }
 
-static bool
-checkentry(const char *tablename, const void *entry,
-	   const struct xt_match *match, void *matchinfo,
-	   unsigned int hook_mask)
+static bool quota_mt_check(const struct xt_mtchk_param *par)
 {
-	struct xt_quota_info *q = matchinfo;
+	struct xt_quota_info *q = par->matchinfo;
 
 	if (q->flags & ~XT_QUOTA_MASK)
 		return false;
@@ -53,34 +48,25 @@ checkentry(const char *tablename, const void *entry,
 	return true;
 }
 
-static struct xt_match xt_quota_match[] __read_mostly = {
-	{
-		.name		= "quota",
-		.family		= AF_INET,
-		.checkentry	= checkentry,
-		.match		= match,
-		.matchsize	= sizeof(struct xt_quota_info),
-		.me		= THIS_MODULE
-	},
-	{
-		.name		= "quota",
-		.family		= AF_INET6,
-		.checkentry	= checkentry,
-		.match		= match,
-		.matchsize	= sizeof(struct xt_quota_info),
-		.me		= THIS_MODULE
-	},
+static struct xt_match quota_mt_reg __read_mostly = {
+	.name       = "quota",
+	.revision   = 0,
+	.family     = NFPROTO_UNSPEC,
+	.match      = quota_mt,
+	.checkentry = quota_mt_check,
+	.matchsize  = sizeof(struct xt_quota_info),
+	.me         = THIS_MODULE,
 };
 
-static int __init xt_quota_init(void)
+static int __init quota_mt_init(void)
 {
-	return xt_register_matches(xt_quota_match, ARRAY_SIZE(xt_quota_match));
+	return xt_register_match(&quota_mt_reg);
 }
 
-static void __exit xt_quota_fini(void)
+static void __exit quota_mt_exit(void)
 {
-	xt_unregister_matches(xt_quota_match, ARRAY_SIZE(xt_quota_match));
+	xt_unregister_match(&quota_mt_reg);
 }
 
-module_init(xt_quota_init);
-module_exit(xt_quota_fini);
+module_init(quota_mt_init);
+module_exit(quota_mt_exit);

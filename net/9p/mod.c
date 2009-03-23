@@ -29,8 +29,10 @@
 #include <net/9p/9p.h>
 #include <linux/fs.h>
 #include <linux/parser.h>
+#include <net/9p/client.h>
 #include <net/9p/transport.h>
 #include <linux/list.h>
+#include <linux/spinlock.h>
 
 #ifdef CONFIG_NET_9P_DEBUG
 unsigned int p9_debug_level = 0;	/* feature-rific global debug level  */
@@ -39,66 +41,102 @@ module_param_named(debug, p9_debug_level, uint, 0);
 MODULE_PARM_DESC(debug, "9P debugging level");
 #endif
 
-extern int p9_mux_global_init(void);
-extern void p9_mux_global_exit(void);
-
 /*
  * Dynamic Transport Registration Routines
  *
  */
 
+static DEFINE_SPINLOCK(v9fs_trans_lock);
 static LIST_HEAD(v9fs_trans_list);
-static struct p9_trans_module *v9fs_default_transport;
 
 /**
  * v9fs_register_trans - register a new transport with 9p
- * @m - structure describing the transport module and entry points
+ * @m: structure describing the transport module and entry points
  *
  */
 void v9fs_register_trans(struct p9_trans_module *m)
 {
+	spin_lock(&v9fs_trans_lock);
 	list_add_tail(&m->list, &v9fs_trans_list);
-	if (m->def)
-		v9fs_default_transport = m;
+	spin_unlock(&v9fs_trans_lock);
 }
 EXPORT_SYMBOL(v9fs_register_trans);
 
 /**
- * v9fs_match_trans - match transport versus registered transports
- * @arg: string identifying transport
+ * v9fs_unregister_trans - unregister a 9p transport
+ * @m: the transport to remove
  *
  */
-struct p9_trans_module *v9fs_match_trans(const substring_t *name)
+void v9fs_unregister_trans(struct p9_trans_module *m)
 {
-	struct list_head *p;
-	struct p9_trans_module *t = NULL;
-
-	list_for_each(p, &v9fs_trans_list) {
-		t = list_entry(p, struct p9_trans_module, list);
-		if (strncmp(t->name, name->from, name->to-name->from) == 0)
-			return t;
-	}
-	return NULL;
+	spin_lock(&v9fs_trans_lock);
+	list_del_init(&m->list);
+	spin_unlock(&v9fs_trans_lock);
 }
-EXPORT_SYMBOL(v9fs_match_trans);
+EXPORT_SYMBOL(v9fs_unregister_trans);
 
 /**
- * v9fs_default_trans - returns pointer to default transport
+ * v9fs_get_trans_by_name - get transport with the matching name
+ * @name: string identifying transport
+ *
+ */
+struct p9_trans_module *v9fs_get_trans_by_name(const substring_t *name)
+{
+	struct p9_trans_module *t, *found = NULL;
+
+	spin_lock(&v9fs_trans_lock);
+
+	list_for_each_entry(t, &v9fs_trans_list, list)
+		if (strncmp(t->name, name->from, name->to-name->from) == 0 &&
+		    try_module_get(t->owner)) {
+			found = t;
+			break;
+		}
+
+	spin_unlock(&v9fs_trans_lock);
+	return found;
+}
+EXPORT_SYMBOL(v9fs_get_trans_by_name);
+
+/**
+ * v9fs_get_default_trans - get the default transport
  *
  */
 
-struct p9_trans_module *v9fs_default_trans(void)
+struct p9_trans_module *v9fs_get_default_trans(void)
 {
-	if (v9fs_default_transport)
-		return v9fs_default_transport;
-	else if (!list_empty(&v9fs_trans_list))
-		return list_first_entry(&v9fs_trans_list,
-					struct p9_trans_module, list);
-	else
-		return NULL;
-}
-EXPORT_SYMBOL(v9fs_default_trans);
+	struct p9_trans_module *t, *found = NULL;
 
+	spin_lock(&v9fs_trans_lock);
+
+	list_for_each_entry(t, &v9fs_trans_list, list)
+		if (t->def && try_module_get(t->owner)) {
+			found = t;
+			break;
+		}
+
+	if (!found)
+		list_for_each_entry(t, &v9fs_trans_list, list)
+			if (try_module_get(t->owner)) {
+				found = t;
+				break;
+			}
+
+	spin_unlock(&v9fs_trans_lock);
+	return found;
+}
+EXPORT_SYMBOL(v9fs_get_default_trans);
+
+/**
+ * v9fs_put_trans - put trans
+ * @m: transport to put
+ *
+ */
+void v9fs_put_trans(struct p9_trans_module *m)
+{
+	if (m)
+		module_put(m->owner);
+}
 
 /**
  * v9fs_init - Initialize module
@@ -106,15 +144,11 @@ EXPORT_SYMBOL(v9fs_default_trans);
  */
 static int __init init_p9(void)
 {
-	int ret;
+	int ret = 0;
 
 	p9_error_init();
 	printk(KERN_INFO "Installing 9P2000 support\n");
-	ret = p9_mux_global_init();
-	if (ret) {
-		printk(KERN_WARNING "9p: starting mux failed\n");
-		return ret;
-	}
+	p9_trans_fd_init();
 
 	return ret;
 }
@@ -126,7 +160,9 @@ static int __init init_p9(void)
 
 static void __exit exit_p9(void)
 {
-	p9_mux_global_exit();
+	printk(KERN_INFO "Unloading 9P2000 support\n");
+
+	p9_trans_fd_exit();
 }
 
 module_init(init_p9)

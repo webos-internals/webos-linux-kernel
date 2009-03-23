@@ -33,7 +33,6 @@
 #include <linux/ptrace.h>
 #include <linux/slab.h>
 #include <linux/user.h>
-#include <linux/a.out.h>
 #include <linux/tty.h>
 #include <linux/string.h>
 #include <linux/delay.h>
@@ -51,6 +50,9 @@
 #include <linux/root_dev.h>
 #include <linux/bitops.h>
 #include <linux/suspend.h>
+#include <linux/of_device.h>
+#include <linux/of_platform.h>
+#include <linux/lmb.h>
 
 #include <asm/reg.h>
 #include <asm/sections.h>
@@ -58,7 +60,6 @@
 #include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/io.h>
-#include <asm/kexec.h>
 #include <asm/pci-bridge.h>
 #include <asm/ohare.h>
 #include <asm/mediabay.h>
@@ -68,13 +69,10 @@
 #include <asm/btext.h>
 #include <asm/pmac_feature.h>
 #include <asm/time.h>
-#include <asm/of_device.h>
-#include <asm/of_platform.h>
 #include <asm/mmu_context.h>
 #include <asm/iommu.h>
 #include <asm/smu.h>
 #include <asm/pmc.h>
-#include <asm/lmb.h>
 #include <asm/udbg.h>
 
 #include "pmac.h"
@@ -94,11 +92,8 @@ extern struct machdep_calls pmac_md;
 #define DEFAULT_ROOT_DEVICE Root_SDA1	/* sda1 - slightly silly choice */
 
 #ifdef CONFIG_PPC64
-#include <asm/udbg.h>
 int sccdbg;
 #endif
-
-extern void zs_kgdb_hook(int tty_num);
 
 sys_ctrler_t sys_ctrler = SYS_CTRLER_UNKNOWN;
 EXPORT_SYMBOL(sys_ctrler);
@@ -314,9 +309,7 @@ static void __init pmac_setup_arch(void)
 	}
 
 	/* See if newworld or oldworld */
-	for (ic = NULL; (ic = of_find_all_nodes(ic)) != NULL; )
-		if (of_get_property(ic, "interrupt-controller", NULL))
-			break;
+	ic = of_find_node_with_property(NULL, "interrupt-controller");
 	if (ic) {
 		pmac_newworld = 1;
 		of_node_put(ic);
@@ -330,15 +323,12 @@ static void __init pmac_setup_arch(void)
 	l2cr_init();
 #endif /* CONFIG_PPC32 */
 
-#ifdef CONFIG_KGDB
-	zs_kgdb_hook(0);
-#endif
-
 	find_via_cuda();
 	find_via_pmu();
 	smu_init();
 
-#if defined(CONFIG_NVRAM) || defined(CONFIG_PPC64)
+#if defined(CONFIG_NVRAM) || defined(CONFIG_NVRAM_MODULE) || \
+    defined(CONFIG_PPC64)
 	pmac_nvram_init();
 #endif
 
@@ -398,17 +388,13 @@ static int initializing = 1;
 
 static int pmac_late_init(void)
 {
-	if (!machine_is(powermac))
-		return -ENODEV;
-
 	initializing = 0;
 	/* this is udbg (which is __init) and we can later use it during
 	 * cpu hotplug (in smp_core99_kick_cpu) */
 	ppc_md.progress = NULL;
 	return 0;
 }
-
-late_initcall(pmac_late_init);
+machine_late_initcall(powermac, pmac_late_init);
 
 /*
  * This is __init_refok because we check for "initializing" before
@@ -535,9 +521,6 @@ static int __init pmac_declare_of_platform_devices(void)
 	if (machine_is(chrp))
 		return -1;
 
-	if (!machine_is(powermac))
-		return 0;
-
 	np = of_find_node_by_name(NULL, "valkyrie");
 	if (np)
 		of_platform_device_create(np, "valkyrie", NULL);
@@ -552,8 +535,79 @@ static int __init pmac_declare_of_platform_devices(void)
 
 	return 0;
 }
+machine_device_initcall(powermac, pmac_declare_of_platform_devices);
 
-device_initcall(pmac_declare_of_platform_devices);
+#ifdef CONFIG_SERIAL_PMACZILOG_CONSOLE
+/*
+ * This is called very early, as part of console_init() (typically just after
+ * time_init()). This function is respondible for trying to find a good
+ * default console on serial ports. It tries to match the open firmware
+ * default output with one of the available serial console drivers.
+ */
+static int __init check_pmac_serial_console(void)
+{
+	struct device_node *prom_stdout = NULL;
+	int offset = 0;
+	const char *name;
+#ifdef CONFIG_SERIAL_PMACZILOG_TTYS
+	char *devname = "ttyS";
+#else
+	char *devname = "ttyPZ";
+#endif
+
+	pr_debug(" -> check_pmac_serial_console()\n");
+
+	/* The user has requested a console so this is already set up. */
+	if (strstr(boot_command_line, "console=")) {
+		pr_debug(" console was specified !\n");
+		return -EBUSY;
+	}
+
+	if (!of_chosen) {
+		pr_debug(" of_chosen is NULL !\n");
+		return -ENODEV;
+	}
+
+	/* We are getting a weird phandle from OF ... */
+	/* ... So use the full path instead */
+	name = of_get_property(of_chosen, "linux,stdout-path", NULL);
+	if (name == NULL) {
+		pr_debug(" no linux,stdout-path !\n");
+		return -ENODEV;
+	}
+	prom_stdout = of_find_node_by_path(name);
+	if (!prom_stdout) {
+		pr_debug(" can't find stdout package %s !\n", name);
+		return -ENODEV;
+	}
+	pr_debug("stdout is %s\n", prom_stdout->full_name);
+
+	name = of_get_property(prom_stdout, "name", NULL);
+	if (!name) {
+		pr_debug(" stdout package has no name !\n");
+		goto not_found;
+	}
+
+	if (strcmp(name, "ch-a") == 0)
+		offset = 0;
+	else if (strcmp(name, "ch-b") == 0)
+		offset = 1;
+	else
+		goto not_found;
+	of_node_put(prom_stdout);
+
+	pr_debug("Found serial console at %s%d\n", devname, offset);
+
+	return add_preferred_console(devname, offset, NULL);
+
+ not_found:
+	pr_debug("No preferred console found !\n");
+	of_node_put(prom_stdout);
+	return -ENODEV;
+}
+console_initcall(check_pmac_serial_console);
+
+#endif /* CONFIG_SERIAL_PMACZILOG_CONSOLE */
 
 /*
  * Called very early, MMU is off, device-tree isn't unflattened
@@ -583,14 +637,6 @@ static int __init pmac_probe(void)
 	ISA_DMA_THRESHOLD = ~0L;
 	DMA_MODE_READ = 1;
 	DMA_MODE_WRITE = 2;
-
-#if defined(CONFIG_BLK_DEV_IDE) || defined(CONFIG_BLK_DEV_IDE_MODULE)
-#ifdef CONFIG_BLK_DEV_IDE_PMAC
-        ppc_ide_md.ide_init_hwif	= pmac_ide_init_hwif_ports;
-        ppc_ide_md.default_io_base	= pmac_ide_get_base;
-#endif /* CONFIG_BLK_DEV_IDE_PMAC */
-#endif /* defined(CONFIG_BLK_DEV_IDE) || defined(CONFIG_BLK_DEV_IDE_MODULE) */
-
 #endif /* CONFIG_PPC32 */
 
 #ifdef CONFIG_PMAC_SMU
@@ -613,9 +659,11 @@ static int pmac_pci_probe_mode(struct pci_bus *bus)
 
 	/* We need to use normal PCI probing for the AGP bus,
 	 * since the device for the AGP bridge isn't in the tree.
+	 * Same for the PCIe host on U4 and the HT host bridge.
 	 */
 	if (bus->self == NULL && (of_device_is_compatible(node, "u3-agp") ||
-				  of_device_is_compatible(node, "u4-pcie")))
+				  of_device_is_compatible(node, "u4-pcie") ||
+				  of_device_is_compatible(node, "u3-ht")))
 		return PCI_PROBE_NORMAL;
 	return PCI_PROBE_DEVTREE;
 }
@@ -689,11 +737,6 @@ define_machine(powermac) {
 	.pci_probe_mode		= pmac_pci_probe_mode,
 	.power_save		= power4_idle,
 	.enable_pmcs		= power4_enable_pmcs,
-#ifdef CONFIG_KEXEC
-	.machine_kexec		= default_machine_kexec,
-	.machine_kexec_prepare	= default_machine_kexec_prepare,
-	.machine_crash_shutdown	= default_machine_crash_shutdown,
-#endif
 #endif /* CONFIG_PPC64 */
 #ifdef CONFIG_PPC32
 	.pcibios_enable_device_hook = pmac_pci_enable_device_hook,

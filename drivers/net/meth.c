@@ -41,7 +41,7 @@
 #endif
 
 #if MFE_DEBUG>=1
-#define DPRINTK(str,args...) printk(KERN_DEBUG "meth: %s: " str, __FUNCTION__ , ## args)
+#define DPRINTK(str,args...) printk(KERN_DEBUG "meth: %s: " str, __func__ , ## args)
 #define MFE_RX_DEBUG 2
 #else
 #define DPRINTK(str,args...)
@@ -94,13 +94,12 @@ char o2meth_eaddr[8]={0,0,0,0,0,0,0,0};
 static inline void load_eaddr(struct net_device *dev)
 {
 	int i;
-	DECLARE_MAC_BUF(mac);
 	u64 macaddr;
 
-	DPRINTK("Loading MAC Address: %s\n", print_mac(mac, dev->dev_addr));
+	DPRINTK("Loading MAC Address: %pM\n", dev->dev_addr);
 	macaddr = 0;
 	for (i = 0; i < 6; i++)
-		macaddr |= dev->dev_addr[i] << ((5 - i) * 8);
+		macaddr |= (u64)dev->dev_addr[i] << ((5 - i) * 8);
 
 	mace->eth.mac_addr = macaddr;
 }
@@ -287,7 +286,7 @@ int meth_reset(struct net_device *dev)
 
 	/* Initial mode: 10 | Half-duplex | Accept normal packets */
 	priv->mac_ctrl = METH_ACCEPT_MCAST | METH_DEFAULT_IPG;
-	if (dev->flags | IFF_PROMISC)
+	if (dev->flags & IFF_PROMISC)
 		priv->mac_ctrl |= METH_PROMISC;
 	mace->eth.mac_ctrl = priv->mac_ctrl;
 
@@ -421,7 +420,6 @@ static void meth_rx(struct net_device* dev, unsigned long int_status)
 					skb_put(skb_c, len);
 					priv->rx_skbs[priv->rx_write] = skb;
 					skb_c->protocol = eth_type_trans(skb_c, dev);
-					dev->last_rx = jiffies;
 					dev->stats.rx_packets++;
 					dev->stats.rx_bytes += len;
 					netif_rx(skb_c);
@@ -830,6 +828,7 @@ static struct platform_driver meth_driver = {
 	.remove	= __devexit_p(meth_remove),
 	.driver = {
 		.name	= "meth",
+		.owner	= THIS_MODULE,
 	}
 };
 
@@ -855,3 +854,4 @@ module_exit(meth_exit_module);
 MODULE_AUTHOR("Ilya Volynets <ilya@theIlya.com>");
 MODULE_DESCRIPTION("SGI O2 Builtin Fast Ethernet driver");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:meth");

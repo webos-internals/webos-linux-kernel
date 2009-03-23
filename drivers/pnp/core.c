@@ -70,7 +70,7 @@ int pnp_register_protocol(struct pnp_protocol *protocol)
 	spin_unlock(&pnp_lock);
 
 	protocol->number = nodenum;
-	sprintf(protocol->dev.bus_id, "pnp%d", nodenum);
+	dev_set_name(&protocol->dev, "pnp%d", nodenum);
 	return device_register(&protocol->dev);
 }
 
@@ -99,37 +99,72 @@ static void pnp_free_ids(struct pnp_dev *dev)
 	}
 }
 
+void pnp_free_resource(struct pnp_resource *pnp_res)
+{
+	list_del(&pnp_res->list);
+	kfree(pnp_res);
+}
+
+void pnp_free_resources(struct pnp_dev *dev)
+{
+	struct pnp_resource *pnp_res, *tmp;
+
+	list_for_each_entry_safe(pnp_res, tmp, &dev->resources, list) {
+		pnp_free_resource(pnp_res);
+	}
+}
+
 static void pnp_release_device(struct device *dmdev)
 {
 	struct pnp_dev *dev = to_pnp_dev(dmdev);
 
-	pnp_free_option(dev->independent);
-	pnp_free_option(dev->dependent);
 	pnp_free_ids(dev);
+	pnp_free_resources(dev);
+	pnp_free_options(dev);
 	kfree(dev);
+}
+
+struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id, char *pnpid)
+{
+	struct pnp_dev *dev;
+	struct pnp_id *dev_id;
+
+	dev = kzalloc(sizeof(struct pnp_dev), GFP_KERNEL);
+	if (!dev)
+		return NULL;
+
+	INIT_LIST_HEAD(&dev->resources);
+	INIT_LIST_HEAD(&dev->options);
+	dev->protocol = protocol;
+	dev->number = id;
+	dev->dma_mask = DMA_24BIT_MASK;
+
+	dev->dev.parent = &dev->protocol->dev;
+	dev->dev.bus = &pnp_bus_type;
+	dev->dev.dma_mask = &dev->dma_mask;
+	dev->dev.coherent_dma_mask = dev->dma_mask;
+	dev->dev.release = &pnp_release_device;
+
+	dev_set_name(&dev->dev, "%02x:%02x", dev->protocol->number, dev->number);
+
+	dev_id = pnp_add_id(dev, pnpid);
+	if (!dev_id) {
+		kfree(dev);
+		return NULL;
+	}
+
+	return dev;
 }
 
 int __pnp_add_device(struct pnp_dev *dev)
 {
-	int ret;
-
 	pnp_fixup_device(dev);
-	dev->dev.bus = &pnp_bus_type;
-	dev->dev.dma_mask = &dev->dma_mask;
-	dev->dma_mask = dev->dev.coherent_dma_mask = DMA_24BIT_MASK;
-	dev->dev.release = &pnp_release_device;
 	dev->status = PNP_READY;
 	spin_lock(&pnp_lock);
 	list_add_tail(&dev->global_list, &pnp_global);
 	list_add_tail(&dev->protocol_list, &dev->protocol->devices);
 	spin_unlock(&pnp_lock);
-
-	ret = device_register(&dev->dev);
-	if (ret)
-		return ret;
-
-	pnp_interface_attach_device(dev);
-	return 0;
+	return device_register(&dev->dev);
 }
 
 /*
@@ -141,28 +176,23 @@ int __pnp_add_device(struct pnp_dev *dev)
 int pnp_add_device(struct pnp_dev *dev)
 {
 	int ret;
+	char buf[128];
+	int len = 0;
+	struct pnp_id *id;
 
 	if (dev->card)
 		return -EINVAL;
 
-	dev->dev.parent = &dev->protocol->dev;
-	sprintf(dev->dev.bus_id, "%02x:%02x", dev->protocol->number,
-		dev->number);
 	ret = __pnp_add_device(dev);
 	if (ret)
 		return ret;
 
-#ifdef CONFIG_PNP_DEBUG
-	{
-		struct pnp_id *id;
+	buf[0] = '\0';
+	for (id = dev->id; id; id = id->next)
+		len += scnprintf(buf + len, sizeof(buf) - len, " %s", id->id);
 
-		dev_printk(KERN_DEBUG, &dev->dev, "%s device, IDs",
-			dev->protocol->name);
-		for (id = dev->id; id; id = id->next)
-			printk(" %s", id->id);
-		printk(" (%s)\n", dev->active ? "active" : "disabled");
-	}
-#endif
+	pnp_dbg(&dev->dev, "%s device, IDs%s (%s)\n",
+		dev->protocol->name, buf, dev->active ? "active" : "disabled");
 	return 0;
 }
 
@@ -177,8 +207,18 @@ void __pnp_remove_device(struct pnp_dev *dev)
 
 static int __init pnp_init(void)
 {
-	printk(KERN_INFO "Linux Plug and Play Support v0.97 (c) Adam Belay\n");
 	return bus_register(&pnp_bus_type);
 }
 
 subsys_initcall(pnp_init);
+
+int pnp_debug;
+
+#if defined(CONFIG_PNP_DEBUG_MESSAGES)
+static int __init pnp_debug_setup(char *__unused)
+{
+	pnp_debug = 1;
+	return 1;
+}
+__setup("pnp.debug", pnp_debug_setup);
+#endif

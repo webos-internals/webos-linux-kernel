@@ -8,10 +8,15 @@ mainmenu "uClinux/68k (w/o MMU) Kernel Configuration"
 config M68K
 	bool
 	default y
+	select HAVE_IDE
 
 config MMU
 	bool
 	default n
+
+config NO_DMA
+	bool
+	default y
 
 config FPU
 	bool
@@ -53,14 +58,28 @@ config GENERIC_CALIBRATE_DELAY
 	bool
 	default y
 
+config GENERIC_TIME
+	bool
+	default y
+
+config GENERIC_CMOS_UPDATE
+	bool
+	default y
+
 config TIME_LOW_RES
 	bool
 	default y
+
+config GENERIC_CLOCKEVENTS
+	bool
+	default n
 
 config NO_IOPORT
 	def_bool y
 
 source "init/Kconfig"
+
+source "kernel/Kconfig.freezer"
 
 menu "Processor type and features"
 
@@ -100,11 +119,13 @@ config M5206e
 
 config M520x
 	bool "MCF520x"
+	select GENERIC_CLOCKEVENTS
 	help
 	   Freescale Coldfire 5207/5208 processor support.
 
 config M523x
 	bool "MCF523x"
+	select GENERIC_CLOCKEVENTS
 	help
 	  Freescale Coldfire 5230/1/2/4/5 processor support
 
@@ -130,6 +151,7 @@ config M5275
 
 config M528x
 	bool "MCF528x"
+	select GENERIC_CLOCKEVENTS
 	help
 	  Motorola ColdFire 5280/5282 processor support.
 
@@ -153,6 +175,7 @@ endchoice
 config M527x
 	bool
 	depends on (M5271 || M5275)
+	select GENERIC_CLOCKEVENTS
 	default y
 
 config COLDFIRE
@@ -379,12 +402,6 @@ config M5307C3
 	help
 	  Support for the Motorola M5307C3 board.
 
-config eLIA
-	bool "Moreton Bay eLIA board support"
-	depends on M5307
-	help
-	  Support for the Moreton Bay eLIA board.
-
 config SECUREEDGEMP3
 	bool "SnapGear SecureEdge/MP3 platform support"
 	depends on M5307
@@ -517,6 +534,11 @@ config 4KSTACKS
 	  kernel stack attached to each process/thread. This facilitates
 	  running more threads on a system and also reduces the pressure
 	  on the VM subsystem for higher order allocations.
+
+config HZ
+	int
+	default 1000 if CLEOPATRA
+	default 100
 
 comment "RAM configuration"
 
@@ -658,6 +680,12 @@ config ROMKERNEL
 
 endchoice
 
+if COLDFIRE
+source "kernel/Kconfig.preempt"
+endif
+
+source "kernel/time/Kconfig"
+
 source "mm/Kconfig"
 
 endmenu
@@ -667,24 +695,7 @@ config ISA_DMA_API
 	depends on !M5272
 	default y
 
-menu "Bus options (PCI, PCMCIA, EISA, MCA, ISA)"
-
-config PCI
-	bool "PCI support"
-	help
-	  Support for PCI bus.
-
-config COMEMPCI
-	bool "CO-MEM lite PCI controller support"
-	depends on (M5307 || M5407)
-
-source "drivers/pci/Kconfig"
-
 source "drivers/pcmcia/Kconfig"
-
-source "drivers/pci/hotplug/Kconfig"
-
-endmenu
 
 menu "Executable file formats"
 
@@ -706,8 +717,6 @@ source "net/Kconfig"
 source "drivers/Kconfig"
 
 source "fs/Kconfig"
-
-source "kernel/Kconfig.instrumentation"
 
 source "arch/m68knommu/Kconfig.debug"
 

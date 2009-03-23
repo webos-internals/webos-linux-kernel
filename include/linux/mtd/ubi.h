@@ -26,23 +26,6 @@
 #include <mtd/ubi-user.h>
 
 /*
- * UBI data type hint constants.
- *
- * UBI_LONGTERM: long-term data
- * UBI_SHORTTERM: short-term data
- * UBI_UNKNOWN: data persistence is unknown
- *
- * These constants are used when data is written to UBI volumes in order to
- * help the UBI wear-leveling unit to find more appropriate physical
- * eraseblocks.
- */
-enum {
-	UBI_LONGTERM = 1,
-	UBI_SHORTTERM,
-	UBI_UNKNOWN
-};
-
-/*
  * enum ubi_open_mode - UBI volume open mode constants.
  *
  * UBI_READONLY: read-only mode
@@ -62,13 +45,13 @@ enum {
  * @size: how many physical eraseblocks are reserved for this volume
  * @used_bytes: how many bytes of data this volume contains
  * @used_ebs: how many physical eraseblocks of this volume actually contain any
- * data
+ *            data
  * @vol_type: volume type (%UBI_DYNAMIC_VOLUME or %UBI_STATIC_VOLUME)
  * @corrupted: non-zero if the volume is corrupted (static volumes only)
  * @upd_marker: non-zero if the volume has update marker set
  * @alignment: volume alignment
  * @usable_leb_size: how many bytes are available in logical eraseblocks of
- * this volume
+ *                   this volume
  * @name_len: volume name length
  * @name: volume name
  * @cdev: UBI volume character device major and minor numbers
@@ -167,7 +150,9 @@ int ubi_leb_change(struct ubi_volume_desc *desc, int lnum, const void *buf,
 		   int len, int dtype);
 int ubi_leb_erase(struct ubi_volume_desc *desc, int lnum);
 int ubi_leb_unmap(struct ubi_volume_desc *desc, int lnum);
+int ubi_leb_map(struct ubi_volume_desc *desc, int lnum, int dtype);
 int ubi_is_mapped(struct ubi_volume_desc *desc, int lnum);
+int ubi_sync(int ubi_num);
 
 /*
  * This function is the same as the 'ubi_leb_read()' function, but it does not

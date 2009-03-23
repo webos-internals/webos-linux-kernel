@@ -64,6 +64,11 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 		ret = poke_user(child, addr, data);
 		break;
 
+	case PTRACE_SYSEMU:
+	case PTRACE_SYSEMU_SINGLESTEP:
+		ret = -EIO;
+		break;
+
 	/* continue and stop at next (return from) syscall */
 	case PTRACE_SYSCALL:
 	/* restart after signal. */
@@ -225,7 +230,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 	return ret;
 }
 
-void send_sigtrap(struct task_struct *tsk, struct uml_pt_regs *regs,
+static void send_sigtrap(struct task_struct *tsk, struct uml_pt_regs *regs,
 		  int error_code)
 {
 	struct siginfo info;

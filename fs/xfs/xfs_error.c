@@ -58,21 +58,10 @@ xfs_error_trap(int e)
 	}
 	return e;
 }
-#endif
-
-#if (defined(DEBUG) || defined(INDUCE_IO_ERROR))
 
 int	xfs_etest[XFS_NUM_INJECT_ERROR];
 int64_t	xfs_etest_fsid[XFS_NUM_INJECT_ERROR];
 char *	xfs_etest_fsname[XFS_NUM_INJECT_ERROR];
-
-void
-xfs_error_test_init(void)
-{
-	memset(xfs_etest, 0, sizeof(xfs_etest));
-	memset(xfs_etest_fsid, 0, sizeof(xfs_etest_fsid));
-	memset(xfs_etest_fsname, 0, sizeof(xfs_etest_fsname));
-}
 
 int
 xfs_error_test(int error_tag, int *fsidp, char *expression,
@@ -150,8 +139,7 @@ xfs_errortag_clearall(xfs_mount_t *mp, int loud)
 				xfs_etest[i]);
 			xfs_etest[i] = 0;
 			xfs_etest_fsid[i] = 0LL;
-			kmem_free(xfs_etest_fsname[i],
-				  strlen(xfs_etest_fsname[i]) + 1);
+			kmem_free(xfs_etest_fsname[i]);
 			xfs_etest_fsname[i] = NULL;
 		}
 	}
@@ -163,23 +151,8 @@ xfs_errortag_clearall(xfs_mount_t *mp, int loud)
 
 	return 0;
 }
-#endif /* DEBUG || INDUCE_IO_ERROR */
+#endif /* DEBUG */
 
-static void
-xfs_fs_vcmn_err(int level, xfs_mount_t *mp, char *fmt, va_list ap)
-{
-	if (mp != NULL) {
-		char	*newfmt;
-		int	len = 16 + mp->m_fsname_len + strlen(fmt);
-
-		newfmt = kmem_alloc(len, KM_SLEEP);
-		sprintf(newfmt, "Filesystem \"%s\": %s", mp->m_fsname, fmt);
-		icmn_err(level, newfmt, ap);
-		kmem_free(newfmt, len);
-	} else {
-		icmn_err(level, fmt, ap);
-	}
-}
 
 void
 xfs_fs_cmn_err(int level, xfs_mount_t *mp, char *fmt, ...)
@@ -228,37 +201,6 @@ xfs_error_report(
 
 		xfs_stack_trace();
 	}
-}
-
-STATIC void
-xfs_hex_dump(void *p, int length)
-{
-	__uint8_t *uip = (__uint8_t*)p;
-	int	i;
-	char	sbuf[128], *s;
-
-	s = sbuf;
-	*s = '\0';
-	for (i=0; i<length; i++, uip++) {
-		if ((i % 16) == 0) {
-			if (*s != '\0')
-				cmn_err(CE_ALERT, "%s\n", sbuf);
-			s = sbuf;
-			sprintf(s, "0x%x: ", i);
-			while( *s != '\0')
-				s++;
-		}
-		sprintf(s, "%02x ", *uip);
-
-		/*
-		 * the kernel sprintf is a void; user sprintf returns
-		 * the sprintf'ed string's length.  Find the new end-
-		 * of-string
-		 */
-		while( *s != '\0')
-			s++;
-	}
-	cmn_err(CE_ALERT, "%s\n", sbuf);
 }
 
 void

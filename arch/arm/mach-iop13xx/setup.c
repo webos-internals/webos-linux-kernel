@@ -18,13 +18,13 @@
  */
 
 #include <linux/serial_8250.h>
+#include <linux/io.h>
 #ifdef CONFIG_MTD_PHYSMAP
 #include <linux/mtd/physmap.h>
 #endif
 #include <asm/mach/map.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
-#include <asm/io.h>
 #include <asm/hardware/iop_adma.h>
 
 #define IOP13XX_UART_XTAL 33334000
@@ -519,7 +519,7 @@ void __init iop13xx_platform_init(void)
 	if (iq8134x_flash_resource.end > iq8134x_flash_resource.start)
 		iop13xx_devices[plat_idx++] = &iq8134x_flash;
 	else
-		printk(KERN_ERR "%s: Failed to probe flash size\n", __FUNCTION__);
+		printk(KERN_ERR "%s: Failed to probe flash size\n", __func__);
 #endif
 
 	platform_add_devices(iop13xx_devices, plat_idx);

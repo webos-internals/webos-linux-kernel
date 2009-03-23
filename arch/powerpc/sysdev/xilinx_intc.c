@@ -107,8 +107,8 @@ xilinx_intc_init(struct device_node *np)
 	}
 	regs = ioremap(res.start, 32);
 
-	printk(KERN_INFO "Xilinx intc at 0x%08X mapped to 0x%p\n",
-		res.start, regs);
+	printk(KERN_INFO "Xilinx intc at 0x%08llx mapped to 0x%p\n",
+		(unsigned long long) res.start, regs);
 
 	/* Setup interrupt controller */
 	out_be32(regs + XINTC_IER, 0); /* disable all irqs */
@@ -135,9 +135,15 @@ void __init xilinx_intc_init_tree(void)
 	struct device_node *np;
 
 	/* find top level interrupt controller */
-	for_each_compatible_node(np, NULL, "xilinx,intc") {
+	for_each_compatible_node(np, NULL, "xlnx,opb-intc-1.00.c") {
 		if (!of_get_property(np, "interrupts", NULL))
 			break;
+	}
+	if (!np) {
+		for_each_compatible_node(np, NULL, "xlnx,xps-intc-1.00.a") {
+			if (!of_get_property(np, "interrupts", NULL))
+				break;
+		}
 	}
 
 	/* xilinx interrupt controller needs to be top level */

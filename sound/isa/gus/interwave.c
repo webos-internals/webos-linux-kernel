@@ -22,7 +22,6 @@
  *
  */
 
-#include <sound/driver.h>
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/isa.h>
@@ -33,7 +32,7 @@
 #include <asm/dma.h>
 #include <sound/core.h>
 #include <sound/gus.h>
-#include <sound/cs4231.h>
+#include <sound/wss.h>
 #ifdef SNDRV_STB
 #include <sound/tea6330t.h>
 #endif
@@ -119,7 +118,7 @@ struct snd_interwave {
 	int irq;
 	struct snd_card *card;
 	struct snd_gus_card *gus;
-	struct snd_cs4231 *cs4231;
+	struct snd_wss *wss;
 #ifdef SNDRV_STB
 	struct resource *i2c_res;
 #endif
@@ -313,7 +312,7 @@ static irqreturn_t snd_interwave_interrupt(int irq, void *dev_id)
 		}
 		if (inb(iwcard->pcm_status_reg) & 0x01) {	/* IRQ bit is set? */
 			handled = 1;
-			snd_cs4231_interrupt(irq, iwcard->cs4231);
+			snd_wss_interrupt(irq, iwcard->wss);
 			loop++;
 		}
 	} while (loop && --max > 0);
@@ -499,13 +498,17 @@ static void __devinit snd_interwave_init(int dev, struct snd_gus_card * gus)
 }
 
 static struct snd_kcontrol_new snd_interwave_controls[] = {
-CS4231_DOUBLE("Master Playback Switch", 0, CS4231_LINE_LEFT_OUTPUT, CS4231_LINE_RIGHT_OUTPUT, 7, 7, 1, 1),
-CS4231_DOUBLE("Master Playback Volume", 0, CS4231_LINE_LEFT_OUTPUT, CS4231_LINE_RIGHT_OUTPUT, 0, 0, 31, 1),
-CS4231_DOUBLE("Mic Playback Switch", 0, CS4231_LEFT_MIC_INPUT, CS4231_RIGHT_MIC_INPUT, 7, 7, 1, 1),
-CS4231_DOUBLE("Mic Playback Volume", 0, CS4231_LEFT_MIC_INPUT, CS4231_RIGHT_MIC_INPUT, 0, 0, 31, 1)
+WSS_DOUBLE("Master Playback Switch", 0,
+		CS4231_LINE_LEFT_OUTPUT, CS4231_LINE_RIGHT_OUTPUT, 7, 7, 1, 1),
+WSS_DOUBLE("Master Playback Volume", 0,
+		CS4231_LINE_LEFT_OUTPUT, CS4231_LINE_RIGHT_OUTPUT, 0, 0, 31, 1),
+WSS_DOUBLE("Mic Playback Switch", 0,
+		CS4231_LEFT_MIC_INPUT, CS4231_RIGHT_MIC_INPUT, 7, 7, 1, 1),
+WSS_DOUBLE("Mic Playback Volume", 0,
+		CS4231_LEFT_MIC_INPUT, CS4231_RIGHT_MIC_INPUT, 0, 0, 31, 1)
 };
 
-static int __devinit snd_interwave_mixer(struct snd_cs4231 *chip)
+static int __devinit snd_interwave_mixer(struct snd_wss *chip)
 {
 	struct snd_card *card = chip->card;
 	struct snd_ctl_elem_id id1, id2;
@@ -528,10 +531,10 @@ static int __devinit snd_interwave_mixer(struct snd_cs4231 *chip)
 	for (idx = 0; idx < ARRAY_SIZE(snd_interwave_controls); idx++)
 		if ((err = snd_ctl_add(card, snd_ctl_new1(&snd_interwave_controls[idx], chip))) < 0)
 			return err;
-	snd_cs4231_out(chip, CS4231_LINE_LEFT_OUTPUT, 0x9f);
-	snd_cs4231_out(chip, CS4231_LINE_RIGHT_OUTPUT, 0x9f);
-	snd_cs4231_out(chip, CS4231_LEFT_MIC_INPUT, 0x9f);
-	snd_cs4231_out(chip, CS4231_RIGHT_MIC_INPUT, 0x9f);
+	snd_wss_out(chip, CS4231_LINE_LEFT_OUTPUT, 0x9f);
+	snd_wss_out(chip, CS4231_LINE_RIGHT_OUTPUT, 0x9f);
+	snd_wss_out(chip, CS4231_LEFT_MIC_INPUT, 0x9f);
+	snd_wss_out(chip, CS4231_RIGHT_MIC_INPUT, 0x9f);
 	/* reassign AUXA to SYNTHESIZER */
 	strcpy(id1.name, "Aux Playback Switch");
 	strcpy(id2.name, "Synth Playback Switch");
@@ -560,50 +563,27 @@ static int __devinit snd_interwave_pnp(int dev, struct snd_interwave *iwcard,
 				       const struct pnp_card_device_id *id)
 {
 	struct pnp_dev *pdev;
-	struct pnp_resource_table * cfg = kmalloc(sizeof(struct pnp_resource_table), GFP_KERNEL);
 	int err;
 
-	if (!cfg)
-		return -ENOMEM;
 	iwcard->dev = pnp_request_card_device(card, id->devs[0].id, NULL);
-	if (iwcard->dev == NULL) {
-		kfree(cfg);
+	if (iwcard->dev == NULL)
 		return -EBUSY;
-	}
+
 #ifdef SNDRV_STB
 	iwcard->devtc = pnp_request_card_device(card, id->devs[1].id, NULL);
-	if (iwcard->devtc == NULL) {
-		kfree(cfg);
+	if (iwcard->devtc == NULL)
 		return -EBUSY;
-	}
 #endif
 	/* Synth & Codec initialization */
 	pdev = iwcard->dev;
-	pnp_init_resource_table(cfg);
-	if (port[dev] != SNDRV_AUTO_PORT) {
-		pnp_resource_change(&cfg->port_resource[0], port[dev], 16);
-		pnp_resource_change(&cfg->port_resource[1], port[dev] + 0x100, 12);
-		pnp_resource_change(&cfg->port_resource[2], port[dev] + 0x10c, 4);
-	}
-	if (dma1[dev] != SNDRV_AUTO_DMA)
-		pnp_resource_change(&cfg->dma_resource[0], dma1[dev], 1);
-	if (dma2[dev] != SNDRV_AUTO_DMA)
-		pnp_resource_change(&cfg->dma_resource[1], dma2[dev], 1);
-	if (dma2[dev] < 0)
-		pnp_resource_change(&cfg->dma_resource[1], 4, 1);
-	if (irq[dev] != SNDRV_AUTO_IRQ)
-		pnp_resource_change(&cfg->irq_resource[0], irq[dev], 1);
-        if (pnp_manual_config_dev(pdev, cfg, 0) < 0)
-		snd_printk(KERN_ERR "InterWave - Synth - the requested resources are invalid, using auto config\n");
+
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
-		kfree(cfg);
 		snd_printk(KERN_ERR "InterWave PnP configure failure (out of resources?)\n");
 		return err;
 	}
 	if (pnp_port_start(pdev, 0) + 0x100 != pnp_port_start(pdev, 1) ||
 	    pnp_port_start(pdev, 0) + 0x10c != pnp_port_start(pdev, 2)) {
-		kfree(cfg);
 		snd_printk(KERN_ERR "PnP configure failure (wrong ports)\n");
 		return -ENOENT;
 	}
@@ -620,21 +600,15 @@ static int __devinit snd_interwave_pnp(int dev, struct snd_interwave *iwcard,
 #ifdef SNDRV_STB
 	/* Tone Control initialization */
 	pdev = iwcard->devtc;
-	pnp_init_resource_table(cfg);
-	if (port_tc[dev] != SNDRV_AUTO_PORT)
-		pnp_resource_change(&cfg->port_resource[0], port_tc[dev], 1);
-        if (pnp_manual_config_dev(pdev, cfg, 0) < 0)
-		snd_printk(KERN_ERR "InterWave - ToneControl - the requested resources are invalid, using auto config\n");
+
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
-		kfree(cfg);
 		snd_printk(KERN_ERR "InterWave ToneControl PnP configure failure (out of resources?)\n");
 		return err;
 	}
 	port_tc[dev] = pnp_port_start(pdev, 0);
 	snd_printdd("isapnp IW: tone control port=0x%lx\n", port_tc[dev]);
 #endif
-	kfree(cfg);
 	return 0;
 }
 #endif /* CONFIG_PNP */
@@ -672,7 +646,7 @@ static int __devinit snd_interwave_probe(struct snd_card *card, int dev)
 {
 	int xirq, xdma1, xdma2;
 	struct snd_interwave *iwcard = card->private_data;
-	struct snd_cs4231 *cs4231;
+	struct snd_wss *wss;
 	struct snd_gus_card *gus;
 #ifdef SNDRV_STB
 	struct snd_i2c_bus *i2c_bus;
@@ -714,33 +688,39 @@ static int __devinit snd_interwave_probe(struct snd_card *card, int dev)
 	}
 	iwcard->irq = xirq;
 
-	if ((err = snd_cs4231_create(card,
-				     gus->gf1.port + 0x10c, -1, xirq,
-				     xdma2 < 0 ? xdma1 : xdma2, xdma1,
-				     CS4231_HW_INTERWAVE,
-				     CS4231_HWSHARE_IRQ |
-				     CS4231_HWSHARE_DMA1 |
-				     CS4231_HWSHARE_DMA2,
-				     &cs4231)) < 0)
+	err = snd_wss_create(card,
+			     gus->gf1.port + 0x10c, -1, xirq,
+			     xdma2 < 0 ? xdma1 : xdma2, xdma1,
+			     WSS_HW_INTERWAVE,
+			     WSS_HWSHARE_IRQ |
+			     WSS_HWSHARE_DMA1 |
+			     WSS_HWSHARE_DMA2,
+			     &wss);
+	if (err < 0)
 		return err;
 
-	if ((err = snd_cs4231_pcm(cs4231, 0, &pcm)) < 0)
+	err = snd_wss_pcm(wss, 0, &pcm);
+	if (err < 0)
 		return err;
 
 	sprintf(pcm->name + strlen(pcm->name), " rev %c", gus->revision + 'A');
 	strcat(pcm->name, " (codec)");
 
-	if ((err = snd_cs4231_timer(cs4231, 2, NULL)) < 0)
+	err = snd_wss_timer(wss, 2, NULL);
+	if (err < 0)
 		return err;
 
-	if ((err = snd_cs4231_mixer(cs4231)) < 0)
+	err = snd_wss_mixer(wss);
+	if (err < 0)
 		return err;
 
 	if (pcm_channels[dev] > 0) {
-		if ((err = snd_gf1_pcm_new(gus, 1, 1, NULL)) < 0)
+		err = snd_gf1_pcm_new(gus, 1, 1, NULL);
+		if (err < 0)
 			return err;
 	}
-	if ((err = snd_interwave_mixer(cs4231)) < 0)
+	err = snd_interwave_mixer(wss);
+	if (err < 0)
 		return err;
 
 #ifdef SNDRV_STB
@@ -784,10 +764,11 @@ static int __devinit snd_interwave_probe(struct snd_card *card, int dev)
 	if (xdma2 >= 0)
 		sprintf(card->longname + strlen(card->longname), "&%d", xdma2);
 
-	if ((err = snd_card_register(card)) < 0)
+	err = snd_card_register(card);
+	if (err < 0)
 		return err;
 	
-	iwcard->cs4231 = cs4231;
+	iwcard->wss = wss;
 	iwcard->gus = gus;
 	return 0;
 }

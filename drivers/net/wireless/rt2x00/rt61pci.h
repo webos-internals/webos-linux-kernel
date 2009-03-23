@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2007 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -39,8 +39,6 @@
  * Signal information.
  * Defaul offset is required for RSSI <-> dBm conversion.
  */
-#define MAX_SIGNAL			100
-#define MAX_RX_SSI			-1
 #define DEFAULT_RSSI_OFFSET		120
 
 /*
@@ -50,8 +48,15 @@
 #define CSR_REG_SIZE			0x04b0
 #define EEPROM_BASE			0x0000
 #define EEPROM_SIZE			0x0100
+#define BBP_BASE			0x0000
 #define BBP_SIZE			0x0080
+#define RF_BASE				0x0000
 #define RF_SIZE				0x0014
+
+/*
+ * Number of TX queues.
+ */
+#define NUM_TX_QUEUES			4
 
 /*
  * PCI registers.
@@ -131,6 +136,16 @@
 #define PAIRWISE_KEY_TABLE_BASE		0x1200
 #define PAIRWISE_TA_TABLE_BASE		0x1a00
 
+#define SHARED_KEY_ENTRY(__idx) \
+	( SHARED_KEY_TABLE_BASE + \
+		((__idx) * sizeof(struct hw_key_entry)) )
+#define PAIRWISE_KEY_ENTRY(__idx) \
+	( PAIRWISE_KEY_TABLE_BASE + \
+		((__idx) * sizeof(struct hw_key_entry)) )
+#define PAIRWISE_TA_ENTRY(__idx) \
+	( PAIRWISE_TA_TABLE_BASE + \
+		((__idx) * sizeof(struct hw_pairwise_ta_entry)) )
+
 struct hw_key_entry {
 	u8 key[16];
 	u8 tx_mic[8];
@@ -139,7 +154,8 @@ struct hw_key_entry {
 
 struct hw_pairwise_ta_entry {
 	u8 address[6];
-	u8 reserved[2];
+	u8 cipher;
+	u8 reserved;
 } __attribute__ ((packed));
 
 /*
@@ -161,7 +177,9 @@ struct hw_pairwise_ta_entry {
 #define HW_BEACON_BASE1			0x2d00
 #define HW_BEACON_BASE2			0x2e00
 #define HW_BEACON_BASE3			0x2f00
-#define HW_BEACON_OFFSET		0x0100
+
+#define HW_BEACON_OFFSET(__index) \
+	( HW_BEACON_BASE0 + (__index * 0x0100) )
 
 /*
  * HOST-MCU shared memory.
@@ -234,6 +252,11 @@ struct hw_pairwise_ta_entry {
 
 /*
  * MAC_CSR3: STA MAC register 1.
+ * UNICAST_TO_ME_MASK:
+ *	Used to mask off bits from byte 5 of the MAC address
+ *	to determine the UNICAST_TO_ME bit for RX frames.
+ *	The full mask is complemented by BSS_ID_MASK:
+ *		MASK = BSS_ID_MASK & UNICAST_TO_ME_MASK
  */
 #define MAC_CSR3			0x300c
 #define MAC_CSR3_BYTE4			FIELD32(0x000000ff)
@@ -251,7 +274,14 @@ struct hw_pairwise_ta_entry {
 
 /*
  * MAC_CSR5: BSSID register 1.
- * BSS_ID_MASK: 3: one BSSID, 0: 4 BSSID, 2 or 1: 2 BSSID.
+ * BSS_ID_MASK:
+ *	This mask is used to mask off bits 0 and 1 of byte 5 of the
+ *	BSSID. This will make sure that those bits will be ignored
+ *	when determining the MY_BSS of RX frames.
+ *		0: 1-BSSID mode (BSS index = 0)
+ *		1: 2-BSSID mode (BSS index: Byte5, bit 0)
+ *		2: 2-BSSID mode (BSS index: byte5, bit 1)
+ *		3: 4-BSSID mode (BSS index: byte5, bit 0 - 1)
  */
 #define MAC_CSR5			0x3014
 #define MAC_CSR5_BYTE4			FIELD32(0x000000ff)
@@ -391,7 +421,7 @@ struct hw_pairwise_ta_entry {
 #define TXRX_CSR0_DROP_TO_DS		FIELD32(0x00200000)
 #define TXRX_CSR0_DROP_VERSION_ERROR	FIELD32(0x00400000)
 #define TXRX_CSR0_DROP_MULTICAST	FIELD32(0x00800000)
-#define TXRX_CSR0_DROP_BORADCAST	FIELD32(0x01000000)
+#define TXRX_CSR0_DROP_BROADCAST	FIELD32(0x01000000)
 #define TXRX_CSR0_DROP_ACK_CTS		FIELD32(0x02000000)
 #define TXRX_CSR0_TX_WITHOUT_WAITING	FIELD32(0x04000000)
 
@@ -645,6 +675,10 @@ struct hw_pairwise_ta_entry {
  * SEC_CSR4: Pairwise key table lookup control.
  */
 #define SEC_CSR4			0x30b0
+#define SEC_CSR4_ENABLE_BSS0		FIELD32(0x00000001)
+#define SEC_CSR4_ENABLE_BSS1		FIELD32(0x00000002)
+#define SEC_CSR4_ENABLE_BSS2		FIELD32(0x00000004)
+#define SEC_CSR4_ENABLE_BSS3		FIELD32(0x00000008)
 
 /*
  * SEC_CSR5: shared key table security mode register.
@@ -866,7 +900,7 @@ struct hw_pairwise_ta_entry {
 #define TX_CNTL_CSR_ABORT_TX_MGMT	FIELD32(0x00100000)
 
 /*
- * LOAD_TX_RING_CSR: Load RX de
+ * LOAD_TX_RING_CSR: Load RX desriptor
  */
 #define LOAD_TX_RING_CSR		0x3434
 #define LOAD_TX_RING_CSR_LOAD_TXD_AC0	FIELD32(0x00000001)
@@ -1077,13 +1111,19 @@ struct hw_pairwise_ta_entry {
  * R4: RX antenna control
  * FRAME_END: 1 - DPDT, 0 - SPDT (Only valid for 802.11G, RF2527 & RF2529)
  */
-#define BBP_R4_RX_ANTENNA		FIELD8(0x03)
+
+/*
+ * ANTENNA_CONTROL semantics (guessed):
+ * 0x1: Software controlled antenna switching (fixed or SW diversity)
+ * 0x2: Hardware diversity.
+ */
+#define BBP_R4_RX_ANTENNA_CONTROL	FIELD8(0x03)
 #define BBP_R4_RX_FRAME_END		FIELD8(0x20)
 
 /*
  * R77
  */
-#define BBP_R77_PAIR			FIELD8(0x03)
+#define BBP_R77_RX_ANTENNA		FIELD8(0x03)
 
 /*
  * RF registers
@@ -1110,10 +1150,10 @@ struct hw_pairwise_ta_entry {
 #define EEPROM_MAC_ADDR_0		0x0002
 #define EEPROM_MAC_ADDR_BYTE0		FIELD16(0x00ff)
 #define EEPROM_MAC_ADDR_BYTE1		FIELD16(0xff00)
-#define EEPROM_MAC_ADDR1		0x0004
+#define EEPROM_MAC_ADDR1		0x0003
 #define EEPROM_MAC_ADDR_BYTE2		FIELD16(0x00ff)
 #define EEPROM_MAC_ADDR_BYTE3		FIELD16(0xff00)
-#define EEPROM_MAC_ADDR_2		0x0006
+#define EEPROM_MAC_ADDR_2		0x0004
 #define EEPROM_MAC_ADDR_BYTE4		FIELD16(0x00ff)
 #define EEPROM_MAC_ADDR_BYTE5		FIELD16(0xff00)
 
@@ -1240,8 +1280,9 @@ struct hw_pairwise_ta_entry {
 /*
  * DMA descriptor defines.
  */
-#define TXD_DESC_SIZE			( 16 * sizeof(struct data_desc) )
-#define RXD_DESC_SIZE			( 16 * sizeof(struct data_desc) )
+#define TXD_DESC_SIZE			( 16 * sizeof(__le32) )
+#define TXINFO_SIZE			( 6 * sizeof(__le32) )
+#define RXD_DESC_SIZE			( 16 * sizeof(__le32) )
 
 /*
  * TX descriptor format for TX, PRIO and Beacon Ring.
@@ -1404,8 +1445,10 @@ struct hw_pairwise_ta_entry {
 
 /*
  * Word4
+ * ICV: Received ICV of originally encrypted.
+ * NOTE: This is a guess, the official definition is "reserved"
  */
-#define RXD_W4_RESERVED			FIELD32(0xffffffff)
+#define RXD_W4_ICV			FIELD32(0xffffffff)
 
 /*
  * the above 20-byte is called RXINFO and will be DMAed to MAC RX block
@@ -1434,24 +1477,17 @@ struct hw_pairwise_ta_entry {
 #define RXD_W15_RESERVED		FIELD32(0xffffffff)
 
 /*
- * Macro's for converting txpower from EEPROM to dscape value
- * and from dscape value to register value.
+ * Macro's for converting txpower from EEPROM to mac80211 value
+ * and from mac80211 value to register value.
  */
 #define MIN_TXPOWER	0
 #define MAX_TXPOWER	31
 #define DEFAULT_TXPOWER	24
 
-#define TXPOWER_FROM_DEV(__txpower)		\
-({						\
-	((__txpower) > MAX_TXPOWER) ?		\
-		DEFAULT_TXPOWER : (__txpower);	\
-})
+#define TXPOWER_FROM_DEV(__txpower) \
+	(((u8)(__txpower)) > MAX_TXPOWER) ? DEFAULT_TXPOWER : (__txpower)
 
-#define TXPOWER_TO_DEV(__txpower)			\
-({							\
-	((__txpower) <= MIN_TXPOWER) ? MIN_TXPOWER :	\
-	(((__txpower) >= MAX_TXPOWER) ? MAX_TXPOWER :	\
-	(__txpower));					\
-})
+#define TXPOWER_TO_DEV(__txpower) \
+	clamp_t(char, __txpower, MIN_TXPOWER, MAX_TXPOWER)
 
 #endif /* RT61PCI_H */

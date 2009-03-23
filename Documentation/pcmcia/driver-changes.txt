@@ -1,5 +1,11 @@
 This file details changes in 2.6 which affect PCMCIA card driver authors:
 
+* New configuration loop helper (as of 2.6.28)
+   By calling pcmcia_loop_config(), a driver can iterate over all available
+   configuration options. During a driver's probe() phase, one doesn't need
+   to use pcmcia_get_{first,next}_tuple, pcmcia_get_tuple_data and
+   pcmcia_parse_tuple directly in most if not all cases.
+
 * New release helper (as of 2.6.17)
    Instead of calling pcmcia_release_{configuration,io,irq,win}, all that's
    necessary now is calling pcmcia_disable_device. As there is no valid
@@ -33,8 +39,8 @@ This file details changes in 2.6 which affect PCMCIA card driver authors:
    and can be used (e.g. for SET_NETDEV_DEV) by using
    handle_to_dev(client_handle_t * handle).
 
-* Convert internal I/O port addresses to unsigned long (as of 2.6.11)
-   ioaddr_t should be replaced by kio_addr_t in PCMCIA card drivers.
+* Convert internal I/O port addresses to unsigned int (as of 2.6.11)
+   ioaddr_t should be replaced by unsigned int in PCMCIA card drivers.
 
 * irq_mask and irq_list parameters (as of 2.6.11)
    The irq_mask and irq_list parameters should no longer be used in

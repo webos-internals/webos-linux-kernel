@@ -163,10 +163,30 @@ enum fc_tgtid_binding_type  {
 
 
 /* Macro for use in defining Virtual Port attributes */
-#define FC_VPORT_ATTR(_name,_mode,_show,_store)				\
-struct class_device_attribute class_device_attr_vport_##_name = 	\
+#define FC_VPORT_ATTR(_name,_mode,_show,_store)		\
+struct device_attribute dev_attr_vport_##_name = 	\
 	__ATTR(_name,_mode,_show,_store)
 
+/*
+ * fc_vport_identifiers: This set of data contains all elements
+ * to uniquely identify and instantiate a FC virtual port.
+ *
+ * Notes:
+ *   symbolic_name: The driver is to append the symbolic_name string data
+ *      to the symbolic_node_name data that it generates by default.
+ *      the resulting combination should then be registered with the switch.
+ *      It is expected that things like Xen may stuff a VM title into
+ *      this field.
+ */
+#define FC_VPORT_SYMBOLIC_NAMELEN		64
+struct fc_vport_identifiers {
+	u64 node_name;
+	u64 port_name;
+	u32 roles;
+	bool disable;
+	enum fc_port_type vport_type;	/* only FC_PORTTYPE_NPIV allowed */
+	char symbolic_name[FC_VPORT_SYMBOLIC_NAMELEN];
+};
 
 /*
  * FC Virtual Port Attributes
@@ -176,7 +196,7 @@ struct class_device_attribute class_device_attr_vport_##_name = 	\
  * ports has a unique presense on the SAN, and may be instantiated via
  * NPIV, Virtual Fabrics, or via additional ALPAs. As the vport is a
  * unique presense, each vport has it's own view of the fabric,
- * authentication priviledge, and priorities.
+ * authentication privilege, and priorities.
  *
  * A virtual port may support 1 or more FC4 roles. Typically it is a
  * FCP Initiator. It could be a FCP Target, or exist sole for an IP over FC
@@ -197,7 +217,6 @@ struct class_device_attribute class_device_attr_vport_##_name = 	\
  * managed by the transport w/o driver interaction.
  */
 
-#define FC_VPORT_SYMBOLIC_NAMELEN		64
 struct fc_vport {
 	/* Fixed Attributes */
 
@@ -234,8 +253,8 @@ struct fc_vport {
 
 #define	dev_to_vport(d)				\
 	container_of(d, struct fc_vport, dev)
-#define transport_class_to_vport(classdev)	\
-	dev_to_vport(classdev->dev)
+#define transport_class_to_vport(dev)		\
+	dev_to_vport(dev->parent)
 #define vport_to_shost(v)			\
 	(v->shost)
 #define vport_to_shost_channel(v)		\
@@ -271,7 +290,7 @@ struct fc_rport_identifiers {
 
 /* Macro for use in defining Remote Port attributes */
 #define FC_RPORT_ATTR(_name,_mode,_show,_store)				\
-struct class_device_attribute class_device_attr_rport_##_name = 	\
+struct device_attribute dev_attr_rport_##_name = 	\
 	__ATTR(_name,_mode,_show,_store)
 
 
@@ -338,11 +357,13 @@ struct fc_rport {	/* aka fc_starget_attrs */
 /* bit field values for struct fc_rport "flags" field: */
 #define FC_RPORT_DEVLOSS_PENDING	0x01
 #define FC_RPORT_SCAN_PENDING		0x02
+#define FC_RPORT_FAST_FAIL_TIMEDOUT	0x04
+#define FC_RPORT_DEVLOSS_CALLBK_DONE	0x08
 
 #define	dev_to_rport(d)				\
 	container_of(d, struct fc_rport, dev)
-#define transport_class_to_rport(classdev)	\
-	dev_to_rport(classdev->dev)
+#define transport_class_to_rport(dev)	\
+	dev_to_rport(dev->parent)
 #define rport_to_shost(r)			\
 	dev_to_shost(r->dev.parent)
 
@@ -489,9 +510,9 @@ struct fc_host_attrs {
 	u16 npiv_vports_inuse;
 
 	/* work queues for rport state manipulation */
-	char work_q_name[KOBJ_NAME_LEN];
+	char work_q_name[20];
 	struct workqueue_struct *work_q;
-	char devloss_work_q_name[KOBJ_NAME_LEN];
+	char devloss_work_q_name[20];
 	struct workqueue_struct *devloss_work_q;
 };
 
@@ -659,12 +680,15 @@ fc_remote_port_chkready(struct fc_rport *rport)
 		if (rport->roles & FC_PORT_ROLE_FCP_TARGET)
 			result = 0;
 		else if (rport->flags & FC_RPORT_DEVLOSS_PENDING)
-			result = DID_IMM_RETRY << 16;
+			result = DID_TRANSPORT_DISRUPTED << 16;
 		else
 			result = DID_NO_CONNECT << 16;
 		break;
 	case FC_PORTSTATE_BLOCKED:
-		result = DID_IMM_RETRY << 16;
+		if (rport->flags & FC_RPORT_FAST_FAIL_TIMEDOUT)
+			result = DID_TRANSPORT_FAILFAST << 16;
+		else
+			result = DID_TRANSPORT_DISRUPTED << 16;
 		break;
 	default:
 		result = DID_NO_CONNECT << 16;
@@ -732,6 +756,8 @@ void fc_host_post_vendor_event(struct Scsi_Host *shost, u32 event_number,
 	 *   be sure to read the Vendor Type and ID formatting requirements
 	 *   specified in scsi_netlink.h
 	 */
+struct fc_vport *fc_vport_create(struct Scsi_Host *shost, int channel,
+		struct fc_vport_identifiers *);
 int fc_vport_terminate(struct fc_vport *vport);
 
 #endif /* SCSI_TRANSPORT_FC_H */

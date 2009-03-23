@@ -20,6 +20,8 @@
 #include <net/sock.h>
 #include <net/af_rxrpc.h>
 #include <net/ip.h>
+#include <net/udp.h>
+#include <net/net_namespace.h>
 #include "ar-internal.h"
 
 unsigned long rxrpc_ack_timeout = 1;
@@ -594,7 +596,7 @@ dead_call:
 	read_unlock_bh(&conn->lock);
 
 	if (sp->hdr.flags & RXRPC_CLIENT_INITIATED &&
-	    sp->hdr.seq == __constant_cpu_to_be32(1)) {
+	    sp->hdr.seq == cpu_to_be32(1)) {
 		_debug("incoming call");
 		skb_queue_tail(&conn->trans->local->accept_queue, skb);
 		rxrpc_queue_work(&conn->trans->local->acceptor);
@@ -707,9 +709,12 @@ void rxrpc_data_ready(struct sock *sk, int count)
 	if (skb_checksum_complete(skb)) {
 		rxrpc_free_skb(skb);
 		rxrpc_put_local(local);
+		UDP_INC_STATS_BH(&init_net, UDP_MIB_INERRORS, 0);
 		_leave(" [CSUM failed]");
 		return;
 	}
+
+	UDP_INC_STATS_BH(&init_net, UDP_MIB_INDATAGRAMS, 0);
 
 	/* the socket buffer we have is owned by UDP, with UDP's data all over
 	 * it, but we really want our own */
@@ -770,7 +775,7 @@ cant_route_call:
 	_debug("can't route call");
 	if (sp->hdr.flags & RXRPC_CLIENT_INITIATED &&
 	    sp->hdr.type == RXRPC_PACKET_TYPE_DATA) {
-		if (sp->hdr.seq == __constant_cpu_to_be32(1)) {
+		if (sp->hdr.seq == cpu_to_be32(1)) {
 			_debug("first packet");
 			skb_queue_tail(&local->accept_queue, skb);
 			rxrpc_queue_work(&local->acceptor);

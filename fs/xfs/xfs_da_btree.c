@@ -511,12 +511,12 @@ xfs_da_node_rebalance(xfs_da_state_t *state, xfs_da_state_blk_t *blk1,
 		 * Move the req'd B-tree elements from high in node1 to
 		 * low in node2.
 		 */
-		be16_add(&node2->hdr.count, count);
+		be16_add_cpu(&node2->hdr.count, count);
 		tmp = count * (uint)sizeof(xfs_da_node_entry_t);
 		btree_s = &node1->btree[be16_to_cpu(node1->hdr.count) - count];
 		btree_d = &node2->btree[0];
 		memcpy(btree_d, btree_s, tmp);
-		be16_add(&node1->hdr.count, -count);
+		be16_add_cpu(&node1->hdr.count, -count);
 	} else {
 		/*
 		 * Move the req'd B-tree elements from low in node2 to
@@ -527,7 +527,7 @@ xfs_da_node_rebalance(xfs_da_state_t *state, xfs_da_state_blk_t *blk1,
 		btree_s = &node2->btree[0];
 		btree_d = &node1->btree[be16_to_cpu(node1->hdr.count)];
 		memcpy(btree_d, btree_s, tmp);
-		be16_add(&node1->hdr.count, count);
+		be16_add_cpu(&node1->hdr.count, count);
 		xfs_da_log_buf(tp, blk1->bp,
 			XFS_DA_LOGRANGE(node1, btree_d, tmp));
 
@@ -539,7 +539,7 @@ xfs_da_node_rebalance(xfs_da_state_t *state, xfs_da_state_blk_t *blk1,
 		btree_s = &node2->btree[count];
 		btree_d = &node2->btree[0];
 		memmove(btree_d, btree_s, tmp);
-		be16_add(&node2->hdr.count, -count);
+		be16_add_cpu(&node2->hdr.count, -count);
 	}
 
 	/*
@@ -604,7 +604,7 @@ xfs_da_node_add(xfs_da_state_t *state, xfs_da_state_blk_t *oldblk,
 	btree->before = cpu_to_be32(newblk->blkno);
 	xfs_da_log_buf(state->args->trans, oldblk->bp,
 		XFS_DA_LOGRANGE(node, btree, tmp + sizeof(*btree)));
-	be16_add(&node->hdr.count, 1);
+	be16_add_cpu(&node->hdr.count, 1);
 	xfs_da_log_buf(state->args->trans, oldblk->bp,
 		XFS_DA_LOGRANGE(node, &node->hdr, sizeof(node->hdr)));
 
@@ -959,7 +959,7 @@ xfs_da_node_remove(xfs_da_state_t *state, xfs_da_state_blk_t *drop_blk)
 	memset((char *)btree, 0, sizeof(xfs_da_node_entry_t));
 	xfs_da_log_buf(state->args->trans, drop_blk->bp,
 	    XFS_DA_LOGRANGE(node, btree, sizeof(*btree)));
-	be16_add(&node->hdr.count, -1);
+	be16_add_cpu(&node->hdr.count, -1);
 	xfs_da_log_buf(state->args->trans, drop_blk->bp,
 	    XFS_DA_LOGRANGE(node, &node->hdr, sizeof(node->hdr)));
 
@@ -1018,7 +1018,7 @@ xfs_da_node_unbalance(xfs_da_state_t *state, xfs_da_state_blk_t *drop_blk,
 	 */
 	tmp = be16_to_cpu(drop_node->hdr.count) * (uint)sizeof(xfs_da_node_entry_t);
 	memcpy(btree, &drop_node->btree[0], tmp);
-	be16_add(&save_node->hdr.count, be16_to_cpu(drop_node->hdr.count));
+	be16_add_cpu(&save_node->hdr.count, be16_to_cpu(drop_node->hdr.count));
 
 	xfs_da_log_buf(tp, save_blk->bp,
 		XFS_DA_LOGRANGE(save_node, &save_node->hdr,
@@ -1431,7 +1431,7 @@ xfs_da_path_shift(xfs_da_state_t *state, xfs_da_state_path_t *path,
 	}
 	if (level < 0) {
 		*result = XFS_ERROR(ENOENT);	/* we're out of our tree */
-		ASSERT(args->oknoent);
+		ASSERT(args->op_flags & XFS_DA_OP_OKNOENT);
 		return(0);
 	}
 
@@ -1530,6 +1530,28 @@ xfs_da_hashname(const uchar_t *name, int namelen)
 	}
 }
 
+enum xfs_dacmp
+xfs_da_compname(
+	struct xfs_da_args *args,
+	const char 	*name,
+	int 		len)
+{
+	return (args->namelen == len && memcmp(args->name, name, len) == 0) ?
+					XFS_CMP_EXACT : XFS_CMP_DIFFERENT;
+}
+
+static xfs_dahash_t
+xfs_default_hashname(
+	struct xfs_name	*name)
+{
+	return xfs_da_hashname(name->name, name->len);
+}
+
+const struct xfs_nameops xfs_default_nameops = {
+	.hashname	= xfs_default_hashname,
+	.compname	= xfs_da_compname
+};
+
 /*
  * Add a block to the btree ahead of the file.
  * Return the new block number to the caller.
@@ -1544,11 +1566,14 @@ xfs_da_grow_inode(xfs_da_args_t *args, xfs_dablk_t *new_blkno)
 	int nmap, error, w, count, c, got, i, mapi;
 	xfs_trans_t *tp;
 	xfs_mount_t *mp;
+	xfs_drfsbno_t	nblks;
 
 	dp = args->dp;
 	mp = dp->i_mount;
 	w = args->whichfork;
 	tp = args->trans;
+	nblks = dp->i_d.di_nblocks;
+
 	/*
 	 * For new directories adjust the file offset and block count.
 	 */
@@ -1572,7 +1597,7 @@ xfs_da_grow_inode(xfs_da_args_t *args, xfs_dablk_t *new_blkno)
 	nmap = 1;
 	ASSERT(args->firstblock != NULL);
 	if ((error = xfs_bmapi(tp, dp, bno, count,
-			XFS_BMAPI_AFLAG(w)|XFS_BMAPI_WRITE|XFS_BMAPI_METADATA|
+			xfs_bmapi_aflag(w)|XFS_BMAPI_WRITE|XFS_BMAPI_METADATA|
 			XFS_BMAPI_CONTIG,
 			args->firstblock, args->total, &map, &nmap,
 			args->flist, NULL))) {
@@ -1593,12 +1618,12 @@ xfs_da_grow_inode(xfs_da_args_t *args, xfs_dablk_t *new_blkno)
 			nmap = MIN(XFS_BMAP_MAX_NMAP, count);
 			c = (int)(bno + count - b);
 			if ((error = xfs_bmapi(tp, dp, b, c,
-					XFS_BMAPI_AFLAG(w)|XFS_BMAPI_WRITE|
+					xfs_bmapi_aflag(w)|XFS_BMAPI_WRITE|
 					XFS_BMAPI_METADATA,
 					args->firstblock, args->total,
 					&mapp[mapi], &nmap, args->flist,
 					NULL))) {
-				kmem_free(mapp, sizeof(*mapp) * count);
+				kmem_free(mapp);
 				return error;
 			}
 			if (nmap < 1)
@@ -1620,11 +1645,13 @@ xfs_da_grow_inode(xfs_da_args_t *args, xfs_dablk_t *new_blkno)
 	    mapp[mapi - 1].br_startoff + mapp[mapi - 1].br_blockcount !=
 	    bno + count) {
 		if (mapp != &map)
-			kmem_free(mapp, sizeof(*mapp) * count);
+			kmem_free(mapp);
 		return XFS_ERROR(ENOSPC);
 	}
 	if (mapp != &map)
-		kmem_free(mapp, sizeof(*mapp) * count);
+		kmem_free(mapp);
+	/* account for newly allocated blocks in reserved blocks total */
+	args->total -= dp->i_d.di_nblocks - nblks;
 	*new_blkno = (xfs_dablk_t)bno;
 	return 0;
 }
@@ -1855,7 +1882,7 @@ xfs_da_shrink_inode(xfs_da_args_t *args, xfs_dablk_t dead_blkno,
 		 * the last block to the place we want to kill.
 		 */
 		if ((error = xfs_bunmapi(tp, dp, dead_blkno, count,
-				XFS_BMAPI_AFLAG(w)|XFS_BMAPI_METADATA,
+				xfs_bmapi_aflag(w)|XFS_BMAPI_METADATA,
 				0, args->firstblock, args->flist, NULL,
 				&done)) == ENOSPC) {
 			if (w != XFS_DATA_FORK)
@@ -1960,7 +1987,7 @@ xfs_da_do_buf(
 			if ((error = xfs_bmapi(trans, dp, (xfs_fileoff_t)bno,
 					nfsb,
 					XFS_BMAPI_METADATA |
-						XFS_BMAPI_AFLAG(whichfork),
+						xfs_bmapi_aflag(whichfork),
 					NULL, 0, mapp, &nmap, NULL, NULL)))
 				goto exit0;
 		}
@@ -2090,10 +2117,10 @@ xfs_da_do_buf(
 		}
 	}
 	if (bplist) {
-		kmem_free(bplist, sizeof(*bplist) * nmap);
+		kmem_free(bplist);
 	}
 	if (mapp != &map) {
-		kmem_free(mapp, sizeof(*mapp) * nfsb);
+		kmem_free(mapp);
 	}
 	if (bpp)
 		*bpp = rbp;
@@ -2102,11 +2129,11 @@ exit1:
 	if (bplist) {
 		for (i = 0; i < nbplist; i++)
 			xfs_trans_brelse(trans, bplist[i]);
-		kmem_free(bplist, sizeof(*bplist) * nmap);
+		kmem_free(bplist);
 	}
 exit0:
 	if (mapp != &map)
-		kmem_free(mapp, sizeof(*mapp) * nfsb);
+		kmem_free(mapp);
 	if (bpp)
 		*bpp = NULL;
 	return error;
@@ -2218,7 +2245,7 @@ xfs_da_state_free(xfs_da_state_t *state)
 
 #ifdef XFS_DABUF_DEBUG
 xfs_dabuf_t	*xfs_dabuf_global_list;
-lock_t		xfs_dabuf_global_lock;
+static DEFINE_SPINLOCK(xfs_dabuf_global_lock);
 #endif
 
 /*
@@ -2264,10 +2291,9 @@ xfs_da_buf_make(int nbuf, xfs_buf_t **bps, inst_t *ra)
 	}
 #ifdef XFS_DABUF_DEBUG
 	{
-		SPLDECL(s);
 		xfs_dabuf_t	*p;
 
-		s = mutex_spinlock(&xfs_dabuf_global_lock);
+		spin_lock(&xfs_dabuf_global_lock);
 		for (p = xfs_dabuf_global_list; p; p = p->next) {
 			ASSERT(p->blkno != dabuf->blkno ||
 			       p->target != dabuf->target);
@@ -2277,7 +2303,7 @@ xfs_da_buf_make(int nbuf, xfs_buf_t **bps, inst_t *ra)
 			xfs_dabuf_global_list->prev = dabuf;
 		dabuf->next = xfs_dabuf_global_list;
 		xfs_dabuf_global_list = dabuf;
-		mutex_spinunlock(&xfs_dabuf_global_lock, s);
+		spin_unlock(&xfs_dabuf_global_lock);
 	}
 #endif
 	return dabuf;
@@ -2316,26 +2342,24 @@ xfs_da_buf_done(xfs_dabuf_t *dabuf)
 	if (dabuf->dirty)
 		xfs_da_buf_clean(dabuf);
 	if (dabuf->nbuf > 1)
-		kmem_free(dabuf->data, BBTOB(dabuf->bbcount));
+		kmem_free(dabuf->data);
 #ifdef XFS_DABUF_DEBUG
 	{
-		SPLDECL(s);
-
-		s = mutex_spinlock(&xfs_dabuf_global_lock);
+		spin_lock(&xfs_dabuf_global_lock);
 		if (dabuf->prev)
 			dabuf->prev->next = dabuf->next;
 		else
 			xfs_dabuf_global_list = dabuf->next;
 		if (dabuf->next)
 			dabuf->next->prev = dabuf->prev;
-		mutex_spinunlock(&xfs_dabuf_global_lock, s);
+		spin_unlock(&xfs_dabuf_global_lock);
 	}
 	memset(dabuf, 0, XFS_DA_BUF_SIZE(dabuf->nbuf));
 #endif
 	if (dabuf->nbuf == 1)
 		kmem_zone_free(xfs_dabuf_zone, dabuf);
 	else
-		kmem_free(dabuf, XFS_DA_BUF_SIZE(dabuf->nbuf));
+		kmem_free(dabuf);
 }
 
 /*
@@ -2406,7 +2430,7 @@ xfs_da_brelse(xfs_trans_t *tp, xfs_dabuf_t *dabuf)
 	for (i = 0; i < nbuf; i++)
 		xfs_trans_brelse(tp, bplist[i]);
 	if (bplist != &bp)
-		kmem_free(bplist, nbuf * sizeof(*bplist));
+		kmem_free(bplist);
 }
 
 /*
@@ -2432,7 +2456,7 @@ xfs_da_binval(xfs_trans_t *tp, xfs_dabuf_t *dabuf)
 	for (i = 0; i < nbuf; i++)
 		xfs_trans_binval(tp, bplist[i]);
 	if (bplist != &bp)
-		kmem_free(bplist, nbuf * sizeof(*bplist));
+		kmem_free(bplist);
 }
 
 /*

@@ -208,9 +208,8 @@ affs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 	affs_lock_dir(dir);
 	bh = affs_find_entry(dir, dentry);
 	affs_unlock_dir(dir);
-	if (IS_ERR(bh)) {
-		return ERR_PTR(PTR_ERR(bh));
-	}
+	if (IS_ERR(bh))
+		return ERR_CAST(bh);
 	if (bh) {
 		u32 ino = bh->b_blocknr;
 
@@ -223,10 +222,9 @@ affs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 			ino = be32_to_cpu(AFFS_TAIL(sb, bh)->original);
 		}
 		affs_brelse(bh);
-		inode = iget(sb, ino);
-		if (!inode) {
-			return ERR_PTR(-EACCES);
-		}
+		inode = affs_iget(sb, ino);
+		if (IS_ERR(inode))
+			return ERR_PTR(PTR_ERR(inode));
 	}
 	dentry->d_op = AFFS_SB(sb)->s_flags & SF_INTL ? &affs_intl_dentry_operations : &affs_dentry_operations;
 	d_add(dentry, inode);
@@ -236,7 +234,8 @@ affs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 int
 affs_unlink(struct inode *dir, struct dentry *dentry)
 {
-	pr_debug("AFFS: unlink(dir=%d, \"%.*s\")\n", (u32)dir->i_ino,
+	pr_debug("AFFS: unlink(dir=%d, %lu \"%.*s\")\n", (u32)dir->i_ino,
+		 dentry->d_inode->i_ino,
 		 (int)dentry->d_name.len, dentry->d_name.name);
 
 	return affs_remove_header(dentry);
@@ -304,7 +303,8 @@ affs_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 int
 affs_rmdir(struct inode *dir, struct dentry *dentry)
 {
-	pr_debug("AFFS: rmdir(dir=%u, \"%.*s\")\n", (u32)dir->i_ino,
+	pr_debug("AFFS: rmdir(dir=%u, %lu \"%.*s\")\n", (u32)dir->i_ino,
+		 dentry->d_inode->i_ino,
 		 (int)dentry->d_name.len, dentry->d_name.name);
 
 	return affs_remove_header(dentry);

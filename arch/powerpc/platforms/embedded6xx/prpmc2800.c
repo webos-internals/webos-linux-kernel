@@ -19,7 +19,6 @@
 #include <asm/prom.h>
 #include <asm/system.h>
 #include <asm/time.h>
-#include <asm/kexec.h>
 
 #include <mm/mmu_decl.h>
 
@@ -49,13 +48,13 @@ static void __init prpmc2800_setup_arch(void)
 	 * ioremap mpp and gpp registers in case they are later
 	 * needed by prpmc2800_reset_board().
 	 */
-	np = of_find_compatible_node(NULL, NULL, "marvell,mv64x60-mpp");
+	np = of_find_compatible_node(NULL, NULL, "marvell,mv64360-mpp");
 	reg = of_get_property(np, "reg", NULL);
 	paddr = of_translate_address(np, reg);
 	of_node_put(np);
 	mv64x60_mpp_reg_base = ioremap(paddr, reg[1]);
 
-	np = of_find_compatible_node(NULL, NULL, "marvell,mv64x60-gpp");
+	np = of_find_compatible_node(NULL, NULL, "marvell,mv64360-gpp");
 	reg = of_get_property(np, "reg", NULL);
 	paddr = of_translate_address(np, reg);
 	of_node_put(np);
@@ -119,10 +118,7 @@ static void prpmc2800_restart(char *cmd)
 
 void prpmc2800_show_cpuinfo(struct seq_file *m)
 {
-	uint memsize = total_memory;
-
 	seq_printf(m, "Vendor\t\t: Motorola\n");
-	seq_printf(m, "Memory\t\t: %d MB\n", memsize / (1024 * 1024));
 	seq_printf(m, "coherency\t: %s\n", PPRPM2800_COHERENCY_SETTING);
 }
 
@@ -158,9 +154,4 @@ define_machine(prpmc2800){
 	.get_irq		= mv64x60_get_irq,
 	.restart		= prpmc2800_restart,
 	.calibrate_decr		= generic_calibrate_decr,
-#ifdef CONFIG_KEXEC
-	.machine_kexec		= default_machine_kexec,
-	.machine_kexec_prepare	= default_machine_kexec_prepare,
-	.machine_crash_shutdown	= default_machine_crash_shutdown,
-#endif
 };

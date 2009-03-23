@@ -13,7 +13,6 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/io.h>
-#include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/atmel-ssc.h>
 
@@ -36,7 +35,7 @@ struct ssc_device *ssc_request(unsigned int ssc_num)
 
 	if (!ssc_valid) {
 		spin_unlock(&user_lock);
-		dev_dbg(&ssc->pdev->dev, "could not find requested device\n");
+		pr_err("ssc: ssc%d platform device is missing\n", ssc_num);
 		return ERR_PTR(-ENODEV);
 	}
 
@@ -154,6 +153,7 @@ static struct platform_driver ssc_driver = {
 	.remove		= __devexit_p(ssc_remove),
 	.driver		= {
 		.name		= "ssc",
+		.owner		= THIS_MODULE,
 	},
 };
 
@@ -172,3 +172,4 @@ module_exit(ssc_exit);
 MODULE_AUTHOR("Hans-Christian Egtvedt <hcegtvedt@atmel.com>");
 MODULE_DESCRIPTION("SSC driver for Atmel AVR32 and AT91");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:ssc");

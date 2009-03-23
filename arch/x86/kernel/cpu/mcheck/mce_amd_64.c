@@ -65,7 +65,7 @@ static struct threshold_block threshold_defaults = {
 };
 
 struct threshold_bank {
-	struct kobject kobj;
+	struct kobject *kobj;
 	struct threshold_block *blocks;
 	cpumask_t cpus;
 };
@@ -83,42 +83,51 @@ static DEFINE_PER_CPU(unsigned char, bank_map);	/* see which banks are on */
  * CPU Initialization
  */
 
+struct thresh_restart {
+	struct threshold_block *b;
+	int reset;
+	u16 old_limit;
+};
+
 /* must be called with correct cpu affinity */
-static void threshold_restart_bank(struct threshold_block *b,
-				   int reset, u16 old_limit)
+static long threshold_restart_bank(void *_tr)
 {
+	struct thresh_restart *tr = _tr;
 	u32 mci_misc_hi, mci_misc_lo;
 
-	rdmsr(b->address, mci_misc_lo, mci_misc_hi);
+	rdmsr(tr->b->address, mci_misc_lo, mci_misc_hi);
 
-	if (b->threshold_limit < (mci_misc_hi & THRESHOLD_MAX))
-		reset = 1;	/* limit cannot be lower than err count */
+	if (tr->b->threshold_limit < (mci_misc_hi & THRESHOLD_MAX))
+		tr->reset = 1;	/* limit cannot be lower than err count */
 
-	if (reset) {		/* reset err count and overflow bit */
+	if (tr->reset) {		/* reset err count and overflow bit */
 		mci_misc_hi =
 		    (mci_misc_hi & ~(MASK_ERR_COUNT_HI | MASK_OVERFLOW_HI)) |
-		    (THRESHOLD_MAX - b->threshold_limit);
-	} else if (old_limit) {	/* change limit w/o reset */
+		    (THRESHOLD_MAX - tr->b->threshold_limit);
+	} else if (tr->old_limit) {	/* change limit w/o reset */
 		int new_count = (mci_misc_hi & THRESHOLD_MAX) +
-		    (old_limit - b->threshold_limit);
+		    (tr->old_limit - tr->b->threshold_limit);
 		mci_misc_hi = (mci_misc_hi & ~MASK_ERR_COUNT_HI) |
 		    (new_count & THRESHOLD_MAX);
 	}
 
-	b->interrupt_enable ?
+	tr->b->interrupt_enable ?
 	    (mci_misc_hi = (mci_misc_hi & ~MASK_INT_TYPE_HI) | INT_TYPE_APIC) :
 	    (mci_misc_hi &= ~MASK_INT_TYPE_HI);
 
 	mci_misc_hi |= MASK_COUNT_EN_HI;
-	wrmsr(b->address, mci_misc_lo, mci_misc_hi);
+	wrmsr(tr->b->address, mci_misc_lo, mci_misc_hi);
+	return 0;
 }
 
 /* cpu init entry point, called from mce.c with preempt off */
-void __cpuinit mce_amd_feature_init(struct cpuinfo_x86 *c)
+void mce_amd_feature_init(struct cpuinfo_x86 *c)
 {
 	unsigned int bank, block;
 	unsigned int cpu = smp_processor_id();
+	u8 lvt_off;
 	u32 low = 0, high = 0, address = 0;
+	struct thresh_restart tr;
 
 	for (bank = 0; bank < NR_BANKS; ++bank) {
 		for (block = 0; block < NR_BLOCKS; ++block) {
@@ -153,16 +162,18 @@ void __cpuinit mce_amd_feature_init(struct cpuinfo_x86 *c)
 			if (shared_bank[bank] && c->cpu_core_id)
 				break;
 #endif
+			lvt_off = setup_APIC_eilvt_mce(THRESHOLD_APIC_VECTOR,
+						       APIC_EILVT_MSG_FIX, 0);
+
 			high &= ~MASK_LVTOFF_HI;
-			high |= K8_APIC_EXT_LVT_ENTRY_THRESHOLD << 20;
+			high |= lvt_off << 20;
 			wrmsr(address, low, high);
 
-			setup_APIC_extended_lvt(K8_APIC_EXT_LVT_ENTRY_THRESHOLD,
-						THRESHOLD_APIC_VECTOR,
-						K8_APIC_EXT_INT_MSG_FIX, 0);
-
 			threshold_defaults.address = address;
-			threshold_restart_bank(&threshold_defaults, 0, 0);
+			tr.b = &threshold_defaults;
+			tr.reset = 0;
+			tr.old_limit = 0;
+			threshold_restart_bank(&tr);
 		}
 	}
 }
@@ -237,7 +248,7 @@ asmlinkage void mce_threshold_interrupt(void)
 		}
 	}
 out:
-	add_pda(irq_threshold_count, 1);
+	inc_irq_stat(irq_threshold_count);
 	irq_exit();
 }
 
@@ -251,20 +262,6 @@ struct threshold_attr {
 	ssize_t(*store) (struct threshold_block *, const char *, size_t count);
 };
 
-static cpumask_t affinity_set(unsigned int cpu)
-{
-	cpumask_t oldmask = current->cpus_allowed;
-	cpumask_t newmask = CPU_MASK_NONE;
-	cpu_set(cpu, newmask);
-	set_cpus_allowed(current, newmask);
-	return oldmask;
-}
-
-static void affinity_restore(cpumask_t oldmask)
-{
-	set_cpus_allowed(current, oldmask);
-}
-
 #define SHOW_FIELDS(name)                                           \
 static ssize_t show_ ## name(struct threshold_block * b, char *buf) \
 {                                                                   \
@@ -277,15 +274,16 @@ static ssize_t store_interrupt_enable(struct threshold_block *b,
 				      const char *buf, size_t count)
 {
 	char *end;
-	cpumask_t oldmask;
+	struct thresh_restart tr;
 	unsigned long new = simple_strtoul(buf, &end, 0);
 	if (end == buf)
 		return -EINVAL;
 	b->interrupt_enable = !!new;
 
-	oldmask = affinity_set(b->cpu);
-	threshold_restart_bank(b, 0, 0);
-	affinity_restore(oldmask);
+	tr.b = b;
+	tr.reset = 0;
+	tr.old_limit = 0;
+	work_on_cpu(b->cpu, threshold_restart_bank, &tr);
 
 	return end - buf;
 }
@@ -294,8 +292,7 @@ static ssize_t store_threshold_limit(struct threshold_block *b,
 				     const char *buf, size_t count)
 {
 	char *end;
-	cpumask_t oldmask;
-	u16 old;
+	struct thresh_restart tr;
 	unsigned long new = simple_strtoul(buf, &end, 0);
 	if (end == buf)
 		return -EINVAL;
@@ -303,34 +300,36 @@ static ssize_t store_threshold_limit(struct threshold_block *b,
 		new = THRESHOLD_MAX;
 	if (new < 1)
 		new = 1;
-	old = b->threshold_limit;
+	tr.old_limit = b->threshold_limit;
 	b->threshold_limit = new;
+	tr.b = b;
+	tr.reset = 0;
 
-	oldmask = affinity_set(b->cpu);
-	threshold_restart_bank(b, 0, old);
-	affinity_restore(oldmask);
+	work_on_cpu(b->cpu, threshold_restart_bank, &tr);
 
 	return end - buf;
 }
 
+static long local_error_count(void *_b)
+{
+	struct threshold_block *b = _b;
+	u32 low, high;
+
+	rdmsr(b->address, low, high);
+	return (high & 0xFFF) - (THRESHOLD_MAX - b->threshold_limit);
+}
+
 static ssize_t show_error_count(struct threshold_block *b, char *buf)
 {
-	u32 high, low;
-	cpumask_t oldmask;
-	oldmask = affinity_set(b->cpu);
-	rdmsr(b->address, low, high);
-	affinity_restore(oldmask);
-	return sprintf(buf, "%x\n",
-		       (high & 0xFFF) - (THRESHOLD_MAX - b->threshold_limit));
+	return sprintf(buf, "%lx\n", work_on_cpu(b->cpu, local_error_count, b));
 }
 
 static ssize_t store_error_count(struct threshold_block *b,
 				 const char *buf, size_t count)
 {
-	cpumask_t oldmask;
-	oldmask = affinity_set(b->cpu);
-	threshold_restart_bank(b, 1, 0);
-	affinity_restore(oldmask);
+	struct thresh_restart tr = { .b = b, .reset = 1, .old_limit = 0 };
+
+	work_on_cpu(b->cpu, threshold_restart_bank, &tr);
 	return 1;
 }
 
@@ -432,10 +431,9 @@ static __cpuinit int allocate_threshold_blocks(unsigned int cpu,
 	else
 		per_cpu(threshold_banks, cpu)[bank]->blocks = b;
 
-	kobject_set_name(&b->kobj, "misc%i", block);
-	b->kobj.parent = &per_cpu(threshold_banks, cpu)[bank]->kobj;
-	b->kobj.ktype = &threshold_ktype;
-	err = kobject_register(&b->kobj);
+	err = kobject_init_and_add(&b->kobj, &threshold_ktype,
+				   per_cpu(threshold_banks, cpu)[bank]->kobj,
+				   "misc%i", block);
 	if (err)
 		goto out_free;
 recurse:
@@ -451,14 +449,25 @@ recurse:
 	if (err)
 		goto out_free;
 
+	if (b)
+		kobject_uevent(&b->kobj, KOBJ_ADD);
+
 	return err;
 
 out_free:
 	if (b) {
-		kobject_unregister(&b->kobj);
+		kobject_put(&b->kobj);
 		kfree(b);
 	}
 	return err;
+}
+
+static __cpuinit long local_allocate_threshold_blocks(void *_bank)
+{
+	unsigned int *bank = _bank;
+
+	return allocate_threshold_blocks(smp_processor_id(), *bank, 0,
+					 MSR_IA32_MC0_MISC + *bank * 4);
 }
 
 /* symlinks sibling shared banks to first core.  first core owns dir/files. */
@@ -466,7 +475,6 @@ static __cpuinit int threshold_create_bank(unsigned int cpu, unsigned int bank)
 {
 	int i, err = 0;
 	struct threshold_bank *b = NULL;
-	cpumask_t oldmask = CPU_MASK_NONE;
 	char name[32];
 
 	sprintf(name, "threshold_bank%i", bank);
@@ -489,7 +497,7 @@ static __cpuinit int threshold_create_bank(unsigned int cpu, unsigned int bank)
 			goto out;
 
 		err = sysfs_create_link(&per_cpu(device_mce, cpu).kobj,
-					&b->kobj, name);
+					b->kobj, name);
 		if (err)
 			goto out;
 
@@ -505,33 +513,28 @@ static __cpuinit int threshold_create_bank(unsigned int cpu, unsigned int bank)
 		goto out;
 	}
 
-	kobject_set_name(&b->kobj, "threshold_bank%i", bank);
-	b->kobj.parent = &per_cpu(device_mce, cpu).kobj;
+	b->kobj = kobject_create_and_add(name, &per_cpu(device_mce, cpu).kobj);
+	if (!b->kobj)
+		goto out_free;
+
 #ifndef CONFIG_SMP
 	b->cpus = CPU_MASK_ALL;
 #else
 	b->cpus = per_cpu(cpu_core_map, cpu);
 #endif
-	err = kobject_register(&b->kobj);
-	if (err)
-		goto out_free;
 
 	per_cpu(threshold_banks, cpu)[bank] = b;
 
-	oldmask = affinity_set(cpu);
-	err = allocate_threshold_blocks(cpu, bank, 0,
-					MSR_IA32_MC0_MISC + bank * 4);
-	affinity_restore(oldmask);
-
+	err = work_on_cpu(cpu, local_allocate_threshold_blocks, &bank);
 	if (err)
 		goto out_free;
 
-	for_each_cpu_mask(i, b->cpus) {
+	for_each_cpu_mask_nr(i, b->cpus) {
 		if (i == cpu)
 			continue;
 
 		err = sysfs_create_link(&per_cpu(device_mce, i).kobj,
-					&b->kobj, name);
+					b->kobj, name);
 		if (err)
 			goto out;
 
@@ -554,7 +557,7 @@ static __cpuinit int threshold_create_device(unsigned int cpu)
 	int err = 0;
 
 	for (bank = 0; bank < NR_BANKS; ++bank) {
-		if (!(per_cpu(bank_map, cpu) & 1 << bank))
+		if (!(per_cpu(bank_map, cpu) & (1 << bank)))
 			continue;
 		err = threshold_create_bank(cpu, bank);
 		if (err)
@@ -581,7 +584,7 @@ static void deallocate_threshold_block(unsigned int cpu,
 		return;
 
 	list_for_each_entry_safe(pos, tmp, &head->blocks->miscj, miscj) {
-		kobject_unregister(&pos->kobj);
+		kobject_put(&pos->kobj);
 		list_del(&pos->miscj);
 		kfree(pos);
 	}
@@ -616,7 +619,7 @@ static void threshold_remove_bank(unsigned int cpu, int bank)
 #endif
 
 	/* remove all sibling symlinks before unregistering */
-	for_each_cpu_mask(i, b->cpus) {
+	for_each_cpu_mask_nr(i, b->cpus) {
 		if (i == cpu)
 			continue;
 
@@ -627,7 +630,8 @@ static void threshold_remove_bank(unsigned int cpu, int bank)
 	deallocate_threshold_block(cpu, bank);
 
 free_out:
-	kobject_unregister(&b->kobj);
+	kobject_del(b->kobj);
+	kobject_put(b->kobj);
 	kfree(b);
 	per_cpu(threshold_banks, cpu)[bank] = NULL;
 }
@@ -637,21 +641,18 @@ static void threshold_remove_device(unsigned int cpu)
 	unsigned int bank;
 
 	for (bank = 0; bank < NR_BANKS; ++bank) {
-		if (!(per_cpu(bank_map, cpu) & 1 << bank))
+		if (!(per_cpu(bank_map, cpu) & (1 << bank)))
 			continue;
 		threshold_remove_bank(cpu, bank);
 	}
 }
 
 /* get notified when a cpu comes on/off */
-static int threshold_cpu_callback(struct notifier_block *nfb,
-					    unsigned long action, void *hcpu)
+static void __cpuinit amd_64_threshold_cpu_callback(unsigned long action,
+						     unsigned int cpu)
 {
-	/* cpu was unsigned int to begin with */
-	unsigned int cpu = (unsigned long)hcpu;
-
 	if (cpu >= NR_CPUS)
-		goto out;
+		return;
 
 	switch (action) {
 	case CPU_ONLINE:
@@ -665,13 +666,7 @@ static int threshold_cpu_callback(struct notifier_block *nfb,
 	default:
 		break;
 	}
-      out:
-	return NOTIFY_OK;
 }
-
-static struct notifier_block threshold_cpu_notifier = {
-	.notifier_call = threshold_cpu_callback,
-};
 
 static __init int threshold_init_device(void)
 {
@@ -683,7 +678,7 @@ static __init int threshold_init_device(void)
 		if (err)
 			return err;
 	}
-	register_hotcpu_notifier(&threshold_cpu_notifier);
+	threshold_cpu_callback = amd_64_threshold_cpu_callback;
 	return 0;
 }
 

@@ -28,6 +28,7 @@
 #include <linux/delay.h>
 
 #include "core.h"
+#include <asm/dcr-regs.h>
 
 static int mal_count;
 
@@ -61,8 +62,8 @@ int __devinit mal_register_commac(struct mal_instance	*mal,
 	return 0;
 }
 
-void __devexit mal_unregister_commac(struct mal_instance	*mal,
-				     struct mal_commac		*commac)
+void mal_unregister_commac(struct mal_instance	*mal,
+		struct mal_commac *commac)
 {
 	unsigned long flags;
 
@@ -136,6 +137,14 @@ void mal_enable_rx_channel(struct mal_instance *mal, int channel)
 {
 	unsigned long flags;
 
+	/*
+	 * On some 4xx PPC's (e.g. 460EX/GT), the rx channel is a multiple
+	 * of 8, but enabling in MAL_RXCASR needs the divided by 8 value
+	 * for the bitmask
+	 */
+	if (!(channel % 8))
+		channel >>= 3;
+
 	spin_lock_irqsave(&mal->lock, flags);
 
 	MAL_DBG(mal, "enable_rx(%d)" NL, channel);
@@ -148,6 +157,14 @@ void mal_enable_rx_channel(struct mal_instance *mal, int channel)
 
 void mal_disable_rx_channel(struct mal_instance *mal, int channel)
 {
+	/*
+	 * On some 4xx PPC's (e.g. 460EX/GT), the rx channel is a multiple
+	 * of 8, but enabling in MAL_RXCASR needs the divided by 8 value
+	 * for the bitmask
+	 */
+	if (!(channel % 8))
+		channel >>= 3;
+
 	set_mal_dcrn(mal, MAL_RXCARR, MAL_CHAN_MASK(channel));
 
 	MAL_DBG(mal, "disable_rx(%d)" NL, channel);
@@ -263,6 +280,12 @@ static irqreturn_t mal_txeob(int irq, void *dev_instance)
 	mal_schedule_poll(mal);
 	set_mal_dcrn(mal, MAL_TXEOBISR, r);
 
+#ifdef CONFIG_PPC_DCR_NATIVE
+	if (mal_has_feature(mal, MAL_FTR_CLEAR_ICINTSTAT))
+		mtdcri(SDR0, DCRN_SDR_ICINTSTAT,
+				(mfdcri(SDR0, DCRN_SDR_ICINTSTAT) | ICINTSTAT_ICTX));
+#endif
+
 	return IRQ_HANDLED;
 }
 
@@ -276,6 +299,12 @@ static irqreturn_t mal_rxeob(int irq, void *dev_instance)
 
 	mal_schedule_poll(mal);
 	set_mal_dcrn(mal, MAL_RXEOBISR, r);
+
+#ifdef CONFIG_PPC_DCR_NATIVE
+	if (mal_has_feature(mal, MAL_FTR_CLEAR_ICINTSTAT))
+		mtdcri(SDR0, DCRN_SDR_ICINTSTAT,
+				(mfdcri(SDR0, DCRN_SDR_ICINTSTAT) | ICINTSTAT_ICRX));
+#endif
 
 	return IRQ_HANDLED;
 }
@@ -317,6 +346,25 @@ static irqreturn_t mal_rxde(int irq, void *dev_instance)
 	mal_schedule_poll(mal);
 	set_mal_dcrn(mal, MAL_RXDEIR, deir);
 
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t mal_int(int irq, void *dev_instance)
+{
+	struct mal_instance *mal = dev_instance;
+	u32 esr = get_mal_dcrn(mal, MAL_ESR);
+
+	if (esr & MAL_ESR_EVB) {
+		/* descriptor error */
+		if (esr & MAL_ESR_DE) {
+			if (esr & MAL_ESR_CIDT)
+				return mal_rxde(irq, dev_instance);
+			else
+				return mal_txde(irq, dev_instance);
+		} else { /* SERR */
+			return mal_serr(irq, dev_instance);
+		}
+	}
 	return IRQ_HANDLED;
 }
 
@@ -477,6 +525,8 @@ static int __devinit mal_probe(struct of_device *ofdev,
 	unsigned int dcr_base;
 	const u32 *prop;
 	u32 cfg;
+	unsigned long irqflags;
+	irq_handler_t hdlr_serr, hdlr_txde, hdlr_rxde;
 
 	mal = kzalloc(sizeof(struct mal_instance), GFP_KERNEL);
 	if (!mal) {
@@ -526,11 +576,30 @@ static int __devinit mal_probe(struct of_device *ofdev,
 		goto fail;
 	}
 
+	if (of_device_is_compatible(ofdev->node, "ibm,mcmal-405ez")) {
+#if defined(CONFIG_IBM_NEW_EMAC_MAL_CLR_ICINTSTAT) && \
+		defined(CONFIG_IBM_NEW_EMAC_MAL_COMMON_ERR)
+		mal->features |= (MAL_FTR_CLEAR_ICINTSTAT |
+				MAL_FTR_COMMON_ERR_INT);
+#else
+		printk(KERN_ERR "%s: Support for 405EZ not enabled!\n",
+				ofdev->node->full_name);
+		err = -ENODEV;
+		goto fail;
+#endif
+	}
+
 	mal->txeob_irq = irq_of_parse_and_map(ofdev->node, 0);
 	mal->rxeob_irq = irq_of_parse_and_map(ofdev->node, 1);
 	mal->serr_irq = irq_of_parse_and_map(ofdev->node, 2);
-	mal->txde_irq = irq_of_parse_and_map(ofdev->node, 3);
-	mal->rxde_irq = irq_of_parse_and_map(ofdev->node, 4);
+
+	if (mal_has_feature(mal, MAL_FTR_COMMON_ERR_INT)) {
+		mal->txde_irq = mal->rxde_irq = mal->serr_irq;
+	} else {
+		mal->txde_irq = irq_of_parse_and_map(ofdev->node, 3);
+		mal->rxde_irq = irq_of_parse_and_map(ofdev->node, 4);
+	}
+
 	if (mal->txeob_irq == NO_IRQ || mal->rxeob_irq == NO_IRQ ||
 	    mal->serr_irq == NO_IRQ || mal->txde_irq == NO_IRQ ||
 	    mal->rxde_irq == NO_IRQ) {
@@ -544,7 +613,9 @@ static int __devinit mal_probe(struct of_device *ofdev,
 	INIT_LIST_HEAD(&mal->list);
 	spin_lock_init(&mal->lock);
 
-	netif_napi_add(NULL, &mal->napi, mal_poll,
+	init_dummy_netdev(&mal->dummy_dev);
+
+	netif_napi_add(&mal->dummy_dev, &mal->napi, mal_poll,
 		       CONFIG_IBM_NEW_EMAC_POLL_WEIGHT);
 
 	/* Load power-on reset defaults */
@@ -592,16 +663,26 @@ static int __devinit mal_probe(struct of_device *ofdev,
 			     sizeof(struct mal_descriptor) *
 			     mal_rx_bd_offset(mal, i));
 
-	err = request_irq(mal->serr_irq, mal_serr, 0, "MAL SERR", mal);
+	if (mal_has_feature(mal, MAL_FTR_COMMON_ERR_INT)) {
+		irqflags = IRQF_SHARED;
+		hdlr_serr = hdlr_txde = hdlr_rxde = mal_int;
+	} else {
+		irqflags = 0;
+		hdlr_serr = mal_serr;
+		hdlr_txde = mal_txde;
+		hdlr_rxde = mal_rxde;
+	}
+
+	err = request_irq(mal->serr_irq, hdlr_serr, irqflags, "MAL SERR", mal);
 	if (err)
 		goto fail2;
-	err = request_irq(mal->txde_irq, mal_txde, 0, "MAL TX DE", mal);
+	err = request_irq(mal->txde_irq, hdlr_txde, irqflags, "MAL TX DE", mal);
 	if (err)
 		goto fail3;
 	err = request_irq(mal->txeob_irq, mal_txeob, 0, "MAL TX EOB", mal);
 	if (err)
 		goto fail4;
-	err = request_irq(mal->rxde_irq, mal_rxde, 0, "MAL RX DE", mal);
+	err = request_irq(mal->rxde_irq, hdlr_rxde, irqflags, "MAL RX DE", mal);
 	if (err)
 		goto fail5;
 	err = request_irq(mal->rxeob_irq, mal_rxeob, 0, "MAL RX EOB", mal);

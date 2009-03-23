@@ -17,8 +17,6 @@
 #include <linux/crc-ccitt.h>
 #include <linux/bitrev.h>
 
-//#define GIG_M10x_STUFF_VOICE_DATA
-
 /* check if byte must be stuffed/escaped
  * I'm not sure which data should be encoded.
  * Therefore I will go the hard way and decode every value
@@ -147,19 +145,17 @@ static inline int hdlc_loop(unsigned char c, unsigned char *src, int numbytes,
 			}
 byte_stuff:
 			c ^= PPP_TRANS;
-#ifdef CONFIG_GIGASET_DEBUG
 			if (unlikely(!muststuff(c)))
 				gig_dbg(DEBUG_HDLC, "byte stuffed: 0x%02x", c);
-#endif
 		} else if (unlikely(c == PPP_FLAG)) {
 			if (unlikely(inputstate & INS_skip_frame)) {
-				if (!(inputstate & INS_have_data)) { /* 7E 7E */
 #ifdef CONFIG_GIGASET_DEBUG
+				if (!(inputstate & INS_have_data)) { /* 7E 7E */
 					++bcs->emptycount;
-#endif
 				} else
 					gig_dbg(DEBUG_HDLC,
 					    "7e----------------------------");
+#endif
 
 				/* end of frame */
 				error = 1;
@@ -226,11 +222,9 @@ byte_stuff:
 			}
 
 			break;
-#ifdef CONFIG_GIGASET_DEBUG
 		} else if (unlikely(muststuff(c))) {
 			/* Should not happen. Possible after ZDLE=1<CR><LF>. */
 			gig_dbg(DEBUG_HDLC, "not byte stuffed: 0x%02x", c);
-#endif
 		}
 
 		/* add character */
@@ -350,8 +344,8 @@ void gigaset_m10x_input(struct inbuf_t *inbuf)
 	unsigned char *src, c;
 	int procbytes;
 
-	head = atomic_read(&inbuf->head);
-	tail = atomic_read(&inbuf->tail);
+	head = inbuf->head;
+	tail = inbuf->tail;
 	gig_dbg(DEBUG_INTR, "buffer state: %u -> %u", head, tail);
 
 	if (head != tail) {
@@ -361,7 +355,7 @@ void gigaset_m10x_input(struct inbuf_t *inbuf)
 		gig_dbg(DEBUG_INTR, "processing %u bytes", numbytes);
 
 		while (numbytes) {
-			if (atomic_read(&cs->mstate) == MS_LOCKED) {
+			if (cs->mstate == MS_LOCKED) {
 				procbytes = lock_loop(src, numbytes, inbuf);
 				src += procbytes;
 				numbytes -= procbytes;
@@ -394,20 +388,16 @@ void gigaset_m10x_input(struct inbuf_t *inbuf)
 					inbuf->inputstate &= ~INS_DLE_char;
 					switch (c) {
 					case 'X': /*begin of command*/
-#ifdef CONFIG_GIGASET_DEBUG
 						if (inbuf->inputstate & INS_command)
-							dev_err(cs->dev,
+							dev_warn(cs->dev,
 					"received <DLE> 'X' in command mode\n");
-#endif
 						inbuf->inputstate |=
 							INS_command | INS_DLE_command;
 						break;
 					case '.': /*end of command*/
-#ifdef CONFIG_GIGASET_DEBUG
 						if (!(inbuf->inputstate & INS_command))
-							dev_err(cs->dev,
+							dev_warn(cs->dev,
 					"received <DLE> '.' in hdlc mode\n");
-#endif
 						inbuf->inputstate &= cs->dle ?
 							~(INS_DLE_command|INS_command)
 							: ~INS_DLE_command;
@@ -436,7 +426,7 @@ nextbyte:
 		}
 
 		gig_dbg(DEBUG_INTR, "setting head to %u", head);
-		atomic_set(&inbuf->head, head);
+		inbuf->head = head;
 	}
 }
 EXPORT_SYMBOL_GPL(gigaset_m10x_input);
@@ -575,7 +565,8 @@ int gigaset_m10x_send_skb(struct bc_state *bcs, struct sk_buff *skb)
 	else
 		skb = iraw_encode(skb, HW_HDR_LEN, 0);
 	if (!skb) {
-		err("unable to allocate memory for encoding!\n");
+		dev_err(bcs->cs->dev,
+			"unable to allocate memory for encoding!\n");
 		return -ENOMEM;
 	}
 

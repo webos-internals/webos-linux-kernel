@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id$
  */
 
 #include <linux/mm.h>
@@ -109,7 +107,11 @@ static int mthca_alloc_icm_pages(struct scatterlist *mem, int order, gfp_t gfp_m
 {
 	struct page *page;
 
-	page = alloc_pages(gfp_mask, order);
+	/*
+	 * Use __GFP_ZERO because buggy firmware assumes ICM pages are
+	 * cleared, and subtle failures are seen if they aren't.
+	 */
+	page = alloc_pages(gfp_mask | __GFP_ZERO, order);
 	if (!page)
 		return -ENOMEM;
 
@@ -359,12 +361,14 @@ struct mthca_icm_table *mthca_alloc_icm_table(struct mthca_dev *dev,
 					      int use_lowmem, int use_coherent)
 {
 	struct mthca_icm_table *table;
+	int obj_per_chunk;
 	int num_icm;
 	unsigned chunk_size;
 	int i;
 	u8 status;
 
-	num_icm = (obj_size * nobj + MTHCA_TABLE_CHUNK_SIZE - 1) / MTHCA_TABLE_CHUNK_SIZE;
+	obj_per_chunk = MTHCA_TABLE_CHUNK_SIZE / obj_size;
+	num_icm = DIV_ROUND_UP(nobj, obj_per_chunk);
 
 	table = kmalloc(sizeof *table + num_icm * sizeof *table->icm, GFP_KERNEL);
 	if (!table)
@@ -412,7 +416,7 @@ err:
 		if (table->icm[i]) {
 			mthca_UNMAP_ICM(dev, virt + i * MTHCA_TABLE_CHUNK_SIZE,
 					MTHCA_TABLE_CHUNK_SIZE / MTHCA_ICM_PAGE_SIZE,
-				        &status);
+					&status);
 			mthca_free_icm(dev, table->icm[i], table->coherent);
 		}
 
@@ -542,6 +546,7 @@ struct mthca_user_db_table *mthca_init_user_db_tab(struct mthca_dev *dev)
 	for (i = 0; i < npages; ++i) {
 		db_tab->page[i].refcount = 0;
 		db_tab->page[i].uvirt    = 0;
+		sg_init_table(&db_tab->page[i].mem, 1);
 	}
 
 	return db_tab;

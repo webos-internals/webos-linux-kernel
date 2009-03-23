@@ -36,6 +36,7 @@ struct nfs_fattr {
 	__u32			nlink;
 	__u32			uid;
 	__u32			gid;
+	dev_t			rdev;
 	__u64			size;
 	union {
 		struct {
@@ -46,7 +47,6 @@ struct nfs_fattr {
 			__u64	used;
 		} nfs3;
 	} du;
-	dev_t			rdev;
 	struct nfs_fsid		fsid;
 	__u64			fileid;
 	struct timespec		atime;
@@ -56,6 +56,7 @@ struct nfs_fattr {
 	__u64			change_attr;	/* NFSv4 change attribute */
 	__u64			pre_change_attr;/* pre-op NFSv4 change attribute */
 	unsigned long		time_start;
+	unsigned long		gencount;
 };
 
 #define NFS_ATTR_WCC		0x0001		/* pre-op WCC data    */
@@ -119,13 +120,14 @@ struct nfs_openargs {
 	const struct nfs_fh *	fh;
 	struct nfs_seqid *	seqid;
 	int			open_flags;
+	fmode_t			fmode;
 	__u64                   clientid;
 	__u64                   id;
 	union {
 		struct iattr *  attrs;    /* UNCHECKED, GUARDED */
 		nfs4_verifier   verifier; /* EXCLUSIVE */
 		nfs4_stateid	delegation;		/* CLAIM_DELEGATE_CUR */
-		int		delegation_type;	/* CLAIM_PREVIOUS */
+		fmode_t		delegation_type;	/* CLAIM_PREVIOUS */
 	} u;
 	const struct qstr *	name;
 	const struct nfs_server *server;	 /* Needed for ID mapping */
@@ -140,8 +142,9 @@ struct nfs_openres {
 	__u32                   rflags;
 	struct nfs_fattr *      f_attr;
 	struct nfs_fattr *      dir_attr;
+	struct nfs_seqid *	seqid;
 	const struct nfs_server *server;
-	int			delegation_type;
+	fmode_t			delegation_type;
 	nfs4_stateid		delegation;
 	__u32			do_recall;
 	__u64			maxsize;
@@ -159,6 +162,7 @@ struct nfs_open_confirmargs {
 
 struct nfs_open_confirmres {
 	nfs4_stateid            stateid;
+	struct nfs_seqid *	seqid;
 };
 
 /*
@@ -168,13 +172,14 @@ struct nfs_closeargs {
 	struct nfs_fh *         fh;
 	nfs4_stateid *		stateid;
 	struct nfs_seqid *	seqid;
-	int			open_flags;
+	fmode_t			fmode;
 	const u32 *		bitmask;
 };
 
 struct nfs_closeres {
 	nfs4_stateid            stateid;
 	struct nfs_fattr *	fattr;
+	struct nfs_seqid *	seqid;
 	const struct nfs_server *server;
 };
 /*
@@ -199,7 +204,9 @@ struct nfs_lock_args {
 };
 
 struct nfs_lock_res {
-	nfs4_stateid			stateid;
+	nfs4_stateid		stateid;
+	struct nfs_seqid *	lock_seqid;
+	struct nfs_seqid *	open_seqid;
 };
 
 struct nfs_locku_args {
@@ -210,7 +217,8 @@ struct nfs_locku_args {
 };
 
 struct nfs_locku_res {
-	nfs4_stateid			stateid;
+	nfs4_stateid		stateid;
+	struct nfs_seqid *	seqid;
 };
 
 struct nfs_lockt_args {
@@ -398,6 +406,8 @@ struct nfs3_setaclargs {
 	int			mask;
 	struct posix_acl *	acl_access;
 	struct posix_acl *	acl_default;
+	size_t			len;
+	unsigned int		npages;
 	struct page **		pages;
 };
 
@@ -666,16 +676,17 @@ struct nfs4_rename_res {
 	struct nfs_fattr *		new_fattr;
 };
 
+#define NFS4_SETCLIENTID_NAMELEN	(127)
 struct nfs4_setclientid {
-	const nfs4_verifier *		sc_verifier;      /* request */
+	const nfs4_verifier *		sc_verifier;
 	unsigned int			sc_name_len;
-	char				sc_name[48];	  /* request */
-	u32				sc_prog;          /* request */
+	char				sc_name[NFS4_SETCLIENTID_NAMELEN + 1];
+	u32				sc_prog;
 	unsigned int			sc_netid_len;
-	char				sc_netid[4];	  /* request */
+	char				sc_netid[RPCBIND_MAXNETIDLEN + 1];
 	unsigned int			sc_uaddr_len;
-	char				sc_uaddr[24];     /* request */
-	u32				sc_cb_ident;      /* request */
+	char				sc_uaddr[RPCBIND_MAXUADDRLEN + 1];
+	u32				sc_cb_ident;
 };
 
 struct nfs4_statfs_arg {
@@ -773,7 +784,7 @@ struct nfs_access_entry;
  * RPC procedure vector for NFSv2/NFSv3 demuxing
  */
 struct nfs_rpc_ops {
-	int	version;		/* Protocol version */
+	u32	version;		/* Protocol version */
 	struct dentry_operations *dentry_ops;
 	const struct inode_operations *dir_inode_ops;
 	const struct inode_operations *file_inode_ops;
@@ -816,15 +827,14 @@ struct nfs_rpc_ops {
 			     struct nfs_pathconf *);
 	int	(*set_capabilities)(struct nfs_server *, struct nfs_fh *);
 	__be32 *(*decode_dirent)(__be32 *, struct nfs_entry *, int plus);
-	void	(*read_setup)   (struct nfs_read_data *);
+	void	(*read_setup)   (struct nfs_read_data *, struct rpc_message *);
 	int	(*read_done)  (struct rpc_task *, struct nfs_read_data *);
-	void	(*write_setup)  (struct nfs_write_data *, int how);
+	void	(*write_setup)  (struct nfs_write_data *, struct rpc_message *);
 	int	(*write_done)  (struct rpc_task *, struct nfs_write_data *);
-	void	(*commit_setup) (struct nfs_write_data *, int how);
+	void	(*commit_setup) (struct nfs_write_data *, struct rpc_message *);
 	int	(*commit_done) (struct rpc_task *, struct nfs_write_data *);
-	int	(*file_open)   (struct inode *, struct file *);
-	int	(*file_release) (struct inode *, struct file *);
 	int	(*lock)(struct file *, int, struct file_lock *);
+	int	(*lock_check_bounds)(const struct file_lock *);
 	void	(*clear_acl_cache)(struct inode *);
 };
 

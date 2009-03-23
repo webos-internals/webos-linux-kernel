@@ -165,7 +165,7 @@ static int cpm2_set_irq_type(unsigned int virq, unsigned int flow_type)
 			edibit = (14 - (src - CPM2_IRQ_EXT1));
 	else
 		if (src >= CPM2_IRQ_PORTC15 && src <= CPM2_IRQ_PORTC0)
-			edibit = (31 - (src - CPM2_IRQ_PORTC15));
+			edibit = (31 - (CPM2_IRQ_PORTC0 - src));
 		else
 			return (flow_type & IRQ_TYPE_LEVEL_LOW) ? 0 : -EINVAL;
 
@@ -266,7 +266,7 @@ void cpm2_pic_init(struct device_node *node)
 	out_be32(&cpm2_intctl->ic_scprrl, 0x05309770);
 
 	/* create a legacy host */
-	cpm2_pic_host = irq_alloc_host(of_node_get(node), IRQ_HOST_MAP_LINEAR,
+	cpm2_pic_host = irq_alloc_host(node, IRQ_HOST_MAP_LINEAR,
 				       64, &cpm2_pic_host_ops, 64);
 	if (cpm2_pic_host == NULL) {
 		printk(KERN_ERR "CPM2 PIC: failed to allocate irq host!\n");

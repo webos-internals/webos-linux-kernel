@@ -277,6 +277,7 @@ u16 inverse_translate(struct vc_data *conp, int glyph, int use_unicode)
 			return p->inverse_translations[m][glyph];
 	}
 }
+EXPORT_SYMBOL_GPL(inverse_translate);
 
 static void update_user_maps(void)
 {
@@ -553,7 +554,7 @@ int con_set_unimap(struct vc_data *vc, ushort ct, struct unipair __user *list)
 		__get_user(fontpos, &list->fontpos);
 		if ((err1 = con_insert_unipair(p, unicode,fontpos)) != 0)
 			err = err1;
-			list++;
+		list++;
 	}
 	
 	if (con_unify_unimap(vc, p))

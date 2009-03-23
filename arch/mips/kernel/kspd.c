@@ -20,6 +20,7 @@
 #include <linux/sched.h>
 #include <linux/unistd.h>
 #include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/fs.h>
 #include <linux/syscalls.h>
 #include <linux/workqueue.h>
@@ -161,8 +162,7 @@ static unsigned int translate_open_flags(int flags)
 	int i;
 	unsigned int ret = 0;
 
-	for (i = 0; i < (sizeof(open_flags_table) / sizeof(struct apsp_table));
-	     i++) {
+	for (i = 0; i < ARRAY_SIZE(open_flags_table); i++) {
 		if( (flags & open_flags_table[i].sp) ) {
 			ret |= open_flags_table[i].ap;
 		}
@@ -174,8 +174,8 @@ static unsigned int translate_open_flags(int flags)
 
 static void sp_setfsuidgid( uid_t uid, gid_t gid)
 {
-	current->fsuid = uid;
-	current->fsgid = gid;
+	current->cred->fsuid = uid;
+	current->cred->fsgid = gid;
 
 	key_fsuid_changed(current);
 	key_fsgid_changed(current);
@@ -222,7 +222,7 @@ void sp_work_handle_request(void)
 		}
 	}
 
-	/* Run the syscall at the priviledge of the user who loaded the
+	/* Run the syscall at the privilege of the user who loaded the
 	   SP program */
 
 	if (vpe_getuid(tclimit))
@@ -257,7 +257,7 @@ void sp_work_handle_request(void)
 
 		vcwd = vpe_getcwd(tclimit);
 
- 		/* change to the cwd of the process that loaded the SP program */
+		/* change to cwd of the process that loaded the SP program */
 		old_fs = get_fs();
 		set_fs(KERNEL_DS);
 		sys_chdir(vcwd);
@@ -323,6 +323,9 @@ static void sp_cleanup(void)
 			set >>= 1;
 		}
 	}
+
+	/* Put daemon cwd back to root to avoid umount problems */
+	sys_chdir("/");
 }
 
 static int channel_open = 0;

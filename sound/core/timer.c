@@ -19,7 +19,6 @@
  *
  */
 
-#include <sound/driver.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -44,11 +43,14 @@
 #endif
 
 static int timer_limit = DEFAULT_TIMER_LIMIT;
+static int timer_tstamp_monotonic = 1;
 MODULE_AUTHOR("Jaroslav Kysela <perex@perex.cz>, Takashi Iwai <tiwai@suse.de>");
 MODULE_DESCRIPTION("ALSA timer interface");
 MODULE_LICENSE("GPL");
 module_param(timer_limit, int, 0444);
 MODULE_PARM_DESC(timer_limit, "Maximum global timers in system.");
+module_param(timer_tstamp_monotonic, int, 0444);
+MODULE_PARM_DESC(timer_tstamp_monotonic, "Use posix monotonic clock source for timestamps (default).");
 
 struct snd_timer_user {
 	struct snd_timer_instance *timeri;
@@ -144,12 +146,10 @@ static struct snd_timer *snd_timer_find(struct snd_timer_id *tid)
 	return NULL;
 }
 
-#ifdef CONFIG_KMOD
+#ifdef CONFIG_MODULES
 
 static void snd_timer_request(struct snd_timer_id *tid)
 {
-	if (! current->fs->root)
-		return;
 	switch (tid->dev_class) {
 	case SNDRV_TIMER_CLASS_GLOBAL:
 		if (tid->device < timer_limit)
@@ -259,8 +259,8 @@ int snd_timer_open(struct snd_timer_instance **ti,
 	/* open a master instance */
 	mutex_lock(&register_mutex);
 	timer = snd_timer_find(tid);
-#ifdef CONFIG_KMOD
-	if (timer == NULL) {
+#ifdef CONFIG_MODULES
+	if (!timer) {
 		mutex_unlock(&register_mutex);
 		snd_timer_request(tid);
 		mutex_lock(&register_mutex);
@@ -306,7 +306,8 @@ int snd_timer_close(struct snd_timer_instance *timeri)
 	struct snd_timer *timer = NULL;
 	struct snd_timer_instance *slave, *tmp;
 
-	snd_assert(timeri != NULL, return -ENXIO);
+	if (snd_BUG_ON(!timeri))
+		return -ENXIO;
 
 	/* force to stop the timer */
 	snd_timer_stop(timeri);
@@ -381,9 +382,13 @@ static void snd_timer_notify1(struct snd_timer_instance *ti, int event)
 	struct snd_timer_instance *ts;
 	struct timespec tstamp;
 
-	getnstimeofday(&tstamp);
-	snd_assert(event >= SNDRV_TIMER_EVENT_START &&
-		   event <= SNDRV_TIMER_EVENT_PAUSE, return);
+	if (timer_tstamp_monotonic)
+		do_posix_clock_monotonic_gettime(&tstamp);
+	else
+		getnstimeofday(&tstamp);
+	if (snd_BUG_ON(event < SNDRV_TIMER_EVENT_START ||
+		       event > SNDRV_TIMER_EVENT_PAUSE))
+		return;
 	if (event == SNDRV_TIMER_EVENT_START ||
 	    event == SNDRV_TIMER_EVENT_CONTINUE)
 		resolution = snd_timer_resolution(ti);
@@ -471,7 +476,8 @@ static int _snd_timer_stop(struct snd_timer_instance * timeri,
 	struct snd_timer *timer;
 	unsigned long flags;
 
-	snd_assert(timeri != NULL, return -ENXIO);
+	if (snd_BUG_ON(!timeri))
+		return -ENXIO;
 
 	if (timeri->flags & SNDRV_TIMER_IFLG_SLAVE) {
 		if (!keep_flag) {
@@ -737,7 +743,7 @@ void snd_timer_interrupt(struct snd_timer * timer, unsigned long ticks_left)
 	spin_unlock_irqrestore(&timer->lock, flags);
 
 	if (use_tasklet)
-		tasklet_hi_schedule(&timer->task_queue);
+		tasklet_schedule(&timer->task_queue);
 }
 
 /*
@@ -755,9 +761,10 @@ int snd_timer_new(struct snd_card *card, char *id, struct snd_timer_id *tid,
 		.dev_disconnect = snd_timer_dev_disconnect,
 	};
 
-	snd_assert(tid != NULL, return -EINVAL);
-	snd_assert(rtimer != NULL, return -EINVAL);
-	*rtimer = NULL;
+	if (snd_BUG_ON(!tid))
+		return -EINVAL;
+	if (rtimer)
+		*rtimer = NULL;
 	timer = kzalloc(sizeof(*timer), GFP_KERNEL);
 	if (timer == NULL) {
 		snd_printk(KERN_ERR "timer: cannot allocate\n");
@@ -785,13 +792,15 @@ int snd_timer_new(struct snd_card *card, char *id, struct snd_timer_id *tid,
 			return err;
 		}
 	}
-	*rtimer = timer;
+	if (rtimer)
+		*rtimer = timer;
 	return 0;
 }
 
 static int snd_timer_free(struct snd_timer *timer)
 {
-	snd_assert(timer != NULL, return -ENXIO);
+	if (!timer)
+		return 0;
 
 	mutex_lock(&register_mutex);
 	if (! list_empty(&timer->open_list_head)) {
@@ -824,8 +833,8 @@ static int snd_timer_dev_register(struct snd_device *dev)
 	struct snd_timer *timer = dev->device_data;
 	struct snd_timer *timer1;
 
-	snd_assert(timer != NULL && timer->hw.start != NULL &&
-		   timer->hw.stop != NULL, return -ENXIO);
+	if (snd_BUG_ON(!timer || !timer->hw.start || !timer->hw.stop))
+		return -ENXIO;
 	if (!(timer->hw.flags & SNDRV_TIMER_HW_SLAVE) &&
 	    !timer->hw.resolution && timer->hw.c_resolution == NULL)
 	    	return -EINVAL;
@@ -876,8 +885,9 @@ void snd_timer_notify(struct snd_timer *timer, int event, struct timespec *tstam
 
 	if (! (timer->hw.flags & SNDRV_TIMER_HW_SLAVE))
 		return;
-	snd_assert(event >= SNDRV_TIMER_EVENT_MSTART &&
-		   event <= SNDRV_TIMER_EVENT_MRESUME, return);
+	if (snd_BUG_ON(event < SNDRV_TIMER_EVENT_MSTART ||
+		       event > SNDRV_TIMER_EVENT_MRESUME))
+		return;
 	spin_lock_irqsave(&timer->lock, flags);
 	if (event == SNDRV_TIMER_EVENT_MSTART ||
 	    event == SNDRV_TIMER_EVENT_MCONTINUE ||
@@ -1182,8 +1192,12 @@ static void snd_timer_user_tinterrupt(struct snd_timer_instance *timeri,
 		spin_unlock(&tu->qlock);
 		return;
 	}
-	if (tu->last_resolution != resolution || ticks > 0)
-		getnstimeofday(&tstamp);
+	if (tu->last_resolution != resolution || ticks > 0) {
+		if (timer_tstamp_monotonic)
+			do_posix_clock_monotonic_gettime(&tstamp);
+		else
+			getnstimeofday(&tstamp);
+	}
 	if ((tu->filter & (1 << SNDRV_TIMER_EVENT_RESOLUTION)) &&
 	    tu->last_resolution != resolution) {
 		r1.event = SNDRV_TIMER_EVENT_RESOLUTION;
@@ -1249,7 +1263,6 @@ static int snd_timer_user_release(struct inode *inode, struct file *file)
 	if (file->private_data) {
 		tu = file->private_data;
 		file->private_data = NULL;
-		fasync_helper(-1, file, 0, &tu->fasync);
 		if (tu->timeri)
 			snd_timer_close(tu->timeri);
 		kfree(tu->queue);

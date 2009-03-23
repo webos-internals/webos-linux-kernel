@@ -19,6 +19,7 @@
 #include <media/ir-common.h>
 #include <media/ir-kbd-i2c.h>
 #include <media/i2c-addr.h>
+#include <media/tuner.h>
 
 /* ---------------------------------------------------------- */
 /* exported by bttv-cards.c                                   */
@@ -129,8 +130,8 @@
 #define BTTV_BOARD_XGUARD                  0x67
 #define BTTV_BOARD_NEBULA_DIGITV           0x68
 #define BTTV_BOARD_PV143                   0x69
-#define BTTV_BOARD_VD009X1_MINIDIN         0x6a
-#define BTTV_BOARD_VD009X1_COMBI           0x6b
+#define BTTV_BOARD_VD009X1_VD011_MINIDIN   0x6a
+#define BTTV_BOARD_VD009X1_VD011_COMBI     0x6b
 #define BTTV_BOARD_VD009_MINIDIN           0x6c
 #define BTTV_BOARD_VD009_COMBI             0x6d
 #define BTTV_BOARD_IVC100                  0x6e
@@ -173,6 +174,12 @@
 #define BTTV_BOARD_VOODOOTV_200		   0x93
 #define BTTV_BOARD_DVICO_FUSIONHDTV_2	   0x94
 #define BTTV_BOARD_TYPHOON_TVTUNERPCI	   0x95
+#define BTTV_BOARD_GEOVISION_GV600	   0x96
+#define BTTV_BOARD_KOZUMI_KTV_01C          0x97
+#define BTTV_BOARD_ENLTV_FM_2		   0x98
+#define BTTV_BOARD_VD012		   0x99
+#define BTTV_BOARD_VD012_X1		   0x9a
+#define BTTV_BOARD_VD012_X2		   0x9b
 
 
 /* more card-specific defines */
@@ -241,7 +248,10 @@ struct tvcard
 	unsigned int radio_addr;
 
 	unsigned int has_radio;
-	void (*audio_hook)(struct bttv *btv, struct video_audio *v, int set);
+
+	void (*volume_gpio)(struct bttv *btv, __u16 volume);
+	void (*audio_mode_gpio)(struct bttv *btv, struct v4l2_tuner *tuner, int set);
+
 	void (*muxsel_hook)(struct bttv *btv, unsigned int input);
 };
 
@@ -293,7 +303,6 @@ extern int bttv_write_gpio(unsigned int card,
 /* ---------------------------------------------------------- */
 /* sysfs/driver-moded based gpio access interface             */
 
-
 struct bttv_sub_device {
 	struct device    dev;
 	struct bttv_core *core;
@@ -303,7 +312,7 @@ struct bttv_sub_device {
 
 struct bttv_sub_driver {
 	struct device_driver   drv;
-	char                   wanted[BUS_ID_SIZE];
+	char                   wanted[20];
 	int                    (*probe)(struct bttv_sub_device *sub);
 	void                   (*remove)(struct bttv_sub_device *sub);
 };

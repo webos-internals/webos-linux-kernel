@@ -27,9 +27,9 @@
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/init.h>
+#include <linux/io.h>
 
-#include <asm/hardware.h>
-#include <asm/io.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/system.h>
 #include <asm/mach/pci.h>
@@ -405,7 +405,6 @@ v3_pci_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 		addr, fsr, pc, instr, __raw_readl(SC_LBFADDR), __raw_readl(SC_LBFCODE) & 255,
 		v3_readb(V3_LB_ISTAT));
 	printk(KERN_DEBUG "%s", buf);
-	printascii(buf);
 #endif
 
 	v3_writeb(V3_LB_ISTAT, 0);
@@ -440,16 +439,19 @@ v3_pci_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	return 1;
 }
 
-static irqreturn_t v3_irq(int irq, void *devid)
+static irqreturn_t v3_irq(int dummy, void *devid)
 {
 #ifdef CONFIG_DEBUG_LL
 	struct pt_regs *regs = get_irq_regs();
 	unsigned long pc = instruction_pointer(regs);
 	unsigned long instr = *(unsigned long *)pc;
 	char buf[128];
+	extern void printascii(const char *);
 
-	sprintf(buf, "V3 int %d: pc=0x%08lx [%08lx] LBFADDR=%08x LBFCODE=%02x ISTAT=%02x\n", irq,
-		pc, instr, __raw_readl(SC_LBFADDR), __raw_readl(SC_LBFCODE) & 255,
+	sprintf(buf, "V3 int %d: pc=0x%08lx [%08lx] LBFADDR=%08x LBFCODE=%02x "
+		"ISTAT=%02x\n", IRQ_AP_V3INT, pc, instr,
+		__raw_readl(SC_LBFADDR),
+		__raw_readl(SC_LBFCODE) & 255,
 		v3_readb(V3_LB_ISTAT));
 	printascii(buf);
 #endif

@@ -20,7 +20,6 @@
  *
  */
 
-#include <sound/driver.h>
 #include <asm/io.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
@@ -1649,9 +1648,10 @@ snd_wavefront_synth_ioctl (struct snd_hwdep *hw, struct file *file,
 
 	card = (struct snd_card *) hw->card;
 
-	snd_assert(card != NULL, return -ENODEV);
-
-	snd_assert(card->private_data != NULL, return -ENODEV);
+	if (snd_BUG_ON(!card))
+		return -ENODEV;
+	if (snd_BUG_ON(!card->private_data))
+		return -ENODEV;
 
 	acard = card->private_data;
 	dev = &acard->wavefront;
@@ -1940,7 +1940,7 @@ static int __devinit
 wavefront_download_firmware (snd_wavefront_t *dev, char *path)
 
 {
-	unsigned char *buf;
+	const unsigned char *buf;
 	int len, err;
 	int section_cnt_downloaded = 0;
 	const struct firmware *firmware;

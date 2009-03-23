@@ -1,6 +1,6 @@
 /* ----------------------------------------------------------------------- *
- *   
- *   Copyright 2000 H. Peter Anvin - All Rights Reserved
+ *
+ *   Copyright 2000-2008 H. Peter Anvin - All Rights Reserved
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -45,9 +45,10 @@ static struct class *msr_class;
 
 static loff_t msr_seek(struct file *file, loff_t offset, int orig)
 {
-	loff_t ret = -EINVAL;
+	loff_t ret;
+	struct inode *inode = file->f_mapping->host;
 
-	lock_kernel();
+	mutex_lock(&inode->i_mutex);
 	switch (orig) {
 	case 0:
 		file->f_pos = offset;
@@ -56,33 +57,43 @@ static loff_t msr_seek(struct file *file, loff_t offset, int orig)
 	case 1:
 		file->f_pos += offset;
 		ret = file->f_pos;
+		break;
+	default:
+		ret = -EINVAL;
 	}
-	unlock_kernel();
+	mutex_unlock(&inode->i_mutex);
 	return ret;
 }
 
-static ssize_t msr_read(struct file *file, char __user * buf,
-			size_t count, loff_t * ppos)
+static ssize_t msr_read(struct file *file, char __user *buf,
+			size_t count, loff_t *ppos)
 {
 	u32 __user *tmp = (u32 __user *) buf;
 	u32 data[2];
 	u32 reg = *ppos;
 	int cpu = iminor(file->f_path.dentry->d_inode);
-	int err;
+	int err = 0;
+	ssize_t bytes = 0;
 
 	if (count % 8)
 		return -EINVAL;	/* Invalid chunk size */
 
 	for (; count; count -= 8) {
 		err = rdmsr_safe_on_cpu(cpu, reg, &data[0], &data[1]);
-		if (err)
-			return -EIO;
-		if (copy_to_user(tmp, &data, 8))
-			return -EFAULT;
+		if (err) {
+			if (err == -EFAULT) /* Fix idiotic error code */
+				err = -EIO;
+			break;
+		}
+		if (copy_to_user(tmp, &data, 8)) {
+			err = -EFAULT;
+			break;
+		}
 		tmp += 2;
+		bytes += 8;
 	}
 
-	return ((char __user *)tmp) - buf;
+	return bytes ? bytes : err;
 }
 
 static ssize_t msr_write(struct file *file, const char __user *buf,
@@ -92,34 +103,49 @@ static ssize_t msr_write(struct file *file, const char __user *buf,
 	u32 data[2];
 	u32 reg = *ppos;
 	int cpu = iminor(file->f_path.dentry->d_inode);
-	int err;
+	int err = 0;
+	ssize_t bytes = 0;
 
 	if (count % 8)
 		return -EINVAL;	/* Invalid chunk size */
 
 	for (; count; count -= 8) {
-		if (copy_from_user(&data, tmp, 8))
-			return -EFAULT;
+		if (copy_from_user(&data, tmp, 8)) {
+			err = -EFAULT;
+			break;
+		}
 		err = wrmsr_safe_on_cpu(cpu, reg, data[0], data[1]);
-		if (err)
-			return -EIO;
+		if (err) {
+			if (err == -EFAULT) /* Fix idiotic error code */
+				err = -EIO;
+			break;
+		}
 		tmp += 2;
+		bytes += 8;
 	}
 
-	return ((char __user *)tmp) - buf;
+	return bytes ? bytes : err;
 }
 
 static int msr_open(struct inode *inode, struct file *file)
 {
 	unsigned int cpu = iminor(file->f_path.dentry->d_inode);
 	struct cpuinfo_x86 *c = &cpu_data(cpu);
+	int ret = 0;
 
-	if (cpu >= NR_CPUS || !cpu_online(cpu))
-		return -ENXIO;	/* No such CPU */
+	lock_kernel();
+	cpu = iminor(file->f_path.dentry->d_inode);
+
+	if (cpu >= nr_cpu_ids || !cpu_online(cpu)) {
+		ret = -ENXIO;	/* No such CPU */
+		goto out;
+	}
+	c = &cpu_data(cpu);
 	if (!cpu_has(c, X86_FEATURE_MSR))
-		return -EIO;	/* MSR not supported */
-
-	return 0;
+		ret = -EIO;	/* MSR not supported */
+out:
+	unlock_kernel();
+	return ret;
 }
 
 /*
@@ -137,7 +163,7 @@ static int __cpuinit msr_device_create(int cpu)
 {
 	struct device *dev;
 
-	dev = device_create(msr_class, NULL, MKDEV(MSR_MAJOR, cpu),
+	dev = device_create(msr_class, NULL, MKDEV(MSR_MAJOR, cpu), NULL,
 			    "msr%d", cpu);
 	return IS_ERR(dev) ? PTR_ERR(dev) : 0;
 }
@@ -155,20 +181,18 @@ static int __cpuinit msr_class_cpu_callback(struct notifier_block *nfb,
 
 	switch (action) {
 	case CPU_UP_PREPARE:
-	case CPU_UP_PREPARE_FROZEN:
 		err = msr_device_create(cpu);
 		break;
 	case CPU_UP_CANCELED:
 	case CPU_UP_CANCELED_FROZEN:
 	case CPU_DEAD:
-	case CPU_DEAD_FROZEN:
 		msr_device_destroy(cpu);
 		break;
 	}
 	return err ? NOTIFY_BAD : NOTIFY_OK;
 }
 
-static struct notifier_block __cpuinitdata msr_class_cpu_notifier = {
+static struct notifier_block __refdata msr_class_cpu_notifier = {
 	.notifier_call = msr_class_cpu_callback,
 };
 

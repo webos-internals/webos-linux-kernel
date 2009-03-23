@@ -15,6 +15,8 @@
 #include <linux/device.h>
 #include <linux/poll.h>
 #include <linux/mutex.h>
+#include <linux/smp_lock.h>
+#include <linux/err.h>
 
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
@@ -307,7 +309,8 @@ static void dasd_eer_write_standard_trigger(struct dasd_device *device,
 	do_gettimeofday(&tv);
 	header.tv_sec = tv.tv_sec;
 	header.tv_usec = tv.tv_usec;
-	strncpy(header.busid, device->cdev->dev.bus_id, DASD_EER_BUSID_SIZE);
+	strncpy(header.busid, dev_name(&device->cdev->dev),
+		DASD_EER_BUSID_SIZE);
 
 	spin_lock_irqsave(&bufferlock, flags);
 	list_for_each_entry(eerb, &bufferlist, list) {
@@ -336,7 +339,7 @@ static void dasd_eer_write_snss_trigger(struct dasd_device *device,
 	unsigned long flags;
 	struct eerbuffer *eerb;
 
-	snss_rc = (cqr->status == DASD_CQR_FAILED) ? -EIO : 0;
+	snss_rc = (cqr->status == DASD_CQR_DONE) ? 0 : -EIO;
 	if (snss_rc)
 		data_size = 0;
 	else
@@ -347,7 +350,8 @@ static void dasd_eer_write_snss_trigger(struct dasd_device *device,
 	do_gettimeofday(&tv);
 	header.tv_sec = tv.tv_sec;
 	header.tv_usec = tv.tv_usec;
-	strncpy(header.busid, device->cdev->dev.bus_id, DASD_EER_BUSID_SIZE);
+	strncpy(header.busid, dev_name(&device->cdev->dev),
+		DASD_EER_BUSID_SIZE);
 
 	spin_lock_irqsave(&bufferlock, flags);
 	list_for_each_entry(eerb, &bufferlist, list) {
@@ -404,10 +408,11 @@ void dasd_eer_snss(struct dasd_device *device)
 		set_bit(DASD_FLAG_EER_SNSS, &device->flags);
 		return;
 	}
+	/* cdev is already locked, can't use dasd_add_request_head */
 	clear_bit(DASD_FLAG_EER_SNSS, &device->flags);
 	cqr->status = DASD_CQR_QUEUED;
-	list_add(&cqr->list, &device->ccw_queue);
-	dasd_schedule_bh(device);
+	list_add(&cqr->devlist, &device->ccw_queue);
+	dasd_schedule_device_bh(device);
 }
 
 /*
@@ -415,7 +420,7 @@ void dasd_eer_snss(struct dasd_device *device)
  */
 static void dasd_eer_snss_cb(struct dasd_ccw_req *cqr, void *data)
 {
-        struct dasd_device *device = cqr->device;
+	struct dasd_device *device = cqr->startdev;
 	unsigned long flags;
 
 	dasd_eer_write(device, cqr, DASD_EER_STATECHANGE);
@@ -455,10 +460,10 @@ int dasd_eer_enable(struct dasd_device *device)
 
 	cqr = dasd_kmalloc_request("ECKD", 1 /* SNSS */,
 				   SNSS_DATA_SIZE, device);
-	if (!cqr)
+	if (IS_ERR(cqr))
 		return -ENOMEM;
 
-	cqr->device = device;
+	cqr->startdev = device;
 	cqr->retries = 255;
 	cqr->expires = 10 * HZ;
 	clear_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags);
@@ -524,13 +529,15 @@ static int dasd_eer_open(struct inode *inp, struct file *filp)
 	eerb = kzalloc(sizeof(struct eerbuffer), GFP_KERNEL);
 	if (!eerb)
 		return -ENOMEM;
+	lock_kernel();
 	eerb->buffer_page_count = eer_pages;
 	if (eerb->buffer_page_count < 1 ||
 	    eerb->buffer_page_count > INT_MAX / PAGE_SIZE) {
 		kfree(eerb);
 		MESSAGE(KERN_WARNING, "can't open device since module "
-			"parameter eer_pages is smaller then 1 or"
-			" bigger then %d", (int)(INT_MAX / PAGE_SIZE));
+			"parameter eer_pages is smaller than 1 or"
+			" bigger than %d", (int)(INT_MAX / PAGE_SIZE));
+		unlock_kernel();
 		return -EINVAL;
 	}
 	eerb->buffersize = eerb->buffer_page_count * PAGE_SIZE;
@@ -538,12 +545,14 @@ static int dasd_eer_open(struct inode *inp, struct file *filp)
 			       GFP_KERNEL);
         if (!eerb->buffer) {
 		kfree(eerb);
+		unlock_kernel();
                 return -ENOMEM;
 	}
 	if (dasd_eer_allocate_buffer_pages(eerb->buffer,
 					   eerb->buffer_page_count)) {
 		kfree(eerb->buffer);
 		kfree(eerb);
+		unlock_kernel();
 		return -ENOMEM;
 	}
 	filp->private_data = eerb;
@@ -551,6 +560,7 @@ static int dasd_eer_open(struct inode *inp, struct file *filp)
 	list_add(&eerb->list, &bufferlist);
 	spin_unlock_irqrestore(&bufferlock, flags);
 
+	unlock_kernel();
 	return nonseekable_open(inp,filp);
 }
 

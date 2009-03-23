@@ -33,10 +33,10 @@
 #include <linux/smp_lock.h>
 #include <linux/nodemask.h>
 #include <linux/smp.h>
+#include <linux/mutex.h>
 
 #include <asm/processor.h>
 #include <asm/topology.h>
-#include <asm/semaphore.h>
 #include <asm/uaccess.h>
 #include <asm/sal.h>
 #include <asm/sn/io.h>
@@ -50,7 +50,7 @@ static void *sn_hwperf_salheap = NULL;
 static int sn_hwperf_obj_cnt = 0;
 static nasid_t sn_hwperf_master_nasid = INVALID_NASID;
 static int sn_hwperf_init(void);
-static DECLARE_MUTEX(sn_hwperf_init_mutex);
+static DEFINE_MUTEX(sn_hwperf_init_mutex);
 
 #define cnode_possible(n)	((n) < num_cnodes)
 
@@ -385,7 +385,6 @@ static int sn_topology_show(struct seq_file *s, void *d)
 	int j;
 	const char *slabname;
 	int ordinal;
-	cpumask_t cpumask;
 	char slice;
 	struct cpuinfo_ia64 *c;
 	struct sn_hwperf_port_info *ptdata;
@@ -473,23 +472,21 @@ static int sn_topology_show(struct seq_file *s, void *d)
 		 * CPUs on this node, if any
 		 */
 		if (!SN_HWPERF_IS_IONODE(obj)) {
-			cpumask = node_to_cpumask(ordinal);
-			for_each_online_cpu(i) {
-				if (cpu_isset(i, cpumask)) {
-					slice = 'a' + cpuid_to_slice(i);
-					c = cpu_data(i);
-					seq_printf(s, "cpu %d %s%c local"
-						" freq %luMHz, arch ia64",
-						i, obj->location, slice,
-						c->proc_freq / 1000000);
-					for_each_online_cpu(j) {
-						seq_printf(s, j ? ":%d" : ", dist %d",
-							node_distance(
+			for_each_cpu_and(i, cpu_online_mask,
+					 cpumask_of_node(ordinal)) {
+				slice = 'a' + cpuid_to_slice(i);
+				c = cpu_data(i);
+				seq_printf(s, "cpu %d %s%c local"
+					   " freq %luMHz, arch ia64",
+					   i, obj->location, slice,
+					   c->proc_freq / 1000000);
+				for_each_online_cpu(j) {
+					seq_printf(s, j ? ":%d" : ", dist %d",
+						   node_distance(
 						    	cpu_to_node(i),
 						    	cpu_to_node(j)));
-					}
-					seq_putc(s, '\n');
 				}
+				seq_putc(s, '\n');
 			}
 		}
 	}
@@ -577,7 +574,7 @@ static void sn_topology_stop(struct seq_file *m, void *v)
 /*
  * /proc/sgi_sn/sn_topology, read-only using seq_file
  */
-static struct seq_operations sn_topology_seq_ops = {
+static const struct seq_operations sn_topology_seq_ops = {
 	.start = sn_topology_start,
 	.next = sn_topology_next,
 	.stop = sn_topology_stop,
@@ -629,7 +626,7 @@ static int sn_hwperf_op_cpu(struct sn_hwperf_op_info *op_info)
 		if (use_ipi) {
 			/* use an interprocessor interrupt to call SAL */
 			smp_call_function_single(cpu, sn_hwperf_call_sal,
-				op_info, 1, 1);
+				op_info, 1);
 		}
 		else {
 			/* migrate the task before calling SAL */ 
@@ -884,10 +881,10 @@ static int sn_hwperf_init(void)
 	int e = 0;
 
 	/* single threaded, once-only initialization */
-	down(&sn_hwperf_init_mutex);
+	mutex_lock(&sn_hwperf_init_mutex);
 
 	if (sn_hwperf_salheap) {
-		up(&sn_hwperf_init_mutex);
+		mutex_unlock(&sn_hwperf_init_mutex);
 		return e;
 	}
 
@@ -936,7 +933,7 @@ out:
 		sn_hwperf_salheap = NULL;
 		sn_hwperf_obj_cnt = 0;
 	}
-	up(&sn_hwperf_init_mutex);
+	mutex_unlock(&sn_hwperf_init_mutex);
 	return e;
 }
 

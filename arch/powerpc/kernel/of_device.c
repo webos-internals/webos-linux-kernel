@@ -5,16 +5,15 @@
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/slab.h>
+#include <linux/of_device.h>
 
 #include <asm/errno.h>
 #include <asm/dcr.h>
-#include <asm/of_device.h>
 
 static void of_device_make_bus_id(struct of_device *dev)
 {
 	static atomic_t bus_no_reg_magic;
 	struct device_node *node = dev->node;
-	char *name = dev->dev.bus_id;
 	const u32 *reg;
 	u64 addr;
 	int magic;
@@ -27,14 +26,12 @@ static void of_device_make_bus_id(struct of_device *dev)
 	reg = of_get_property(node, "dcr-reg", NULL);
 	if (reg) {
 #ifdef CONFIG_PPC_DCR_NATIVE
-		snprintf(name, BUS_ID_SIZE, "d%x.%s",
-			 *reg, node->name);
+		dev_set_name(&dev->dev, "d%x.%s", *reg, node->name);
 #else /* CONFIG_PPC_DCR_NATIVE */
 		addr = of_translate_dcr_address(node, *reg, NULL);
 		if (addr != OF_BAD_ADDR) {
-			snprintf(name, BUS_ID_SIZE,
-				 "D%llx.%s", (unsigned long long)addr,
-				 node->name);
+			dev_set_name(&dev->dev, "D%llx.%s",
+				     (unsigned long long)addr, node->name);
 			return;
 		}
 #endif /* !CONFIG_PPC_DCR_NATIVE */
@@ -48,9 +45,8 @@ static void of_device_make_bus_id(struct of_device *dev)
 	if (reg) {
 		addr = of_translate_address(node, reg);
 		if (addr != OF_BAD_ADDR) {
-			snprintf(name, BUS_ID_SIZE,
-				 "%llx.%s", (unsigned long long)addr,
-				 node->name);
+			dev_set_name(&dev->dev, "%llx.%s",
+				     (unsigned long long)addr, node->name);
 			return;
 		}
 	}
@@ -60,7 +56,7 @@ static void of_device_make_bus_id(struct of_device *dev)
 	 * counter (and pray...)
 	 */
 	magic = atomic_add_return(1, &bus_no_reg_magic);
-	snprintf(name, BUS_ID_SIZE, "%s.%d", node->name, magic - 1);
+	dev_set_name(&dev->dev, "%s.%d", node->name, magic - 1);
 }
 
 struct of_device *of_device_alloc(struct device_node *np,
@@ -78,64 +74,15 @@ struct of_device *of_device_alloc(struct device_node *np,
 	dev->dev.parent = parent;
 	dev->dev.release = of_release_dev;
 	dev->dev.archdata.of_node = np;
-	dev->dev.archdata.numa_node = of_node_to_nid(np);
 
 	if (bus_id)
-		strlcpy(dev->dev.bus_id, bus_id, BUS_ID_SIZE);
+		dev_set_name(&dev->dev, bus_id);
 	else
 		of_device_make_bus_id(dev);
 
 	return dev;
 }
 EXPORT_SYMBOL(of_device_alloc);
-
-ssize_t of_device_get_modalias(struct of_device *ofdev,
-				char *str, ssize_t len)
-{
-	const char *compat;
-	int cplen, i;
-	ssize_t tsize, csize, repend;
-
-	/* Name & Type */
-	csize = snprintf(str, len, "of:N%sT%s",
-				ofdev->node->name, ofdev->node->type);
-
-	/* Get compatible property if any */
-	compat = of_get_property(ofdev->node, "compatible", &cplen);
-	if (!compat)
-		return csize;
-
-	/* Find true end (we tolerate multiple \0 at the end */
-	for (i=(cplen-1); i>=0 && !compat[i]; i--)
-		cplen--;
-	if (!cplen)
-		return csize;
-	cplen++;
-
-	/* Check space (need cplen+1 chars including final \0) */
-	tsize = csize + cplen;
-	repend = tsize;
-
-	if (csize>=len)		/* @ the limit, all is already filled */
-		return tsize;
-
-	if (tsize>=len) {		/* limit compat list */
-		cplen = len-csize-1;
-		repend = len;
-	}
-
-	/* Copy and do char replacement */
-	memcpy(&str[csize+1], compat, cplen);
-	for (i=csize; i<repend; i++) {
-		char c = str[i];
-		if (c=='\0')
-			str[i] = 'C';
-		else if (c==' ')
-			str[i] = '_';
-	}
-
-	return tsize;
-}
 
 int of_device_uevent(struct device *dev, struct kobj_uevent_env *env)
 {

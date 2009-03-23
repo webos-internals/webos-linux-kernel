@@ -39,11 +39,6 @@
 
 #include "hidp.h"
 
-#ifndef CONFIG_BT_HIDP_DEBUG
-#undef  BT_DBG
-#define BT_DBG(D...)
-#endif
-
 static int hidp_sock_release(struct socket *sock)
 {
 	struct sock *sk = sock->sk;
@@ -86,13 +81,13 @@ static int hidp_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long 
 
 		isock = sockfd_lookup(ca.intr_sock, &err);
 		if (!isock) {
-			fput(csock->file);
+			sockfd_put(csock);
 			return err;
 		}
 
 		if (csock->sk->sk_state != BT_CONNECTED || isock->sk->sk_state != BT_CONNECTED) {
-			fput(csock->file);
-			fput(isock->file);
+			sockfd_put(csock);
+			sockfd_put(isock);
 			return -EBADFD;
 		}
 
@@ -101,8 +96,8 @@ static int hidp_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long 
 			if (copy_to_user(argp, &ca, sizeof(ca)))
 				err = -EFAULT;
 		} else {
-			fput(csock->file);
-			fput(isock->file);
+			sockfd_put(csock);
+			sockfd_put(isock);
 		}
 
 		return err;

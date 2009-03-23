@@ -18,14 +18,14 @@
  */
 #include <linux/pci.h>
 
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach/pci.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <asm/arch/pci.h>
+#include <mach/pci.h>
 #include <asm/mach/time.h>
-#include <asm/arch/time.h>
+#include <mach/time.h>
 
 extern int init_atu; /* Flag to select which ATU(s) to initialize / disable */
 
@@ -81,7 +81,7 @@ static void __init iq81340mc_init(void)
 static void __init iq81340mc_timer_init(void)
 {
 	unsigned long bus_freq = iop13xx_core_freq() / iop13xx_xsi_bus_ratio();
-	printk(KERN_DEBUG "%s: bus frequency: %lu\n", __FUNCTION__, bus_freq);
+	printk(KERN_DEBUG "%s: bus frequency: %lu\n", __func__, bus_freq);
 	iop_init_time(bus_freq);
 }
 

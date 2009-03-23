@@ -25,6 +25,13 @@ SECTIONS
 	} :kernel
 	_etext = .;	/* End of text section */
 
+	NOTES :kernel :note
+	.dummy : {
+		*(.dummy)
+	} :kernel
+
+	RODATA
+
 	/* Exception table */
 	. = ALIGN(16);
 	__ex_table : {
@@ -33,24 +40,17 @@ SECTIONS
 		__stop___ex_table = .;
 	}
 
-	NOTES :kernel :note
-	.dummy : {
-		*(.dummy)
-	} :kernel
-
-	RODATA
-
 	/* Will be freed after init */
 	. = ALIGN(PAGE_SIZE);
 	/* Init code and data */
 	__init_begin = .;
 	.init.text : {
 		_sinittext = .;
-		*(.init.text)
+		INIT_TEXT
 		_einittext = .;
 	}
 	.init.data : {
-		*(.init.data)
+		INIT_DATA
 	}
 
 	. = ALIGN(16);
@@ -136,8 +136,8 @@ SECTIONS
 
 	/* Sections to be discarded */
 	/DISCARD/ : {
-		*(.exit.text)
-		*(.exit.data)
+		EXIT_TEXT
+		EXIT_DATA
 		*(.exitcall.exit)
 	}
 

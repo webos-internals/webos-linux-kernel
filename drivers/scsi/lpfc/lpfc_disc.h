@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2004-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2004-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -36,8 +36,8 @@ enum lpfc_work_type {
 	LPFC_EVT_WARM_START,
 	LPFC_EVT_KILL,
 	LPFC_EVT_ELS_RETRY,
-	LPFC_EVT_DEV_LOSS_DELAY,
 	LPFC_EVT_DEV_LOSS,
+	LPFC_EVT_FASTPATH_MGMT_EVT,
 };
 
 /* structure used to queue event to the discovery tasklet */
@@ -48,6 +48,24 @@ struct lpfc_work_evt {
 	enum lpfc_work_type   evt;
 };
 
+struct lpfc_scsi_check_condition_event;
+struct lpfc_scsi_varqueuedepth_event;
+struct lpfc_scsi_event_header;
+struct lpfc_fabric_event_header;
+struct lpfc_fcprdchkerr_event;
+
+/* structure used for sending events from fast path */
+struct lpfc_fast_path_event {
+	struct lpfc_work_evt work_evt;
+	struct lpfc_vport     *vport;
+	union {
+		struct lpfc_scsi_check_condition_event check_cond_evt;
+		struct lpfc_scsi_varqueuedepth_event queue_depth_evt;
+		struct lpfc_scsi_event_header scsi_evt;
+		struct lpfc_fabric_event_header fabric_evt;
+		struct lpfc_fcprdchkerr_event read_check_error;
+	} un;
+};
 
 struct lpfc_nodelist {
 	struct list_head nlp_listp;
@@ -74,6 +92,12 @@ struct lpfc_nodelist {
 	uint8_t         nlp_fcp_info;	        /* class info, bits 0-3 */
 #define NLP_FCP_2_DEVICE   0x10			/* FCP-2 device */
 
+	uint16_t        nlp_usg_map;	/* ndlp management usage bitmap */
+#define NLP_USG_NODE_ACT_BIT	0x1	/* Indicate ndlp is actively used */
+#define NLP_USG_IACT_REQ_BIT	0x2	/* Request to inactivate ndlp */
+#define NLP_USG_FREE_REQ_BIT	0x4	/* Request to invoke ndlp memory free */
+#define NLP_USG_FREE_ACK_BIT	0x8	/* Indicate ndlp memory free invoked */
+
 	struct timer_list   nlp_delayfunc;	/* Used for delayed ELS cmds */
 	struct fc_rport *rport;			/* Corresponding FC transport
 						   port structure */
@@ -83,27 +107,58 @@ struct lpfc_nodelist {
 	unsigned long last_ramp_up_time;        /* jiffy of last ramp up */
 	unsigned long last_q_full_time;		/* jiffy of last queue full */
 	struct kref     kref;
+	atomic_t cmd_pending;
+	uint32_t cmd_qdepth;
+	unsigned long last_change_time;
+	struct lpfc_scsicmd_bkt *lat_data;	/* Latency data */
 };
 
 /* Defines for nlp_flag (uint32) */
-#define NLP_PLOGI_SND      0x20		/* sent PLOGI request for this entry */
-#define NLP_PRLI_SND       0x40		/* sent PRLI request for this entry */
-#define NLP_ADISC_SND      0x80		/* sent ADISC request for this entry */
-#define NLP_LOGO_SND       0x100	/* sent LOGO request for this entry */
-#define NLP_RNID_SND       0x400	/* sent RNID request for this entry */
-#define NLP_ELS_SND_MASK   0x7e0	/* sent ELS request for this entry */
-#define NLP_DELAY_TMO      0x20000	/* delay timeout is running for node */
-#define NLP_NPR_2B_DISC    0x40000	/* node is included in num_disc_nodes */
-#define NLP_RCV_PLOGI      0x80000	/* Rcv'ed PLOGI from remote system */
-#define NLP_LOGO_ACC       0x100000	/* Process LOGO after ACC completes */
-#define NLP_TGT_NO_SCSIID  0x200000	/* good PRLI but no binding for scsid */
-#define NLP_ACC_REGLOGIN   0x1000000	/* Issue Reg Login after successful
+#define NLP_PLOGI_SND      0x00000020	/* sent PLOGI request for this entry */
+#define NLP_PRLI_SND       0x00000040	/* sent PRLI request for this entry */
+#define NLP_ADISC_SND      0x00000080	/* sent ADISC request for this entry */
+#define NLP_LOGO_SND       0x00000100	/* sent LOGO request for this entry */
+#define NLP_RNID_SND       0x00000400	/* sent RNID request for this entry */
+#define NLP_ELS_SND_MASK   0x000007e0	/* sent ELS request for this entry */
+#define NLP_DEFER_RM       0x00010000	/* Remove this ndlp if no longer used */
+#define NLP_DELAY_TMO      0x00020000	/* delay timeout is running for node */
+#define NLP_NPR_2B_DISC    0x00040000	/* node is included in num_disc_nodes */
+#define NLP_RCV_PLOGI      0x00080000	/* Rcv'ed PLOGI from remote system */
+#define NLP_LOGO_ACC       0x00100000	/* Process LOGO after ACC completes */
+#define NLP_TGT_NO_SCSIID  0x00200000	/* good PRLI but no binding for scsid */
+#define NLP_ACC_REGLOGIN   0x01000000	/* Issue Reg Login after successful
 					   ACC */
-#define NLP_NPR_ADISC      0x2000000	/* Issue ADISC when dq'ed from
+#define NLP_NPR_ADISC      0x02000000	/* Issue ADISC when dq'ed from
 					   NPR list */
-#define NLP_RM_DFLT_RPI    0x4000000	/* need to remove leftover dflt RPI */
-#define NLP_NODEV_REMOVE   0x8000000	/* Defer removal till discovery ends */
+#define NLP_RM_DFLT_RPI    0x04000000	/* need to remove leftover dflt RPI */
+#define NLP_NODEV_REMOVE   0x08000000	/* Defer removal till discovery ends */
 #define NLP_TARGET_REMOVE  0x10000000   /* Target remove in process */
+#define NLP_SC_REQ         0x20000000	/* Target requires authentication */
+
+/* ndlp usage management macros */
+#define NLP_CHK_NODE_ACT(ndlp)		(((ndlp)->nlp_usg_map \
+						& NLP_USG_NODE_ACT_BIT) \
+					&& \
+					!((ndlp)->nlp_usg_map \
+						& NLP_USG_FREE_ACK_BIT))
+#define NLP_SET_NODE_ACT(ndlp)		((ndlp)->nlp_usg_map \
+						|= NLP_USG_NODE_ACT_BIT)
+#define NLP_INT_NODE_ACT(ndlp)		((ndlp)->nlp_usg_map \
+						= NLP_USG_NODE_ACT_BIT)
+#define NLP_CLR_NODE_ACT(ndlp)		((ndlp)->nlp_usg_map \
+						&= ~NLP_USG_NODE_ACT_BIT)
+#define NLP_CHK_IACT_REQ(ndlp)          ((ndlp)->nlp_usg_map \
+						& NLP_USG_IACT_REQ_BIT)
+#define NLP_SET_IACT_REQ(ndlp)          ((ndlp)->nlp_usg_map \
+						|= NLP_USG_IACT_REQ_BIT)
+#define NLP_CHK_FREE_REQ(ndlp)		((ndlp)->nlp_usg_map \
+						& NLP_USG_FREE_REQ_BIT)
+#define NLP_SET_FREE_REQ(ndlp)		((ndlp)->nlp_usg_map \
+						|= NLP_USG_FREE_REQ_BIT)
+#define NLP_CHK_FREE_ACK(ndlp)		((ndlp)->nlp_usg_map \
+						& NLP_USG_FREE_ACK_BIT)
+#define NLP_SET_FREE_ACK(ndlp)		((ndlp)->nlp_usg_map \
+						|= NLP_USG_FREE_ACK_BIT)
 
 /* There are 4 different double linked lists nodelist entries can reside on.
  * The Port Login (PLOGI) list and Address Discovery (ADISC) list are used

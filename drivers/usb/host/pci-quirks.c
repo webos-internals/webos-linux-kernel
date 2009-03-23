@@ -106,7 +106,7 @@ int uhci_check_and_reset_hc(struct pci_dev *pdev, unsigned long base)
 	pci_read_config_word(pdev, UHCI_USBLEGSUP, &legsup);
 	if (legsup & ~(UHCI_USBLEGSUP_RO | UHCI_USBLEGSUP_RWC)) {
 		dev_dbg(&pdev->dev, "%s: legsup = 0x%04x\n",
-				__FUNCTION__, legsup);
+				__func__, legsup);
 		goto reset_needed;
 	}
 
@@ -114,14 +114,14 @@ int uhci_check_and_reset_hc(struct pci_dev *pdev, unsigned long base)
 	if ((cmd & UHCI_USBCMD_RUN) || !(cmd & UHCI_USBCMD_CONFIGURE) ||
 			!(cmd & UHCI_USBCMD_EGSM)) {
 		dev_dbg(&pdev->dev, "%s: cmd = 0x%04x\n",
-				__FUNCTION__, cmd);
+				__func__, cmd);
 		goto reset_needed;
 	}
 
 	intr = inw(base + UHCI_USBINTR);
 	if (intr & (~UHCI_USBINTR_RESUME)) {
 		dev_dbg(&pdev->dev, "%s: intr = 0x%04x\n",
-				__FUNCTION__, intr);
+				__func__, intr);
 		goto reset_needed;
 	}
 	return 0;
@@ -172,9 +172,9 @@ static void __devinit quirk_usb_handoff_ohci(struct pci_dev *pdev)
 	if (!mmio_resource_enabled(pdev, 0))
 		return;
 
-	base = ioremap_nocache(pci_resource_start(pdev, 0),
-				     pci_resource_len(pdev, 0));
-	if (base == NULL) return;
+	base = pci_ioremap_bar(pdev, 0);
+	if (base == NULL)
+		return;
 
 /* On PA-RISC, PDC can leave IR set incorrectly; ignore it there. */
 #ifndef __hppa__
@@ -190,9 +190,8 @@ static void __devinit quirk_usb_handoff_ohci(struct pci_dev *pdev)
 			msleep(10);
 		}
 		if (wait_time <= 0)
-			printk(KERN_WARNING "%s %s: BIOS handoff "
-					"failed (BIOS bug ?) %08x\n",
-					pdev->dev.bus_id, "OHCI",
+			dev_warn(&pdev->dev, "OHCI: BIOS handoff failed"
+					" (BIOS bug?) %08x\n",
 					readl(base + OHCI_CONTROL));
 
 		/* reset controller, preserving RWC */
@@ -222,9 +221,9 @@ static void __devinit quirk_usb_disable_ehci(struct pci_dev *pdev)
 	if (!mmio_resource_enabled(pdev, 0))
 		return;
 
-	base = ioremap_nocache(pci_resource_start(pdev, 0),
-				pci_resource_len(pdev, 0));
-	if (base == NULL) return;
+	base = pci_ioremap_bar(pdev, 0);
+	if (base == NULL)
+		return;
 
 	cap_length = readb(base);
 	op_reg_base = base + cap_length;
@@ -243,8 +242,7 @@ static void __devinit quirk_usb_disable_ehci(struct pci_dev *pdev)
 		switch (cap & 0xff) {
 		case 1:			/* BIOS/SMM/... handoff support */
 			if ((cap & EHCI_USBLEGSUP_BIOS)) {
-				pr_debug("%s %s: BIOS handoff\n",
-						pdev->dev.bus_id, "EHCI");
+				dev_dbg(&pdev->dev, "EHCI: BIOS handoff\n");
 
 #if 0
 /* aleksey_gorelov@phoenix.com reports that some systems need SMI forced on,
@@ -273,7 +271,7 @@ static void __devinit quirk_usb_disable_ehci(struct pci_dev *pdev)
 			/* if boot firmware now owns EHCI, spin till
 			 * it hands it over.
 			 */
-			msec = 5000;
+			msec = 1000;
 			while ((cap & EHCI_USBLEGSUP_BIOS) && (msec > 0)) {
 				tried_handoff = 1;
 				msleep(10);
@@ -285,9 +283,8 @@ static void __devinit quirk_usb_disable_ehci(struct pci_dev *pdev)
 				/* well, possibly buggy BIOS... try to shut
 				 * it down, and hope nothing goes too wrong
 				 */
-				printk(KERN_WARNING "%s %s: BIOS handoff "
-						"failed (BIOS bug ?) %08x\n",
-					pdev->dev.bus_id, "EHCI", cap);
+				dev_warn(&pdev->dev, "EHCI: BIOS handoff failed"
+						" (BIOS bug?) %08x\n", cap);
 				pci_write_config_byte(pdev, offset + 2, 0);
 			}
 
@@ -306,17 +303,14 @@ static void __devinit quirk_usb_disable_ehci(struct pci_dev *pdev)
 			cap = 0;
 			/* FALLTHROUGH */
 		default:
-			printk(KERN_WARNING "%s %s: unrecognized "
-					"capability %02x\n",
-					pdev->dev.bus_id, "EHCI",
-					cap & 0xff);
+			dev_warn(&pdev->dev, "EHCI: unrecognized capability "
+					"%02x\n", cap & 0xff);
 			break;
 		}
 		offset = (cap >> 8) & 0xff;
 	}
 	if (!count)
-		printk(KERN_DEBUG "%s %s: capability loop?\n",
-				pdev->dev.bus_id, "EHCI");
+		dev_printk(KERN_DEBUG, &pdev->dev, "EHCI: capability loop?\n");
 
 	/*
 	 * halt EHCI & disable its interrupts in any case

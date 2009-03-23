@@ -90,7 +90,7 @@ static struct atari_disk_type {
 	unsigned	blocks;		/* total number of blocks */
 	unsigned	fdc_speed;	/* fdc_speed setting */
 	unsigned 	stretch;	/* track doubling ? */
-} disk_type[] = {
+} atari_disk_type[] = {
 	{ "d360",  9, 720, 0, 0},	/*  0: 360kB diskette */
 	{ "D360",  9, 720, 0, 1},	/*  1: 360kb in 720k or 1.2MB drive */
 	{ "D720",  9,1440, 0, 0},	/*  2: 720kb in 720k or 1.2MB drive */
@@ -361,13 +361,13 @@ static void finish_fdc( void );
 static void finish_fdc_done( int dummy );
 static void setup_req_params( int drive );
 static void redo_fd_request( void);
-static int fd_ioctl( struct inode *inode, struct file *filp, unsigned int
+static int fd_ioctl(struct block_device *bdev, fmode_t mode, unsigned int
                      cmd, unsigned long param);
 static void fd_probe( int drive );
 static int fd_test_drive_present( int drive );
 static void config_types( void );
-static int floppy_open( struct inode *inode, struct file *filp );
-static int floppy_release( struct inode * inode, struct file * filp );
+static int floppy_open(struct block_device *bdev, fmode_t mode);
+static int floppy_release(struct gendisk *disk, fmode_t mode);
 
 /************************* End of Prototypes **************************/
 
@@ -658,7 +658,7 @@ static int do_format(int drive, int type, struct atari_format_descr *desc)
 			return -EINVAL;
 		}
 		type = minor2disktype[type].index;
-		UDT = &disk_type[type];
+		UDT = &atari_disk_type[type];
 	}
 
 	if (!UDT || desc->track >= UDT->blocks/UDT->spt/2 || desc->head >= 2) {
@@ -1064,7 +1064,7 @@ static void fd_rwsec_done1(int status)
 	       searched for a non-existent sector! */
 	    !(read_track && FDC_READ(FDCREG_SECTOR) > SUDT->spt)) {
 		if (Probing) {
-			if (SUDT > disk_type) {
+			if (SUDT > atari_disk_type) {
 			    if (SUDT[-1].blocks > ReqBlock) {
 				/* try another disk type */
 				SUDT--;
@@ -1082,7 +1082,7 @@ static void fd_rwsec_done1(int status)
 		} else {	
 /* record not found, but not probing. Maybe stretch wrong ? Restart probing */
 			if (SUD.autoprobe) {
-				SUDT = disk_type + StartDiskType[DriveType];
+				SUDT = atari_disk_type + StartDiskType[DriveType];
 				set_capacity(unit[SelectedDrive].disk,
 							SUDT->blocks);
 				Probing = 1;
@@ -1421,7 +1421,7 @@ repeat:
 	if (type == 0) {
 		if (!UDT) {
 			Probing = 1;
-			UDT = disk_type + StartDiskType[DriveType];
+			UDT = atari_disk_type + StartDiskType[DriveType];
 			set_capacity(floppy->disk, UDT->blocks);
 			UD.autoprobe = 1;
 		}
@@ -1439,7 +1439,7 @@ repeat:
 			goto repeat;
 		}
 		type = minor2disktype[type].index;
-		UDT = &disk_type[type];
+		UDT = &atari_disk_type[type];
 		set_capacity(floppy->disk, UDT->blocks);
 		UD.autoprobe = 0;
 	}
@@ -1483,10 +1483,10 @@ void do_fd_request(struct request_queue * q)
 	atari_enable_irq( IRQ_MFP_FDC );
 }
 
-static int fd_ioctl(struct inode *inode, struct file *filp,
+static int fd_ioctl(struct block_device *bdev, fmode_t mode,
 		    unsigned int cmd, unsigned long param)
 {
-	struct gendisk *disk = inode->i_bdev->bd_disk;
+	struct gendisk *disk = bdev->bd_disk;
 	struct atari_floppy_struct *floppy = disk->private_data;
 	int drive = floppy - unit;
 	int type = floppy->type;
@@ -1505,7 +1505,7 @@ static int fd_ioctl(struct inode *inode, struct file *filp,
 			if (minor2disktype[type].drive_types > DriveType)
 				return -ENODEV;
 			type = minor2disktype[type].index;
-			dtp = &disk_type[type];
+			dtp = &atari_disk_type[type];
 			if (UD.flags & FTD_MSG)
 			    printk (KERN_ERR "floppy%d: found dtp %p name %s!\n",
 			        drive, dtp, dtp->name);
@@ -1576,7 +1576,7 @@ static int fd_ioctl(struct inode *inode, struct file *filp,
 				continue;
 			}
 			setidx = minor2disktype[settype].index;
-			dtp = &disk_type[setidx];
+			dtp = &atari_disk_type[setidx];
 
 			/* found matching entry ?? */
 			if (   dtp->blocks  == setprm.size 
@@ -1661,7 +1661,7 @@ static int fd_ioctl(struct inode *inode, struct file *filp,
 		/* invalidate the buffer track to force a reread */
 		BufferDrive = -1;
 		set_bit(drive, &fake_change);
-		check_disk_change(inode->i_bdev);
+		check_disk_change(bdev);
 		return 0;
 	default:
 		return -EINVAL;
@@ -1730,7 +1730,7 @@ static int __init fd_test_drive_present( int drive )
 
 	timeout = jiffies + 2*HZ+HZ/2;
 	while (time_before(jiffies, timeout))
-		if (!(mfp.par_dt_reg & 0x20))
+		if (!(st_mfp.par_dt_reg & 0x20))
 			break;
 
 	status = FDC_READ( FDCREG_STATUS );
@@ -1747,7 +1747,7 @@ static int __init fd_test_drive_present( int drive )
 		/* dummy seek command to make WP bit accessible */
 		FDC_WRITE( FDCREG_DATA, 0 );
 		FDC_WRITE( FDCREG_CMD, FDCCMD_SEEK );
-		while( mfp.par_dt_reg & 0x20 )
+		while( st_mfp.par_dt_reg & 0x20 )
 			;
 		status = FDC_READ( FDCREG_STATUS );
 	}
@@ -1804,37 +1804,36 @@ static void __init config_types( void )
  * drive with different device numbers.
  */
 
-static int floppy_open( struct inode *inode, struct file *filp )
+static int floppy_open(struct block_device *bdev, fmode_t mode)
 {
-	struct atari_floppy_struct *p = inode->i_bdev->bd_disk->private_data;
-	int type  = iminor(inode) >> 2;
+	struct atari_floppy_struct *p = bdev->bd_disk->private_data;
+	int type  = MINOR(bdev->bd_dev) >> 2;
 
 	DPRINT(("fd_open: type=%d\n",type));
 	if (p->ref && p->type != type)
 		return -EBUSY;
 
-	if (p->ref == -1 || (p->ref && filp->f_flags & O_EXCL))
+	if (p->ref == -1 || (p->ref && mode & FMODE_EXCL))
 		return -EBUSY;
 
-	if (filp->f_flags & O_EXCL)
+	if (mode & FMODE_EXCL)
 		p->ref = -1;
 	else
 		p->ref++;
 
 	p->type = type;
 
-	if (filp->f_flags & O_NDELAY)
+	if (mode & FMODE_NDELAY)
 		return 0;
 
-	if (filp->f_mode & 3) {
-		check_disk_change(inode->i_bdev);
-		if (filp->f_mode & 2) {
+	if (mode & (FMODE_READ|FMODE_WRITE)) {
+		check_disk_change(bdev);
+		if (mode & FMODE_WRITE) {
 			if (p->wpstat) {
 				if (p->ref < 0)
 					p->ref = 0;
 				else
 					p->ref--;
-				floppy_release(inode, filp);
 				return -EROFS;
 			}
 		}
@@ -1843,9 +1842,9 @@ static int floppy_open( struct inode *inode, struct file *filp )
 }
 
 
-static int floppy_release( struct inode * inode, struct file * filp )
+static int floppy_release(struct gendisk *disk, fmode_t mode)
 {
-	struct atari_floppy_struct *p = inode->i_bdev->bd_disk->private_data;
+	struct atari_floppy_struct *p = disk->private_data;
 	if (p->ref < 0)
 		p->ref = 0;
 	else if (!p->ref--) {
@@ -1859,7 +1858,7 @@ static struct block_device_operations floppy_fops = {
 	.owner		= THIS_MODULE,
 	.open		= floppy_open,
 	.release	= floppy_release,
-	.ioctl		= fd_ioctl,
+	.locked_ioctl	= fd_ioctl,
 	.media_changed	= check_floppy_change,
 	.revalidate_disk= floppy_revalidate,
 };
@@ -1880,11 +1879,7 @@ static int __init atari_floppy_init (void)
 
 	if (!MACH_IS_ATARI)
 		/* Amiga, Mac, ... don't have Atari-compatible floppy :-) */
-		return -ENXIO;
-
-	if (MACH_IS_HADES)
-		/* Hades doesn't have Atari-compatible floppy */
-		return -ENXIO;
+		return -ENODEV;
 
 	if (register_blkdev(FLOPPY_MAJOR,"fd"))
 		return -EBUSY;

@@ -1,60 +1,15 @@
 /*
- * This file is part of the zfcp device driver for
- * FCP adapters for IBM System z9 and zSeries.
+ * zfcp device driver
  *
- * (C) Copyright IBM Corp. 2002, 2006
+ * Registration and callback for the s390 common I/O layer.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * Copyright IBM Corporation 2002, 2008
  */
 
+#define KMSG_COMPONENT "zfcp"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
 #include "zfcp_ext.h"
-
-#define ZFCP_LOG_AREA                   ZFCP_LOG_AREA_CONFIG
-
-static int zfcp_ccw_probe(struct ccw_device *);
-static void zfcp_ccw_remove(struct ccw_device *);
-static int zfcp_ccw_set_online(struct ccw_device *);
-static int zfcp_ccw_set_offline(struct ccw_device *);
-static int zfcp_ccw_notify(struct ccw_device *, int);
-static void zfcp_ccw_shutdown(struct ccw_device *);
-
-static struct ccw_device_id zfcp_ccw_device_id[] = {
-	{CCW_DEVICE_DEVTYPE(ZFCP_CONTROL_UNIT_TYPE,
-			    ZFCP_CONTROL_UNIT_MODEL,
-			    ZFCP_DEVICE_TYPE,
-			    ZFCP_DEVICE_MODEL)},
-	{CCW_DEVICE_DEVTYPE(ZFCP_CONTROL_UNIT_TYPE,
-			    ZFCP_CONTROL_UNIT_MODEL,
-			    ZFCP_DEVICE_TYPE,
-			    ZFCP_DEVICE_MODEL_PRIV)},
-	{},
-};
-
-static struct ccw_driver zfcp_ccw_driver = {
-	.owner       = THIS_MODULE,
-	.name        = ZFCP_NAME,
-	.ids         = zfcp_ccw_device_id,
-	.probe       = zfcp_ccw_probe,
-	.remove      = zfcp_ccw_remove,
-	.set_online  = zfcp_ccw_set_online,
-	.set_offline = zfcp_ccw_set_offline,
-	.notify      = zfcp_ccw_notify,
-	.shutdown    = zfcp_ccw_shutdown,
-};
-
-MODULE_DEVICE_TABLE(ccw, zfcp_ccw_device_id);
 
 /**
  * zfcp_ccw_probe - probe function of zfcp driver
@@ -66,19 +21,17 @@ MODULE_DEVICE_TABLE(ccw, zfcp_ccw_device_id);
  * In addition the nameserver port will be added to the ports of the adapter
  * and its sysfs representation will be created too.
  */
-static int
-zfcp_ccw_probe(struct ccw_device *ccw_device)
+static int zfcp_ccw_probe(struct ccw_device *ccw_device)
 {
-	struct zfcp_adapter *adapter;
 	int retval = 0;
 
 	down(&zfcp_data.config_sema);
-	adapter = zfcp_adapter_enqueue(ccw_device);
-	if (!adapter)
+	if (zfcp_adapter_enqueue(ccw_device)) {
+		dev_err(&ccw_device->dev,
+			"Setting up data structures for the "
+			"FCP adapter failed\n");
 		retval = -EINVAL;
-	else
-		ZFCP_LOG_DEBUG("Probed adapter %s\n",
-			       zfcp_get_busid_by_adapter(adapter));
+	}
 	up(&zfcp_data.config_sema);
 	return retval;
 }
@@ -92,39 +45,41 @@ zfcp_ccw_probe(struct ccw_device *ccw_device)
  * ports that belong to this adapter. And in addition all resources of this
  * adapter will be freed too.
  */
-static void
-zfcp_ccw_remove(struct ccw_device *ccw_device)
+static void zfcp_ccw_remove(struct ccw_device *ccw_device)
 {
 	struct zfcp_adapter *adapter;
 	struct zfcp_port *port, *p;
 	struct zfcp_unit *unit, *u;
+	LIST_HEAD(unit_remove_lh);
+	LIST_HEAD(port_remove_lh);
 
 	ccw_device_set_offline(ccw_device);
 	down(&zfcp_data.config_sema);
 	adapter = dev_get_drvdata(&ccw_device->dev);
 
-	ZFCP_LOG_DEBUG("Removing adapter %s\n",
-		       zfcp_get_busid_by_adapter(adapter));
 	write_lock_irq(&zfcp_data.config_lock);
 	list_for_each_entry_safe(port, p, &adapter->port_list_head, list) {
 		list_for_each_entry_safe(unit, u, &port->unit_list_head, list) {
-			list_move(&unit->list, &port->unit_remove_lh);
+			list_move(&unit->list, &unit_remove_lh);
 			atomic_set_mask(ZFCP_STATUS_COMMON_REMOVE,
 					&unit->status);
 		}
-		list_move(&port->list, &adapter->port_remove_lh);
+		list_move(&port->list, &port_remove_lh);
 		atomic_set_mask(ZFCP_STATUS_COMMON_REMOVE, &port->status);
 	}
 	atomic_set_mask(ZFCP_STATUS_COMMON_REMOVE, &adapter->status);
 	write_unlock_irq(&zfcp_data.config_lock);
 
-	list_for_each_entry_safe(port, p, &adapter->port_remove_lh, list) {
-		list_for_each_entry_safe(unit, u, &port->unit_remove_lh, list) {
+	list_for_each_entry_safe(port, p, &port_remove_lh, list) {
+		list_for_each_entry_safe(unit, u, &unit_remove_lh, list) {
+			if (atomic_read(&unit->status) &
+			    ZFCP_STATUS_UNIT_REGISTERED)
+				scsi_remove_device(unit->device);
 			zfcp_unit_dequeue(unit);
 		}
 		zfcp_port_dequeue(port);
 	}
-	zfcp_adapter_wait(adapter);
+	wait_event(adapter->remove_wq, atomic_read(&adapter->refcount) == 0);
 	zfcp_adapter_dequeue(adapter);
 
 	up(&zfcp_data.config_sema);
@@ -139,8 +94,7 @@ zfcp_ccw_remove(struct ccw_device *ccw_device)
  * registered with the SCSI stack, that the QDIO queues will be set up
  * and that the adapter will be opened (asynchronously).
  */
-static int
-zfcp_ccw_set_online(struct ccw_device *ccw_device)
+static int zfcp_ccw_set_online(struct ccw_device *ccw_device)
 {
 	struct zfcp_adapter *adapter;
 	int retval;
@@ -149,29 +103,22 @@ zfcp_ccw_set_online(struct ccw_device *ccw_device)
 	adapter = dev_get_drvdata(&ccw_device->dev);
 
 	retval = zfcp_erp_thread_setup(adapter);
-	if (retval) {
-		ZFCP_LOG_INFO("error: start of error recovery thread for "
-			      "adapter %s failed\n",
-			      zfcp_get_busid_by_adapter(adapter));
-		goto out;
-	}
-
-	retval = zfcp_adapter_scsi_register(adapter);
 	if (retval)
-		goto out_scsi_register;
+		goto out;
 
 	/* initialize request counter */
 	BUG_ON(!zfcp_reqlist_isempty(adapter));
 	adapter->req_no = 0;
 
-	zfcp_erp_modify_adapter_status(adapter, ZFCP_STATUS_COMMON_RUNNING,
-				       ZFCP_SET);
-	zfcp_erp_adapter_reopen(adapter, ZFCP_STATUS_COMMON_ERP_FAILED);
+	zfcp_erp_modify_adapter_status(adapter, 10, NULL,
+				       ZFCP_STATUS_COMMON_RUNNING, ZFCP_SET);
+	zfcp_erp_adapter_reopen(adapter, ZFCP_STATUS_COMMON_ERP_FAILED, 85,
+				NULL);
 	zfcp_erp_wait(adapter);
-	goto out;
+	up(&zfcp_data.config_sema);
+	flush_work(&adapter->scan_work);
+	return 0;
 
- out_scsi_register:
-	zfcp_erp_thread_kill(adapter);
  out:
 	up(&zfcp_data.config_sema);
 	return retval;
@@ -184,14 +131,13 @@ zfcp_ccw_set_online(struct ccw_device *ccw_device)
  * This function gets called by the common i/o layer and sets an adapter
  * into state offline.
  */
-static int
-zfcp_ccw_set_offline(struct ccw_device *ccw_device)
+static int zfcp_ccw_set_offline(struct ccw_device *ccw_device)
 {
 	struct zfcp_adapter *adapter;
 
 	down(&zfcp_data.config_sema);
 	adapter = dev_get_drvdata(&ccw_device->dev);
-	zfcp_erp_adapter_shutdown(adapter, 0);
+	zfcp_erp_adapter_shutdown(adapter, 0, 86, NULL);
 	zfcp_erp_wait(adapter);
 	zfcp_erp_thread_kill(adapter);
 	up(&zfcp_data.config_sema);
@@ -199,48 +145,75 @@ zfcp_ccw_set_offline(struct ccw_device *ccw_device)
 }
 
 /**
- * zfcp_ccw_notify
+ * zfcp_ccw_notify - ccw notify function
  * @ccw_device: pointer to belonging ccw device
  * @event: indicates if adapter was detached or attached
  *
  * This function gets called by the common i/o layer if an adapter has gone
  * or reappeared.
  */
-static int
-zfcp_ccw_notify(struct ccw_device *ccw_device, int event)
+static int zfcp_ccw_notify(struct ccw_device *ccw_device, int event)
+{
+	struct zfcp_adapter *adapter = dev_get_drvdata(&ccw_device->dev);
+
+	switch (event) {
+	case CIO_GONE:
+		dev_warn(&adapter->ccw_device->dev,
+			 "The FCP device has been detached\n");
+		zfcp_erp_adapter_shutdown(adapter, 0, 87, NULL);
+		break;
+	case CIO_NO_PATH:
+		dev_warn(&adapter->ccw_device->dev,
+			 "The CHPID for the FCP device is offline\n");
+		zfcp_erp_adapter_shutdown(adapter, 0, 88, NULL);
+		break;
+	case CIO_OPER:
+		dev_info(&adapter->ccw_device->dev,
+			 "The FCP device is operational again\n");
+		zfcp_erp_modify_adapter_status(adapter, 11, NULL,
+					       ZFCP_STATUS_COMMON_RUNNING,
+					       ZFCP_SET);
+		zfcp_erp_adapter_reopen(adapter, ZFCP_STATUS_COMMON_ERP_FAILED,
+					89, NULL);
+		break;
+	}
+	return 1;
+}
+
+/**
+ * zfcp_ccw_shutdown - handle shutdown from cio
+ * @cdev: device for adapter to shutdown.
+ */
+static void zfcp_ccw_shutdown(struct ccw_device *cdev)
 {
 	struct zfcp_adapter *adapter;
 
 	down(&zfcp_data.config_sema);
-	adapter = dev_get_drvdata(&ccw_device->dev);
-	switch (event) {
-	case CIO_GONE:
-		ZFCP_LOG_NORMAL("adapter %s: device gone\n",
-				zfcp_get_busid_by_adapter(adapter));
-		debug_text_event(adapter->erp_dbf,1,"dev_gone");
-		zfcp_erp_adapter_shutdown(adapter, 0);
-		break;
-	case CIO_NO_PATH:
-		ZFCP_LOG_NORMAL("adapter %s: no path\n",
-				zfcp_get_busid_by_adapter(adapter));
-		debug_text_event(adapter->erp_dbf,1,"no_path");
-		zfcp_erp_adapter_shutdown(adapter, 0);
-		break;
-	case CIO_OPER:
-		ZFCP_LOG_NORMAL("adapter %s: operational again\n",
-				zfcp_get_busid_by_adapter(adapter));
-		debug_text_event(adapter->erp_dbf,1,"dev_oper");
-		zfcp_erp_modify_adapter_status(adapter,
-					       ZFCP_STATUS_COMMON_RUNNING,
-					       ZFCP_SET);
-		zfcp_erp_adapter_reopen(adapter,
-					ZFCP_STATUS_COMMON_ERP_FAILED);
-		break;
-	}
+	adapter = dev_get_drvdata(&cdev->dev);
+	zfcp_erp_adapter_shutdown(adapter, 0, 90, NULL);
 	zfcp_erp_wait(adapter);
 	up(&zfcp_data.config_sema);
-	return 1;
 }
+
+static struct ccw_device_id zfcp_ccw_device_id[] = {
+	{ CCW_DEVICE_DEVTYPE(0x1731, 0x3, 0x1732, 0x3) },
+	{ CCW_DEVICE_DEVTYPE(0x1731, 0x3, 0x1732, 0x4) }, /* priv. */
+	{},
+};
+
+MODULE_DEVICE_TABLE(ccw, zfcp_ccw_device_id);
+
+static struct ccw_driver zfcp_ccw_driver = {
+	.owner       = THIS_MODULE,
+	.name        = "zfcp",
+	.ids         = zfcp_ccw_device_id,
+	.probe       = zfcp_ccw_probe,
+	.remove      = zfcp_ccw_remove,
+	.set_online  = zfcp_ccw_set_online,
+	.set_offline = zfcp_ccw_set_offline,
+	.notify      = zfcp_ccw_notify,
+	.shutdown    = zfcp_ccw_shutdown,
+};
 
 /**
  * zfcp_ccw_register - ccw register function
@@ -248,36 +221,24 @@ zfcp_ccw_notify(struct ccw_device *ccw_device, int event)
  * Registers the driver at the common i/o layer. This function will be called
  * at module load time/system start.
  */
-int __init
-zfcp_ccw_register(void)
+int __init zfcp_ccw_register(void)
 {
-	int retval;
-
-	retval = ccw_driver_register(&zfcp_ccw_driver);
-	if (retval)
-		goto out;
-	retval = zfcp_sysfs_driver_create_files(&zfcp_ccw_driver.driver);
-	if (retval)
-		ccw_driver_unregister(&zfcp_ccw_driver);
- out:
-	return retval;
+	return ccw_driver_register(&zfcp_ccw_driver);
 }
 
 /**
- * zfcp_ccw_shutdown - gets called on reboot/shutdown
- *
- * Makes sure that QDIO queues are down when the system gets stopped.
+ * zfcp_get_adapter_by_busid - find zfcp_adapter struct
+ * @busid: bus id string of zfcp adapter to find
  */
-static void
-zfcp_ccw_shutdown(struct ccw_device *cdev)
+struct zfcp_adapter *zfcp_get_adapter_by_busid(char *busid)
 {
-	struct zfcp_adapter *adapter;
+	struct ccw_device *ccw_device;
+	struct zfcp_adapter *adapter = NULL;
 
-	down(&zfcp_data.config_sema);
-	adapter = dev_get_drvdata(&cdev->dev);
-	zfcp_erp_adapter_shutdown(adapter, 0);
-	zfcp_erp_wait(adapter);
-	up(&zfcp_data.config_sema);
+	ccw_device = get_ccwdev_by_busid(&zfcp_ccw_driver, busid);
+	if (ccw_device) {
+		adapter = dev_get_drvdata(&ccw_device->dev);
+		put_device(&ccw_device->dev);
+	}
+	return adapter;
 }
-
-#undef ZFCP_LOG_AREA

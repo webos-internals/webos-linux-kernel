@@ -33,6 +33,10 @@ int inet6_csk_bind_conflict(const struct sock *sk,
 	const struct hlist_node *node;
 
 	/* We must walk the whole port owner list in this case. -DaveM */
+	/*
+	 * See comment in inet_csk_bind_conflict about sock lookup
+	 * vs net namespaces issues.
+	 */
 	sk_for_each_bound(sk2, node, &tb->owners) {
 		if (sk != sk2 &&
 		    (!sk->sk_bound_dev_if ||
@@ -94,7 +98,7 @@ struct request_sock *inet6_csk_search_req(const struct sock *sk,
 		    ipv6_addr_equal(&treq->rmt_addr, raddr) &&
 		    ipv6_addr_equal(&treq->loc_addr, laddr) &&
 		    (!treq->iif || treq->iif == iif)) {
-			BUG_TRAP(req->sk == NULL);
+			WARN_ON(req->sk != NULL);
 			*prevp = prev;
 			return req;
 		}
@@ -215,7 +219,7 @@ int inet6_csk_xmit(struct sk_buff *skb, int ipfragok)
 		if (final_p)
 			ipv6_addr_copy(&fl.fl6_dst, final_p);
 
-		if ((err = xfrm_lookup(&dst, &fl, sk, 0)) < 0) {
+		if ((err = xfrm_lookup(sock_net(sk), &dst, &fl, sk, 0)) < 0) {
 			sk->sk_route_caps = 0;
 			kfree_skb(skb);
 			return err;

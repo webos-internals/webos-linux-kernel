@@ -209,9 +209,9 @@ static ssize_t b43legacy_debugfs_read(struct file *file, char __user *userbuf,
 	struct b43legacy_wldev *dev;
 	struct b43legacy_debugfs_fops *dfops;
 	struct b43legacy_dfs_file *dfile;
-	ssize_t ret = 0;
+	ssize_t uninitialized_var(ret);
 	char *buf;
-	const size_t bufsize = 1024 * 128;
+	const size_t bufsize = 1024 * 16; /* 16 KiB buffer */
 	const size_t buforder = get_order(bufsize);
 	int err = 0;
 

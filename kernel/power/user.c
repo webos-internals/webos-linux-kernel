@@ -23,10 +23,34 @@
 #include <linux/console.h>
 #include <linux/cpu.h>
 #include <linux/freezer.h>
+#include <linux/smp_lock.h>
 
 #include <asm/uaccess.h>
 
 #include "power.h"
+
+/*
+ * NOTE: The SNAPSHOT_SET_SWAP_FILE and SNAPSHOT_PMOPS ioctls are obsolete and
+ * will be removed in the future.  They are only preserved here for
+ * compatibility with existing userland utilities.
+ */
+#define SNAPSHOT_SET_SWAP_FILE	_IOW(SNAPSHOT_IOC_MAGIC, 10, unsigned int)
+#define SNAPSHOT_PMOPS		_IOW(SNAPSHOT_IOC_MAGIC, 12, unsigned int)
+
+#define PMOPS_PREPARE	1
+#define PMOPS_ENTER	2
+#define PMOPS_FINISH	3
+
+/*
+ * NOTE: The following ioctl definitions are wrong and have been replaced with
+ * correct ones.  They are only preserved here for compatibility with existing
+ * userland utilities and will be removed in the future.
+ */
+#define SNAPSHOT_ATOMIC_SNAPSHOT	_IOW(SNAPSHOT_IOC_MAGIC, 3, void *)
+#define SNAPSHOT_SET_IMAGE_SIZE		_IOW(SNAPSHOT_IOC_MAGIC, 6, unsigned long)
+#define SNAPSHOT_AVAIL_SWAP		_IOR(SNAPSHOT_IOC_MAGIC, 7, void *)
+#define SNAPSHOT_GET_SWAP_PAGE		_IOR(SNAPSHOT_IOC_MAGIC, 8, void *)
+
 
 #define SNAPSHOT_MINOR	231
 
@@ -36,7 +60,7 @@ static struct snapshot_data {
 	int mode;
 	char frozen;
 	char ready;
-	char platform_suspend;
+	char platform_support;
 } snapshot_state;
 
 atomic_t snapshot_device_available = ATOMIC_INIT(1);
@@ -44,17 +68,24 @@ atomic_t snapshot_device_available = ATOMIC_INIT(1);
 static int snapshot_open(struct inode *inode, struct file *filp)
 {
 	struct snapshot_data *data;
+	int error;
 
-	if (!atomic_add_unless(&snapshot_device_available, -1, 0))
-		return -EBUSY;
+	mutex_lock(&pm_mutex);
+
+	if (!atomic_add_unless(&snapshot_device_available, -1, 0)) {
+		error = -EBUSY;
+		goto Unlock;
+	}
 
 	if ((filp->f_flags & O_ACCMODE) == O_RDWR) {
 		atomic_inc(&snapshot_device_available);
-		return -ENOSYS;
+		error = -ENOSYS;
+		goto Unlock;
 	}
 	if(create_basic_memory_bitmaps()) {
 		atomic_inc(&snapshot_device_available);
-		return -ENOMEM;
+		error = -ENOMEM;
+		goto Unlock;
 	}
 	nonseekable_open(inode, filp);
 	data = &snapshot_state;
@@ -64,31 +95,46 @@ static int snapshot_open(struct inode *inode, struct file *filp)
 		data->swap = swsusp_resume_device ?
 			swap_type_of(swsusp_resume_device, 0, NULL) : -1;
 		data->mode = O_RDONLY;
+		error = pm_notifier_call_chain(PM_HIBERNATION_PREPARE);
+		if (error)
+			pm_notifier_call_chain(PM_POST_HIBERNATION);
 	} else {
 		data->swap = -1;
 		data->mode = O_WRONLY;
+		error = pm_notifier_call_chain(PM_RESTORE_PREPARE);
+		if (error)
+			pm_notifier_call_chain(PM_POST_RESTORE);
 	}
+	if (error)
+		atomic_inc(&snapshot_device_available);
 	data->frozen = 0;
 	data->ready = 0;
-	data->platform_suspend = 0;
+	data->platform_support = 0;
 
-	return 0;
+ Unlock:
+	mutex_unlock(&pm_mutex);
+
+	return error;
 }
 
 static int snapshot_release(struct inode *inode, struct file *filp)
 {
 	struct snapshot_data *data;
 
+	mutex_lock(&pm_mutex);
+
 	swsusp_free();
 	free_basic_memory_bitmaps();
 	data = filp->private_data;
 	free_all_swap_pages(data->swap);
-	if (data->frozen) {
-		mutex_lock(&pm_mutex);
+	if (data->frozen)
 		thaw_processes();
-		mutex_unlock(&pm_mutex);
-	}
+	pm_notifier_call_chain(data->mode == O_WRONLY ?
+			PM_POST_HIBERNATION : PM_POST_RESTORE);
 	atomic_inc(&snapshot_device_available);
+
+	mutex_unlock(&pm_mutex);
+
 	return 0;
 }
 
@@ -98,9 +144,13 @@ static ssize_t snapshot_read(struct file *filp, char __user *buf,
 	struct snapshot_data *data;
 	ssize_t res;
 
+	mutex_lock(&pm_mutex);
+
 	data = filp->private_data;
-	if (!data->ready)
-		return -ENODATA;
+	if (!data->ready) {
+		res = -ENODATA;
+		goto Unlock;
+	}
 	res = snapshot_read_next(&data->handle, count);
 	if (res > 0) {
 		if (copy_to_user(buf, data_of(data->handle), res))
@@ -108,6 +158,10 @@ static ssize_t snapshot_read(struct file *filp, char __user *buf,
 		else
 			*offp = data->handle.offset;
 	}
+
+ Unlock:
+	mutex_unlock(&pm_mutex);
+
 	return res;
 }
 
@@ -117,6 +171,8 @@ static ssize_t snapshot_write(struct file *filp, const char __user *buf,
 	struct snapshot_data *data;
 	ssize_t res;
 
+	mutex_lock(&pm_mutex);
+
 	data = filp->private_data;
 	res = snapshot_write_next(&data->handle, count);
 	if (res > 0) {
@@ -125,15 +181,18 @@ static ssize_t snapshot_write(struct file *filp, const char __user *buf,
 		else
 			*offp = data->handle.offset;
 	}
+
+	mutex_unlock(&pm_mutex);
+
 	return res;
 }
 
-static int snapshot_ioctl(struct inode *inode, struct file *filp,
-                          unsigned int cmd, unsigned long arg)
+static long snapshot_ioctl(struct file *filp, unsigned int cmd,
+							unsigned long arg)
 {
 	int error = 0;
 	struct snapshot_data *data;
-	loff_t avail;
+	loff_t size;
 	sector_t offset;
 
 	if (_IOC_TYPE(cmd) != SNAPSHOT_IOC_MAGIC)
@@ -143,6 +202,9 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
+	if (!mutex_trylock(&pm_mutex))
+		return -EBUSY;
+
 	data = filp->private_data;
 
 	switch (cmd) {
@@ -150,20 +212,20 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 	case SNAPSHOT_FREEZE:
 		if (data->frozen)
 			break;
-		mutex_lock(&pm_mutex);
-		error = pm_notifier_call_chain(PM_HIBERNATION_PREPARE);
-		if (!error) {
-			printk("Syncing filesystems ... ");
-			sys_sync();
-			printk("done.\n");
 
-			error = freeze_processes();
-			if (error)
-				thaw_processes();
-		}
+		printk("Syncing filesystems ... ");
+		sys_sync();
+		printk("done.\n");
+
+		error = usermodehelper_disable();
 		if (error)
-			pm_notifier_call_chain(PM_POST_HIBERNATION);
-		mutex_unlock(&pm_mutex);
+			break;
+
+		error = freeze_processes();
+		if (error) {
+			thaw_processes();
+			usermodehelper_enable();
+		}
 		if (!error)
 			data->frozen = 1;
 		break;
@@ -171,21 +233,20 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 	case SNAPSHOT_UNFREEZE:
 		if (!data->frozen || data->ready)
 			break;
-		mutex_lock(&pm_mutex);
 		thaw_processes();
-		pm_notifier_call_chain(PM_POST_HIBERNATION);
-		mutex_unlock(&pm_mutex);
+		usermodehelper_enable();
 		data->frozen = 0;
 		break;
 
+	case SNAPSHOT_CREATE_IMAGE:
 	case SNAPSHOT_ATOMIC_SNAPSHOT:
 		if (data->mode != O_RDONLY || !data->frozen  || data->ready) {
 			error = -EPERM;
 			break;
 		}
-		error = hibernation_snapshot(data->platform_suspend);
+		error = hibernation_snapshot(data->platform_support);
 		if (!error)
-			error = put_user(in_suspend, (unsigned int __user *)arg);
+			error = put_user(in_suspend, (int __user *)arg);
 		if (!error)
 			data->ready = 1;
 		break;
@@ -197,7 +258,7 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 			error = -EPERM;
 			break;
 		}
-		error = hibernation_restore(data->platform_suspend);
+		error = hibernation_restore(data->platform_support);
 		break;
 
 	case SNAPSHOT_FREE:
@@ -206,16 +267,29 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 		data->ready = 0;
 		break;
 
+	case SNAPSHOT_PREF_IMAGE_SIZE:
 	case SNAPSHOT_SET_IMAGE_SIZE:
 		image_size = arg;
 		break;
 
-	case SNAPSHOT_AVAIL_SWAP:
-		avail = count_swap_pages(data->swap, 1);
-		avail <<= PAGE_SHIFT;
-		error = put_user(avail, (loff_t __user *)arg);
+	case SNAPSHOT_GET_IMAGE_SIZE:
+		if (!data->ready) {
+			error = -ENODATA;
+			break;
+		}
+		size = snapshot_get_image_size();
+		size <<= PAGE_SHIFT;
+		error = put_user(size, (loff_t __user *)arg);
 		break;
 
+	case SNAPSHOT_AVAIL_SWAP_SIZE:
+	case SNAPSHOT_AVAIL_SWAP:
+		size = count_swap_pages(data->swap, 1);
+		size <<= PAGE_SHIFT;
+		error = put_user(size, (loff_t __user *)arg);
+		break;
+
+	case SNAPSHOT_ALLOC_SWAP_PAGE:
 	case SNAPSHOT_GET_SWAP_PAGE:
 		if (data->swap < 0 || data->swap >= MAX_SWAPFILES) {
 			error = -ENODEV;
@@ -224,7 +298,7 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 		offset = alloc_swapdev_block(data->swap);
 		if (offset) {
 			offset <<= PAGE_SHIFT;
-			error = put_user(offset, (sector_t __user *)arg);
+			error = put_user(offset, (loff_t __user *)arg);
 		} else {
 			error = -ENOSPC;
 		}
@@ -238,7 +312,7 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 		free_all_swap_pages(data->swap);
 		break;
 
-	case SNAPSHOT_SET_SWAP_FILE:
+	case SNAPSHOT_SET_SWAP_FILE: /* This ioctl is deprecated */
 		if (!swsusp_swap_in_use()) {
 			/*
 			 * User space encodes device types as two-byte values,
@@ -263,38 +337,40 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 			error = -EPERM;
 			break;
 		}
-		if (!mutex_trylock(&pm_mutex)) {
-			error = -EBUSY;
-			break;
-		}
 		/*
 		 * Tasks are frozen and the notifiers have been called with
 		 * PM_HIBERNATION_PREPARE
 		 */
 		error = suspend_devices_and_enter(PM_SUSPEND_MEM);
-		mutex_unlock(&pm_mutex);
 		break;
 
-	case SNAPSHOT_PMOPS:
+	case SNAPSHOT_PLATFORM_SUPPORT:
+		data->platform_support = !!arg;
+		break;
+
+	case SNAPSHOT_POWER_OFF:
+		if (data->platform_support)
+			error = hibernation_platform_enter();
+		break;
+
+	case SNAPSHOT_PMOPS: /* This ioctl is deprecated */
 		error = -EINVAL;
 
 		switch (arg) {
 
 		case PMOPS_PREPARE:
-			data->platform_suspend = 1;
+			data->platform_support = 1;
 			error = 0;
 			break;
 
 		case PMOPS_ENTER:
-			if (data->platform_suspend)
+			if (data->platform_support)
 				error = hibernation_platform_enter();
-
 			break;
 
 		case PMOPS_FINISH:
-			if (data->platform_suspend)
+			if (data->platform_support)
 				error = 0;
-
 			break;
 
 		default:
@@ -339,6 +415,8 @@ static int snapshot_ioctl(struct inode *inode, struct file *filp,
 
 	}
 
+	mutex_unlock(&pm_mutex);
+
 	return error;
 }
 
@@ -348,7 +426,7 @@ static const struct file_operations snapshot_fops = {
 	.read = snapshot_read,
 	.write = snapshot_write,
 	.llseek = no_llseek,
-	.ioctl = snapshot_ioctl,
+	.unlocked_ioctl = snapshot_ioctl,
 };
 
 static struct miscdevice snapshot_device = {

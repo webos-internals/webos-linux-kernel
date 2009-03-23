@@ -51,7 +51,6 @@ struct taos_data {
 /* TAOS TSL2550 EVM */
 static struct i2c_board_info tsl2550_info = {
 	I2C_BOARD_INFO("tsl2550", 0x39),
-	.type	= "tsl2550",
 };
 
 /* Instantiate i2c devices based on the adapter name */
@@ -59,7 +58,7 @@ static struct i2c_client *taos_instantiate_device(struct i2c_adapter *adapter)
 {
 	if (!strncmp(adapter->name, "TAOS TSL2550 EVM", 16)) {
 		dev_info(&adapter->dev, "Instantiating device %s at 0x%02x\n",
-			tsl2550_info.driver_name, tsl2550_info.addr);
+			tsl2550_info.type, tsl2550_info.addr);
 		return i2c_new_device(adapter, &tsl2550_info);
 	}
 
@@ -97,9 +96,8 @@ static int taos_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 			sprintf(p, "$%02X", command);
 		break;
 	default:
-		dev_dbg(&adapter->dev, "Unsupported transaction size %d\n",
-			size);
-		return -EINVAL;
+		dev_warn(&adapter->dev, "Unsupported transaction %d\n", size);
+		return -EOPNOTSUPP;
 	}
 
 	/* Send the transaction to the TAOS EVM */

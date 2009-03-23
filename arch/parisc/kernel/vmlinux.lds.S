@@ -50,6 +50,7 @@ SECTIONS
 
 	_text = .;		/* Text and read-only data */
 	.text ALIGN(16) : {
+		HEAD_TEXT
 		TEXT_TEXT
 		SCHED_TEXT
 		LOCK_TEXT
@@ -66,7 +67,6 @@ SECTIONS
 	_etext = .;
 
 	RODATA
-	BUG_TABLE
 
 	/* writeable */
 	/* Make sure this is page aligned so
@@ -172,11 +172,11 @@ SECTIONS
 	__init_begin = .;
 	.init.text : { 
 		_sinittext = .;
-		*(.init.text)
+		INIT_TEXT
 		_einittext = .;
 	}
 	.init.data : {
-		*(.init.data)
+		INIT_DATA
 	}
 	. = ALIGN(16);
 	.init.setup : {
@@ -215,10 +215,10 @@ SECTIONS
 	 *  from .altinstructions and .eh_frame
 	 */
 	.exit.text : {
-		*(.exit.text)
+		EXIT_TEXT
 	}
 	.exit.data : {
-		*(.exit.data)
+		EXIT_DATA
 	}
 #ifdef CONFIG_BLK_DEV_INITRD
 	. = ALIGN(PAGE_SIZE);

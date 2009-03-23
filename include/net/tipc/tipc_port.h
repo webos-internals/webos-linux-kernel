@@ -2,7 +2,7 @@
  * include/net/tipc/tipc_port.h: Include file for privileged access to TIPC ports
  * 
  * Copyright (c) 1994-2007, Ericsson AB
- * Copyright (c) 2005-2007, Wind River Systems
+ * Copyright (c) 2005-2008, Wind River Systems
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -75,23 +75,10 @@ struct tipc_port {
 };
 
 
-/**
- * tipc_createport_raw - create a native TIPC port and return it's reference
- *
- * Note: 'dispatcher' and 'wakeup' deliver a locked port.
- */
-
-u32 tipc_createport_raw(void *usr_handle,
+struct tipc_port *tipc_createport_raw(void *usr_handle,
 			u32 (*dispatcher)(struct tipc_port *, struct sk_buff *),
 			void (*wakeup)(struct tipc_port *),
 			const u32 importance);
-
-/*
- * tipc_set_msg_option(): port must be locked.
- */
-int tipc_set_msg_option(struct tipc_port *tp_ptr,
-			const char *opt,
-			const u32 len);
 
 int tipc_reject_msg(struct sk_buff *buf, u32 err);
 
@@ -102,6 +89,12 @@ void tipc_acknowledge(u32 port_ref,u32 ack);
 struct tipc_port *tipc_get_port(const u32 ref);
 
 void *tipc_get_handle(const u32 ref);
+
+/*
+ * The following routines require that the port be locked on entry
+ */
+
+int tipc_disconnect_port(struct tipc_port *tp_ptr);
 
 
 #endif

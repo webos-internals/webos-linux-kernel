@@ -6,7 +6,6 @@
 #include <linux/string.h>
 #include "power.h"
 
-
 /*
  *	wakeup - Report/change current wakeup option for device
  *

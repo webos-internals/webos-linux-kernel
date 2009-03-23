@@ -24,8 +24,10 @@
 #include <linux/fs.h>
 #include <linux/syscalls.h>
 #include <linux/ctype.h>
+#include <linux/lmb.h>
+#include <linux/of.h>
 
-#include <asm/lmb.h>
+#include <asm/prom.h>
 
 #include "platform.h"
 
@@ -304,7 +306,7 @@ static void _dump_params(const struct os_area_params *p, const char *func,
 {
 	pr_debug("%s:%d: p.boot_flag:       %u\n", func, line, p->boot_flag);
 	pr_debug("%s:%d: p.num_params:      %u\n", func, line, p->num_params);
-	pr_debug("%s:%d: p.rtc_diff         %ld\n", func, line, p->rtc_diff);
+	pr_debug("%s:%d: p.rtc_diff         %lld\n", func, line, p->rtc_diff);
 	pr_debug("%s:%d: p.av_multi_out     %u\n", func, line, p->av_multi_out);
 	pr_debug("%s:%d: p.ctrl_button:     %u\n", func, line, p->ctrl_button);
 	pr_debug("%s:%d: p.static_ip_addr:  %u.%u.%u.%u\n", func, line,

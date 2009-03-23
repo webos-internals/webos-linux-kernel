@@ -156,9 +156,9 @@ static int sendcmd(
 	unsigned int blkcnt,
 	unsigned int log_unit );
 
-static int ida_open(struct inode *inode, struct file *filep);
-static int ida_release(struct inode *inode, struct file *filep);
-static int ida_ioctl(struct inode *inode, struct file *filep, unsigned int cmd, unsigned long arg);
+static int ida_open(struct block_device *bdev, fmode_t mode);
+static int ida_release(struct gendisk *disk, fmode_t mode);
+static int ida_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd, unsigned long arg);
 static int ida_getgeo(struct block_device *bdev, struct hd_geometry *geo);
 static int ida_ctlr_ioctl(ctlr_info_t *h, int dsk, ida_ioctl_t *io);
 
@@ -167,7 +167,6 @@ static void start_io(ctlr_info_t *h);
 
 static inline void addQ(cmdlist_t **Qptr, cmdlist_t *c);
 static inline cmdlist_t *removeQ(cmdlist_t **Qptr, cmdlist_t *c);
-static inline void complete_buffers(struct bio *bio, int ok);
 static inline void complete_command(cmdlist_t *cmd, int timeout);
 
 static irqreturn_t do_ida_intr(int irq, void *dev_id);
@@ -198,7 +197,7 @@ static struct block_device_operations ida_fops  = {
 	.owner		= THIS_MODULE,
 	.open		= ida_open,
 	.release	= ida_release,
-	.ioctl		= ida_ioctl,
+	.locked_ioctl	= ida_ioctl,
 	.getgeo		= ida_getgeo,
 	.revalidate_disk= ida_revalidate,
 };
@@ -215,7 +214,7 @@ static struct proc_dir_entry *proc_array;
 static void __init ida_procinit(int i)
 {
 	if (proc_array == NULL) {
-		proc_array = proc_mkdir("cpqarray", proc_root_driver);
+		proc_array = proc_mkdir("driver/cpqarray", NULL);
 		if (!proc_array) return;
 	}
 
@@ -425,7 +424,7 @@ static int __init cpqarray_register_ctlr( int i, struct pci_dev *pdev)
 		hba[i]->pci_dev, NR_CMDS * sizeof(cmdlist_t),
 		&(hba[i]->cmd_pool_dhandle));
 	hba[i]->cmd_pool_bits = kcalloc(
-		(NR_CMDS+BITS_PER_LONG-1)/BITS_PER_LONG, sizeof(unsigned long),
+		DIV_ROUND_UP(NR_CMDS, BITS_PER_LONG), sizeof(unsigned long),
 		GFP_KERNEL);
 
 	if (!hba[i]->cmd_pool_bits || !hba[i]->cmd_pool)
@@ -568,7 +567,12 @@ static int __init cpqarray_init(void)
 			num_cntlrs_reg++;
 	}
 
-	return(num_cntlrs_reg);
+	if (num_cntlrs_reg)
+		return 0;
+	else {
+		pci_unregister_driver(&cpqarray_pci_driver);
+		return -ENODEV;
+	}
 }
 
 /* Function to find the first free pointer into our hba[] array */
@@ -819,12 +823,12 @@ DBGINFO(
 /*
  * Open.  Make sure the device is really there.
  */
-static int ida_open(struct inode *inode, struct file *filep)
+static int ida_open(struct block_device *bdev, fmode_t mode)
 {
-	drv_info_t *drv = get_drv(inode->i_bdev->bd_disk);
-	ctlr_info_t *host = get_host(inode->i_bdev->bd_disk);
+	drv_info_t *drv = get_drv(bdev->bd_disk);
+	ctlr_info_t *host = get_host(bdev->bd_disk);
 
-	DBGINFO(printk("ida_open %s\n", inode->i_bdev->bd_disk->disk_name));
+	DBGINFO(printk("ida_open %s\n", bdev->bd_disk->disk_name));
 	/*
 	 * Root is allowed to open raw volume zero even if it's not configured
 	 * so array config can still work.  I don't think I really like this,
@@ -844,9 +848,9 @@ static int ida_open(struct inode *inode, struct file *filep)
 /*
  * Close.  Sync first.
  */
-static int ida_release(struct inode *inode, struct file *filep)
+static int ida_release(struct gendisk *disk, fmode_t mode)
 {
-	ctlr_info_t *host = get_host(inode->i_bdev->bd_disk);
+	ctlr_info_t *host = get_host(disk);
 	host->usage_count--;
 	return 0;
 }
@@ -980,26 +984,13 @@ static void start_io(ctlr_info_t *h)
 	}
 }
 
-static inline void complete_buffers(struct bio *bio, int ok)
-{
-	struct bio *xbh;
-
-	while (bio) {
-		xbh = bio->bi_next;
-		bio->bi_next = NULL;
-		
-		bio_endio(bio, ok ? 0 : -EIO);
-
-		bio = xbh;
-	}
-}
 /*
  * Mark all buffers that cmd was responsible for
  */
 static inline void complete_command(cmdlist_t *cmd, int timeout)
 {
 	struct request *rq = cmd->rq;
-	int ok=1;
+	int error = 0;
 	int i, ddir;
 
 	if (cmd->req.hdr.rcode & RCODE_NONFATAL &&
@@ -1011,16 +1002,17 @@ static inline void complete_command(cmdlist_t *cmd, int timeout)
 	if (cmd->req.hdr.rcode & RCODE_FATAL) {
 		printk(KERN_WARNING "Fatal error on ida/c%dd%d\n",
 				cmd->ctlr, cmd->hdr.unit);
-		ok = 0;
+		error = -EIO;
 	}
 	if (cmd->req.hdr.rcode & RCODE_INVREQ) {
 				printk(KERN_WARNING "Invalid request on ida/c%dd%d = (cmd=%x sect=%d cnt=%d sg=%d ret=%x)\n",
 				cmd->ctlr, cmd->hdr.unit, cmd->req.hdr.cmd,
 				cmd->req.hdr.blk, cmd->req.hdr.blk_cnt,
 				cmd->req.hdr.sg_cnt, cmd->req.hdr.rcode);
-		ok = 0;	
+		error = -EIO;
 	}
-	if (timeout) ok = 0;
+	if (timeout)
+		error = -EIO;
 	/* unmap the DMA mapping for all the scatter gather elements */
 	if (cmd->req.hdr.cmd == IDA_READ)
 		ddir = PCI_DMA_FROMDEVICE;
@@ -1030,18 +1022,9 @@ static inline void complete_command(cmdlist_t *cmd, int timeout)
                 pci_unmap_page(hba[cmd->ctlr]->pci_dev, cmd->req.sg[i].addr,
 				cmd->req.sg[i].size, ddir);
 
-	complete_buffers(rq->bio, ok);
-
-	if (blk_fs_request(rq)) {
-		const int rw = rq_data_dir(rq);
-
-		disk_stat_add(rq->rq_disk, sectors[rw], rq->nr_sectors);
-	}
-
-	add_disk_randomness(rq->rq_disk);
-
 	DBGPX(printk("Done with %p\n", rq););
-	end_that_request_last(rq, ok ? 1 : -EIO);
+	if (__blk_end_request(rq, error, blk_rq_bytes(rq)))
+		BUG();
 }
 
 /*
@@ -1150,10 +1133,10 @@ static int ida_getgeo(struct block_device *bdev, struct hd_geometry *geo)
  *  ida_ioctl does some miscellaneous stuff like reporting drive geometry,
  *  setting readahead and submitting commands from userspace to the controller.
  */
-static int ida_ioctl(struct inode *inode, struct file *filep, unsigned int cmd, unsigned long arg)
+static int ida_ioctl(struct block_device *bdev, fmode_t mode, unsigned int cmd, unsigned long arg)
 {
-	drv_info_t *drv = get_drv(inode->i_bdev->bd_disk);
-	ctlr_info_t *host = get_host(inode->i_bdev->bd_disk);
+	drv_info_t *drv = get_drv(bdev->bd_disk);
+	ctlr_info_t *host = get_host(bdev->bd_disk);
 	int error;
 	ida_ioctl_t __user *io = (ida_ioctl_t __user *)arg;
 	ida_ioctl_t *my_io;
@@ -1187,7 +1170,7 @@ out_passthru:
 		put_user(host->ctlr_sig, (int __user *)arg);
 		return 0;
 	case IDAREVALIDATEVOLS:
-		if (iminor(inode) != 0)
+		if (MINOR(bdev->bd_dev) != 0)
 			return -ENXIO;
 		return revalidate_allvol(host);
 	case IDADRIVERVERSION:
@@ -1818,7 +1801,7 @@ static void __exit cpqarray_exit(void)
 		}
 	}
 
-	remove_proc_entry("cpqarray", proc_root_driver);
+	remove_proc_entry("driver/cpqarray", NULL);
 }
 
 module_init(cpqarray_init)

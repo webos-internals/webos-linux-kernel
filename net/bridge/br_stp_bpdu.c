@@ -5,8 +5,6 @@
  *	Authors:
  *	Lennert Buytenhek		<buytenh@gnu.org>
  *
- *	$Id: br_stp_bpdu.c,v 1.3 2001/11/10 02:35:25 davem Exp $
- *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
  *	as published by the Free Software Foundation; either version
@@ -20,6 +18,7 @@
 #include <net/net_namespace.h>
 #include <net/llc.h>
 #include <net/llc_pdu.h>
+#include <net/stp.h>
 #include <asm/unaligned.h>
 
 #include "br_private.h"
@@ -58,12 +57,12 @@ static inline void br_set_ticks(unsigned char *dest, int j)
 {
 	unsigned long ticks = (STP_HZ * j)/ HZ;
 
-	put_unaligned(htons(ticks), (__be16 *)dest);
+	put_unaligned_be16(ticks, dest);
 }
 
 static inline int br_get_ticks(const unsigned char *src)
 {
-	unsigned long ticks = ntohs(get_unaligned((__be16 *)src));
+	unsigned long ticks = get_unaligned_be16(src);
 
 	return DIV_ROUND_UP(ticks * HZ, STP_HZ);
 }
@@ -133,24 +132,15 @@ void br_send_tcn_bpdu(struct net_bridge_port *p)
  *
  * NO locks, but rcu_read_lock (preempt_disabled)
  */
-int br_stp_rcv(struct sk_buff *skb, struct net_device *dev,
-	       struct packet_type *pt, struct net_device *orig_dev)
+void br_stp_rcv(const struct stp_proto *proto, struct sk_buff *skb,
+		struct net_device *dev)
 {
-	const struct llc_pdu_un *pdu = llc_pdu_un_hdr(skb);
 	const unsigned char *dest = eth_hdr(skb)->h_dest;
 	struct net_bridge_port *p = rcu_dereference(dev->br_port);
 	struct net_bridge *br;
 	const unsigned char *buf;
 
-	if (dev->nd_net != &init_net)
-		goto err;
-
 	if (!p)
-		goto err;
-
-	if (pdu->ssap != LLC_SAP_BSPAN
-	    || pdu->dsap != LLC_SAP_BSPAN
-	    || pdu->ctrl_1 != LLC_PDU_TYPE_U)
 		goto err;
 
 	if (!pskb_may_pull(skb, 4))
@@ -226,5 +216,4 @@ int br_stp_rcv(struct sk_buff *skb, struct net_device *dev,
 	spin_unlock(&br->lock);
  err:
 	kfree_skb(skb);
-	return 0;
 }

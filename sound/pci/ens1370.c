@@ -26,7 +26,6 @@
  * by Kurt J. Bosch
  */
 
-#include <sound/driver.h>
 #include <asm/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -523,7 +522,7 @@ static unsigned int snd_es1371_wait_src_ready(struct ensoniq * ensoniq)
 			return r;
 		cond_resched();
 	}
-	snd_printk(KERN_ERR "wait source ready timeout 0x%lx [0x%x]\n",
+	snd_printk(KERN_ERR "wait src ready timeout 0x%lx [0x%x]\n",
 		   ES_REG(ensoniq, 1371_SMPRATE), r);
 	return 0;
 }
@@ -1630,26 +1629,27 @@ static int __devinit snd_ensoniq_1371_mixer(struct ensoniq *ensoniq,
 	memset(&ac97, 0, sizeof(ac97));
 	ac97.private_data = ensoniq;
 	ac97.private_free = snd_ensoniq_mixer_free_ac97;
+	ac97.pci = ensoniq->pci;
 	ac97.scaps = AC97_SCAP_AUDIO;
 	if ((err = snd_ac97_mixer(pbus, &ac97, &ensoniq->u.es1371.ac97)) < 0)
 		return err;
 	if (has_spdif > 0 ||
 	    (!has_spdif && es1371_quirk_lookup(ensoniq, es1371_spdif_present))) {
 		struct snd_kcontrol *kctl;
-		int i, index = 0;
+		int i, is_spdif = 0;
 
 		ensoniq->spdif_default = ensoniq->spdif_stream =
 			SNDRV_PCM_DEFAULT_CON_SPDIF;
 		outl(ensoniq->spdif_default, ES_REG(ensoniq, CHANNEL_STATUS));
 
 		if (ensoniq->u.es1371.ac97->ext_id & AC97_EI_SPDIF)
-			index++;
+			is_spdif++;
 
 		for (i = 0; i < ARRAY_SIZE(snd_es1371_mixer_spdif); i++) {
 			kctl = snd_ctl_new1(&snd_es1371_mixer_spdif[i], ensoniq);
 			if (!kctl)
 				return -ENOMEM;
-			kctl->id.index = index;
+			kctl->id.index = is_spdif;
 			err = snd_ctl_add(card, kctl);
 			if (err < 0)
 				return err;
@@ -1911,7 +1911,8 @@ static int snd_ensoniq_free(struct ensoniq *ensoniq)
 	outl(0, ES_REG(ensoniq, CONTROL));	/* switch everything off */
 	outl(0, ES_REG(ensoniq, SERIAL));	/* clear serial interface */
 #endif
-	synchronize_irq(ensoniq->irq);
+	if (ensoniq->irq >= 0)
+		synchronize_irq(ensoniq->irq);
 	pci_set_power_state(ensoniq->pci, 3);
       __hw_end:
 #ifdef CHIP1370

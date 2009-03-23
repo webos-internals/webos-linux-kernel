@@ -13,19 +13,7 @@
 
 #include <asm/mman.h>
 #include <asm/uaccess.h>
-
-asmlinkage int sys_pipe(unsigned long __user *filedes)
-{
-	int fd[2];
-	int error;
-
-	error = do_pipe(fd);
-	if (!error) {
-		if (copy_to_user(filedes, fd, sizeof(fd)))
-			error = -EFAULT;
-	}
-	return error;
-}
+#include <asm/syscalls.h>
 
 asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
 			  unsigned long prot, unsigned long flags,

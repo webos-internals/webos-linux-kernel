@@ -20,7 +20,7 @@ struct netpoll {
 
 	u32 local_ip, remote_ip;
 	u16 local_port, remote_port;
- 	u8 local_mac[ETH_ALEN], remote_mac[ETH_ALEN];
+	u8 remote_mac[ETH_ALEN];
 };
 
 struct netpoll_info {
@@ -92,11 +92,6 @@ static inline void netpoll_poll_unlock(void *have)
 		spin_unlock(&napi->poll_lock);
 	}
 	rcu_read_unlock();
-}
-
-static inline void netpoll_netdev_init(struct net_device *dev)
-{
-	INIT_LIST_HEAD(&dev->napi_list);
 }
 
 #else

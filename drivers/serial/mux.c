@@ -243,7 +243,7 @@ static void mux_write(struct uart_port *port)
 static void mux_read(struct uart_port *port)
 {
 	int data;
-	struct tty_struct *tty = port->info->tty;
+	struct tty_struct *tty = port->info->port.tty;
 	__u32 start_count = port->icount.rx;
 
 	while(1) {
@@ -582,7 +582,7 @@ static struct parisc_driver serial_mux_driver = {
 };
 
 /**
- * mux_init - Serial MUX initalization procedure.
+ * mux_init - Serial MUX initialization procedure.
  *
  * Register the Serial MUX driver.
  */

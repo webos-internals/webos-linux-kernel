@@ -32,12 +32,18 @@ extern int compat_sock_get_timestampns(struct sock *, struct timespec __user *);
 #endif /* defined(CONFIG_COMPAT) */
 
 extern int get_compat_msghdr(struct msghdr *, struct compat_msghdr __user *);
-extern int verify_compat_iovec(struct msghdr *, struct iovec *, char *, int);
+extern int verify_compat_iovec(struct msghdr *, struct iovec *, struct sockaddr *, int);
 extern asmlinkage long compat_sys_sendmsg(int,struct compat_msghdr __user *,unsigned);
 extern asmlinkage long compat_sys_recvmsg(int,struct compat_msghdr __user *,unsigned);
 extern asmlinkage long compat_sys_getsockopt(int, int, int, char __user *, int __user *);
 extern int put_cmsg_compat(struct msghdr*, int, int, int, void *);
 
 extern int cmsghdr_from_user_compat_to_kern(struct msghdr *, struct sock *, unsigned char *, int);
+
+extern int compat_mc_setsockopt(struct sock *, int, int, char __user *, int,
+	int (*)(struct sock *, int, int, char __user *, int));
+extern int compat_mc_getsockopt(struct sock *, int, int, char __user *,
+	int __user *, int (*)(struct sock *, int, int, char __user *,
+				int __user *));
 
 #endif /* NET_COMPAT_H */

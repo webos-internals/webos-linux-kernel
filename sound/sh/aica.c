@@ -35,7 +35,6 @@
 #include <linux/timer.h>
 #include <linux/delay.h>
 #include <linux/workqueue.h>
-#include <sound/driver.h>
 #include <sound/core.h>
 #include <sound/control.h>
 #include <sound/pcm.h>
@@ -43,7 +42,7 @@
 #include <sound/info.h>
 #include <asm/io.h>
 #include <asm/dma.h>
-#include <asm/dreamcast/sysasic.h>
+#include <mach/sysasic.h>
 #include "aica.h"
 
 MODULE_AUTHOR("Adrian McMenamin <adrian@mcmen.demon.co.uk>");
@@ -107,7 +106,8 @@ static void spu_memset(u32 toi, u32 what, int length)
 {
 	int i;
 	unsigned long flags;
-	snd_assert(length % 4 == 0, return);
+	if (snd_BUG_ON(length % 4))
+		return;
 	for (i = 0; i < length; i++) {
 		if (!(i % 8))
 			spu_write_wait();
@@ -237,6 +237,7 @@ static int aica_dma_transfer(int channels, int buffer_size,
 	struct snd_card_aica *dreamcastcard;
 	struct snd_pcm_runtime *runtime;
 	unsigned long flags;
+	err = 0;
 	dreamcastcard = substream->pcm->private_data;
 	period_offset = dreamcastcard->clicks;
 	period_offset %= (AICA_PERIOD_NUMBER / channels);
@@ -522,11 +523,14 @@ static int aica_pcmvolume_put(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_card_aica *dreamcastcard;
+	unsigned int vol;
 	dreamcastcard = kcontrol->private_data;
 	if (unlikely(!dreamcastcard->channel))
 		return -ETXTBSY;
-	if (unlikely(dreamcastcard->channel->vol ==
-		     ucontrol->value.integer.value[0]))
+	vol = ucontrol->value.integer.value[0];
+	if (vol > 0xff)
+		return -EINVAL;
+	if (unlikely(dreamcastcard->channel->vol == vol))
 		return 0;
 	dreamcastcard->channel->vol = ucontrol->value.integer.value[0];
 	dreamcastcard->master_volume = ucontrol->value.integer.value[0];
@@ -586,7 +590,7 @@ static int __devinit add_aicamixer_controls(struct snd_card_aica
 	return 0;
 }
 
-static int snd_aica_remove(struct platform_device *devptr)
+static int __devexit snd_aica_remove(struct platform_device *devptr)
 {
 	struct snd_card_aica *dreamcastcard;
 	dreamcastcard = platform_get_drvdata(devptr);
@@ -598,7 +602,7 @@ static int snd_aica_remove(struct platform_device *devptr)
 	return 0;
 }
 
-static int __init snd_aica_probe(struct platform_device *devptr)
+static int __devinit snd_aica_probe(struct platform_device *devptr)
 {
 	int err;
 	struct snd_card_aica *dreamcastcard;
@@ -647,7 +651,7 @@ static int __init snd_aica_probe(struct platform_device *devptr)
 
 static struct platform_driver snd_aica_driver = {
 	.probe = snd_aica_probe,
-	.remove = snd_aica_remove,
+	.remove = __devexit_p(snd_aica_remove),
 	.driver = {
 		   .name = SND_AICA_DRIVER},
 };
@@ -660,7 +664,7 @@ static int __init aica_init(void)
 		return err;
 	pd = platform_device_register_simple(SND_AICA_DRIVER, -1,
 					     aica_memory_space, 2);
-	if (unlikely(IS_ERR(pd))) {
+	if (IS_ERR(pd)) {
 		platform_driver_unregister(&snd_aica_driver);
 		return PTR_ERR(pd);
 	}

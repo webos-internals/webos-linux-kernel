@@ -119,8 +119,6 @@ retry:
 			goto fault;
 
 		pfn = pte_pfn(*pte);
-		if (!pfn_valid(pfn))
-			goto out;
 
 		offset = uaddr & (PAGE_SIZE - 1);
 		size = min(n - done, PAGE_SIZE - offset);
@@ -135,7 +133,6 @@ retry:
 		done += size;
 		uaddr += size;
 	} while (done < n);
-out:
 	spin_unlock(&mm->page_table_lock);
 	return n - done;
 fault:
@@ -163,9 +160,6 @@ retry:
 		goto fault;
 
 	pfn = pte_pfn(*pte);
-	if (!pfn_valid(pfn))
-		goto out;
-
 	ret = (pfn << PAGE_SHIFT) + (uaddr & (PAGE_SIZE - 1));
 out:
 	return ret;
@@ -244,11 +238,6 @@ retry:
 			goto fault;
 
 		pfn = pte_pfn(*pte);
-		if (!pfn_valid(pfn)) {
-			done = -1;
-			goto out;
-		}
-
 		offset = uaddr & (PAGE_SIZE-1);
 		addr = (char *)(pfn << PAGE_SHIFT) + offset;
 		len = min(count - done, PAGE_SIZE - offset);
@@ -256,7 +245,6 @@ retry:
 		done += len_str;
 		uaddr += len_str;
 	} while ((len_str == len) && (done < count));
-out:
 	spin_unlock(&mm->page_table_lock);
 	return done + 1;
 fault:
@@ -302,6 +290,10 @@ static size_t copy_in_user_pt(size_t n, void __user *to,
 	pte_t *pte_from, *pte_to;
 	int write_user;
 
+	if (segment_eq(get_fs(), KERNEL_DS)) {
+		memcpy((void __force *) to, (void __force *) from, n);
+		return 0;
+	}
 	done = 0;
 retry:
 	spin_lock(&mm->page_table_lock);
@@ -321,12 +313,7 @@ retry:
 		}
 
 		pfn_from = pte_pfn(*pte_from);
-		if (!pfn_valid(pfn_from))
-			goto out;
 		pfn_to = pte_pfn(*pte_to);
-		if (!pfn_valid(pfn_to))
-			goto out;
-
 		offset_from = uaddr_from & (PAGE_SIZE-1);
 		offset_to = uaddr_from & (PAGE_SIZE-1);
 		offset_max = max(offset_from, offset_to);
@@ -338,7 +325,6 @@ retry:
 		uaddr_from += size;
 		uaddr_to += size;
 	} while (done < n);
-out:
 	spin_unlock(&mm->page_table_lock);
 	return n - done;
 fault:
@@ -361,18 +347,10 @@ fault:
 		     : "0" (-EFAULT), "d" (oparg), "a" (uaddr),		\
 		       "m" (*uaddr) : "cc" );
 
-int futex_atomic_op_pt(int op, int __user *uaddr, int oparg, int *old)
+static int __futex_atomic_op_pt(int op, int __user *uaddr, int oparg, int *old)
 {
 	int oldval = 0, newval, ret;
 
-	spin_lock(&current->mm->page_table_lock);
-	uaddr = (int __user *) __dat_user_addr((unsigned long) uaddr);
-	if (!uaddr) {
-		spin_unlock(&current->mm->page_table_lock);
-		return -EFAULT;
-	}
-	get_page(virt_to_page(uaddr));
-	spin_unlock(&current->mm->page_table_lock);
 	switch (op) {
 	case FUTEX_OP_SET:
 		__futex_atomic_op("lr %2,%5\n",
@@ -397,15 +375,17 @@ int futex_atomic_op_pt(int op, int __user *uaddr, int oparg, int *old)
 	default:
 		ret = -ENOSYS;
 	}
-	put_page(virt_to_page(uaddr));
-	*old = oldval;
+	if (ret == 0)
+		*old = oldval;
 	return ret;
 }
 
-int futex_atomic_cmpxchg_pt(int __user *uaddr, int oldval, int newval)
+int futex_atomic_op_pt(int op, int __user *uaddr, int oparg, int *old)
 {
 	int ret;
 
+	if (segment_eq(get_fs(), KERNEL_DS))
+		return __futex_atomic_op_pt(op, uaddr, oparg, old);
 	spin_lock(&current->mm->page_table_lock);
 	uaddr = (int __user *) __dat_user_addr((unsigned long) uaddr);
 	if (!uaddr) {
@@ -414,13 +394,40 @@ int futex_atomic_cmpxchg_pt(int __user *uaddr, int oldval, int newval)
 	}
 	get_page(virt_to_page(uaddr));
 	spin_unlock(&current->mm->page_table_lock);
-	asm volatile("   cs   %1,%4,0(%5)\n"
-		     "0: lr   %0,%1\n"
-		     "1:\n"
-		     EX_TABLE(0b,1b)
+	ret = __futex_atomic_op_pt(op, uaddr, oparg, old);
+	put_page(virt_to_page(uaddr));
+	return ret;
+}
+
+static int __futex_atomic_cmpxchg_pt(int __user *uaddr, int oldval, int newval)
+{
+	int ret;
+
+	asm volatile("0: cs   %1,%4,0(%5)\n"
+		     "1: lr   %0,%1\n"
+		     "2:\n"
+		     EX_TABLE(0b,2b) EX_TABLE(1b,2b)
 		     : "=d" (ret), "+d" (oldval), "=m" (*uaddr)
 		     : "0" (-EFAULT), "d" (newval), "a" (uaddr), "m" (*uaddr)
 		     : "cc", "memory" );
+	return ret;
+}
+
+int futex_atomic_cmpxchg_pt(int __user *uaddr, int oldval, int newval)
+{
+	int ret;
+
+	if (segment_eq(get_fs(), KERNEL_DS))
+		return __futex_atomic_cmpxchg_pt(uaddr, oldval, newval);
+	spin_lock(&current->mm->page_table_lock);
+	uaddr = (int __user *) __dat_user_addr((unsigned long) uaddr);
+	if (!uaddr) {
+		spin_unlock(&current->mm->page_table_lock);
+		return -EFAULT;
+	}
+	get_page(virt_to_page(uaddr));
+	spin_unlock(&current->mm->page_table_lock);
+	ret = __futex_atomic_cmpxchg_pt(uaddr, oldval, newval);
 	put_page(virt_to_page(uaddr));
 	return ret;
 }

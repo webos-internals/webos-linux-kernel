@@ -2,8 +2,8 @@
 # USB Storage driver configuration
 #
 
-comment "NOTE: USB_STORAGE enables SCSI, and 'SCSI disk support'"
-comment "may also be needed; see USB_STORAGE Help for more information"
+comment "NOTE: USB_STORAGE depends on SCSI but BLK_DEV_SD may also be needed;"
+comment "see USB_STORAGE Help for more information"
 	depends on USB
 
 config USB_STORAGE
@@ -32,8 +32,8 @@ config USB_STORAGE_DEBUG
 	  verbose debugging messages.
 
 config USB_STORAGE_DATAFAB
-	bool "Datafab Compact Flash Reader support (EXPERIMENTAL)"
-	depends on USB_STORAGE && EXPERIMENTAL
+	bool "Datafab Compact Flash Reader support"
+	depends on USB_STORAGE
 	help
 	  Support for certain Datafab CompactFlash readers.
 	  Datafab has a web page at <http://www.datafabusa.com/>.
@@ -61,16 +61,9 @@ config USB_STORAGE_ISD200
 	  - CyQ've CQ8060A CDRW drive
 	  - Planex eXtreme Drive RX-25HU USB-IDE cable (not model RX-25U)
 
-config USB_STORAGE_DPCM
-	bool "Microtech/ZiO! CompactFlash/SmartMedia support"
-	depends on USB_STORAGE
-	help
-	  Say Y here to support the Microtech/ZiO! CompactFlash reader.
-	  There is a web page at <http://www.ziocorp.com/products/>.
-
 config USB_STORAGE_USBAT
-	bool "USBAT/USBAT02-based storage support (EXPERIMENTAL)"
-	depends on USB_STORAGE && EXPERIMENTAL
+	bool "USBAT/USBAT02-based storage support"
+	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support storage devices
 	  based on the SCM/Shuttle USBAT/USBAT02 processors.
@@ -90,30 +83,30 @@ config USB_STORAGE_USBAT
 	  - Sandisk ImageMate SDDR-05b
 
 config USB_STORAGE_SDDR09
-	bool "SanDisk SDDR-09 (and other SmartMedia) support (EXPERIMENTAL)"
-	depends on USB_STORAGE && EXPERIMENTAL
+	bool "SanDisk SDDR-09 (and other SmartMedia, including DPCM) support"
+	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Sandisk SDDR-09
 	  SmartMedia reader in the USB Mass Storage driver.
-	  Also works for the Microtech Zio! SmartMedia reader.
+	  Also works for the Microtech Zio! CompactFlash/SmartMedia reader.
 
 config USB_STORAGE_SDDR55
-	bool "SanDisk SDDR-55 SmartMedia support (EXPERIMENTAL)"
-	depends on USB_STORAGE && EXPERIMENTAL
+	bool "SanDisk SDDR-55 SmartMedia support"
+	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Sandisk SDDR-55
 	  SmartMedia reader in the USB Mass Storage driver.
 
 config USB_STORAGE_JUMPSHOT
-	bool "Lexar Jumpshot Compact Flash Reader (EXPERIMENTAL)"
-	depends on USB_STORAGE && EXPERIMENTAL
+	bool "Lexar Jumpshot Compact Flash Reader"
+	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Lexar Jumpshot
 	  USB CompactFlash reader.
 
 config USB_STORAGE_ALAUDA
-	bool "Olympus MAUSB-10/Fuji DPC-R1 support (EXPERIMENTAL)"
-	depends on USB_STORAGE && EXPERIMENTAL
+	bool "Olympus MAUSB-10/Fuji DPC-R1 support"
+	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Olympus MAUSB-10
 	  and Fujifilm DPC-R1 USB Card reader/writer devices.
@@ -122,8 +115,9 @@ config USB_STORAGE_ALAUDA
 	  XD and SmartMedia cards.
 
 config USB_STORAGE_ONETOUCH
-	bool "Support OneTouch Button on Maxtor Hard Drives (EXPERIMENTAL)"
-	depends on USB_STORAGE && INPUT_EVDEV && EXPERIMENTAL && !PM
+	bool "Support OneTouch Button on Maxtor Hard Drives"
+	depends on USB_STORAGE
+	depends on INPUT=y || INPUT=USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Maxtor OneTouch
 	  USB hard drive's onetouch button.
@@ -144,6 +138,17 @@ config USB_STORAGE_KARMA
 	  it to be mounted as an ordinary filesystem. Performing an eject
 	  on the resulting scsi device node returns the Karma to normal
 	  operation.
+
+config USB_STORAGE_CYPRESS_ATACB
+	bool "SAT emulation on Cypress USB/ATA Bridge with ATACB"
+	depends on USB_STORAGE
+	---help---
+	  Say Y here if you want to use SAT (ata pass through) on devices based
+	  on the Cypress USB/ATA bridge supporting ATACB. This will allow you
+	  to use tools to tune and monitor your drive (like hdparm or smartctl).
+
+	  If you say no here your device will still work with the standard usb
+	  mass storage class.
 
 config USB_LIBUSUAL
 	bool "The shared table of common (or usual) storage devices"

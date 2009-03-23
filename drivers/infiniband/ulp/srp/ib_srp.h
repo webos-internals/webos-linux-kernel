@@ -28,8 +28,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: ib_srp.h 3932 2005-11-01 17:19:29Z roland $
  */
 
 #ifndef IB_SRP_H
@@ -54,6 +52,7 @@ enum {
 
 	SRP_PORT_REDIRECT	= 1,
 	SRP_DLID_REDIRECT	= 2,
+	SRP_STALE_CONN		= 3,
 
 	SRP_MAX_LUN		= 512,
 	SRP_DEF_SG_TABLESIZE	= 12,
@@ -79,6 +78,11 @@ enum srp_target_state {
 	SRP_TARGET_REMOVED
 };
 
+enum srp_request_type {
+	SRP_REQ_NORMAL,
+	SRP_REQ_TASK_MGMT,
+};
+
 struct srp_device {
 	struct list_head	dev_list;
 	struct ib_device       *dev;
@@ -91,9 +95,9 @@ struct srp_device {
 };
 
 struct srp_host {
-	struct srp_device      *dev;
+	struct srp_device      *srp_dev;
 	u8			port;
-	struct class_device	class_dev;
+	struct device		dev;
 	struct list_head	target_list;
 	spinlock_t		target_lock;
 	struct completion	released;

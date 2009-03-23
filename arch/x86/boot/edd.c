@@ -9,8 +9,6 @@
  * ----------------------------------------------------------------------- */
 
 /*
- * arch/i386/boot/edd.c
- *
  * Get EDD BIOS disk information
  */
 
@@ -43,6 +41,7 @@ static u32 read_mbr_sig(u8 devno, struct edd_info *ei, u32 *mbrsig)
 	char *mbrbuf_ptr, *mbrbuf_end;
 	u32 buf_base, mbr_base;
 	extern char _end[];
+	u16 mbr_magic;
 
 	sector_size = ei->params.bytes_per_sector;
 	if (!sector_size)
@@ -60,11 +59,15 @@ static u32 read_mbr_sig(u8 devno, struct edd_info *ei, u32 *mbrsig)
 	if (mbrbuf_end > (char *)(size_t)boot_params.hdr.heap_end_ptr)
 		return -1;
 
+	memset(mbrbuf_ptr, 0, sector_size);
 	if (read_mbr(devno, mbrbuf_ptr))
 		return -1;
 
 	*mbrsig = *(u32 *)&mbrbuf_ptr[EDD_MBR_SIG_OFFSET];
-	return 0;
+	mbr_magic = *(u16 *)&mbrbuf_ptr[510];
+
+	/* check for valid MBR magic */
+	return mbr_magic == 0xAA55 ? 0 : -1;
 }
 
 static int get_edd_info(u8 devno, struct edd_info *ei)
@@ -128,17 +131,28 @@ void query_edd(void)
 {
 	char eddarg[8];
 	int do_mbr = 1;
+#ifdef CONFIG_EDD_OFF
+	int do_edd = 0;
+#else
 	int do_edd = 1;
+#endif
+	int be_quiet;
 	int devno;
 	struct edd_info ei, *edp;
 	u32 *mbrptr;
 
 	if (cmdline_find_option("edd", eddarg, sizeof eddarg) > 0) {
-		if (!strcmp(eddarg, "skipmbr") || !strcmp(eddarg, "skip"))
+		if (!strcmp(eddarg, "skipmbr") || !strcmp(eddarg, "skip")) {
+			do_edd = 1;
 			do_mbr = 0;
+		}
 		else if (!strcmp(eddarg, "off"))
 			do_edd = 0;
+		else if (!strcmp(eddarg, "on"))
+			do_edd = 1;
 	}
+
+	be_quiet = cmdline_find_option_bool("quiet");
 
 	edp    = boot_params.eddbuf;
 	mbrptr = boot_params.edd_mbr_sig_buffer;
@@ -146,14 +160,20 @@ void query_edd(void)
 	if (!do_edd)
 		return;
 
+	/* Bugs in OnBoard or AddOnCards Bios may hang the EDD probe,
+	 * so give a hint if this happens.
+	 */
+
+	if (!be_quiet)
+		printf("Probing EDD (edd=off to disable)... ");
+
 	for (devno = 0x80; devno < 0x80+EDD_MBR_SIG_MAX; devno++) {
 		/*
 		 * Scan the BIOS-supported hard disks and query EDD
 		 * information...
 		 */
-		get_edd_info(devno, &ei);
-
-		if (boot_params.eddbuf_entries < EDDMAXNR) {
+		if (!get_edd_info(devno, &ei)
+		    && boot_params.eddbuf_entries < EDDMAXNR) {
 			memcpy(edp, &ei, sizeof ei);
 			edp++;
 			boot_params.eddbuf_entries++;
@@ -162,6 +182,9 @@ void query_edd(void)
 		if (do_mbr && !read_mbr_sig(devno, &ei, mbrptr++))
 			boot_params.edd_mbr_sig_buf_entries = devno-0x80+1;
 	}
+
+	if (!be_quiet)
+		printf("ok\n");
 }
 
 #endif

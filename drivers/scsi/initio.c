@@ -4,7 +4,7 @@
  * Copyright (c) 1994-1998 Initio Corporation
  * Copyright (c) 1998 Bas Vermeulen <bvermeul@blackstar.xs4all.nl>
  * Copyright (c) 2004 Christoph Hellwig <hch@lst.de>
- * Copyright (c) 2007 Red Hat <alan@redhat.com>
+ * Copyright (c) 2007 Red Hat
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -2581,8 +2581,8 @@ static void initio_build_scb(struct initio_host * host, struct scsi_ctrl_blk * c
 	/* Map the sense buffer into bus memory */
 	dma_addr = dma_map_single(&host->pci_dev->dev, cmnd->sense_buffer,
 				  SENSE_SIZE, DMA_FROM_DEVICE);
-	cblk->senseptr = cpu_to_le32((u32)dma_addr);
-	cblk->senselen = cpu_to_le32(SENSE_SIZE);
+	cblk->senseptr = (u32)dma_addr;
+	cblk->senselen = SENSE_SIZE;
 	cmnd->SCp.ptr = (char *)(unsigned long)dma_addr;
 	cblk->cdblen = cmnd->cmd_len;
 
@@ -2590,7 +2590,7 @@ static void initio_build_scb(struct initio_host * host, struct scsi_ctrl_blk * c
 	cblk->hastat = 0;
 	cblk->tastat = 0;
 	/* Command the command */
-	memcpy(&cblk->cdb[0], &cmnd->cmnd, cmnd->cmd_len);
+	memcpy(cblk->cdb, cmnd->cmnd, cmnd->cmd_len);
 
 	/* Set up tags */
 	if (cmnd->device->tagged_supported) {	/* Tag Support                  */
@@ -2606,7 +2606,7 @@ static void initio_build_scb(struct initio_host * host, struct scsi_ctrl_blk * c
 		dma_addr = dma_map_single(&host->pci_dev->dev, &cblk->sglist[0],
 					  sizeof(struct sg_entry) * TOTAL_SG_ENTRY,
 					  DMA_BIDIRECTIONAL);
-		cblk->bufptr = cpu_to_le32((u32)dma_addr);
+		cblk->bufptr = (u32)dma_addr;
 		cmnd->SCp.dma_handle = dma_addr;
 
 		cblk->sglen = nseg;
@@ -2616,7 +2616,8 @@ static void initio_build_scb(struct initio_host * host, struct scsi_ctrl_blk * c
 		sg = &cblk->sglist[0];
 		scsi_for_each_sg(cmnd, sglist, cblk->sglen, i) {
 			sg->data = cpu_to_le32((u32)sg_dma_address(sglist));
-			total_len += sg->len = cpu_to_le32((u32)sg_dma_len(sglist));
+			sg->len = cpu_to_le32((u32)sg_dma_len(sglist));
+			total_len += sg_dma_len(sglist);
 			++sg;
 		}
 
@@ -2833,7 +2834,6 @@ static struct scsi_host_template initio_template = {
 	.sg_tablesize		= SG_ALL,
 	.cmd_per_lun		= 1,
 	.use_clustering		= ENABLE_CLUSTERING,
-	.use_sg_chaining	= ENABLE_SG_CHAINING,
 };
 
 static int initio_probe_one(struct pci_dev *pdev,

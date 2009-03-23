@@ -2,12 +2,6 @@
  * Fast Ethernet Controller (FEC) driver for Motorola MPC8xx.
  * Copyright (c) 1997 Dan Malek (dmalek@jlc.net)
  *
- * This version of the driver is specific to the FADS implementation,
- * since the board contains control registers external to the processor
- * for the control of the LevelOne LXT970 transceiver.  The MPC860T manual
- * describes connections using the internal parallel port I/O, which
- * is basically all of Port D.
- *
  * Right now, I am very wasteful with the buffers.  I allocate memory
  * pages and then divide them into 2K frame buffers.  This way I know I
  * have buffers large enough to hold one frame within one buffer descriptor.
@@ -49,22 +43,18 @@
 #include <asm/pgtable.h>
 #include <asm/cacheflush.h>
 
-#if defined(CONFIG_M523x) || defined(CONFIG_M527x) || \
-    defined(CONFIG_M5272) || defined(CONFIG_M528x) || \
-    defined(CONFIG_M520x) || defined(CONFIG_M532x)
 #include <asm/coldfire.h>
 #include <asm/mcfsim.h>
 #include "fec.h"
-#else
-#include <asm/8xx_immap.h>
-#include <asm/mpc8xx.h>
-#include "commproc.h"
-#endif
 
 #if defined(CONFIG_FEC2)
 #define	FEC_MAX_PORTS	2
 #else
 #define	FEC_MAX_PORTS	1
+#endif
+
+#if defined(CONFIG_M5272)
+#define HAVE_mii_link_interrupt
 #endif
 
 /*
@@ -205,7 +195,10 @@ struct fec_enet_private {
 	cbd_t	*cur_rx, *cur_tx;		/* The next free ring entry */
 	cbd_t	*dirty_tx;	/* The ring entries to be free()ed. */
 	uint	tx_full;
-	spinlock_t lock;
+	/* hold while accessing the HW like ringbuffer for tx/rx but not MAC */
+	spinlock_t hw_lock;
+	/* hold while accessing the mii_list_t() elements */
+	spinlock_t mii_lock;
 
 	uint	phy_id;
 	uint	phy_id_done;
@@ -309,6 +302,7 @@ fec_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	volatile fec_t	*fecp;
 	volatile cbd_t	*bdp;
 	unsigned short	status;
+	unsigned long flags;
 
 	fep = netdev_priv(dev);
 	fecp = (volatile fec_t*)dev->base_addr;
@@ -318,6 +312,7 @@ fec_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		return 1;
 	}
 
+	spin_lock_irqsave(&fep->hw_lock, flags);
 	/* Fill in a Tx ring entry */
 	bdp = fep->cur_tx;
 
@@ -328,6 +323,7 @@ fec_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		 * This should not happen, since dev->tbusy should be set.
 		 */
 		printk("%s: tx queue full!.\n", dev->name);
+		spin_unlock_irqrestore(&fep->hw_lock, flags);
 		return 1;
 	}
 #endif
@@ -366,8 +362,6 @@ fec_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	flush_dcache_range((unsigned long)skb->data,
 			   (unsigned long)skb->data + skb->len);
 
-	spin_lock_irq(&fep->lock);
-
 	/* Send it on its way.  Tell FEC it's ready, interrupt when done,
 	 * it's the last BD of the frame, and to put the CRC on the end.
 	 */
@@ -396,7 +390,7 @@ fec_enet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	fep->cur_tx = (cbd_t *)bdp;
 
-	spin_unlock_irq(&fep->lock);
+	spin_unlock_irqrestore(&fep->hw_lock, flags);
 
 	return 0;
 }
@@ -454,19 +448,20 @@ fec_enet_interrupt(int irq, void * dev_id)
 	struct	net_device *dev = dev_id;
 	volatile fec_t	*fecp;
 	uint	int_events;
-	int handled = 0;
+	irqreturn_t ret = IRQ_NONE;
 
 	fecp = (volatile fec_t*)dev->base_addr;
 
 	/* Get the interrupt events that caused us to be here.
 	*/
-	while ((int_events = fecp->fec_ievent) != 0) {
+	do {
+		int_events = fecp->fec_ievent;
 		fecp->fec_ievent = int_events;
 
 		/* Handle receive event in its own function.
 		 */
 		if (int_events & FEC_ENET_RXF) {
-			handled = 1;
+			ret = IRQ_HANDLED;
 			fec_enet_rx(dev);
 		}
 
@@ -475,17 +470,18 @@ fec_enet_interrupt(int irq, void * dev_id)
 		   them as part of the transmit process.
 		*/
 		if (int_events & FEC_ENET_TXF) {
-			handled = 1;
+			ret = IRQ_HANDLED;
 			fec_enet_tx(dev);
 		}
 
 		if (int_events & FEC_ENET_MII) {
-			handled = 1;
+			ret = IRQ_HANDLED;
 			fec_enet_mii(dev);
 		}
 
-	}
-	return IRQ_RETVAL(handled);
+	} while (int_events);
+
+	return ret;
 }
 
 
@@ -498,7 +494,7 @@ fec_enet_tx(struct net_device *dev)
 	struct	sk_buff	*skb;
 
 	fep = netdev_priv(dev);
-	spin_lock(&fep->lock);
+	spin_lock_irq(&fep->hw_lock);
 	bdp = fep->dirty_tx;
 
 	while (((status = bdp->cbd_sc) & BD_ENET_TX_READY) == 0) {
@@ -557,7 +553,7 @@ fec_enet_tx(struct net_device *dev)
 		}
 	}
 	fep->dirty_tx = (cbd_t *)bdp;
-	spin_unlock(&fep->lock);
+	spin_unlock_irq(&fep->hw_lock);
 }
 
 
@@ -583,6 +579,8 @@ fec_enet_rx(struct net_device *dev)
 
 	fep = netdev_priv(dev);
 	fecp = (volatile fec_t*)dev->base_addr;
+
+	spin_lock_irq(&fep->hw_lock);
 
 	/* First, grab all of the stats for the incoming packet.
 	 * These get messed up if we get called due to a busy condition.
@@ -689,6 +687,8 @@ while (!((status = bdp->cbd_sc) & BD_ENET_RX_EMPTY)) {
 	 */
 	fecp->fec_r_des_active = 0;
 #endif
+
+	spin_unlock_irq(&fep->hw_lock);
 }
 
 
@@ -702,10 +702,10 @@ fec_enet_mii(struct net_device *dev)
 	uint		mii_reg;
 
 	fep = netdev_priv(dev);
+	spin_lock_irq(&fep->mii_lock);
+
 	ep = fep->hwp;
 	mii_reg = ep->fec_mii_data;
-
-	spin_lock(&fep->lock);
 
 	if ((mip = mii_head) == NULL) {
 		printk("MII and no head!\n");
@@ -723,7 +723,7 @@ fec_enet_mii(struct net_device *dev)
 		ep->fec_mii_data = mip->mii_regval;
 
 unlock:
-	spin_unlock(&fep->lock);
+	spin_unlock_irq(&fep->mii_lock);
 }
 
 static int
@@ -737,11 +737,10 @@ mii_queue(struct net_device *dev, int regval, void (*func)(uint, struct net_devi
 	/* Add PHY address to register command.
 	*/
 	fep = netdev_priv(dev);
+	spin_lock_irqsave(&fep->mii_lock, flags);
+
 	regval |= fep->phy_addr << 23;
-
 	retval = 0;
-
-	spin_lock_irqsave(&fep->lock,flags);
 
 	if ((mip = mii_free) != NULL) {
 		mii_free = mip->mii_next;
@@ -759,9 +758,8 @@ mii_queue(struct net_device *dev, int regval, void (*func)(uint, struct net_devi
 		retval = 1;
 	}
 
-	spin_unlock_irqrestore(&fep->lock,flags);
-
-	return(retval);
+	spin_unlock_irqrestore(&fep->mii_lock, flags);
+	return retval;
 }
 
 static void mii_do_cmd(struct net_device *dev, const phy_cmd_t *c)
@@ -1157,7 +1155,7 @@ static phy_info_t const phy_info_ks8721bl = {
 
 static void mii_parse_dp8384x_sr2(uint mii_reg, struct net_device *dev)
 {
-	struct fec_enet_private *fep = dev->priv;
+	struct fec_enet_private *fep = netdev_priv(dev);
 	volatile uint *s = &(fep->phy_status);
 
 	*s &= ~(PHY_STAT_SPMASK | PHY_STAT_LINK | PHY_STAT_ANC);
@@ -1222,14 +1220,9 @@ static phy_info_t const * const phy_info[] = {
 };
 
 /* ------------------------------------------------------------------------- */
-#if !defined(CONFIG_M532x)
-#ifdef CONFIG_RPXCLASSIC
-static void
-mii_link_interrupt(void *dev_id);
-#else
+#ifdef HAVE_mii_link_interrupt
 static irqreturn_t
 mii_link_interrupt(int irq, void * dev_id);
-#endif
 #endif
 
 #if defined(CONFIG_M5272)
@@ -1253,7 +1246,7 @@ static void __inline__ fec_request_intrs(struct net_device *dev)
 
 	/* Setup interrupt handlers. */
 	for (idp = id; idp->name; idp++) {
-		if (request_irq(idp->irq, idp->handler, 0, idp->name, dev) != 0)
+		if (request_irq(idp->irq, idp->handler, IRQF_DISABLED, idp->name, dev) != 0)
 			printk("FEC: Could not allocate %s IRQ(%d)!\n", idp->name, idp->irq);
 	}
 
@@ -1362,18 +1355,8 @@ static void __inline__ fec_request_intrs(struct net_device *dev)
 		unsigned short irq;
 	} *idp, id[] = {
 		{ "fec(TXF)", 23 },
-		{ "fec(TXB)", 24 },
-		{ "fec(TXFIFO)", 25 },
-		{ "fec(TXCR)", 26 },
 		{ "fec(RXF)", 27 },
-		{ "fec(RXB)", 28 },
 		{ "fec(MII)", 29 },
-		{ "fec(LC)", 30 },
-		{ "fec(HBERR)", 31 },
-		{ "fec(GRA)", 32 },
-		{ "fec(EBERR)", 33 },
-		{ "fec(BABT)", 34 },
-		{ "fec(BABR)", 35 },
 		{ NULL },
 	};
 
@@ -1382,7 +1365,7 @@ static void __inline__ fec_request_intrs(struct net_device *dev)
 
 	/* Setup interrupt handlers. */
 	for (idp = id; idp->name; idp++) {
-		if (request_irq(b+idp->irq, fec_enet_interrupt, 0, idp->name, dev) != 0)
+		if (request_irq(b+idp->irq, fec_enet_interrupt, IRQF_DISABLED, idp->name, dev) != 0)
 			printk("FEC: Could not allocate %s IRQ(%d)!\n", idp->name, b+idp->irq);
 	}
 
@@ -1533,18 +1516,8 @@ static void __inline__ fec_request_intrs(struct net_device *dev)
 		unsigned short irq;
 	} *idp, id[] = {
 		{ "fec(TXF)", 23 },
-		{ "fec(TXB)", 24 },
-		{ "fec(TXFIFO)", 25 },
-		{ "fec(TXCR)", 26 },
 		{ "fec(RXF)", 27 },
-		{ "fec(RXB)", 28 },
 		{ "fec(MII)", 29 },
-		{ "fec(LC)", 30 },
-		{ "fec(HBERR)", 31 },
-		{ "fec(GRA)", 32 },
-		{ "fec(EBERR)", 33 },
-		{ "fec(BABT)", 34 },
-		{ "fec(BABR)", 35 },
 		{ NULL },
 	};
 
@@ -1553,7 +1526,7 @@ static void __inline__ fec_request_intrs(struct net_device *dev)
 
 	/* Setup interrupt handlers. */
 	for (idp = id; idp->name; idp++) {
-		if (request_irq(b+idp->irq,fec_enet_interrupt,0,idp->name,dev)!=0)
+		if (request_irq(b+idp->irq, fec_enet_interrupt, IRQF_DISABLED, idp->name,dev) != 0)
 			printk("FEC: Could not allocate %s IRQ(%d)!\n", idp->name, b+idp->irq);
 	}
 
@@ -1660,18 +1633,8 @@ static void __inline__ fec_request_intrs(struct net_device *dev)
 		unsigned short irq;
 	} *idp, id[] = {
 	    { "fec(TXF)", 36 },
-	    { "fec(TXB)", 37 },
-	    { "fec(TXFIFO)", 38 },
-	    { "fec(TXCR)", 39 },
 	    { "fec(RXF)", 40 },
-	    { "fec(RXB)", 41 },
 	    { "fec(MII)", 42 },
-	    { "fec(LC)", 43 },
-	    { "fec(HBERR)", 44 },
-	    { "fec(GRA)", 45 },
-	    { "fec(EBERR)", 46 },
-	    { "fec(BABT)", 47 },
-	    { "fec(BABR)", 48 },
 	    { NULL },
 	};
 
@@ -1680,7 +1643,7 @@ static void __inline__ fec_request_intrs(struct net_device *dev)
 
 	/* Setup interrupt handlers. */
 	for (idp = id; idp->name; idp++) {
-		if (request_irq(b+idp->irq,fec_enet_interrupt,0,idp->name,dev)!=0)
+		if (request_irq(b+idp->irq, fec_enet_interrupt, IRQF_DISABLED, idp->name,dev) != 0)
 			printk("FEC: Could not allocate %s IRQ(%d)!\n",
 				idp->name, b+idp->irq);
 	}
@@ -1735,7 +1698,7 @@ static void __inline__ fec_set_mii(struct net_device *dev, struct fec_enet_priva
 	/*
 	 * Set MII speed to 2.5 MHz
 	 */
-	fep->phy_speed = ((((MCF_CLK / 2) / (2500000 / 10)) + 5) / 10) * 2;
+	fep->phy_speed = (MCF_CLK / 3) / (2500000 * 2 ) * 2;
 	fecp->fec_mii_speed = fep->phy_speed;
 
 	fec_restart(dev, 0);
@@ -1813,24 +1776,6 @@ static void __inline__ fec_request_intrs(struct net_device *dev)
 
 	if (request_8xxirq(FEC_INTERRUPT, fec_enet_interrupt, 0, "fec", dev) != 0)
 		panic("Could not allocate FEC IRQ!");
-
-#ifdef CONFIG_RPXCLASSIC
-	/* Make Port C, bit 15 an input that causes interrupts.
-	*/
-	immap->im_ioport.iop_pcpar &= ~0x0001;
-	immap->im_ioport.iop_pcdir &= ~0x0001;
-	immap->im_ioport.iop_pcso &= ~0x0001;
-	immap->im_ioport.iop_pcint |= 0x0001;
-	cpm_install_handler(CPMVEC_PIO_PC15, mii_link_interrupt, dev);
-
-	/* Make LEDS reflect Link status.
-	*/
-	*((uint *) RPX_CSR_ADDR) &= ~BCSR2_FETHLEDMODE;
-#endif
-#ifdef CONFIG_FADS
-	if (request_8xxirq(SIU_IRQ2, mii_link_interrupt, 0, "mii", dev) != 0)
-		panic("Could not allocate MII IRQ!");
-#endif
 }
 
 static void __inline__ fec_get_mac(struct net_device *dev)
@@ -1839,16 +1784,6 @@ static void __inline__ fec_get_mac(struct net_device *dev)
 
 	bd = (bd_t *)__res;
 	memcpy(dev->dev_addr, bd->bi_enetaddr, ETH_ALEN);
-
-#ifdef CONFIG_RPXCLASSIC
-	/* The Embedded Planet boards have only one MAC address in
-	 * the EEPROM, but can have two Ethernet ports.  For the
-	 * FEC port, we create another address by setting one of
-	 * the address bits above something that would have (up to
-	 * now) been allocated.
-	 */
-	dev->dev_adrd[3] |= 0x80;
-#endif
 }
 
 static void __inline__ fec_set_mii(struct net_device *dev, struct fec_enet_private *fep)
@@ -2126,13 +2061,9 @@ mii_discover_phy(uint mii_reg, struct net_device *dev)
 
 /* This interrupt occurs when the PHY detects a link change.
 */
-#ifdef CONFIG_RPXCLASSIC
-static void
-mii_link_interrupt(void *dev_id)
-#else
+#ifdef HAVE_mii_link_interrupt
 static irqreturn_t
 mii_link_interrupt(int irq, void * dev_id)
-#endif
 {
 	struct	net_device *dev = dev_id;
 	struct fec_enet_private *fep = netdev_priv(dev);
@@ -2148,6 +2079,7 @@ mii_link_interrupt(int irq, void * dev_id)
 
 	return IRQ_HANDLED;
 }
+#endif
 
 static int
 fec_enet_open(struct net_device *dev)
@@ -2243,13 +2175,13 @@ static void set_multicast_list(struct net_device *dev)
 			/* Catch all multicast addresses, so set the
 			 * filter to all 1's.
 			 */
-			ep->fec_hash_table_high = 0xffffffff;
-			ep->fec_hash_table_low = 0xffffffff;
+			ep->fec_grp_hash_table_high = 0xffffffff;
+			ep->fec_grp_hash_table_low = 0xffffffff;
 		} else {
 			/* Clear filter and add the addresses in hash register.
 			*/
-			ep->fec_hash_table_high = 0;
-			ep->fec_hash_table_low = 0;
+			ep->fec_grp_hash_table_high = 0;
+			ep->fec_grp_hash_table_low = 0;
 
 			dmi = dev->mc_list;
 
@@ -2280,9 +2212,9 @@ static void set_multicast_list(struct net_device *dev)
 				hash = (crc >> (32 - HASH_BITS)) & 0x3f;
 
 				if (hash > 31)
-					ep->fec_hash_table_high |= 1 << (hash - 32);
+					ep->fec_grp_hash_table_high |= 1 << (hash - 32);
 				else
-					ep->fec_hash_table_low |= 1 << hash;
+					ep->fec_grp_hash_table_low |= 1 << hash;
 			}
 		}
 	}
@@ -2331,6 +2263,9 @@ int __init fec_enet_init(struct net_device *dev)
 		printk("FEC: allocate descriptor memory failed?\n");
 		return -ENOMEM;
 	}
+
+	spin_lock_init(&fep->hw_lock);
+	spin_lock_init(&fep->mii_lock);
 
 	/* Create an Ethernet device instance.
 	*/
@@ -2430,11 +2365,15 @@ int __init fec_enet_init(struct net_device *dev)
 	*/
 	fec_request_intrs(dev);
 
-	fecp->fec_hash_table_high = 0;
-	fecp->fec_hash_table_low = 0;
+	fecp->fec_grp_hash_table_high = 0;
+	fecp->fec_grp_hash_table_low = 0;
 	fecp->fec_r_buff_size = PKT_MAXBLR_SIZE;
 	fecp->fec_ecntrl = 2;
 	fecp->fec_r_des_active = 0;
+#ifndef CONFIG_M5272
+	fecp->fec_hash_table_high = 0;
+	fecp->fec_hash_table_low = 0;
+#endif
 
 	dev->base_addr = (unsigned long)fecp;
 
@@ -2455,8 +2394,7 @@ int __init fec_enet_init(struct net_device *dev)
 
 	/* Clear and enable interrupts */
 	fecp->fec_ievent = 0xffc00000;
-	fecp->fec_imask = (FEC_ENET_TXF | FEC_ENET_TXB |
-		FEC_ENET_RXF | FEC_ENET_RXB | FEC_ENET_MII);
+	fecp->fec_imask = (FEC_ENET_TXF | FEC_ENET_RXF | FEC_ENET_MII);
 
 	/* Queue up command to detect the PHY and initialize the
 	 * remainder of the interface.
@@ -2500,8 +2438,8 @@ fec_restart(struct net_device *dev, int duplex)
 
 	/* Reset all multicast.
 	*/
-	fecp->fec_hash_table_high = 0;
-	fecp->fec_hash_table_low = 0;
+	fecp->fec_grp_hash_table_high = 0;
+	fecp->fec_grp_hash_table_low = 0;
 
 	/* Set maximum receive buffer size.
 	*/
@@ -2583,8 +2521,7 @@ fec_restart(struct net_device *dev, int duplex)
 
 	/* Enable interrupts we wish to service.
 	*/
-	fecp->fec_imask = (FEC_ENET_TXF | FEC_ENET_TXB |
-		FEC_ENET_RXF | FEC_ENET_RXB | FEC_ENET_MII);
+	fecp->fec_imask = (FEC_ENET_TXF | FEC_ENET_RXF | FEC_ENET_MII);
 }
 
 static void
@@ -2624,8 +2561,7 @@ fec_stop(struct net_device *dev)
 static int __init fec_enet_module_init(void)
 {
 	struct net_device *dev;
-	int i, j, err;
-	DECLARE_MAC_BUF(mac);
+	int i, err;
 
 	printk("FEC ENET Version 0.2\n");
 
@@ -2644,8 +2580,7 @@ static int __init fec_enet_module_init(void)
 			return -EIO;
 		}
 
-		printk("%s: ethernet %s\n",
-		       dev->name, print_mac(mac, dev->dev_addr));
+		printk("%s: ethernet %pM\n", dev->name, dev->dev_addr);
 	}
 	return 0;
 }

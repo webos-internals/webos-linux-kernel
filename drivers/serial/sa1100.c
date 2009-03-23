@@ -20,9 +20,6 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
- *  $Id: sa1100.c,v 1.50 2002/07/29 14:41:04 rmk Exp $
- *
  */
 
 #if defined(CONFIG_SERIAL_SA1100_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
@@ -42,7 +39,7 @@
 
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/mach/serial_sa1100.h>
 
 /* We've been assigned a range on the "Low-density serial ports" major */
@@ -192,7 +189,7 @@ static void sa1100_enable_ms(struct uart_port *port)
 static void
 sa1100_rx_chars(struct sa1100_port *sport)
 {
-	struct tty_struct *tty = sport->port.info->tty;
+	struct tty_struct *tty = sport->port.info->port.tty;
 	unsigned int status, ch, flg;
 
 	status = UTSR1_TO_SM(UART_GET_UTSR1(sport)) |
@@ -655,7 +652,7 @@ void __init sa1100_register_uart_fns(struct sa1100_port_fns *fns)
 void __init sa1100_register_uart(int idx, int port)
 {
 	if (idx >= NR_PORTS) {
-		printk(KERN_ERR "%s: bad index number %d\n", __FUNCTION__, idx);
+		printk(KERN_ERR "%s: bad index number %d\n", __func__, idx);
 		return;
 	}
 
@@ -682,7 +679,7 @@ void __init sa1100_register_uart(int idx, int port)
 		break;
 
 	default:
-		printk(KERN_ERR "%s: bad port number %d\n", __FUNCTION__, port);
+		printk(KERN_ERR "%s: bad port number %d\n", __func__, port);
 	}
 }
 
@@ -884,6 +881,7 @@ static struct platform_driver sa11x0_serial_driver = {
 	.resume		= sa1100_serial_resume,
 	.driver		= {
 		.name	= "sa11x0-uart",
+		.owner	= THIS_MODULE,
 	},
 };
 
@@ -891,7 +889,7 @@ static int __init sa1100_serial_init(void)
 {
 	int ret;
 
-	printk(KERN_INFO "Serial: SA11x0 driver $Revision: 1.50 $\n");
+	printk(KERN_INFO "Serial: SA11x0 driver\n");
 
 	sa1100_init_ports();
 
@@ -914,6 +912,7 @@ module_init(sa1100_serial_init);
 module_exit(sa1100_serial_exit);
 
 MODULE_AUTHOR("Deep Blue Solutions Ltd");
-MODULE_DESCRIPTION("SA1100 generic serial port driver $Revision: 1.50 $");
+MODULE_DESCRIPTION("SA1100 generic serial port driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_CHARDEV_MAJOR(SERIAL_SA1100_MAJOR);
+MODULE_ALIAS("platform:sa11x0-uart");

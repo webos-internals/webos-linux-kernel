@@ -11,10 +11,10 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/mach-types.h>
 #include <asm/irq.h>
-#include <asm/arch/cerf.h>
+#include <mach/cerf.h>
 #include "sa1100_generic.h"
 
 #define CERF_SOCKET	1
@@ -63,7 +63,7 @@ cerf_pcmcia_configure_socket(struct soc_pcmcia_socket *skt,
 
 	default:
 		printk(KERN_ERR "%s(): unrecognized Vcc %u\n",
-			__FUNCTION__, state->Vcc);
+			__func__, state->Vcc);
 		return -1;
 	}
 

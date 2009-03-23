@@ -11,7 +11,7 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Kiran Kumar Immidi");
-MODULE_DESCRIPTION("Match for SCTP protocol packets");
+MODULE_DESCRIPTION("Xtables: SCTP protocol packet match");
 MODULE_ALIAS("ipt_sctp");
 MODULE_ALIAS("ip6t_sctp");
 
@@ -46,7 +46,8 @@ match_packet(const struct sk_buff *skb,
 	     bool *hotdrop)
 {
 	u_int32_t chunkmapcopy[256 / sizeof (u_int32_t)];
-	sctp_chunkhdr_t _sch, *sch;
+	const sctp_chunkhdr_t *sch;
+	sctp_chunkhdr_t _sch;
 	int chunk_match_type = info->chunk_match_type;
 	const struct xt_sctp_flag_info *flag_info = info->flag_info;
 	int flag_count = info->flag_count;
@@ -104,7 +105,7 @@ match_packet(const struct sk_buff *skb,
 
 	switch (chunk_match_type) {
 	case SCTP_CHUNK_MATCH_ALL:
-		return SCTP_CHUNKMAP_IS_CLEAR(info->chunkmap);
+		return SCTP_CHUNKMAP_IS_CLEAR(chunkmapcopy);
 	case SCTP_CHUNK_MATCH_ANY:
 		return false;
 	case SCTP_CHUNK_MATCH_ONLY:
@@ -116,27 +117,21 @@ match_packet(const struct sk_buff *skb,
 }
 
 static bool
-match(const struct sk_buff *skb,
-      const struct net_device *in,
-      const struct net_device *out,
-      const struct xt_match *match,
-      const void *matchinfo,
-      int offset,
-      unsigned int protoff,
-      bool *hotdrop)
+sctp_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 {
-	const struct xt_sctp_info *info = matchinfo;
-	sctp_sctphdr_t _sh, *sh;
+	const struct xt_sctp_info *info = par->matchinfo;
+	const sctp_sctphdr_t *sh;
+	sctp_sctphdr_t _sh;
 
-	if (offset) {
+	if (par->fragoff != 0) {
 		duprintf("Dropping non-first fragment.. FIXME\n");
 		return false;
 	}
 
-	sh = skb_header_pointer(skb, protoff, sizeof(_sh), &_sh);
+	sh = skb_header_pointer(skb, par->thoff, sizeof(_sh), &_sh);
 	if (sh == NULL) {
 		duprintf("Dropping evil TCP offset=0 tinygram.\n");
-		*hotdrop = true;
+		*par->hotdrop = true;
 		return false;
 	}
 	duprintf("spt: %d\tdpt: %d\n", ntohs(sh->source), ntohs(sh->dest));
@@ -147,19 +142,14 @@ match(const struct sk_buff *skb,
 		&& SCCHECK(ntohs(sh->dest) >= info->dpts[0]
 			&& ntohs(sh->dest) <= info->dpts[1],
 			XT_SCTP_DEST_PORTS, info->flags, info->invflags)
-		&& SCCHECK(match_packet(skb, protoff + sizeof (sctp_sctphdr_t),
-					info, hotdrop),
+		&& SCCHECK(match_packet(skb, par->thoff + sizeof(sctp_sctphdr_t),
+					info, par->hotdrop),
 			   XT_SCTP_CHUNK_TYPES, info->flags, info->invflags);
 }
 
-static bool
-checkentry(const char *tablename,
-	   const void *inf,
-	   const struct xt_match *match,
-	   void *matchinfo,
-	   unsigned int hook_mask)
+static bool sctp_mt_check(const struct xt_mtchk_param *par)
 {
-	const struct xt_sctp_info *info = matchinfo;
+	const struct xt_sctp_info *info = par->matchinfo;
 
 	return !(info->flags & ~XT_SCTP_VALID_FLAGS)
 		&& !(info->invflags & ~XT_SCTP_VALID_FLAGS)
@@ -171,36 +161,36 @@ checkentry(const char *tablename,
 				| SCTP_CHUNK_MATCH_ONLY)));
 }
 
-static struct xt_match xt_sctp_match[] __read_mostly = {
+static struct xt_match sctp_mt_reg[] __read_mostly = {
 	{
 		.name		= "sctp",
-		.family		= AF_INET,
-		.checkentry	= checkentry,
-		.match		= match,
+		.family		= NFPROTO_IPV4,
+		.checkentry	= sctp_mt_check,
+		.match		= sctp_mt,
 		.matchsize	= sizeof(struct xt_sctp_info),
 		.proto		= IPPROTO_SCTP,
 		.me		= THIS_MODULE
 	},
 	{
 		.name		= "sctp",
-		.family		= AF_INET6,
-		.checkentry	= checkentry,
-		.match		= match,
+		.family		= NFPROTO_IPV6,
+		.checkentry	= sctp_mt_check,
+		.match		= sctp_mt,
 		.matchsize	= sizeof(struct xt_sctp_info),
 		.proto		= IPPROTO_SCTP,
 		.me		= THIS_MODULE
 	},
 };
 
-static int __init xt_sctp_init(void)
+static int __init sctp_mt_init(void)
 {
-	return xt_register_matches(xt_sctp_match, ARRAY_SIZE(xt_sctp_match));
+	return xt_register_matches(sctp_mt_reg, ARRAY_SIZE(sctp_mt_reg));
 }
 
-static void __exit xt_sctp_fini(void)
+static void __exit sctp_mt_exit(void)
 {
-	xt_unregister_matches(xt_sctp_match, ARRAY_SIZE(xt_sctp_match));
+	xt_unregister_matches(sctp_mt_reg, ARRAY_SIZE(sctp_mt_reg));
 }
 
-module_init(xt_sctp_init);
-module_exit(xt_sctp_fini);
+module_init(sctp_mt_init);
+module_exit(sctp_mt_exit);

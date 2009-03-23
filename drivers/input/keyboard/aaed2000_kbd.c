@@ -20,8 +20,8 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
-#include <asm/arch/hardware.h>
-#include <asm/arch/aaed2000.h>
+#include <mach/hardware.h>
+#include <mach/aaed2000.h>
 
 #define KB_ROWS			12
 #define KB_COLS			8
@@ -156,11 +156,15 @@ static int __devexit aaedkbd_remove(struct platform_device *pdev)
 	return 0;
 }
 
+/* work with hotplug and coldplug */
+MODULE_ALIAS("platform:aaed2000-keyboard");
+
 static struct platform_driver aaedkbd_driver = {
 	.probe		= aaedkbd_probe,
 	.remove		= __devexit_p(aaedkbd_remove),
 	.driver		= {
 		.name	= "aaed2000-keyboard",
+		.owner	= THIS_MODULE,
 	},
 };
 
@@ -179,4 +183,4 @@ module_exit(aaedkbd_exit);
 
 MODULE_AUTHOR("Nicolas Bellido Y Ortega");
 MODULE_DESCRIPTION("AAED-2000 Keyboard Driver");
-MODULE_LICENSE("GPLv2");
+MODULE_LICENSE("GPL v2");

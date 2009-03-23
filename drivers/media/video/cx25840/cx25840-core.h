@@ -22,9 +22,8 @@
 
 
 #include <linux/videodev2.h>
+#include <media/v4l2-device.h>
 #include <linux/i2c.h>
-
-extern int cx25840_debug;
 
 /* ENABLE_PVR150_WORKAROUND activates a workaround for a hardware bug that is
    present in Hauppauge PVR-150 (and possibly PVR-500) cards that have
@@ -36,21 +35,30 @@ extern int cx25840_debug;
 
 struct cx25840_state {
 	struct i2c_client *c;
+	struct v4l2_subdev sd;
 	int pvr150_workaround;
 	int radio;
+	v4l2_std_id std;
 	enum cx25840_video_input vid_input;
 	enum cx25840_audio_input aud_input;
 	u32 audclk_freq;
 	int audmode;
 	int unmute_volume; /* -1 if not muted */
+	int default_volume;
 	int vbi_line_offset;
 	u32 id;
 	u32 rev;
 	int is_cx25836;
+	int is_cx23885;
 	int is_initialized;
 	wait_queue_head_t fw_wait;    /* wake up when the fw load is finished */
 	struct work_struct fw_work;   /* work entry for fw load */
 };
+
+static inline struct cx25840_state *to_state(struct v4l2_subdev *sd)
+{
+	return container_of(sd, struct cx25840_state, sd);
+}
 
 /* ----------------------------------------------------------------------- */
 /* cx25850-core.c 							   */
@@ -59,7 +67,7 @@ int cx25840_write4(struct i2c_client *client, u16 addr, u32 value);
 u8 cx25840_read(struct i2c_client *client, u16 addr);
 u32 cx25840_read4(struct i2c_client *client, u16 addr);
 int cx25840_and_or(struct i2c_client *client, u16 addr, unsigned mask, u8 value);
-v4l2_std_id cx25840_get_v4lstd(struct i2c_client *client);
+void cx25840_std_setup(struct i2c_client *client);
 
 /* ----------------------------------------------------------------------- */
 /* cx25850-firmware.c                                                      */
@@ -72,7 +80,6 @@ void cx25840_audio_set_path(struct i2c_client *client);
 
 /* ----------------------------------------------------------------------- */
 /* cx25850-vbi.c                                                           */
-void cx25840_vbi_setup(struct i2c_client *client);
 int cx25840_vbi(struct i2c_client *client, unsigned int cmd, void *arg);
 
 #endif

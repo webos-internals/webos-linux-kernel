@@ -96,7 +96,7 @@ static int ah_output(struct xfrm_state *x, struct sk_buff *skb)
 
 	ah->reserved = 0;
 	ah->spi = x->id.spi;
-	ah->seq_no = htonl(XFRM_SKB_CB(skb)->seq);
+	ah->seq_no = htonl(XFRM_SKB_CB(skb)->seq.output);
 
 	spin_lock_bh(&x->lock);
 	err = ah_mac_digest(ahp, skb, ah->auth_data);
@@ -169,6 +169,8 @@ static int ah_input(struct xfrm_state *x, struct sk_buff *skb)
 		if (ip_clear_mutable_options(iph, &dummy))
 			goto out;
 	}
+
+	spin_lock(&x->lock);
 	{
 		u8 auth_data[MAX_AH_AUTH_LEN];
 
@@ -176,13 +178,16 @@ static int ah_input(struct xfrm_state *x, struct sk_buff *skb)
 		skb_push(skb, ihl);
 		err = ah_mac_digest(ahp, skb, ah->auth_data);
 		if (err)
-			goto out;
-		err = -EINVAL;
-		if (memcmp(ahp->work_icv, auth_data, ahp->icv_trunc_len)) {
-			x->stats.integrity_failed++;
-			goto out;
-		}
+			goto unlock;
+		if (memcmp(ahp->work_icv, auth_data, ahp->icv_trunc_len))
+			err = -EBADMSG;
 	}
+unlock:
+	spin_unlock(&x->lock);
+
+	if (err)
+		goto out;
+
 	skb->network_header += ah_hlen;
 	memcpy(skb_network_header(skb), work_buf, ihl);
 	skb->transport_header = skb->network_header;
@@ -196,15 +201,16 @@ out:
 
 static void ah4_err(struct sk_buff *skb, u32 info)
 {
-	struct iphdr *iph = (struct iphdr*)skb->data;
-	struct ip_auth_hdr *ah = (struct ip_auth_hdr*)(skb->data+(iph->ihl<<2));
+	struct net *net = dev_net(skb->dev);
+	struct iphdr *iph = (struct iphdr *)skb->data;
+	struct ip_auth_hdr *ah = (struct ip_auth_hdr *)(skb->data+(iph->ihl<<2));
 	struct xfrm_state *x;
 
 	if (icmp_hdr(skb)->type != ICMP_DEST_UNREACH ||
 	    icmp_hdr(skb)->code != ICMP_FRAG_NEEDED)
 		return;
 
-	x = xfrm_state_lookup((xfrm_address_t *)&iph->daddr, ah->spi, IPPROTO_AH, AF_INET);
+	x = xfrm_state_lookup(net, (xfrm_address_t *)&iph->daddr, ah->spi, IPPROTO_AH, AF_INET);
 	if (!x)
 		return;
 	printk(KERN_DEBUG "pmtu discovery on SA AH/%08x/%08x\n",
@@ -288,14 +294,12 @@ static void ah_destroy(struct xfrm_state *x)
 		return;
 
 	kfree(ahp->work_icv);
-	ahp->work_icv = NULL;
 	crypto_free_hash(ahp->tfm);
-	ahp->tfm = NULL;
 	kfree(ahp);
 }
 
 
-static struct xfrm_type ah_type =
+static const struct xfrm_type ah_type =
 {
 	.description	= "AH4",
 	.owner		= THIS_MODULE,
@@ -311,6 +315,7 @@ static struct net_protocol ah4_protocol = {
 	.handler	=	xfrm4_rcv,
 	.err_handler	=	ah4_err,
 	.no_policy	=	1,
+	.netns_ok	=	1,
 };
 
 static int __init ah4_init(void)

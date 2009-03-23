@@ -19,14 +19,15 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/mmc_spi.h>
 #include <linux/mmc/host.h>
+#include <linux/of_platform.h>
 
-#include <asm/of_platform.h>
 #include <asm/time.h>
 #include <asm/ipic.h>
 #include <asm/udbg.h>
 #include <asm/qe.h>
 #include <asm/qe_ic.h>
 #include <sysdev/fsl_soc.h>
+#include <sysdev/fsl_pci.h>
 
 #include "mpc83xx.h"
 
@@ -37,6 +38,7 @@
 #define DBG(fmt...)
 #endif
 
+#ifdef CONFIG_QUICC_ENGINE
 static void mpc83xx_spi_activate_cs(u8 cs, u8 polarity)
 {
 	pr_debug("%s %d %d\n", __func__, cs, polarity);
@@ -63,9 +65,6 @@ static struct spi_board_info mpc832x_spi_boardinfo = {
 
 static int __init mpc832x_spi_init(void)
 {
-	if (!machine_is(mpc832x_rdb))
-		return 0;
-
 	par_io_config_pin(3,  0, 3, 0, 1, 0); /* SPI1 MOSI, I/O */
 	par_io_config_pin(3,  1, 3, 0, 1, 0); /* SPI1 MISO, I/O */
 	par_io_config_pin(3,  2, 3, 0, 1, 0); /* SPI1 CLK,  I/O */
@@ -79,8 +78,8 @@ static int __init mpc832x_spi_init(void)
 			    mpc83xx_spi_activate_cs,
 			    mpc83xx_spi_deactivate_cs);
 }
-
-device_initcall(mpc832x_spi_init);
+machine_device_initcall(mpc832x_rdb, mpc832x_spi_init);
+#endif /* CONFIG_QUICC_ENGINE */
 
 /* ************************************************************************
  *
@@ -104,7 +103,7 @@ static void __init mpc832x_rdb_setup_arch(void)
 #ifdef CONFIG_QUICC_ENGINE
 	qe_reset();
 
-	if ((np = of_find_node_by_name(np, "par_io")) != NULL) {
+	if ((np = of_find_node_by_name(NULL, "par_io")) != NULL) {
 		par_io_init(np);
 		of_node_put(np);
 
@@ -117,23 +116,22 @@ static void __init mpc832x_rdb_setup_arch(void)
 static struct of_device_id mpc832x_ids[] = {
 	{ .type = "soc", },
 	{ .compatible = "soc", },
+	{ .compatible = "simple-bus", },
 	{ .type = "qe", },
+	{ .compatible = "fsl,qe", },
 	{},
 };
 
 static int __init mpc832x_declare_of_platform_devices(void)
 {
-	if (!machine_is(mpc832x_rdb))
-		return 0;
-
 	/* Publish the QE devices */
 	of_platform_bus_probe(NULL, mpc832x_ids, NULL);
 
 	return 0;
 }
-device_initcall(mpc832x_declare_of_platform_devices);
+machine_device_initcall(mpc832x_rdb, mpc832x_declare_of_platform_devices);
 
-void __init mpc832x_rdb_init_IRQ(void)
+static void __init mpc832x_rdb_init_IRQ(void)
 {
 
 	struct device_node *np;
@@ -151,10 +149,12 @@ void __init mpc832x_rdb_init_IRQ(void)
 	of_node_put(np);
 
 #ifdef CONFIG_QUICC_ENGINE
-	np = of_find_node_by_type(NULL, "qeic");
-	if (!np)
-		return;
-
+	np = of_find_compatible_node(NULL, NULL, "fsl,qe-ic");
+	if (!np) {
+		np = of_find_node_by_type(NULL, "qeic");
+		if (!np)
+			return;
+	}
 	qe_ic_init(np, 0, qe_ic_cascade_low_ipic, qe_ic_cascade_high_ipic);
 	of_node_put(np);
 #endif				/* CONFIG_QUICC_ENGINE */

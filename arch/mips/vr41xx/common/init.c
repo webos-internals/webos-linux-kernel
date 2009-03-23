@@ -1,7 +1,7 @@
 /*
  *  init.c, Common initialization routines for NEC VR4100 series.
  *
- *  Copyright (C) 2003-2005  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *  Copyright (C) 2003-2008  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -40,6 +40,8 @@ void __init plat_time_init(void)
 {
 	unsigned long tclock;
 
+	vr41xx_calculate_clock_frequency();
+
 	tclock = vr41xx_get_tclock_frequency();
 	if (current_cpu_data.processor_id == PRID_VR4131_REV2_0 ||
 	    current_cpu_data.processor_id == PRID_VR4131_REV2_1)
@@ -50,9 +52,9 @@ void __init plat_time_init(void)
 
 void __init plat_mem_setup(void)
 {
-	vr41xx_calculate_clock_frequency();
-
 	iomem_resource_init();
+
+	vr41xx_siu_setup();
 }
 
 void __init prom_init(void)

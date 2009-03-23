@@ -31,7 +31,6 @@ typedef struct xfs_sysctl_val {
 } xfs_sysctl_val_t;
 
 typedef struct xfs_param {
-	xfs_sysctl_val_t restrict_chown;/* Root/non-root can give away files.*/
 	xfs_sysctl_val_t sgid_inherit;	/* Inherit S_ISGID if process' GID is
 					 * not a member of parent dir GID. */
 	xfs_sysctl_val_t symlink_mode;	/* Link creat mode affected by umask */
@@ -68,7 +67,7 @@ typedef struct xfs_param {
 enum {
 	/* XFS_REFCACHE_SIZE = 1 */
 	/* XFS_REFCACHE_PURGE = 2 */
-	XFS_RESTRICT_CHOWN = 3,
+	/* XFS_RESTRICT_CHOWN = 3 */
 	XFS_SGID_INHERIT = 4,
 	XFS_SYMLINK_MODE = 5,
 	XFS_PANIC_MASK = 6,
@@ -93,10 +92,10 @@ enum {
 extern xfs_param_t	xfs_params;
 
 #ifdef CONFIG_SYSCTL
-extern void xfs_sysctl_register(void);
+extern int xfs_sysctl_register(void);
 extern void xfs_sysctl_unregister(void);
 #else
-# define xfs_sysctl_register()		do { } while (0)
+# define xfs_sysctl_register()		(0)
 # define xfs_sysctl_unregister()	do { } while (0)
 #endif /* CONFIG_SYSCTL */
 

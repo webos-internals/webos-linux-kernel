@@ -18,13 +18,13 @@
 #include <linux/time.h>
 #include <linux/init.h>
 #include <linux/timex.h>
-#include <asm/hardware.h>
-#include <asm/io.h>
+#include <linux/io.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/uaccess.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/time.h>
-#include <asm/arch/time.h>
+#include <mach/time.h>
 
 static unsigned long ticks_per_jiffy;
 static unsigned long ticks_per_usec;
@@ -57,8 +57,6 @@ unsigned long iop_gettimeoffset(void)
 static irqreturn_t
 iop_timer_interrupt(int irq, void *dev_id)
 {
-	write_seqlock(&xtime_lock);
-
 	write_tisr(1);
 
 	while ((signed long)(next_jiffy_time - read_tcr1())
@@ -66,8 +64,6 @@ iop_timer_interrupt(int irq, void *dev_id)
 		timer_tick();
 		next_jiffy_time -= ticks_per_jiffy;
 	}
-
-	write_sequnlock(&xtime_lock);
 
 	return IRQ_HANDLED;
 }

@@ -1,7 +1,7 @@
 /*
  * Kilauea board specific routines
  *
- * Copyright 2007 DENX Software Engineering, Stefan Roese <sr@denx.de>
+ * Copyright 2007-2008 DENX Software Engineering, Stefan Roese <sr@denx.de>
  *
  * Based on the Walnut code by
  * Josh Boyer <jwboyer@linux.vnet.ibm.com>
@@ -19,8 +19,10 @@
 #include <asm/udbg.h>
 #include <asm/time.h>
 #include <asm/uic.h>
+#include <asm/pci-bridge.h>
+#include <asm/ppc4xx.h>
 
-static struct of_device_id kilauea_of_bus[] = {
+static __initdata struct of_device_id kilauea_of_bus[] = {
 	{ .compatible = "ibm,plb4", },
 	{ .compatible = "ibm,opb", },
 	{ .compatible = "ibm,ebc", },
@@ -29,14 +31,11 @@ static struct of_device_id kilauea_of_bus[] = {
 
 static int __init kilauea_device_probe(void)
 {
-	if (!machine_is(kilauea))
-		return 0;
-
 	of_platform_bus_probe(NULL, kilauea_of_bus, NULL);
 
 	return 0;
 }
-device_initcall(kilauea_device_probe);
+machine_device_initcall(kilauea, kilauea_device_probe);
 
 static int __init kilauea_probe(void)
 {
@@ -44,6 +43,8 @@ static int __init kilauea_probe(void)
 
 	if (!of_flat_dt_is_compatible(root, "amcc,kilauea"))
 		return 0;
+
+	ppc_pci_set_flags(PPC_PCI_REASSIGN_ALL_RSRC);
 
 	return 1;
 }
@@ -54,5 +55,6 @@ define_machine(kilauea) {
 	.progress 			= udbg_progress,
 	.init_IRQ 			= uic_init_tree,
 	.get_irq 			= uic_get_irq,
+	.restart			= ppc4xx_reset_system,
 	.calibrate_decr			= generic_calibrate_decr,
 };

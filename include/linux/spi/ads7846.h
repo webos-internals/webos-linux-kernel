@@ -14,7 +14,8 @@ enum ads7846_filter {
 struct ads7846_platform_data {
 	u16	model;			/* 7843, 7845, 7846. */
 	u16	vref_delay_usecs;	/* 0 for external vref; etc */
-	int	keep_vref_on:1;		/* set to keep vref on for differential
+	u16	vref_mv;		/* external vref value, milliVolts */
+	bool	keep_vref_on;		/* set to keep vref on for differential
 					 * measurements as well */
 
 	/* Settling time of the analog signals; a function of Vcc and the
@@ -42,6 +43,9 @@ struct ads7846_platform_data {
 	u16	debounce_tol;		/* tolerance used for filtering */
 	u16	debounce_rep;		/* additional consecutive good readings
 					 * required after the first two */
+	int	gpio_pendown;		/* the GPIO used to decide the pendown
+					 * state if get_pendown_state == NULL
+					 */
 	int	(*get_pendown_state)(void);
 	int	(*filter_init)	(struct ads7846_platform_data *pdata,
 				 void **filter_data);

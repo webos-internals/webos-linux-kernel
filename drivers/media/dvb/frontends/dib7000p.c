@@ -35,8 +35,8 @@ struct dib7000p_state {
 
 	u16 wbd_ref;
 
-	u8 current_band;
-	fe_bandwidth_t current_bandwidth;
+	u8  current_band;
+	u32 current_bandwidth;
 	struct dibx000_agc_config *current_agc;
 	u32 timf;
 
@@ -1074,7 +1074,7 @@ static int dib7000p_get_frontend(struct dvb_frontend* fe,
 
 	fep->inversion = INVERSION_AUTO;
 
-	fep->u.ofdm.bandwidth = state->current_bandwidth;
+	fep->u.ofdm.bandwidth = BANDWIDTH_TO_INDEX(state->current_bandwidth);
 
 	switch ((tps >> 8) & 0x3) {
 		case 0: fep->u.ofdm.transmission_mode = TRANSMISSION_MODE_2K; break;
@@ -1128,12 +1128,11 @@ static int dib7000p_set_frontend(struct dvb_frontend* fe,
 				struct dvb_frontend_parameters *fep)
 {
 	struct dib7000p_state *state = fe->demodulator_priv;
-	int time;
+	int time, ret;
 
-	state->current_bandwidth = fep->u.ofdm.bandwidth;
-	dib7000p_set_bandwidth(state, BANDWIDTH_TO_KHZ(fep->u.ofdm.bandwidth));
+	dib7000p_set_output_mode(state, OUTMODE_HIGH_Z);
 
-	/* maybe the parameter has been changed */
+    /* maybe the parameter has been changed */
 	state->sfn_workaround_active = buggy_sfn_workaround;
 
 	if (fe->ops.tuner_ops.set_params)
@@ -1166,10 +1165,11 @@ static int dib7000p_set_frontend(struct dvb_frontend* fe,
 		dib7000p_get_frontend(fe, fep);
 	}
 
-	/* make this a config parameter */
-	dib7000p_set_output_mode(state, OUTMODE_MPEG2_FIFO);
+	ret = dib7000p_tune(fe, fep);
 
-	return dib7000p_tune(fe, fep);
+	/* make this a config parameter */
+	dib7000p_set_output_mode(state, state->cfg.output_mode);
+    return ret;
 }
 
 static int dib7000p_read_status(struct dvb_frontend *fe, fe_status_t *stat)
@@ -1329,6 +1329,13 @@ struct dvb_frontend * dib7000p_attach(struct i2c_adapter *i2c_adap, u8 i2c_addr,
 	st->i2c_addr = i2c_addr;
 	st->gpio_val = cfg->gpio_val;
 	st->gpio_dir = cfg->gpio_dir;
+
+	/* Ensure the output mode remains at the previous default if it's
+	 * not specifically set by the caller.
+	 */
+	if ((st->cfg.output_mode != OUTMODE_MPEG2_SERIAL) &&
+	    (st->cfg.output_mode != OUTMODE_MPEG2_PAR_GATED_CLK))
+		st->cfg.output_mode = OUTMODE_MPEG2_FIFO;
 
 	demod                   = &st->demod;
 	demod->demodulator_priv = st;

@@ -35,14 +35,12 @@
 
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/hardware.h>
-#include <asm/arch/netx-regs.h>
+#include <mach/hardware.h>
+#include <mach/netx-regs.h>
 
 /* We've been assigned a range on the "Low-density serial ports" major */
 #define SERIAL_NX_MAJOR	204
 #define MINOR_START	170
-
-#ifdef CONFIG_SERIAL_NETX_CONSOLE
 
 enum uart_regs {
 	UART_DR              = 0x00,
@@ -203,7 +201,7 @@ static void netx_txint(struct uart_port *port)
 static void netx_rxint(struct uart_port *port)
 {
 	unsigned char rx, flg, status;
-	struct tty_struct *tty = port->info->tty;
+	struct tty_struct *tty = port->info->port.tty;
 
 	while (!(readl(port->membase + UART_FR) & FR_RXFE)) {
 		rx = readl(port->membase + UART_DR);
@@ -287,6 +285,7 @@ static void netx_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
 	unsigned int val;
 
+	/* FIXME: Locking needed ? */
 	if (mctrl & TIOCM_RTS) {
 		val = readl(port->membase + UART_RTS_CR);
 		writel(val | RTS_CR_RTS, port->membase + UART_RTS_CR);
@@ -527,6 +526,8 @@ static struct netx_port netx_ports[] = {
 	}
 };
 
+#ifdef CONFIG_SERIAL_NETX_CONSOLE
+
 static void netx_console_putchar(struct uart_port *port, int ch)
 {
 	while (readl(port->membase + UART_FR) & FR_BUSY);
@@ -713,6 +714,7 @@ static struct platform_driver serial_netx_driver = {
 
 	.driver		= {
 		.name   = DRIVER_NAME,
+		.owner	= THIS_MODULE,
 	},
 };
 
@@ -745,3 +747,4 @@ module_exit(netx_serial_exit);
 MODULE_AUTHOR("Sascha Hauer");
 MODULE_DESCRIPTION("NetX serial port driver");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:" DRIVER_NAME);

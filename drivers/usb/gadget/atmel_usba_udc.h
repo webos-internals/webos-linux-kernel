@@ -41,6 +41,15 @@
 #define USBA_EN_USBA				(1 <<  8)
 #define USBA_DETACH				(1 <<  9)
 #define USBA_REMOTE_WAKE_UP			(1 << 10)
+#define USBA_PULLD_DIS				(1 << 11)
+
+#if defined(CONFIG_AVR32)
+#define USBA_ENABLE_MASK			USBA_EN_USBA
+#define USBA_DISABLE_MASK			0
+#elif defined(CONFIG_ARCH_AT91)
+#define USBA_ENABLE_MASK			(USBA_EN_USBA | USBA_PULLD_DIS)
+#define USBA_DISABLE_MASK			USBA_DETACH
+#endif /* CONFIG_ARCH_AT91 */
 
 /* Bitfields in FNUM */
 #define USBA_MICRO_FRAME_NUM_OFFSET		0
@@ -216,7 +225,6 @@
 #define FIFO_IOMEM_ID	0
 #define CTRL_IOMEM_ID	1
 
-#ifdef DEBUG
 #define DBG_ERR		0x0001	/* report all error returns */
 #define DBG_HW		0x0002	/* debug hardware initialization */
 #define DBG_GADGET	0x0004	/* calls to/from gadget driver */
@@ -230,14 +238,12 @@
 #define DBG_NONE	0x0000
 
 #define DEBUG_LEVEL	(DBG_ERR)
+
 #define DBG(level, fmt, ...)					\
 	do {							\
 		if ((level) & DEBUG_LEVEL)			\
-			printk(KERN_DEBUG "udc: " fmt, ## __VA_ARGS__);	\
+			pr_debug("udc: " fmt, ## __VA_ARGS__);	\
 	} while (0)
-#else
-#define DBG(level, fmt...)
-#endif
 
 enum usba_ctrl_state {
 	WAIT_FOR_SETUP,

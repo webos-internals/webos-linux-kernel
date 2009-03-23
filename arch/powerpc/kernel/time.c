@@ -66,6 +66,7 @@
 #include <asm/smp.h>
 #include <asm/vdso_datapage.h>
 #include <asm/firmware.h>
+#include <asm/cputime.h>
 #ifdef CONFIG_PPC_ISERIES
 #include <asm/iseries/it_lp_queue.h>
 #include <asm/iseries/hv_call_xm.h>
@@ -116,16 +117,19 @@ static struct clock_event_device decrementer_clockevent = {
        .features       = CLOCK_EVT_FEAT_ONESHOT,
 };
 
-static DEFINE_PER_CPU(struct clock_event_device, decrementers);
-void init_decrementer_clockevent(void);
-static DEFINE_PER_CPU(u64, decrementer_next_tb);
+struct decrementer_clock {
+	struct clock_event_device event;
+	u64 next_tb;
+};
+
+static DEFINE_PER_CPU(struct decrementer_clock, decrementers);
 
 #ifdef CONFIG_PPC_ISERIES
 static unsigned long __initdata iSeries_recal_titan;
 static signed long __initdata iSeries_recal_tb;
 
 /* Forward declaration is only needed for iSereis compiles */
-void __init clocksource_init(void);
+static void __init clocksource_init(void);
 #endif
 
 #define XSEC_PER_SEC (1024*1024)
@@ -145,9 +149,9 @@ EXPORT_SYMBOL(tb_ticks_per_sec);	/* for cputime_t conversions */
 u64 tb_to_xs;
 unsigned tb_to_us;
 
-#define TICKLEN_SCALE	TICK_LENGTH_SHIFT
-u64 last_tick_len;	/* units are ns / 2^TICKLEN_SCALE */
-u64 ticklen_to_xs;	/* 0.64 fraction */
+#define TICKLEN_SCALE	NTP_SCALE_SHIFT
+static u64 last_tick_len;	/* units are ns / 2^TICKLEN_SCALE */
+static u64 ticklen_to_xs;	/* 0.64 fraction */
 
 /* If last_tick_len corresponds to about 1/HZ seconds, then
    last_tick_len << TICKLEN_SHIFT will be about 2^63. */
@@ -159,8 +163,6 @@ EXPORT_SYMBOL_GPL(rtc_lock);
 static u64 tb_to_ns_scale __read_mostly;
 static unsigned tb_to_ns_shift __read_mostly;
 static unsigned long boot_tb __read_mostly;
-
-struct gettimeofday_struct do_gtod;
 
 extern struct timezone sys_tz;
 static long timezone_offset;
@@ -186,6 +188,8 @@ u64 __cputime_sec_factor;
 EXPORT_SYMBOL(__cputime_sec_factor);
 u64 __cputime_clockt_factor;
 EXPORT_SYMBOL(__cputime_clockt_factor);
+DEFINE_PER_CPU(unsigned long, cputime_last_delta);
+DEFINE_PER_CPU(unsigned long, cputime_scaled_last_delta);
 
 static void calc_cputime_factors(void)
 {
@@ -216,7 +220,11 @@ static u64 read_purr(void)
  */
 static u64 read_spurr(u64 purr)
 {
-	if (cpu_has_feature(CPU_FTR_SPURR))
+	/*
+	 * cpus without PURR won't have a SPURR
+	 * We already know the former when we use this, so tell gcc
+	 */
+	if (cpu_has_feature(CPU_FTR_PURR) && cpu_has_feature(CPU_FTR_SPURR))
 		return mfspr(SPRN_SPURR);
 	return purr;
 }
@@ -227,30 +235,33 @@ static u64 read_spurr(u64 purr)
  */
 void account_system_vtime(struct task_struct *tsk)
 {
-	u64 now, nowscaled, delta, deltascaled;
+	u64 now, nowscaled, delta, deltascaled, sys_time;
 	unsigned long flags;
 
 	local_irq_save(flags);
 	now = read_purr();
-	delta = now - get_paca()->startpurr;
-	get_paca()->startpurr = now;
 	nowscaled = read_spurr(now);
+	delta = now - get_paca()->startpurr;
 	deltascaled = nowscaled - get_paca()->startspurr;
+	get_paca()->startpurr = now;
 	get_paca()->startspurr = nowscaled;
 	if (!in_interrupt()) {
 		/* deltascaled includes both user and system time.
 		 * Hence scale it based on the purr ratio to estimate
 		 * the system time */
+		sys_time = get_paca()->system_time;
 		if (get_paca()->user_time)
-			deltascaled = deltascaled * get_paca()->system_time /
-			     (get_paca()->system_time + get_paca()->user_time);
-		delta += get_paca()->system_time;
+			deltascaled = deltascaled * sys_time /
+			     (sys_time + get_paca()->user_time);
+		delta += sys_time;
 		get_paca()->system_time = 0;
 	}
-	account_system_time(tsk, 0, delta);
-	get_paca()->purrdelta = delta;
-	account_system_time_scaled(tsk, deltascaled);
-	get_paca()->spurrdelta = deltascaled;
+	if (in_irq() || idle_task(smp_processor_id()) != tsk)
+		account_system_time(tsk, 0, delta, deltascaled);
+	else
+		account_idle_time(delta);
+	per_cpu(cputime_last_delta, smp_processor_id()) = delta;
+	per_cpu(cputime_scaled_last_delta, smp_processor_id()) = deltascaled;
 	local_irq_restore(flags);
 }
 
@@ -266,13 +277,8 @@ void account_process_tick(struct task_struct *tsk, int user_tick)
 
 	utime = get_paca()->user_time;
 	get_paca()->user_time = 0;
-	account_user_time(tsk, utime);
-
-	/* Estimate the scaled utime by scaling the real utime based
-	 * on the last spurr to purr ratio */
-	utimescaled = utime * get_paca()->spurrdelta / get_paca()->purrdelta;
-	get_paca()->spurrdelta = get_paca()->purrdelta = 0;
-	account_user_time_scaled(tsk, utimescaled);
+	utimescaled = cputime_to_scaled(utime);
+	account_user_time(tsk, utime, utimescaled);
 }
 
 /*
@@ -314,7 +320,7 @@ void snapshot_timebases(void)
 {
 	if (!cpu_has_feature(CPU_FTR_PURR))
 		return;
-	on_each_cpu(snapshot_tb_and_purr, NULL, 0, 1);
+	on_each_cpu(snapshot_tb_and_purr, NULL, 1);
 }
 
 /*
@@ -326,16 +332,18 @@ void calculate_steal_time(void)
 	s64 stolen;
 	struct cpu_purr_data *pme;
 
-	if (!cpu_has_feature(CPU_FTR_PURR))
-		return;
-	pme = &per_cpu(cpu_purr_data, smp_processor_id());
+	pme = &__get_cpu_var(cpu_purr_data);
 	if (!pme->initialized)
-		return;		/* this can happen in early boot */
+		return;		/* !CPU_FTR_PURR or early in early boot */
 	tb = mftb();
 	purr = mfspr(SPRN_PURR);
 	stolen = (tb - pme->tb) - (purr - pme->purr);
-	if (stolen > 0)
-		account_steal_time(current, stolen);
+	if (stolen > 0) {
+		if (idle_task(smp_processor_id()) != current)
+			account_steal_time(stolen);
+		else
+			account_idle_time(stolen);
+	}
 	pme->tb = tb;
 	pme->purr = purr;
 }
@@ -353,7 +361,7 @@ static void snapshot_purr(void)
 	if (!cpu_has_feature(CPU_FTR_PURR))
 		return;
 	local_irq_save(flags);
-	pme = &per_cpu(cpu_purr_data, smp_processor_id());
+	pme = &__get_cpu_var(cpu_purr_data);
 	pme->tb = mftb();
 	pme->purr = mfspr(SPRN_PURR);
 	pme->initialized = 1;
@@ -409,31 +417,9 @@ void udelay(unsigned long usecs)
 }
 EXPORT_SYMBOL(udelay);
 
-
-/*
- * There are two copies of tb_to_xs and stamp_xsec so that no
- * lock is needed to access and use these values in
- * do_gettimeofday.  We alternate the copies and as long as a
- * reasonable time elapses between changes, there will never
- * be inconsistent values.  ntpd has a minimum of one minute
- * between updates.
- */
 static inline void update_gtod(u64 new_tb_stamp, u64 new_stamp_xsec,
 			       u64 new_tb_to_xs)
 {
-	unsigned temp_idx;
-	struct gettimeofday_vars *temp_varp;
-
-	temp_idx = (do_gtod.var_idx == 0);
-	temp_varp = &do_gtod.vars[temp_idx];
-
-	temp_varp->tb_to_xs = new_tb_to_xs;
-	temp_varp->tb_orig_stamp = new_tb_stamp;
-	temp_varp->stamp_xsec = new_stamp_xsec;
-	smp_mb();
-	do_gtod.varp = temp_varp;
-	do_gtod.var_idx = temp_idx;
-
 	/*
 	 * tb_update_count is used to allow the userspace gettimeofday code
 	 * to assure itself that it sees a consistent view of the tb_to_xs and
@@ -450,6 +436,7 @@ static inline void update_gtod(u64 new_tb_stamp, u64 new_stamp_xsec,
 	vdso_data->tb_to_xs = new_tb_to_xs;
 	vdso_data->wtom_clock_sec = wall_to_monotonic.tv_sec;
 	vdso_data->wtom_clock_nsec = wall_to_monotonic.tv_nsec;
+	vdso_data->stamp_xtime = xtime;
 	smp_wmb();
 	++(vdso_data->tb_update_count);
 }
@@ -508,9 +495,7 @@ static int __init iSeries_tb_recal(void)
 				tb_ticks_per_sec   = new_tb_ticks_per_sec;
 				calc_cputime_factors();
 				div128_by_32( XSEC_PER_SEC, 0, tb_ticks_per_sec, &divres );
-				do_gtod.tb_ticks_per_sec = tb_ticks_per_sec;
 				tb_to_xs = divres.result_low;
-				do_gtod.varp->tb_to_xs = tb_to_xs;
 				vdso_data->tb_ticks_per_sec = tb_ticks_per_sec;
 				vdso_data->tb_to_xs = tb_to_xs;
 			}
@@ -556,8 +541,8 @@ void __init iSeries_time_init_early(void)
 void timer_interrupt(struct pt_regs * regs)
 {
 	struct pt_regs *old_regs;
-	int cpu = smp_processor_id();
-	struct clock_event_device *evt = &per_cpu(decrementers, cpu);
+	struct decrementer_clock *decrementer =  &__get_cpu_var(decrementers);
+	struct clock_event_device *evt = &decrementer->event;
 	u64 now;
 
 	/* Ensure a positive value is written to the decrementer, or else
@@ -570,9 +555,9 @@ void timer_interrupt(struct pt_regs * regs)
 #endif
 
 	now = get_tb_or_rtc();
-	if (now < per_cpu(decrementer_next_tb, cpu)) {
+	if (now < decrementer->next_tb) {
 		/* not time for this event yet */
-		now = per_cpu(decrementer_next_tb, cpu) - now;
+		now = decrementer->next_tb - now;
 		if (now <= DECREMENTER_MAX)
 			set_dec((int)now);
 		return;
@@ -622,6 +607,45 @@ void wakeup_decrementer(void)
 		ticks = 1;
 	set_dec(ticks);
 }
+
+#ifdef CONFIG_SUSPEND
+void generic_suspend_disable_irqs(void)
+{
+	preempt_disable();
+
+	/* Disable the decrementer, so that it doesn't interfere
+	 * with suspending.
+	 */
+
+	set_dec(0x7fffffff);
+	local_irq_disable();
+	set_dec(0x7fffffff);
+}
+
+void generic_suspend_enable_irqs(void)
+{
+	wakeup_decrementer();
+
+	local_irq_enable();
+	preempt_enable();
+}
+
+/* Overrides the weak version in kernel/power/main.c */
+void arch_suspend_disable_irqs(void)
+{
+	if (ppc_md.suspend_disable_irqs)
+		ppc_md.suspend_disable_irqs();
+	generic_suspend_disable_irqs();
+}
+
+/* Overrides the weak version in kernel/power/main.c */
+void arch_suspend_enable_irqs(void)
+{
+	generic_suspend_enable_irqs();
+	if (ppc_md.suspend_enable_irqs)
+		ppc_md.suspend_enable_irqs();
+}
+#endif
 
 #ifdef CONFIG_SMP
 void __init smp_space_timers(unsigned int max_cpus)
@@ -697,10 +721,6 @@ void __init generic_calibrate_decr(void)
 	}
 
 #if defined(CONFIG_BOOKE) || defined(CONFIG_40x)
-	/* Set the time base to zero */
-	mtspr(SPRN_TBWL, 0);
-	mtspr(SPRN_TBWU, 0);
-
 	/* Clear any pending timer interrupts */
 	mtspr(SPRN_TSR, TSR_ENW | TSR_WIS | TSR_DIS | TSR_FIS);
 
@@ -787,7 +807,7 @@ void update_vsyscall_tz(void)
 	++vdso_data->tb_update_count;
 }
 
-void __init clocksource_init(void)
+static void __init clocksource_init(void)
 {
 	struct clocksource *clock;
 
@@ -811,7 +831,7 @@ void __init clocksource_init(void)
 static int decrementer_set_next_event(unsigned long evt,
 				      struct clock_event_device *dev)
 {
-	__get_cpu_var(decrementer_next_tb) = get_tb_or_rtc() + evt;
+	__get_cpu_var(decrementers).next_tb = get_tb_or_rtc() + evt;
 	set_dec(evt);
 	return 0;
 }
@@ -825,10 +845,10 @@ static void decrementer_set_mode(enum clock_event_mode mode,
 
 static void register_decrementer_clockevent(int cpu)
 {
-	struct clock_event_device *dec = &per_cpu(decrementers, cpu);
+	struct clock_event_device *dec = &per_cpu(decrementers, cpu).event;
 
 	*dec = decrementer_clockevent;
-	dec->cpumask = cpumask_of_cpu(cpu);
+	dec->cpumask = cpumask_of(cpu);
 
 	printk(KERN_DEBUG "clockevent: %s mult[%lx] shift[%d] cpu[%d]\n",
 	       dec->name, dec->mult, dec->shift, cpu);
@@ -836,7 +856,7 @@ static void register_decrementer_clockevent(int cpu)
 	clockevents_register_device(dec);
 }
 
-void init_decrementer_clockevent(void)
+static void __init init_decrementer_clockevent(void)
 {
 	int cpu = smp_processor_id();
 
@@ -947,22 +967,11 @@ void __init time_init(void)
 		sys_tz.tz_dsttime = 0;
         }
 
-	do_gtod.varp = &do_gtod.vars[0];
-	do_gtod.var_idx = 0;
-	do_gtod.varp->tb_orig_stamp = tb_last_jiffy;
-	__get_cpu_var(last_jiffy) = tb_last_jiffy;
-	do_gtod.varp->stamp_xsec = (u64) xtime.tv_sec * XSEC_PER_SEC;
-	do_gtod.tb_ticks_per_sec = tb_ticks_per_sec;
-	do_gtod.varp->tb_to_xs = tb_to_xs;
-	do_gtod.tb_to_us = tb_to_us;
-
 	vdso_data->tb_orig_stamp = tb_last_jiffy;
 	vdso_data->tb_update_count = 0;
 	vdso_data->tb_ticks_per_sec = tb_ticks_per_sec;
 	vdso_data->stamp_xsec = (u64) xtime.tv_sec * XSEC_PER_SEC;
 	vdso_data->tb_to_xs = tb_to_xs;
-
-	time_freq = 0;
 
 	write_sequnlock_irqrestore(&xtime_lock, flags);
 

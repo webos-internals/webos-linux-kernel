@@ -29,6 +29,7 @@
 
 #include <linux/slab.h>
 
+#include <linux/edac.h>
 #include "edac_core.h"
 
 #define I82443_REVISION	"0.1"
@@ -112,6 +113,12 @@ struct i82443bxgx_edacmc_error_info {
 };
 
 static struct edac_pci_ctl_info *i82443bxgx_pci;
+
+static struct pci_dev *mci_pdev;	/* init dev: in case that AGP code has
+					 * already registered driver
+					 */
+
+static int i82443bxgx_registered = 1;
 
 static void i82443bxgx_edacmc_get_error_info(struct mem_ctl_info *mci,
 				struct i82443bxgx_edacmc_error_info
@@ -344,10 +351,17 @@ EXPORT_SYMBOL_GPL(i82443bxgx_edacmc_probe1);
 static int __devinit i82443bxgx_edacmc_init_one(struct pci_dev *pdev,
 						const struct pci_device_id *ent)
 {
+	int rc;
+
 	debugf0("MC: " __FILE__ ": %s()\n", __func__);
 
 	/* don't need to call pci_device_enable() */
-	return i82443bxgx_edacmc_probe1(pdev, ent->driver_data);
+	rc = i82443bxgx_edacmc_probe1(pdev, ent->driver_data);
+
+	if (mci_pdev == NULL)
+		mci_pdev = pci_dev_get(pdev);
+
+	return rc;
 }
 
 static void __devexit i82443bxgx_edacmc_remove_one(struct pci_dev *pdev)
@@ -386,12 +400,61 @@ static struct pci_driver i82443bxgx_edacmc_driver = {
 
 static int __init i82443bxgx_edacmc_init(void)
 {
-	return pci_register_driver(&i82443bxgx_edacmc_driver);
+	int pci_rc;
+       /* Ensure that the OPSTATE is set correctly for POLL or NMI */
+       opstate_init();
+
+	pci_rc = pci_register_driver(&i82443bxgx_edacmc_driver);
+	if (pci_rc < 0)
+		goto fail0;
+
+	if (mci_pdev == NULL) {
+		const struct pci_device_id *id = &i82443bxgx_pci_tbl[0];
+		int i = 0;
+		i82443bxgx_registered = 0;
+
+		while (mci_pdev == NULL && id->vendor != 0) {
+			mci_pdev = pci_get_device(id->vendor,
+					id->device, NULL);
+			i++;
+			id = &i82443bxgx_pci_tbl[i];
+		}
+		if (!mci_pdev) {
+			debugf0("i82443bxgx pci_get_device fail\n");
+			pci_rc = -ENODEV;
+			goto fail1;
+		}
+
+		pci_rc = i82443bxgx_edacmc_init_one(mci_pdev, i82443bxgx_pci_tbl);
+
+		if (pci_rc < 0) {
+			debugf0("i82443bxgx init fail\n");
+			pci_rc = -ENODEV;
+			goto fail1;
+		}
+	}
+
+	return 0;
+
+fail1:
+	pci_unregister_driver(&i82443bxgx_edacmc_driver);
+
+fail0:
+	if (mci_pdev != NULL)
+		pci_dev_put(mci_pdev);
+
+	return pci_rc;
 }
 
 static void __exit i82443bxgx_edacmc_exit(void)
 {
 	pci_unregister_driver(&i82443bxgx_edacmc_driver);
+
+	if (!i82443bxgx_registered)
+		i82443bxgx_edacmc_remove_one(mci_pdev);
+
+	if (mci_pdev)
+		pci_dev_put(mci_pdev);
 }
 
 module_init(i82443bxgx_edacmc_init);
@@ -400,3 +463,6 @@ module_exit(i82443bxgx_edacmc_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Tim Small <tim@buttersideup.com> - WPAD");
 MODULE_DESCRIPTION("EDAC MC support for Intel 82443BX/GX memory controllers");
+
+module_param(edac_op_state, int, 0444);
+MODULE_PARM_DESC(edac_op_state, "EDAC Error Reporting state: 0=Poll,1=NMI");

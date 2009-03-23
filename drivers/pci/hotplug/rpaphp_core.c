@@ -37,7 +37,7 @@
 				/* and pci_do_scan_bus */
 #include "rpaphp.h"
 
-int debug;
+int rpaphp_debug;
 LIST_HEAD(rpaphp_slot_head);
 
 #define DRIVER_VERSION	"0.1"
@@ -50,7 +50,7 @@ MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 
-module_param(debug, bool, 0644);
+module_param_named(debug, rpaphp_debug, bool, 0644);
 
 /**
  * set_attention_status - set attention LED
@@ -317,7 +317,7 @@ int rpaphp_add_slot(struct device_node *dn)
 	if (!is_php_dn(dn, &indexes, &names, &types, &power_domains))
 		return 0;
 
-	dbg("Entry %s: dn->full_name=%s\n", __FUNCTION__, dn->full_name);
+	dbg("Entry %s: dn->full_name=%s\n", __func__, dn->full_name);
 
 	/* register PCI devices */
 	name = (char *) &names[1];
@@ -343,7 +343,7 @@ int rpaphp_add_slot(struct device_node *dn)
 		name += strlen(name) + 1;
 		type += strlen(type) + 1;
 	}
-	dbg("%s - Exit: rc[%d]\n", __FUNCTION__, retval);
+	dbg("%s - Exit: rc[%d]\n", __func__, retval);
 
 	/* XXX FIXME: reports a failure only if last entry in loop failed */
 	return retval;
@@ -404,7 +404,7 @@ static int enable_slot(struct hotplug_slot *hotplug_slot)
 	} else if (state == EMPTY) {
 		slot->state = EMPTY;
 	} else {
-		err("%s: slot[%s] is in invalid state\n", __FUNCTION__, slot->name);
+		err("%s: slot[%s] is in invalid state\n", __func__, slot->name);
 		slot->state = NOT_VALID;
 		return -EINVAL;
 	}

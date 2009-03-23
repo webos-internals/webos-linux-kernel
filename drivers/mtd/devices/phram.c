@@ -1,8 +1,6 @@
 /**
- * $Id: phram.c,v 1.16 2005/11/07 11:14:25 gleixner Exp $
- *
  * Copyright (c) ????		Jochen Schäuble <psionic@psionic.de>
- * Copyright (c) 2003-2004	Jörn Engel <joern@wh.fh-wedel.de>
+ * Copyright (c) 2003-2004	Joern Engel <joern@wh.fh-wedel.de>
  *
  * Usage:
  *
@@ -57,20 +55,21 @@ static int phram_erase(struct mtd_info *mtd, struct erase_info *instr)
 }
 
 static int phram_point(struct mtd_info *mtd, loff_t from, size_t len,
-		size_t *retlen, u_char **mtdbuf)
+		size_t *retlen, void **virt, resource_size_t *phys)
 {
-	u_char *start = mtd->priv;
-
 	if (from + len > mtd->size)
 		return -EINVAL;
 
-	*mtdbuf = start + from;
+	/* can we return a physical address with this driver? */
+	if (phys)
+		return -EINVAL;
+
+	*virt = mtd->priv + from;
 	*retlen = len;
 	return 0;
 }
 
-static void phram_unpoint(struct mtd_info *mtd, u_char *addr, loff_t from,
-		size_t len)
+static void phram_unpoint(struct mtd_info *mtd, loff_t from, size_t len)
 {
 }
 
@@ -282,7 +281,7 @@ static int phram_setup(const char *val, struct kernel_param *kp)
 }
 
 module_param_call(phram, phram_setup, NULL, NULL, 000);
-MODULE_PARM_DESC(phram,"Memory region to map. \"map=<name>,<start>,<length>\"");
+MODULE_PARM_DESC(phram, "Memory region to map. \"phram=<name>,<start>,<length>\"");
 
 
 static int __init init_phram(void)
@@ -299,5 +298,5 @@ module_init(init_phram);
 module_exit(cleanup_phram);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jörn Engel <joern@wh.fh-wedel.de>");
+MODULE_AUTHOR("Joern Engel <joern@wh.fh-wedel.de>");
 MODULE_DESCRIPTION("MTD driver for physical RAM");

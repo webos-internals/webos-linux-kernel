@@ -1,4 +1,4 @@
-/* Copyright (c) 2006 Coraid, Inc.  See COPYING for GPL terms. */
+/* Copyright (c) 2007 Coraid, Inc.  See COPYING for GPL terms. */
 /*
  * aoenet.c
  * Ethernet portion of AoE driver
@@ -30,7 +30,7 @@ enum {
 
 static char aoe_iflist[IFLISTSZ];
 module_param_string(aoe_iflist, aoe_iflist, IFLISTSZ, 0600);
-MODULE_PARM_DESC(aoe_iflist, "aoe_iflist=\"dev1 [dev2 ...]\"\n");
+MODULE_PARM_DESC(aoe_iflist, "aoe_iflist=\"dev1 [dev2 ...]\"");
 
 #ifndef MODULE
 static int __init aoe_iflist_setup(char *str)
@@ -83,25 +83,13 @@ set_aoe_iflist(const char __user *user_str, size_t size)
 	return 0;
 }
 
-u64
-mac_addr(char addr[6])
-{
-	__be64 n = 0;
-	char *p = (char *) &n;
-
-	memcpy(p + 2, addr, 6);	/* (sizeof addr != 6) */
-
-	return __be64_to_cpu(n);
-}
-
 void
-aoenet_xmit(struct sk_buff *sl)
+aoenet_xmit(struct sk_buff_head *queue)
 {
-	struct sk_buff *skb;
+	struct sk_buff *skb, *tmp;
 
-	while ((skb = sl)) {
-		sl = sl->next;
-		skb->next = skb->prev = NULL;
+	skb_queue_walk_safe(queue, skb, tmp) {
+		__skb_unlink(skb, queue);
 		dev_queue_xmit(skb);
 	}
 }
@@ -115,7 +103,7 @@ aoenet_rcv(struct sk_buff *skb, struct net_device *ifp, struct packet_type *pt, 
 	struct aoe_hdr *h;
 	u32 n;
 
-	if (ifp->nd_net != &init_net)
+	if (dev_net(ifp) != &init_net)
 		goto exit;
 
 	skb = skb_share_check(skb, GFP_ATOMIC);
@@ -128,7 +116,7 @@ aoenet_rcv(struct sk_buff *skb, struct net_device *ifp, struct packet_type *pt, 
 	skb_push(skb, ETH_HLEN);	/* (1) */
 
 	h = (struct aoe_hdr *) skb_mac_header(skb);
-	n = be32_to_cpu(get_unaligned(&h->tag));
+	n = get_unaligned_be32(&h->tag);
 	if ((h->verfl & AOEFL_RSP) == 0 || (n & 1<<31))
 		goto exit;
 
@@ -137,9 +125,12 @@ aoenet_rcv(struct sk_buff *skb, struct net_device *ifp, struct packet_type *pt, 
 		if (n > NECODES)
 			n = 0;
 		if (net_ratelimit())
-			printk(KERN_ERR "aoe: error packet from %d.%d; ecode=%d '%s'\n",
-			       be16_to_cpu(get_unaligned(&h->major)), h->minor,
-			       h->err, aoe_errlist[n]);
+			printk(KERN_ERR
+				"%s%d.%d@%s; ecode=%d '%s'\n",
+				"aoe: error packet from ",
+				get_unaligned_be16(&h->major),
+				h->minor, skb->dev->name,
+				h->err, aoe_errlist[n]);
 		goto exit;
 	}
 
@@ -151,6 +142,8 @@ aoenet_rcv(struct sk_buff *skb, struct net_device *ifp, struct packet_type *pt, 
 		aoecmd_cfg_rsp(skb);
 		break;
 	default:
+		if (h->cmd >= AOECMD_VEND_MIN)
+			break;	/* don't complain about vendor commands */
 		printk(KERN_INFO "aoe: unknown cmd %d\n", h->cmd);
 	}
 exit:

@@ -6,8 +6,6 @@
  *  Derived from drivers/mtd/nand/autcpu12.c
  *       Copyright (c) 2001 Thomas Gleixner (gleixner@autronix.de)
  *
- * $Id: edb7312.c,v 1.12 2005/11/07 11:14:30 gleixner Exp $
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
@@ -25,7 +23,7 @@
 #include <linux/mtd/nand.h>
 #include <linux/mtd/partitions.h>
 #include <asm/io.h>
-#include <asm/arch/hardware.h>	/* for CLPS7111_VIRT_BASE */
+#include <mach/hardware.h>	/* for CLPS7111_VIRT_BASE */
 #include <asm/sizes.h>
 #include <asm/hardware/clps7111.h>
 
@@ -125,7 +123,7 @@ static int __init ep7312_init(void)
 		return -ENOMEM;
 	}
 
-	/* map physical adress */
+	/* map physical address */
 	ep7312_fio_base = ioremap(ep7312_fio_pbase, SZ_1K);
 	if (!ep7312_fio_base) {
 		printk("ioremap EDB7312 NAND flash failed\n");

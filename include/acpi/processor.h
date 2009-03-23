@@ -4,7 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/cpu.h>
 #include <linux/cpuidle.h>
-
+#include <linux/thermal.h>
 #include <asm/acpi.h>
 
 #define ACPI_PROCESSOR_BUSY_METRIC	10
@@ -32,8 +32,11 @@
 #define DOMAIN_COORD_TYPE_SW_ANY	0xfd
 #define DOMAIN_COORD_TYPE_HW_ALL	0xfe
 
-#define ACPI_CSTATE_SYSTEMIO	(0)
-#define ACPI_CSTATE_FFH		(1)
+#define ACPI_CSTATE_SYSTEMIO	0
+#define ACPI_CSTATE_FFH		1
+#define ACPI_CSTATE_HALT	2
+
+#define ACPI_CX_DESC_LEN	32
 
 /* Power Management */
 
@@ -64,7 +67,7 @@ struct acpi_processor_cx {
 	u8 valid;
 	u8 type;
 	u32 address;
-	u8 space_id;
+	u8 entry_method;
 	u8 index;
 	u32 latency;
 	u32 latency_ticks;
@@ -73,6 +76,7 @@ struct acpi_processor_cx {
 	u64 time;
 	struct acpi_processor_cx_policy promotion;
 	struct acpi_processor_cx_policy demotion;
+	char desc[ACPI_CX_DESC_LEN];
 };
 
 struct acpi_processor_power {
@@ -123,7 +127,7 @@ struct acpi_processor_performance {
 	unsigned int state_count;
 	struct acpi_processor_px *states;
 	struct acpi_psd_package domain_info;
-	cpumask_t shared_cpu_map;
+	cpumask_var_t shared_cpu_map;
 	unsigned int shared_type;
 };
 
@@ -168,7 +172,7 @@ struct acpi_processor_throttling {
 	unsigned int state_count;
 	struct acpi_processor_tx_tss *states_tss;
 	struct acpi_tsd_package domain_info;
-	cpumask_t shared_cpu_map;
+	cpumask_var_t shared_cpu_map;
 	int (*acpi_processor_get_throttling) (struct acpi_processor * pr);
 	int (*acpi_processor_set_throttling) (struct acpi_processor * pr,
 					      int state);
@@ -176,13 +180,15 @@ struct acpi_processor_throttling {
 	u32 address;
 	u8 duty_offset;
 	u8 duty_width;
+	u8 tsd_valid_flag;
+	unsigned int shared_type;
 	struct acpi_processor_tx states[ACPI_PROCESSOR_MAX_THROTTLING];
 };
 
 /* Limit Interface */
 
 struct acpi_processor_lx {
-	int px;			/* performace state */
+	int px;			/* performance state */
 	int tx;			/* throttle level */
 };
 
@@ -218,7 +224,7 @@ struct acpi_processor {
 	struct acpi_processor_performance *performance;
 	struct acpi_processor_throttling throttling;
 	struct acpi_processor_limit limit;
-
+	struct thermal_cooling_device *cdev;
 	/* the _PDC objects for this processor, if any */
 	struct acpi_object_list *pdc;
 };
@@ -249,7 +255,7 @@ extern void acpi_processor_unregister_performance(struct
 int acpi_processor_notify_smm(struct module *calling_module);
 
 /* for communication between multiple parts of the processor kernel module */
-extern struct acpi_processor *processors[NR_CPUS];
+DECLARE_PER_CPU(struct acpi_processor *, processors);
 extern struct acpi_processor_errata errata;
 
 void arch_acpi_processor_init_pdc(struct acpi_processor *pr);
@@ -313,10 +319,11 @@ static inline int acpi_processor_ppc_has_changed(struct acpi_processor *pr)
 #endif				/* CONFIG_CPU_FREQ */
 
 /* in processor_throttling.c */
+int acpi_processor_tstate_has_changed(struct acpi_processor *pr);
 int acpi_processor_get_throttling_info(struct acpi_processor *pr);
 extern int acpi_processor_set_throttling(struct acpi_processor *pr, int state);
 extern struct file_operations acpi_processor_throttling_fops;
-
+extern void acpi_processor_throttling_init(void);
 /* in processor_idle.c */
 int acpi_processor_power_init(struct acpi_processor *pr,
 			      struct acpi_device *device);
@@ -330,7 +337,7 @@ extern struct cpuidle_driver acpi_idle_driver;
 /* in processor_thermal.c */
 int acpi_processor_get_limit_info(struct acpi_processor *pr);
 extern struct file_operations acpi_processor_limit_fops;
-
+extern struct thermal_cooling_device_ops processor_cooling_ops;
 #ifdef CONFIG_CPU_FREQ
 void acpi_thermal_cpufreq_init(void);
 void acpi_thermal_cpufreq_exit(void);

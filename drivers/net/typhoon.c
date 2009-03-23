@@ -128,13 +128,12 @@ static const int multicast_filter_limit = 32;
 #include <asm/io.h>
 #include <asm/uaccess.h>
 #include <linux/in6.h>
-#include <linux/version.h>
 #include <linux/dma-mapping.h>
 
 #include "typhoon.h"
 #include "typhoon-firmware.h"
 
-static const char version[] __devinitdata =
+static char version[] __devinitdata =
     "typhoon.c: version " DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
 MODULE_AUTHOR("David Dillow <dave@thedillows.org>");
@@ -178,7 +177,7 @@ enum typhoon_cards {
 };
 
 /* directly indexed by enum typhoon_cards, above */
-static const struct typhoon_card_info typhoon_card_info[] __devinitdata = {
+static struct typhoon_card_info typhoon_card_info[] __devinitdata = {
 	{ "3Com Typhoon (3C990-TX)",
 		TYPHOON_CRYPTO_NONE},
 	{ "3Com Typhoon (3CR990-TX-95)",
@@ -333,8 +332,6 @@ enum state_values {
 #define TYPHOON_RESET_TIMEOUT_SLEEP	(6 * HZ)
 #define TYPHOON_RESET_TIMEOUT_NOSLEEP	((6 * 1000000) / TYPHOON_UDELAY)
 #define TYPHOON_WAIT_TIMEOUT		((1000000 / 2) / TYPHOON_UDELAY)
-
-#define typhoon_synchronize_irq(x) synchronize_irq(x)
 
 #if defined(NETIF_F_TSO)
 #define skb_tso_size(x)		(skb_shinfo(x)->gso_size)
@@ -1732,7 +1729,6 @@ typhoon_rx(struct typhoon *tp, struct basic_ring *rxRing, volatile __le32 * read
 			netif_receive_skb(new_skb);
 		spin_unlock(&tp->state_lock);
 
-		tp->dev->last_rx = jiffies;
 		received++;
 		budget--;
 	}
@@ -1759,7 +1755,6 @@ static int
 typhoon_poll(struct napi_struct *napi, int budget)
 {
 	struct typhoon *tp = container_of(napi, struct typhoon, napi);
-	struct net_device *dev = tp->dev;
 	struct typhoon_indexes *indexes = tp->indexes;
 	int work_done;
 
@@ -1788,7 +1783,7 @@ typhoon_poll(struct napi_struct *napi, int budget)
 	}
 
 	if (work_done < budget) {
-		netif_rx_complete(dev, napi);
+		netif_rx_complete(napi);
 		iowrite32(TYPHOON_INTR_NONE,
 				tp->ioaddr + TYPHOON_REG_INTR_MASK);
 		typhoon_post_pci_writes(tp->ioaddr);
@@ -1801,7 +1796,7 @@ static irqreturn_t
 typhoon_interrupt(int irq, void *dev_instance)
 {
 	struct net_device *dev = dev_instance;
-	struct typhoon *tp = dev->priv;
+	struct typhoon *tp = netdev_priv(dev);
 	void __iomem *ioaddr = tp->ioaddr;
 	u32 intr_status;
 
@@ -1811,10 +1806,10 @@ typhoon_interrupt(int irq, void *dev_instance)
 
 	iowrite32(intr_status, ioaddr + TYPHOON_REG_INTR_STATUS);
 
-	if (netif_rx_schedule_prep(dev, &tp->napi)) {
+	if (netif_rx_schedule_prep(&tp->napi)) {
 		iowrite32(TYPHOON_INTR_ALL, ioaddr + TYPHOON_REG_INTR_MASK);
 		typhoon_post_pci_writes(ioaddr);
-		__netif_rx_schedule(dev, &tp->napi);
+		__netif_rx_schedule(&tp->napi);
 	} else {
 		printk(KERN_ERR "%s: Error, poll already scheduled\n",
                        dev->name);
@@ -2143,7 +2138,6 @@ typhoon_close(struct net_device *dev)
 		printk(KERN_ERR "%s: unable to stop runtime\n", dev->name);
 
 	/* Make sure there is no irq handler running on a different CPU. */
-	typhoon_synchronize_irq(dev->irq);
 	free_irq(dev->irq, dev);
 
 	typhoon_free_rx_rings(tp);
@@ -2183,7 +2177,6 @@ typhoon_resume(struct pci_dev *pdev)
 	}
 
 	netif_device_attach(dev);
-	netif_start_queue(dev);
 	return 0;
 
 reset:
@@ -2303,6 +2296,19 @@ out:
 	return mode;
 }
 
+static const struct net_device_ops typhoon_netdev_ops = {
+	.ndo_open		= typhoon_open,
+	.ndo_stop		= typhoon_close,
+	.ndo_start_xmit		= typhoon_start_tx,
+	.ndo_set_multicast_list	= typhoon_set_rx_mode,
+	.ndo_tx_timeout		= typhoon_tx_timeout,
+	.ndo_get_stats		= typhoon_get_stats,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_set_mac_address	= typhoon_set_mac_address,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_vlan_rx_register	= typhoon_vlan_rx_register,
+};
+
 static int __devinit
 typhoon_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
@@ -2316,7 +2322,6 @@ typhoon_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct cmd_desc xp_cmd;
 	struct resp_desc xp_resp[3];
 	int err = 0;
-	DECLARE_MAC_BUF(mac);
 
 	if(!did_version++)
 		printk(KERN_INFO "%s", version);
@@ -2503,16 +2508,9 @@ typhoon_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	/* The chip-specific entries in the device structure. */
-	dev->open		= typhoon_open;
-	dev->hard_start_xmit	= typhoon_start_tx;
-	dev->stop		= typhoon_close;
-	dev->set_multicast_list	= typhoon_set_rx_mode;
-	dev->tx_timeout		= typhoon_tx_timeout;
+	dev->netdev_ops		= &typhoon_netdev_ops;
 	netif_napi_add(dev, &tp->napi, typhoon_poll, 16);
 	dev->watchdog_timeo	= TX_TIMEOUT;
-	dev->get_stats		= typhoon_get_stats;
-	dev->set_mac_address	= typhoon_set_mac_address;
-	dev->vlan_rx_register	= typhoon_vlan_rx_register;
 
 	SET_ETHTOOL_OPS(dev, &typhoon_ethtool_ops);
 
@@ -2531,11 +2529,11 @@ typhoon_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	pci_set_drvdata(pdev, dev);
 
-	printk(KERN_INFO "%s: %s at %s 0x%llx, %s\n",
+	printk(KERN_INFO "%s: %s at %s 0x%llx, %pM\n",
 	       dev->name, typhoon_card_info[card_id].name,
 	       use_mmio ? "MMIO" : "IO",
 	       (unsigned long long)pci_resource_start(pdev, use_mmio),
-	       print_mac(mac, dev->dev_addr));
+	       dev->dev_addr);
 
 	/* xp_resp still contains the response to the READ_VERSIONS command.
 	 * For debugging, let the user know what version he has.

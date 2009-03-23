@@ -42,8 +42,7 @@ void ack_bad_irq(unsigned int irq)
 #ifdef CONFIG_SMP 
 static char irq_user_affinity[NR_IRQS];
 
-int
-select_smp_affinity(unsigned int irq)
+int irq_select_affinity(unsigned int irq)
 {
 	static int last_cpu;
 	int cpu = last_cpu + 1;
@@ -51,12 +50,13 @@ select_smp_affinity(unsigned int irq)
 	if (!irq_desc[irq].chip->set_affinity || irq_user_affinity[irq])
 		return 1;
 
-	while (!cpu_possible(cpu))
+	while (!cpu_possible(cpu) ||
+	       !cpumask_test_cpu(cpu, irq_default_affinity))
 		cpu = (cpu < (NR_CPUS-1) ? cpu + 1 : 0);
 	last_cpu = cpu;
 
 	irq_desc[irq].affinity = cpumask_of_cpu(cpu);
-	irq_desc[irq].chip->set_affinity(irq, cpumask_of_cpu(cpu));
+	irq_desc[irq].chip->set_affinity(irq, cpumask_of(cpu));
 	return 0;
 }
 #endif /* CONFIG_SMP */

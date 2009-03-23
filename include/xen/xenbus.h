@@ -97,6 +97,7 @@ struct xenbus_driver {
 	int (*uevent)(struct xenbus_device *, char **, int, char *, int);
 	struct device_driver driver;
 	int (*read_otherend_details)(struct xenbus_device *dev);
+	int (*is_ready)(struct xenbus_device *dev);
 };
 
 static inline struct xenbus_driver *to_xenbus_driver(struct device_driver *drv)
@@ -134,8 +135,6 @@ struct xenbus_transaction
 
 /* Nil transaction ID. */
 #define XBT_NIL ((struct xenbus_transaction) { 0 })
-
-int __init xenbus_dev_init(void);
 
 char **xenbus_directory(struct xenbus_transaction t,
 			const char *dir, const char *node, unsigned int *num);

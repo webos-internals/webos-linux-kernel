@@ -16,11 +16,11 @@
 #include <linux/err.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
+#include <linux/io.h>
 
-#include <asm/hardware.h>
-#include <asm/io.h>
+#include <mach/hardware.h>
 
-#include <asm/arch/psc.h>
+#include <mach/psc.h>
 #include "clock.h"
 
 /* PLL/Reset register offsets */
@@ -231,6 +231,11 @@ static struct clk davinci_clks[] = {
 		.lpsc = DAVINCI_LPSC_GPIO,
 	},
 	{
+		.name = "usb",
+		.rate = &commonrate,
+		.lpsc = DAVINCI_LPSC_USB,
+	},
+	{
 		.name = "AEMIFCLK",
 		.rate = &commonrate,
 		.lpsc = DAVINCI_LPSC_AEMIF,
@@ -290,7 +295,7 @@ static int davinci_ck_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static struct seq_operations davinci_ck_op = {
+static const struct seq_operations davinci_ck_op = {
 	.start	= davinci_ck_start,
 	.next	= davinci_ck_next,
 	.stop	= davinci_ck_stop,
@@ -302,7 +307,7 @@ static int davinci_ck_open(struct inode *inode, struct file *file)
 	return seq_open(file, &davinci_ck_op);
 }
 
-static struct file_operations proc_davinci_ck_operations = {
+static const struct file_operations proc_davinci_ck_operations = {
 	.open		= davinci_ck_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
@@ -311,11 +316,7 @@ static struct file_operations proc_davinci_ck_operations = {
 
 static int __init davinci_ck_proc_init(void)
 {
-	struct proc_dir_entry *entry;
-
-	entry = create_proc_entry("davinci_clocks", 0, NULL);
-	if (entry)
-		entry->proc_fops = &proc_davinci_ck_operations;
+	proc_create("davinci_clocks", 0, NULL, &proc_davinci_ck_operations);
 	return 0;
 
 }

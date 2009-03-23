@@ -1,8 +1,6 @@
 /* Driver for SanDisk SDDR-09 SmartMedia reader
  * Header File
  *
- * $Id: sddr09.h,v 1.5 2000/08/25 00:13:51 mdharm Exp $
- *
  * Current development and maintenance by:
  *   (c) 2000 Robert Baruch (autophile@dol.net)
  *   (c) 2002 Andries Brouwer (aeb@cwi.nl)
@@ -30,8 +28,11 @@
 /* Sandisk SDDR-09 stuff */
 
 extern int sddr09_transport(struct scsi_cmnd *srb, struct us_data *us);
-
-extern int usb_stor_sddr09_dpcm_init(struct us_data *us);
 extern int usb_stor_sddr09_init(struct us_data *us);
+
+/* Microtech DPCM-USB stuff */
+
+extern int dpcm_transport(struct scsi_cmnd *srb, struct us_data *us);
+extern int usb_stor_sddr09_dpcm_init(struct us_data *us);
 
 #endif

@@ -10,9 +10,6 @@
  *	trampoline page to make our stack and everything else
  *	is a mystery.
  *
- *	In fact we don't actually need a stack so we don't
- *	set one up.
- *
  *	On entry to trampoline_data, the processor is in real mode
  *	with 16-bit addressing and 16-bit data.  CS has some value
  *	and IP is zero.  Thus, data addresses need to be absolute
@@ -33,12 +30,7 @@
 #include <asm/msr.h>
 #include <asm/segment.h>
 
-/* We can free up trampoline after bootup if cpu hotplug is not supported. */
-#ifndef CONFIG_HOTPLUG_CPU
-.section .init.data, "aw", @progbits
-#else
 .section .rodata, "a", @progbits
-#endif
 
 .code16
 

@@ -27,19 +27,19 @@ SECTIONS
 		__init_begin = .;
 			_sinittext = .;
 			*(.text.reset)
-			*(.init.text)
+			INIT_TEXT
 			/*
 			 * .exit.text is discarded at runtime, not
 			 * link time, to deal with references from
 			 * __bug_table
 			 */
-			*(.exit.text)
+			EXIT_TEXT
 			_einittext = .;
 		. = ALIGN(4);
 		__tagtable_begin = .;
 			*(.taglist.init)
 		__tagtable_end = .;
-			*(.init.data)
+			INIT_DATA
 		. = ALIGN(16);
 		__setup_start = .;
 			*(.init.setup)
@@ -68,14 +68,6 @@ SECTIONS
 		_evba = .;
 		_text = .;
 		*(.ex.text)
-		. = 0x50;
-		*(.tlbx.ex.text)
-		. = 0x60;
-		*(.tlbr.ex.text)
-		. = 0x70;
-		*(.tlbw.ex.text)
-		. = 0x100;
-		*(.scall.text)
 		*(.irq.text)
 		KPROBES_TEXT
 		TEXT_TEXT
@@ -93,8 +85,6 @@ SECTIONS
 		__stop___ex_table = .;
 	}
 
-	BUG_TABLE
-
 	RODATA
 
 	. = ALIGN(THREAD_SIZE);
@@ -106,6 +96,10 @@ SECTIONS
 		 * First, the init task union, aligned to an 8K boundary.
 		 */
 		*(.data.init_task)
+
+		/* Then, the page-aligned data */
+		. = ALIGN(PAGE_SIZE);
+		*(.data.page_aligned)
 
 		/* Then, the cacheline aligned data */
 		. = ALIGN(L1_CACHE_BYTES);
@@ -135,7 +129,7 @@ SECTIONS
 	 * thrown away, as cleanup code is never called unless it's a module.
 	 */
 	/DISCARD/       	: {
-		*(.exit.data)
+		EXIT_DATA
 		*(.exitcall.exit)
 	}
 

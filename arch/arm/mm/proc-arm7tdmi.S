@@ -12,7 +12,7 @@
 #include <linux/init.h>
 #include <asm/assembler.h>
 #include <asm/asm-offsets.h>
-#include <asm/elf.h>
+#include <asm/hwcap.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable.h>
 #include <asm/ptrace.h>
@@ -64,6 +64,7 @@ __arm7tdmi_setup:
 		.type	arm7tdmi_processor_functions, #object
 ENTRY(arm7tdmi_processor_functions)
 		.word	v4t_late_abort
+		.word	pabort_noifar
 		.word	cpu_arm7tdmi_proc_init
 		.word	cpu_arm7tdmi_proc_fin
 		.word	cpu_arm7tdmi_reset

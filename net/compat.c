@@ -20,11 +20,12 @@
 #include <linux/syscalls.h>
 #include <linux/filter.h>
 #include <linux/compat.h>
-#include <linux/netfilter_ipv4/ip_tables.h>
 #include <linux/security.h>
 
 #include <net/scm.h>
 #include <net/sock.h>
+#include <net/ip.h>
+#include <net/ipv6.h>
 #include <asm/uaccess.h>
 #include <net/compat.h>
 
@@ -74,7 +75,7 @@ int get_compat_msghdr(struct msghdr *kmsg, struct compat_msghdr __user *umsg)
 
 /* I've named the args so it is easy to tell whose space the pointers are in. */
 int verify_compat_iovec(struct msghdr *kern_msg, struct iovec *kern_iov,
-		   char *kern_address, int mode)
+		   struct sockaddr *kern_address, int mode)
 {
 	int tot_len;
 
@@ -225,14 +226,14 @@ int put_cmsg_compat(struct msghdr *kmsg, int level, int type, int len, void *dat
 		return 0; /* XXX: return error? check spec. */
 	}
 
-	if (level == SOL_SOCKET && type == SO_TIMESTAMP) {
+	if (level == SOL_SOCKET && type == SCM_TIMESTAMP) {
 		struct timeval *tv = (struct timeval *)data;
 		ctv.tv_sec = tv->tv_sec;
 		ctv.tv_usec = tv->tv_usec;
 		data = &ctv;
 		len = sizeof(ctv);
 	}
-	if (level == SOL_SOCKET && type == SO_TIMESTAMPNS) {
+	if (level == SOL_SOCKET && type == SCM_TIMESTAMPNS) {
 		struct timespec *ts = (struct timespec *)data;
 		cts.tv_sec = ts->tv_sec;
 		cts.tv_nsec = ts->tv_nsec;
@@ -317,107 +318,6 @@ void scm_detach_fds_compat(struct msghdr *kmsg, struct scm_cookie *scm)
 }
 
 /*
- * For now, we assume that the compatibility and native version
- * of struct ipt_entry are the same - sfr.  FIXME
- */
-struct compat_ipt_replace {
-	char			name[IPT_TABLE_MAXNAMELEN];
-	u32			valid_hooks;
-	u32			num_entries;
-	u32			size;
-	u32			hook_entry[NF_IP_NUMHOOKS];
-	u32			underflow[NF_IP_NUMHOOKS];
-	u32			num_counters;
-	compat_uptr_t		counters;	/* struct ipt_counters * */
-	struct ipt_entry	entries[0];
-};
-
-static int do_netfilter_replace(int fd, int level, int optname,
-				char __user *optval, int optlen)
-{
-	struct compat_ipt_replace __user *urepl;
-	struct ipt_replace __user *repl_nat;
-	char name[IPT_TABLE_MAXNAMELEN];
-	u32 origsize, tmp32, num_counters;
-	unsigned int repl_nat_size;
-	int ret;
-	int i;
-	compat_uptr_t ucntrs;
-
-	urepl = (struct compat_ipt_replace __user *)optval;
-	if (get_user(origsize, &urepl->size))
-		return -EFAULT;
-
-	/* Hack: Causes ipchains to give correct error msg --RR */
-	if (optlen != sizeof(*urepl) + origsize)
-		return -ENOPROTOOPT;
-
-	/* XXX Assumes that size of ipt_entry is the same both in
-	 *     native and compat environments.
-	 */
-	repl_nat_size = sizeof(*repl_nat) + origsize;
-	repl_nat = compat_alloc_user_space(repl_nat_size);
-
-	ret = -EFAULT;
-	if (put_user(origsize, &repl_nat->size))
-		goto out;
-
-	if (!access_ok(VERIFY_READ, urepl, optlen) ||
-	    !access_ok(VERIFY_WRITE, repl_nat, optlen))
-		goto out;
-
-	if (__copy_from_user(name, urepl->name, sizeof(urepl->name)) ||
-	    __copy_to_user(repl_nat->name, name, sizeof(repl_nat->name)))
-		goto out;
-
-	if (__get_user(tmp32, &urepl->valid_hooks) ||
-	    __put_user(tmp32, &repl_nat->valid_hooks))
-		goto out;
-
-	if (__get_user(tmp32, &urepl->num_entries) ||
-	    __put_user(tmp32, &repl_nat->num_entries))
-		goto out;
-
-	if (__get_user(num_counters, &urepl->num_counters) ||
-	    __put_user(num_counters, &repl_nat->num_counters))
-		goto out;
-
-	if (__get_user(ucntrs, &urepl->counters) ||
-	    __put_user(compat_ptr(ucntrs), &repl_nat->counters))
-		goto out;
-
-	if (__copy_in_user(&repl_nat->entries[0],
-			   &urepl->entries[0],
-			   origsize))
-		goto out;
-
-	for (i = 0; i < NF_IP_NUMHOOKS; i++) {
-		if (__get_user(tmp32, &urepl->hook_entry[i]) ||
-		    __put_user(tmp32, &repl_nat->hook_entry[i]) ||
-		    __get_user(tmp32, &urepl->underflow[i]) ||
-		    __put_user(tmp32, &repl_nat->underflow[i]))
-			goto out;
-	}
-
-	/*
-	 * Since struct ipt_counters just contains two u_int64_t members
-	 * we can just do the access_ok check here and pass the (converted)
-	 * pointer into the standard syscall.  We hope that the pointer is
-	 * not misaligned ...
-	 */
-	if (!access_ok(VERIFY_WRITE, compat_ptr(ucntrs),
-		       num_counters * sizeof(struct ipt_counters)))
-		goto out;
-
-
-	ret = sys_setsockopt(fd, level, optname,
-			     (char __user *)repl_nat, repl_nat_size);
-
-out:
-	return ret;
-}
-
-/*
  * A struct sock_filter is architecture independent.
  */
 struct compat_sock_fprog {
@@ -484,10 +384,6 @@ asmlinkage long compat_sys_setsockopt(int fd, int level, int optname,
 {
 	int err;
 	struct socket *sock;
-
-	if (level == SOL_IPV6 && optname == IPT_SO_SET_REPLACE)
-		return do_netfilter_replace(fd, level, optname,
-					    optval, optlen);
 
 	if (optlen < 0)
 		return -EINVAL;
@@ -627,11 +523,209 @@ asmlinkage long compat_sys_getsockopt(int fd, int level, int optname,
 	}
 	return err;
 }
+
+struct compat_group_req {
+	__u32				 gr_interface;
+	struct __kernel_sockaddr_storage gr_group
+		__attribute__ ((aligned(4)));
+} __attribute__ ((packed));
+
+struct compat_group_source_req {
+	__u32				 gsr_interface;
+	struct __kernel_sockaddr_storage gsr_group
+		__attribute__ ((aligned(4)));
+	struct __kernel_sockaddr_storage gsr_source
+		__attribute__ ((aligned(4)));
+} __attribute__ ((packed));
+
+struct compat_group_filter {
+	__u32				 gf_interface;
+	struct __kernel_sockaddr_storage gf_group
+		__attribute__ ((aligned(4)));
+	__u32				 gf_fmode;
+	__u32				 gf_numsrc;
+	struct __kernel_sockaddr_storage gf_slist[1]
+		__attribute__ ((aligned(4)));
+} __attribute__ ((packed));
+
+#define __COMPAT_GF0_SIZE (sizeof(struct compat_group_filter) - \
+			sizeof(struct __kernel_sockaddr_storage))
+
+
+int compat_mc_setsockopt(struct sock *sock, int level, int optname,
+	char __user *optval, int optlen,
+	int (*setsockopt)(struct sock *,int,int,char __user *,int))
+{
+	char __user	*koptval = optval;
+	int		koptlen = optlen;
+
+	switch (optname) {
+	case MCAST_JOIN_GROUP:
+	case MCAST_LEAVE_GROUP:
+	{
+		struct compat_group_req __user *gr32 = (void *)optval;
+		struct group_req __user *kgr =
+			compat_alloc_user_space(sizeof(struct group_req));
+		u32 interface;
+
+		if (!access_ok(VERIFY_READ, gr32, sizeof(*gr32)) ||
+		    !access_ok(VERIFY_WRITE, kgr, sizeof(struct group_req)) ||
+		    __get_user(interface, &gr32->gr_interface) ||
+		    __put_user(interface, &kgr->gr_interface) ||
+		    copy_in_user(&kgr->gr_group, &gr32->gr_group,
+				sizeof(kgr->gr_group)))
+			return -EFAULT;
+		koptval = (char __user *)kgr;
+		koptlen = sizeof(struct group_req);
+		break;
+	}
+	case MCAST_JOIN_SOURCE_GROUP:
+	case MCAST_LEAVE_SOURCE_GROUP:
+	case MCAST_BLOCK_SOURCE:
+	case MCAST_UNBLOCK_SOURCE:
+	{
+		struct compat_group_source_req __user *gsr32 = (void *)optval;
+		struct group_source_req __user *kgsr = compat_alloc_user_space(
+			sizeof(struct group_source_req));
+		u32 interface;
+
+		if (!access_ok(VERIFY_READ, gsr32, sizeof(*gsr32)) ||
+		    !access_ok(VERIFY_WRITE, kgsr,
+			sizeof(struct group_source_req)) ||
+		    __get_user(interface, &gsr32->gsr_interface) ||
+		    __put_user(interface, &kgsr->gsr_interface) ||
+		    copy_in_user(&kgsr->gsr_group, &gsr32->gsr_group,
+				sizeof(kgsr->gsr_group)) ||
+		    copy_in_user(&kgsr->gsr_source, &gsr32->gsr_source,
+				sizeof(kgsr->gsr_source)))
+			return -EFAULT;
+		koptval = (char __user *)kgsr;
+		koptlen = sizeof(struct group_source_req);
+		break;
+	}
+	case MCAST_MSFILTER:
+	{
+		struct compat_group_filter __user *gf32 = (void *)optval;
+		struct group_filter __user *kgf;
+		u32 interface, fmode, numsrc;
+
+		if (!access_ok(VERIFY_READ, gf32, __COMPAT_GF0_SIZE) ||
+		    __get_user(interface, &gf32->gf_interface) ||
+		    __get_user(fmode, &gf32->gf_fmode) ||
+		    __get_user(numsrc, &gf32->gf_numsrc))
+			return -EFAULT;
+		koptlen = optlen + sizeof(struct group_filter) -
+				sizeof(struct compat_group_filter);
+		if (koptlen < GROUP_FILTER_SIZE(numsrc))
+			return -EINVAL;
+		kgf = compat_alloc_user_space(koptlen);
+		if (!access_ok(VERIFY_WRITE, kgf, koptlen) ||
+		    __put_user(interface, &kgf->gf_interface) ||
+		    __put_user(fmode, &kgf->gf_fmode) ||
+		    __put_user(numsrc, &kgf->gf_numsrc) ||
+		    copy_in_user(&kgf->gf_group, &gf32->gf_group,
+				sizeof(kgf->gf_group)) ||
+		    (numsrc && copy_in_user(kgf->gf_slist, gf32->gf_slist,
+				numsrc * sizeof(kgf->gf_slist[0]))))
+			return -EFAULT;
+		koptval = (char __user *)kgf;
+		break;
+	}
+
+	default:
+		break;
+	}
+	return setsockopt(sock, level, optname, koptval, koptlen);
+}
+
+EXPORT_SYMBOL(compat_mc_setsockopt);
+
+int compat_mc_getsockopt(struct sock *sock, int level, int optname,
+	char __user *optval, int __user *optlen,
+	int (*getsockopt)(struct sock *,int,int,char __user *,int __user *))
+{
+	struct compat_group_filter __user *gf32 = (void *)optval;
+	struct group_filter __user *kgf;
+	int __user	*koptlen;
+	u32 interface, fmode, numsrc;
+	int klen, ulen, err;
+
+	if (optname != MCAST_MSFILTER)
+		return getsockopt(sock, level, optname, optval, optlen);
+
+	koptlen = compat_alloc_user_space(sizeof(*koptlen));
+	if (!access_ok(VERIFY_READ, optlen, sizeof(*optlen)) ||
+	    __get_user(ulen, optlen))
+		return -EFAULT;
+
+	/* adjust len for pad */
+	klen = ulen + sizeof(*kgf) - sizeof(*gf32);
+
+	if (klen < GROUP_FILTER_SIZE(0))
+		return -EINVAL;
+
+	if (!access_ok(VERIFY_WRITE, koptlen, sizeof(*koptlen)) ||
+	    __put_user(klen, koptlen))
+		return -EFAULT;
+
+	/* have to allow space for previous compat_alloc_user_space, too */
+	kgf = compat_alloc_user_space(klen+sizeof(*optlen));
+
+	if (!access_ok(VERIFY_READ, gf32, __COMPAT_GF0_SIZE) ||
+	    __get_user(interface, &gf32->gf_interface) ||
+	    __get_user(fmode, &gf32->gf_fmode) ||
+	    __get_user(numsrc, &gf32->gf_numsrc) ||
+	    __put_user(interface, &kgf->gf_interface) ||
+	    __put_user(fmode, &kgf->gf_fmode) ||
+	    __put_user(numsrc, &kgf->gf_numsrc) ||
+	    copy_in_user(&kgf->gf_group,&gf32->gf_group,sizeof(kgf->gf_group)))
+		return -EFAULT;
+
+	err = getsockopt(sock, level, optname, (char __user *)kgf, koptlen);
+	if (err)
+		return err;
+
+	if (!access_ok(VERIFY_READ, koptlen, sizeof(*koptlen)) ||
+	    __get_user(klen, koptlen))
+		return -EFAULT;
+
+	ulen = klen - (sizeof(*kgf)-sizeof(*gf32));
+
+	if (!access_ok(VERIFY_WRITE, optlen, sizeof(*optlen)) ||
+	    __put_user(ulen, optlen))
+		return -EFAULT;
+
+	if (!access_ok(VERIFY_READ, kgf, klen) ||
+	    !access_ok(VERIFY_WRITE, gf32, ulen) ||
+	    __get_user(interface, &kgf->gf_interface) ||
+	    __get_user(fmode, &kgf->gf_fmode) ||
+	    __get_user(numsrc, &kgf->gf_numsrc) ||
+	    __put_user(interface, &gf32->gf_interface) ||
+	    __put_user(fmode, &gf32->gf_fmode) ||
+	    __put_user(numsrc, &gf32->gf_numsrc))
+		return -EFAULT;
+	if (numsrc) {
+		int copylen;
+
+		klen -= GROUP_FILTER_SIZE(0);
+		copylen = numsrc * sizeof(gf32->gf_slist[0]);
+		if (copylen > klen)
+			copylen = klen;
+	        if (copy_in_user(gf32->gf_slist, kgf->gf_slist, copylen))
+			return -EFAULT;
+	}
+	return err;
+}
+
+EXPORT_SYMBOL(compat_mc_getsockopt);
+
+
 /* Argument list sizes for compat_sys_socketcall */
 #define AL(x) ((x) * sizeof(u32))
-static unsigned char nas[18]={AL(0),AL(3),AL(3),AL(3),AL(2),AL(3),
+static unsigned char nas[19]={AL(0),AL(3),AL(3),AL(3),AL(2),AL(3),
 				AL(3),AL(3),AL(4),AL(4),AL(4),AL(6),
-				AL(6),AL(2),AL(5),AL(5),AL(3),AL(3)};
+				AL(6),AL(2),AL(5),AL(5),AL(3),AL(3),
+				AL(4)};
 #undef AL
 
 asmlinkage long compat_sys_sendmsg(int fd, struct compat_msghdr __user *msg, unsigned flags)
@@ -650,7 +744,7 @@ asmlinkage long compat_sys_socketcall(int call, u32 __user *args)
 	u32 a[6];
 	u32 a0, a1;
 
-	if (call < SYS_SOCKET || call > SYS_RECVMSG)
+	if (call < SYS_SOCKET || call > SYS_ACCEPT4)
 		return -EINVAL;
 	if (copy_from_user(a, args, nas[call]))
 		return -EFAULT;
@@ -671,7 +765,7 @@ asmlinkage long compat_sys_socketcall(int call, u32 __user *args)
 		ret = sys_listen(a0, a1);
 		break;
 	case SYS_ACCEPT:
-		ret = sys_accept(a0, compat_ptr(a1), compat_ptr(a[2]));
+		ret = sys_accept4(a0, compat_ptr(a1), compat_ptr(a[2]), 0);
 		break;
 	case SYS_GETSOCKNAME:
 		ret = sys_getsockname(a0, compat_ptr(a1), compat_ptr(a[2]));
@@ -710,6 +804,9 @@ asmlinkage long compat_sys_socketcall(int call, u32 __user *args)
 		break;
 	case SYS_RECVMSG:
 		ret = compat_sys_recvmsg(a0, compat_ptr(a1), a[2]);
+		break;
+	case SYS_ACCEPT4:
+		ret = sys_accept4(a0, compat_ptr(a1), compat_ptr(a[2]), a[3]);
 		break;
 	default:
 		ret = -EINVAL;

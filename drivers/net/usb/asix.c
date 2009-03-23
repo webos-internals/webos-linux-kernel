@@ -33,8 +33,7 @@
 #include <linux/mii.h>
 #include <linux/usb.h>
 #include <linux/crc32.h>
-
-#include "usbnet.h"
+#include <linux/usb/usbnet.h>
 
 #define DRIVER_VERSION "14-Jun-2006"
 static const char driver_name [] = "asix";
@@ -247,10 +246,11 @@ out:
 static void asix_async_cmd_callback(struct urb *urb)
 {
 	struct usb_ctrlrequest *req = (struct usb_ctrlrequest *)urb->context;
+	int status = urb->status;
 
-	if (urb->status < 0)
+	if (status < 0)
 		printk(KERN_DEBUG "asix_async_cmd_callback() failed with %d",
-			urb->status);
+			status);
 
 	kfree(req);
 	usb_free_urb(urb);
@@ -1103,11 +1103,13 @@ static int ax88178_link_reset(struct usbnet *dev)
 	mode = AX88178_MEDIUM_DEFAULT;
 
 	if (ecmd.speed == SPEED_1000)
-		mode |= AX_MEDIUM_GM | AX_MEDIUM_ENCK;
+		mode |= AX_MEDIUM_GM;
 	else if (ecmd.speed == SPEED_100)
 		mode |= AX_MEDIUM_PS;
 	else
 		mode &= ~(AX_MEDIUM_PS | AX_MEDIUM_GM);
+
+	mode |= AX_MEDIUM_ENCK;
 
 	if (ecmd.duplex == DUPLEX_FULL)
 		mode |= AX_MEDIUM_FD;
@@ -1382,6 +1384,10 @@ static const struct usb_device_id	products [] = {
 	USB_DEVICE (0x0411, 0x003d),
 	.driver_info =  (unsigned long) &ax8817x_info,
 }, {
+	// Buffalo LUA-U2-GT 10/100/1000
+	USB_DEVICE (0x0411, 0x006e),
+	.driver_info =  (unsigned long) &ax88178_info,
+}, {
 	// Sitecom LN-029 "USB 2.0 10/100 Ethernet adapter"
 	USB_DEVICE (0x6189, 0x182d),
 	.driver_info =  (unsigned long) &ax8817x_info,
@@ -1437,6 +1443,22 @@ static const struct usb_device_id	products [] = {
 	// Belkin F5D5055
 	USB_DEVICE(0x050d, 0x5055),
 	.driver_info = (unsigned long) &ax88178_info,
+}, {
+	// Apple USB Ethernet Adapter
+	USB_DEVICE(0x05ac, 0x1402),
+	.driver_info = (unsigned long) &ax88772_info,
+}, {
+	// Cables-to-Go USB Ethernet Adapter
+	USB_DEVICE(0x0b95, 0x772a),
+	.driver_info = (unsigned long) &ax88772_info,
+}, {
+	// ABOCOM for pci
+	USB_DEVICE(0x14ea, 0xab11),
+	.driver_info = (unsigned long) &ax88178_info,
+}, {
+	// ASIX 88772a
+	USB_DEVICE(0x0db0, 0xa877),
+	.driver_info = (unsigned long) &ax88772_info,
 },
 	{ },		// END
 };

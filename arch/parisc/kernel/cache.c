@@ -51,12 +51,12 @@ static struct pdc_btlb_info btlb_info __read_mostly;
 void
 flush_data_cache(void)
 {
-	on_each_cpu(flush_data_cache_local, NULL, 1, 1);
+	on_each_cpu(flush_data_cache_local, NULL, 1);
 }
 void 
 flush_instruction_cache(void)
 {
-	on_each_cpu(flush_instruction_cache_local, NULL, 1, 1);
+	on_each_cpu(flush_instruction_cache_local, NULL, 1);
 }
 #endif
 
@@ -305,7 +305,7 @@ flush_user_cache_page_non_current(struct vm_area_struct *vma,
 	/* save the current process space and pgd */
 	unsigned long space = mfsp(3), pgd = mfctl(25);
 
-	/* we don't mind taking interrups since they may not
+	/* we don't mind taking interrupts since they may not
 	 * do anything with user space, but we can't
 	 * be preempted here */
 	preempt_disable();
@@ -515,7 +515,7 @@ static void cacheflush_h_tmp_function(void *dummy)
 
 void flush_cache_all(void)
 {
-	on_each_cpu(cacheflush_h_tmp_function, NULL, 1, 1);
+	on_each_cpu(cacheflush_h_tmp_function, NULL, 1);
 }
 
 void flush_cache_mm(struct mm_struct *mm)
@@ -551,10 +551,7 @@ void flush_cache_range(struct vm_area_struct *vma,
 {
 	int sr3;
 
-	if (!vma->vm_mm->context) {
-		BUG();
-		return;
-	}
+	BUG_ON(!vma->vm_mm->context);
 
 	sr3 = mfsp(3);
 	if (vma->vm_mm->context == sr3) {

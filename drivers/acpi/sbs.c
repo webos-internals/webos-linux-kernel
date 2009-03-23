@@ -463,7 +463,7 @@ static ssize_t acpi_battery_alarm_store(struct device *dev,
 }
 
 static struct device_attribute alarm_attr = {
-	.attr = {.name = "alarm", .mode = 0644, .owner = THIS_MODULE},
+	.attr = {.name = "alarm", .mode = 0644},
 	.show = acpi_battery_alarm_show,
 	.store = acpi_battery_alarm_store,
 };
@@ -483,8 +483,6 @@ acpi_sbs_add_fs(struct proc_dir_entry **dir,
 		struct file_operations *state_fops,
 		struct file_operations *alarm_fops, void *data)
 {
-	struct proc_dir_entry *entry = NULL;
-
 	if (!*dir) {
 		*dir = proc_mkdir(dir_name, parent_dir);
 		if (!*dir) {
@@ -494,34 +492,19 @@ acpi_sbs_add_fs(struct proc_dir_entry **dir,
 	}
 
 	/* 'info' [R] */
-	if (info_fops) {
-		entry = create_proc_entry(ACPI_SBS_FILE_INFO, S_IRUGO, *dir);
-		if (entry) {
-			entry->proc_fops = info_fops;
-			entry->data = data;
-			entry->owner = THIS_MODULE;
-		}
-	}
+	if (info_fops)
+		proc_create_data(ACPI_SBS_FILE_INFO, S_IRUGO, *dir,
+				 info_fops, data);
 
 	/* 'state' [R] */
-	if (state_fops) {
-		entry = create_proc_entry(ACPI_SBS_FILE_STATE, S_IRUGO, *dir);
-		if (entry) {
-			entry->proc_fops = state_fops;
-			entry->data = data;
-			entry->owner = THIS_MODULE;
-		}
-	}
+	if (state_fops)
+		proc_create_data(ACPI_SBS_FILE_STATE, S_IRUGO, *dir,
+				 state_fops, data);
 
 	/* 'alarm' [R/W] */
-	if (alarm_fops) {
-		entry = create_proc_entry(ACPI_SBS_FILE_ALARM, S_IRUGO, *dir);
-		if (entry) {
-			entry->proc_fops = alarm_fops;
-			entry->data = data;
-			entry->owner = THIS_MODULE;
-		}
-	}
+	if (alarm_fops)
+		proc_create_data(ACPI_SBS_FILE_ALARM, S_IRUGO, *dir,
+				 alarm_fops, data);
 	return 0;
 }
 
@@ -827,7 +810,7 @@ static int acpi_battery_add(struct acpi_sbs *sbs, int id)
 #endif
 	printk(KERN_INFO PREFIX "%s [%s]: Battery Slot [%s] (battery %s)\n",
 	       ACPI_SBS_DEVICE_NAME, acpi_device_bid(sbs->device),
-	       battery->name, sbs->battery->present ? "present" : "absent");
+	       battery->name, battery->present ? "present" : "absent");
 	return result;
 }
 
@@ -888,7 +871,7 @@ static void acpi_charger_remove(struct acpi_sbs *sbs)
 #endif
 }
 
-void acpi_sbs_callback(void *context)
+static void acpi_sbs_callback(void *context)
 {
 	int id;
 	struct acpi_sbs *sbs = context;
@@ -948,7 +931,7 @@ static int acpi_sbs_add(struct acpi_device *device)
 	sbs->device = device;
 	strcpy(acpi_device_name(device), ACPI_SBS_DEVICE_NAME);
 	strcpy(acpi_device_class(device), ACPI_SBS_CLASS);
-	acpi_driver_data(device) = sbs;
+	device->driver_data = sbs;
 
 	result = acpi_charger_add(sbs);
 	if (result)

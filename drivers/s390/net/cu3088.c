@@ -25,7 +25,6 @@
 #include <linux/module.h>
 #include <linux/err.h>
 
-#include <asm/s390_rdev.h>
 #include <asm/ccwdev.h>
 #include <asm/ccwgroup.h>
 
@@ -36,7 +35,6 @@ const char *cu3088_type[] = {
 	"CTC/A",
 	"ESCON channel",
 	"FICON channel",
-	"P390 LCS card",
 	"OSA LCS card",
 	"CLAW channel device",
 	"unknown channel type",
@@ -49,7 +47,6 @@ static struct ccw_device_id cu3088_ids[] = {
 	{ CCW_DEVICE(0x3088, 0x08), .driver_info = channel_type_parallel },
 	{ CCW_DEVICE(0x3088, 0x1f), .driver_info = channel_type_escon },
 	{ CCW_DEVICE(0x3088, 0x1e), .driver_info = channel_type_ficon },
-	{ CCW_DEVICE(0x3088, 0x01), .driver_info = channel_type_p390 },
 	{ CCW_DEVICE(0x3088, 0x60), .driver_info = channel_type_osa2 },
 	{ CCW_DEVICE(0x3088, 0x61), .driver_info = channel_type_claw },
 	{ /* end of list */ }
@@ -62,30 +59,14 @@ static struct device *cu3088_root_dev;
 static ssize_t
 group_write(struct device_driver *drv, const char *buf, size_t count)
 {
-	const char *start, *end;
-	char bus_ids[2][BUS_ID_SIZE], *argv[2];
-	int i;
 	int ret;
 	struct ccwgroup_driver *cdrv;
 
 	cdrv = to_ccwgroupdrv(drv);
 	if (!cdrv)
 		return -EINVAL;
-	start = buf;
-	for (i=0; i<2; i++) {
-		static const char delim[] = {',', '\n'};
-		int len;
-
-		if (!(end = strchr(start, delim[i])))
-			return -EINVAL;
-		len = min_t(ptrdiff_t, BUS_ID_SIZE, end - start + 1);
-		strlcpy (bus_ids[i], start, len);
-		argv[i] = bus_ids[i];
-		start = end + 1;
-	}
-
-	ret = ccwgroup_create(cu3088_root_dev, cdrv->driver_id,
-			      &cu3088_driver, 2, argv);
+	ret = ccwgroup_create_from_string(cu3088_root_dev, cdrv->driver_id,
+					  &cu3088_driver, 2, buf);
 
 	return (ret == 0) ? count : ret;
 }
@@ -138,12 +119,12 @@ cu3088_init (void)
 {
 	int rc;
 
-	cu3088_root_dev = s390_root_dev_register("cu3088");
+	cu3088_root_dev = root_device_register("cu3088");
 	if (IS_ERR(cu3088_root_dev))
 		return PTR_ERR(cu3088_root_dev);
 	rc = ccw_driver_register(&cu3088_driver);
 	if (rc)
-		s390_root_dev_unregister(cu3088_root_dev);
+		root_device_unregister(cu3088_root_dev);
 
 	return rc;
 }
@@ -152,7 +133,7 @@ static void __exit
 cu3088_exit (void)
 {
 	ccw_driver_unregister(&cu3088_driver);
-	s390_root_dev_unregister(cu3088_root_dev);
+	root_device_unregister(cu3088_root_dev);
 }
 
 MODULE_DEVICE_TABLE(ccw,cu3088_ids);

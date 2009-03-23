@@ -22,14 +22,12 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-#include <sound/driver.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <sound/core.h>
 #include "hda_codec.h"
 #include "hda_local.h"
-
 
 /* si3054 verbs */
 #define SI3054_VERB_READ_NODE  0x900
@@ -207,7 +205,7 @@ static int si3054_build_pcms(struct hda_codec *codec)
 	info->name = "Si3054 Modem";
 	info->stream[SNDRV_PCM_STREAM_PLAYBACK] = si3054_pcm;
 	info->stream[SNDRV_PCM_STREAM_CAPTURE]  = si3054_pcm;
-	info->is_modem = 1;
+	info->pcm_type = HDA_PCM_TYPE_MODEM;
 	return 0;
 }
 
@@ -284,10 +282,9 @@ static int patch_si3054(struct hda_codec *codec)
 /*
  * patch entries
  */
-struct hda_codec_preset snd_hda_preset_si3054[] = {
+static struct hda_codec_preset snd_hda_preset_si3054[] = {
  	{ .id = 0x163c3055, .name = "Si3054", .patch = patch_si3054 },
  	{ .id = 0x163c3155, .name = "Si3054", .patch = patch_si3054 },
- 	{ .id = 0x11c11040, .name = "Si3054", .patch = patch_si3054 },
  	{ .id = 0x11c13026, .name = "Si3054", .patch = patch_si3054 },
  	{ .id = 0x11c13055, .name = "Si3054", .patch = patch_si3054 },
  	{ .id = 0x11c13155, .name = "Si3054", .patch = patch_si3054 },
@@ -303,3 +300,35 @@ struct hda_codec_preset snd_hda_preset_si3054[] = {
 	{}
 };
 
+MODULE_ALIAS("snd-hda-codec-id:163c3055");
+MODULE_ALIAS("snd-hda-codec-id:163c3155");
+MODULE_ALIAS("snd-hda-codec-id:11c13026");
+MODULE_ALIAS("snd-hda-codec-id:11c13055");
+MODULE_ALIAS("snd-hda-codec-id:11c13155");
+MODULE_ALIAS("snd-hda-codec-id:10573055");
+MODULE_ALIAS("snd-hda-codec-id:10573057");
+MODULE_ALIAS("snd-hda-codec-id:10573155");
+MODULE_ALIAS("snd-hda-codec-id:11063288");
+MODULE_ALIAS("snd-hda-codec-id:15433155");
+MODULE_ALIAS("snd-hda-codec-id:18540018");
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Si3054 HD-audio modem codec");
+
+static struct hda_codec_preset_list si3054_list = {
+	.preset = snd_hda_preset_si3054,
+	.owner = THIS_MODULE,
+};
+
+static int __init patch_si3054_init(void)
+{
+	return snd_hda_add_codec_preset(&si3054_list);
+}
+
+static void __exit patch_si3054_exit(void)
+{
+	snd_hda_delete_codec_preset(&si3054_list);
+}
+
+module_init(patch_si3054_init)
+module_exit(patch_si3054_exit)

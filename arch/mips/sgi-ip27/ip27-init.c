@@ -27,7 +27,6 @@
 #include <asm/sn/hub.h>
 #include <asm/sn/intr.h>
 #include <asm/current.h>
-#include <asm/smp.h>
 #include <asm/processor.h>
 #include <asm/mmu_context.h>
 #include <asm/thread_info.h>
@@ -54,7 +53,7 @@ extern void pcibr_setup(cnodeid_t);
 
 extern void xtalk_probe_node(cnodeid_t nid);
 
-static void __init per_hub_init(cnodeid_t cnode)
+static void __cpuinit per_hub_init(cnodeid_t cnode)
 {
 	struct hub_data *hub = hub_data(cnode);
 	nasid_t nasid = COMPACT_TO_NASID_NODEID(cnode);
@@ -162,27 +161,6 @@ cnodeid_t get_compact_nodeid(void)
 	return NASID_TO_COMPACT_NODEID(get_nasid());
 }
 
-/* Extracted from the IOC3 meta driver.  FIXME.  */
-static inline void ioc3_sio_init(void)
-{
-	struct ioc3 *ioc3;
-	nasid_t nid;
-	long loops;
-
-	nid = get_nasid();
-	ioc3 = (struct ioc3 *) KL_CONFIG_CH_CONS_INFO(nid)->memory_base;
-
-	ioc3->sscr_a = 0;			/* PIO mode for uarta.  */
-	ioc3->sscr_b = 0;			/* PIO mode for uartb.  */
-	ioc3->sio_iec = ~0;
-	ioc3->sio_ies = (SIO_IR_SA_INT | SIO_IR_SB_INT);
-
-	loops=1000000; while(loops--);
-	ioc3->sregs.uarta.iu_fcr = 0;
-	ioc3->sregs.uartb.iu_fcr = 0;
-	loops=1000000; while(loops--);
-}
-
 static inline void ioc3_eth_init(void)
 {
 	struct ioc3 *ioc3;
@@ -235,7 +213,6 @@ void __init plat_mem_setup(void)
 		panic("Kernel compiled for N mode.");
 #endif
 
-	ioc3_sio_init();
 	ioc3_eth_init();
 	per_cpu_init();
 

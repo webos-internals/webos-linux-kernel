@@ -14,27 +14,30 @@
 	<othername>(J.A.K.)</othername>
 	<surname>Mouw</surname>
 	<affiliation>
-	  <orgname>Delft University of Technology</orgname>
-	  <orgdiv>Faculty of Information Technology and Systems</orgdiv>
 	  <address>
-            <email>J.A.K.Mouw@its.tudelft.nl</email>
-            <pob>PO BOX 5031</pob>
-            <postcode>2600 GA</postcode>
-            <city>Delft</city>
-            <country>The Netherlands</country>
+            <email>mouw@nl.linux.org</email>
           </address>
 	</affiliation>
       </author>
+      <othercredit>
+	<contrib>
+	This software and documentation were written while working on the
+	LART computing board
+	(<ulink url="http://www.lartmaker.nl/">http://www.lartmaker.nl/</ulink>),
+	which was sponsored by the Delt University of Technology projects
+	Mobile Multi-media Communications and Ubiquitous Communications.
+	</contrib>
+      </othercredit>
     </authorgroup>
 
     <revhistory>
       <revision>
-	<revnumber>1.0&nbsp;</revnumber>
+	<revnumber>1.0</revnumber>
 	<date>May 30, 2001</date>
 	<revremark>Initial revision posted to linux-kernel</revremark>
       </revision>
       <revision>
-	<revnumber>1.1&nbsp;</revnumber>
+	<revnumber>1.1</revnumber>
 	<date>June 3, 2001</date>
 	<revremark>Revised after comments from linux-kernel</revremark>
       </revision>
@@ -85,7 +88,7 @@
 
 
 
-  <preface>
+  <preface id="Preface">
     <title>Preface</title>
 
     <para>
@@ -106,18 +109,6 @@
       url="http://people.redhat.com/twaugh/docbook/selfdocbook/">Selfdocbook</ulink>,
       and Marc Joosen <email>marcj@historia.et.tudelft.nl</email> for
       proofreading.
-    </para>
-
-    <para>
-      This documentation was written while working on the LART
-      computing board (<ulink
-      url="http://www.lart.tudelft.nl/">http://www.lart.tudelft.nl/</ulink>),
-      which is sponsored by the Mobile Multi-media Communications
-      (<ulink
-      url="http://www.mmc.tudelft.nl/">http://www.mmc.tudelft.nl/</ulink>)
-      and Ubiquitous Communications (<ulink
-      url="http://www.ubicom.tudelft.nl/">http://www.ubicom.tudelft.nl/</ulink>)
-      projects.
     </para>
 
     <para>
@@ -230,7 +221,7 @@
 
 
 
-    <sect1>
+    <sect1 id="Creating_a_symlink">
       <title>Creating a symlink</title>
 
       <funcsynopsis>
@@ -254,7 +245,7 @@
       </para>
     </sect1>
 
-    <sect1>
+    <sect1 id="Creating_a_directory">
       <title>Creating a directory</title>
       
       <funcsynopsis>
@@ -274,7 +265,7 @@
 
 
 
-    <sect1>
+    <sect1 id="Removing_an_entry">
       <title>Removing an entry</title>
       
       <funcsynopsis>
@@ -340,7 +331,7 @@ entry->write_proc = write_proc_foo;
 
 
 
-    <sect1>
+    <sect1 id="Reading_data">
       <title>Reading data</title>
 
       <para>
@@ -448,7 +439,7 @@ entry->write_proc = write_proc_foo;
 
 
 
-    <sect1>
+    <sect1 id="Writing_data">
       <title>Writing data</title>
 
       <para>
@@ -579,7 +570,7 @@ int foo_read_func(char *page, char **start, off_t off,
 
 
 
-    <sect1>
+    <sect1 id="Modules">
       <title>Modules</title>
 
       <para>
@@ -599,7 +590,7 @@ entry->owner = THIS_MODULE;
 
 
 
-    <sect1>
+    <sect1 id="Mode_and_ownership">
       <title>Mode and ownership</title>
 
       <para>

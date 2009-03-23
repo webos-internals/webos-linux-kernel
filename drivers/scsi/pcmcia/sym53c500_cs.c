@@ -632,9 +632,10 @@ SYM53C500_biosparm(struct scsi_device *disk,
 }
 
 static ssize_t
-SYM53C500_show_pio(struct class_device *cdev, char *buf)
+SYM53C500_show_pio(struct device *dev, struct device_attribute *attr,
+		   char *buf)
 {
-	struct Scsi_Host *SHp = class_to_shost(cdev);
+	struct Scsi_Host *SHp = class_to_shost(dev);
 	struct sym53c500_data *data =
 	    (struct sym53c500_data *)SHp->hostdata;
 
@@ -642,10 +643,11 @@ SYM53C500_show_pio(struct class_device *cdev, char *buf)
 }
 
 static ssize_t
-SYM53C500_store_pio(struct class_device *cdev, const char *buf, size_t count)
+SYM53C500_store_pio(struct device *dev, struct device_attribute *attr,
+		    const char *buf, size_t count)
 {
 	int pio;
-	struct Scsi_Host *SHp = class_to_shost(cdev);
+	struct Scsi_Host *SHp = class_to_shost(dev);
 	struct sym53c500_data *data =
 	    (struct sym53c500_data *)SHp->hostdata;
 
@@ -662,7 +664,7 @@ SYM53C500_store_pio(struct class_device *cdev, const char *buf, size_t count)
 *  SCSI HBA device attributes we want to
 *  make available via sysfs.
 */
-static struct class_device_attribute SYM53C500_pio_attr = {
+static struct device_attribute SYM53C500_pio_attr = {
 	.attr = {
 		.name = "fast_pio",
 		.mode = (S_IRUGO | S_IWUSR),
@@ -671,7 +673,7 @@ static struct class_device_attribute SYM53C500_pio_attr = {
 	.store = SYM53C500_store_pio,
 };
 
-static struct class_device_attribute *SYM53C500_shost_attrs[] = {
+static struct device_attribute *SYM53C500_shost_attrs[] = {
 	&SYM53C500_pio_attr,
 	NULL,
 };
@@ -692,22 +694,33 @@ static struct scsi_host_template sym53c500_driver_template = {
      .sg_tablesize		= 32,
      .cmd_per_lun		= 1,
      .use_clustering		= ENABLE_CLUSTERING,
-     .use_sg_chaining		= ENABLE_SG_CHAINING,
      .shost_attrs		= SYM53C500_shost_attrs
 };
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
 
+static int SYM53C500_config_check(struct pcmcia_device *p_dev,
+				  cistpl_cftable_entry_t *cfg,
+				  cistpl_cftable_entry_t *dflt,
+				  unsigned int vcc,
+				  void *priv_data)
+{
+	p_dev->io.BasePort1 = cfg->io.win[0].base;
+	p_dev->io.NumPorts1 = cfg->io.win[0].len;
+
+	if (p_dev->io.BasePort1 == 0)
+		return -ENODEV;
+
+	return pcmcia_request_io(p_dev, &p_dev->io);
+}
+
 static int
 SYM53C500_config(struct pcmcia_device *link)
 {
 	struct scsi_info_t *info = link->priv;
-	tuple_t tuple;
-	cisparse_t parse;
-	int i, last_ret, last_fn;
+	int last_ret, last_fn;
 	int irq_level, port_base;
-	unsigned short tuple_data[32];
 	struct Scsi_Host *host;
 	struct scsi_host_template *tpnt = &sym53c500_driver_template;
 	struct sym53c500_data *data;
@@ -716,27 +729,10 @@ SYM53C500_config(struct pcmcia_device *link)
 
 	info->manf_id = link->manf_id;
 
-	tuple.TupleData = (cisdata_t *)tuple_data;
-	tuple.TupleDataMax = 64;
-	tuple.TupleOffset = 0;
-
-	tuple.DesiredTuple = CISTPL_CFTABLE_ENTRY;
-	CS_CHECK(GetFirstTuple, pcmcia_get_first_tuple(link, &tuple));
-	while (1) {
-		if (pcmcia_get_tuple_data(link, &tuple) != 0 ||
-		    pcmcia_parse_tuple(link, &tuple, &parse) != 0)
-			goto next_entry;
-		link->conf.ConfigIndex = parse.cftable_entry.index;
-		link->io.BasePort1 = parse.cftable_entry.io.win[0].base;
-		link->io.NumPorts1 = parse.cftable_entry.io.win[0].len;
-
-		if (link->io.BasePort1 != 0) {
-			i = pcmcia_request_io(link, &link->io);
-			if (i == CS_SUCCESS)
-				break;
-		}
-next_entry:
-		CS_CHECK(GetNextTuple, pcmcia_get_next_tuple(link, &tuple));
+	last_ret = pcmcia_loop_config(link, SYM53C500_config_check, NULL);
+	if (last_ret) {
+		cs_error(link, RequestIO, last_ret);
+		goto failed;
 	}
 
 	CS_CHECK(RequestIRQ, pcmcia_request_irq(link, &link->irq));
@@ -830,6 +826,7 @@ err_release:
 
 cs_failed:
 	cs_error(link, last_fn, last_ret);
+failed:
 	SYM53C500_release(link);
 	return -ENODEV;
 } /* SYM53C500_config */

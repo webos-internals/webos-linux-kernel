@@ -4,8 +4,6 @@
  *	Authors:
  *	Lennert Buytenhek		<buytenh@gnu.org>
  *
- *	$Id: if_bridge.h,v 1.1 2000/02/18 16:47:01 davem Exp $
- *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
  *	as published by the Free Software Foundation; either version
@@ -97,7 +95,9 @@ struct __fdb_entry
 	__u8 port_no;
 	__u8 is_local;
 	__u32 ageing_timer_value;
-	__u32 unused;
+	__u8 port_hi;
+	__u8 pad0;
+	__u16 unused;
 };
 
 #ifdef __KERNEL__

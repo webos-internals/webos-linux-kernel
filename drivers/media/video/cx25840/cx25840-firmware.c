@@ -24,6 +24,7 @@
 #include "cx25840-core.h"
 
 #define FWFILE "v4l-cx25840.fw"
+#define FWFILE_CX23885 "v4l-cx23885-avcore-01.fw"
 
 /*
  * Mike Isely <isely@pobox.com> - The FWSEND parameter controls the
@@ -78,11 +79,9 @@ static int check_fw_load(struct i2c_client *client, int size)
 	return 0;
 }
 
-static int fw_write(struct i2c_client *client, u8 * data, int size)
+static int fw_write(struct i2c_client *client, const u8 *data, int size)
 {
-	int sent;
-
-	if ((sent = i2c_master_send(client, data, size)) < size) {
+	if (i2c_master_send(client, data, size) < size) {
 		v4l_err(client, "firmware load i2c failure\n");
 		return -ENOSYS;
 	}
@@ -92,9 +91,14 @@ static int fw_write(struct i2c_client *client, u8 * data, int size)
 
 int cx25840_loadfw(struct i2c_client *client)
 {
+	struct cx25840_state *state = to_state(i2c_get_clientdata(client));
 	const struct firmware *fw = NULL;
-	u8 buffer[4], *ptr;
-	int size, send, retval;
+	u8 buffer[FWSEND];
+	const u8 *ptr;
+	int size, retval;
+
+	if (state->is_cx23885)
+		firmware = FWFILE_CX23885;
 
 	if (request_firmware(&fw, firmware, FWDEV(client)) != 0) {
 		v4l_err(client, "unable to open firmware %s\n", firmware);
@@ -105,30 +109,23 @@ int cx25840_loadfw(struct i2c_client *client)
 
 	buffer[0] = 0x08;
 	buffer[1] = 0x02;
-	buffer[2] = fw->data[0];
-	buffer[3] = fw->data[1];
-	retval = fw_write(client, buffer, 4);
 
-	if (retval < 0) {
-		release_firmware(fw);
-		return retval;
-	}
-
-	size = fw->size - 2;
+	size = fw->size;
 	ptr = fw->data;
 	while (size > 0) {
-		ptr[0] = 0x08;
-		ptr[1] = 0x02;
-		send = size > (FWSEND - 2) ? FWSEND : size + 2;
-		retval = fw_write(client, ptr, send);
+		int len = min(FWSEND - 2, size);
+
+		memcpy(buffer + 2, ptr, len);
+
+		retval = fw_write(client, buffer, len + 2);
 
 		if (retval < 0) {
 			release_firmware(fw);
 			return retval;
 		}
 
-		size -= FWSEND - 2;
-		ptr += FWSEND - 2;
+		size -= len;
+		ptr += len;
 	}
 
 	end_fw_load(client);

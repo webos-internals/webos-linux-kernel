@@ -5,13 +5,20 @@
 #include <asm/thread_info.h>
 #include <asm/processor-flags.h>
 
-/*G:020 This is where we begin: head.S notes that the boot header's platform
- * type field is "1" (lguest), so calls us here.
+/*G:020 Our story starts with the kernel booting into startup_32 in
+ * arch/x86/kernel/head_32.S.  It expects a boot header, which is created by
+ * the bootloader (the Launcher in our case).
+ *
+ * The startup_32 function does very little: it clears the uninitialized global
+ * C variables which we expect to be zero (ie. BSS) and then copies the boot
+ * header and kernel command line somewhere safe.  Finally it checks the
+ * 'hardware_subarch' field.  This was introduced in 2.6.24 for lguest and Xen:
+ * if it's set to '1' (lguest's assigned number), then it calls us here.
  *
  * WARNING: be very careful here!  We're running at addresses equal to physical
  * addesses (around 0), not above PAGE_OFFSET as most code expectes
  * (eg. 0xC0000000).  Jumps are relative, so they're OK, but we can't touch any
- * data.
+ * data without remembering to subtract __PAGE_OFFSET!
  *
  * The .section line puts this code in .init.text so it will be discarded after
  * boot. */
@@ -22,21 +29,6 @@ ENTRY(lguest_entry)
 	movl $LHCALL_LGUEST_INIT, %eax
 	movl $lguest_data - __PAGE_OFFSET, %edx
 	int $LGUEST_TRAP_ENTRY
-
-	/* The Host put the toplevel pagetable in lguest_data.pgdir.  The movsl
-	 * instruction uses %esi implicitly as the source for the copy we'
-	 * about to do. */
-	movl lguest_data - __PAGE_OFFSET + LGUEST_DATA_pgdir, %esi
-
-	/* Copy first 32 entries of page directory to __PAGE_OFFSET entries.
-	 * This means the first 128M of kernel memory will be mapped at
-	 * PAGE_OFFSET where the kernel expects to run.  This will get it far
-	 * enough through boot to switch to its own pagetables. */
-	movl $32, %ecx
-	movl %esi, %edi
-	addl $((__PAGE_OFFSET >> 22) * 4), %edi
-	rep
-	movsl
 
 	/* Set up the initial stack so we can run C code. */
 	movl $(init_thread_union+THREAD_SIZE),%esp

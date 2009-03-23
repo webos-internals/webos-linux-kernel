@@ -14,27 +14,50 @@
 #	help
 #	  This option enables support for the CPCI405 board.
 
-#config EP405
-#	bool "EP405/EP405PC"
-#	depends on 40x
-#	default n
-#	select 405GP
-#	help
-#	  This option enables support for the EP405/EP405PC boards.
+config ACADIA
+	bool "Acadia"
+	depends on 40x
+	default n
+	select PPC40x_SIMPLE
+	select 405EZ
+	help
+	  This option enables support for the AMCC 405EZ Acadia evaluation board.
 
-#config EP405PC
-#	bool "EP405PC Support"
-#	depends on EP405
-#	default y
-#	help
-#	  This option enables support for the extra features of the EP405PC board.
+config EP405
+	bool "EP405/EP405PC"
+	depends on 40x
+	default n
+	select 405GP
+	select PCI
+	help
+	  This option enables support for the EP405/EP405PC boards.
+
+config HCU4
+	bool "Hcu4"
+	depends on 40x
+	default n
+	select 405GPR
+	help
+	  This option enables support for the Nestal Maschinen HCU4 board.
 
 config KILAUEA
 	bool "Kilauea"
 	depends on 40x
 	default n
+	select 405EX
+	select PPC4xx_PCI_EXPRESS
 	help
 	  This option enables support for the AMCC PPC405EX evaluation board.
+
+config MAKALU
+	bool "Makalu"
+	depends on 40x
+	default n
+	select 405EX
+	select PCI
+	select PPC4xx_PCI_EXPRESS
+	help
+	  This option enables support for the AMCC PPC405EX board.
 
 #config REDWOOD_5
 #	bool "Redwood-5"
@@ -65,6 +88,8 @@ config WALNUT
 	depends on 40x
 	default y
 	select 405GP
+	select PCI
+	select OF_RTC
 	help
 	  This option enables support for the IBM PPC405GP evaluation board.
 
@@ -84,6 +109,13 @@ config XILINX_VIRTEX_GENERIC_BOARD
 
 	  Most Virtex designs should use this unless it needs to do some
 	  special configuration at board probe time.
+
+config PPC40x_SIMPLE
+	bool "Simple PowerPC 40x board support"
+	depends on 40x
+	default n
+	help
+	  This option enables the simple PowerPC 40x platform support.
 
 # 40x specific CPU modules, selected based on the board above.
 config NP405H
@@ -105,6 +137,17 @@ config 405GP
 config 405EP
 	bool
 
+config 405EX
+	bool
+	select IBM_NEW_EMAC_EMAC4
+	select IBM_NEW_EMAC_RGMII
+
+config 405EZ
+	bool
+	select IBM_NEW_EMAC_NO_FLOW_CTRL
+	select IBM_NEW_EMAC_MAL_CLR_ICINTSTAT
+	select IBM_NEW_EMAC_MAL_COMMON_ERR
+
 config 405GPR
 	bool
 
@@ -125,6 +168,14 @@ config STB03xxx
 	bool
 	select IBM405_ERR77
 	select IBM405_ERR51
+
+config PPC4xx_GPIO
+	bool "PPC4xx GPIO support"
+	depends on 40x
+	select ARCH_REQUIRE_GPIOLIB
+	select GENERIC_GPIO
+	help
+	  Enable gpiolib support for ppc40x based boards
 
 # 40x errata/workaround config symbols, selected by the CPU models above
 

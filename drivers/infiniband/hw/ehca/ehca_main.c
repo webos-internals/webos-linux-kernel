@@ -44,70 +44,78 @@
 #include <linux/slab.h>
 #endif
 
+#include <linux/notifier.h>
+#include <linux/memory.h>
 #include "ehca_classes.h"
 #include "ehca_iverbs.h"
 #include "ehca_mrmw.h"
 #include "ehca_tools.h"
 #include "hcp_if.h"
 
-#define HCAD_VERSION "0025"
+#define HCAD_VERSION "0026"
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Christoph Raisch <raisch@de.ibm.com>");
 MODULE_DESCRIPTION("IBM eServer HCA InfiniBand Device Driver");
 MODULE_VERSION(HCAD_VERSION);
 
-int ehca_open_aqp1     = 0;
+static int ehca_open_aqp1     = 0;
+static int ehca_hw_level      = 0;
+static int ehca_poll_all_eqs  = 1;
+
 int ehca_debug_level   = 0;
-int ehca_hw_level      = 0;
 int ehca_nr_ports      = 2;
 int ehca_use_hp_mr     = 0;
 int ehca_port_act_time = 30;
-int ehca_poll_all_eqs  = 1;
 int ehca_static_rate   = -1;
 int ehca_scaling_code  = 0;
-int ehca_mr_largepage  = 1;
 int ehca_lock_hcalls   = -1;
+int ehca_max_cq        = -1;
+int ehca_max_qp        = -1;
 
-module_param_named(open_aqp1,     ehca_open_aqp1,     int, S_IRUGO);
-module_param_named(debug_level,   ehca_debug_level,   int, S_IRUGO);
-module_param_named(hw_level,      ehca_hw_level,      int, S_IRUGO);
-module_param_named(nr_ports,      ehca_nr_ports,      int, S_IRUGO);
-module_param_named(use_hp_mr,     ehca_use_hp_mr,     int, S_IRUGO);
-module_param_named(port_act_time, ehca_port_act_time, int, S_IRUGO);
-module_param_named(poll_all_eqs,  ehca_poll_all_eqs,  int, S_IRUGO);
-module_param_named(static_rate,   ehca_static_rate,   int, S_IRUGO);
-module_param_named(scaling_code,  ehca_scaling_code,  int, S_IRUGO);
-module_param_named(mr_largepage,  ehca_mr_largepage,  int, S_IRUGO);
+module_param_named(open_aqp1,     ehca_open_aqp1,     bool, S_IRUGO);
+module_param_named(debug_level,   ehca_debug_level,   int,  S_IRUGO);
+module_param_named(hw_level,      ehca_hw_level,      int,  S_IRUGO);
+module_param_named(nr_ports,      ehca_nr_ports,      int,  S_IRUGO);
+module_param_named(use_hp_mr,     ehca_use_hp_mr,     bool, S_IRUGO);
+module_param_named(port_act_time, ehca_port_act_time, int,  S_IRUGO);
+module_param_named(poll_all_eqs,  ehca_poll_all_eqs,  bool, S_IRUGO);
+module_param_named(static_rate,   ehca_static_rate,   int,  S_IRUGO);
+module_param_named(scaling_code,  ehca_scaling_code,  bool, S_IRUGO);
 module_param_named(lock_hcalls,   ehca_lock_hcalls,   bool, S_IRUGO);
+module_param_named(number_of_cqs, ehca_max_cq,        int,  S_IRUGO);
+module_param_named(number_of_qps, ehca_max_qp,        int,  S_IRUGO);
 
 MODULE_PARM_DESC(open_aqp1,
-		 "AQP1 on startup (0: no (default), 1: yes)");
+		 "Open AQP1 on startup (default: no)");
 MODULE_PARM_DESC(debug_level,
-		 "debug level"
-		 " (0: no debug traces (default), 1: with debug traces)");
+		 "Amount of debug output (0: none (default), 1: traces, "
+		 "2: some dumps, 3: lots)");
 MODULE_PARM_DESC(hw_level,
-		 "hardware level"
-		 " (0: autosensing (default), 1: v. 0.20, 2: v. 0.21)");
+		 "Hardware level (0: autosensing (default), "
+		 "0x10..0x14: eHCA, 0x20..0x23: eHCA2)");
 MODULE_PARM_DESC(nr_ports,
-		 "number of connected ports (default: 2)");
+		 "number of connected ports (-1: autodetect, 1: port one only, "
+		 "2: two ports (default)");
 MODULE_PARM_DESC(use_hp_mr,
-		 "high performance MRs (0: no (default), 1: yes)");
+		 "Use high performance MRs (default: no)");
 MODULE_PARM_DESC(port_act_time,
-		 "time to wait for port activation (default: 30 sec)");
+		 "Time to wait for port activation (default: 30 sec)");
 MODULE_PARM_DESC(poll_all_eqs,
-		 "polls all event queues periodically"
-		 " (0: no, 1: yes (default))");
+		 "Poll all event queues periodically (default: yes)");
 MODULE_PARM_DESC(static_rate,
-		 "set permanent static rate (default: disabled)");
+		 "Set permanent static rate (default: no static rate)");
 MODULE_PARM_DESC(scaling_code,
-		 "set scaling code (0: disabled/default, 1: enabled)");
-MODULE_PARM_DESC(mr_largepage,
-		 "use large page for MR (0: use PAGE_SIZE (default), "
-		 "1: use large page depending on MR size");
+		 "Enable scaling code (default: no)");
 MODULE_PARM_DESC(lock_hcalls,
-		 "serialize all hCalls made by the driver "
+		 "Serialize all hCalls made by the driver "
 		 "(default: autodetect)");
+MODULE_PARM_DESC(number_of_cqs,
+		"Max number of CQs which can be allocated "
+		"(default: autodetect)");
+MODULE_PARM_DESC(number_of_qps,
+		"Max number of QPs which can be allocated "
+		"(default: autodetect)");
 
 DEFINE_RWLOCK(ehca_qp_idr_lock);
 DEFINE_RWLOCK(ehca_cq_idr_lock);
@@ -273,6 +281,7 @@ static int ehca_sense_attributes(struct ehca_shca *shca)
 	u64 h_ret;
 	struct hipz_query_hca *rblock;
 	struct hipz_query_port *port;
+	const char *loc_code;
 
 	static const u32 pgsize_map[] = {
 		HCA_CAP_MR_PGSIZE_4K,  0x1000,
@@ -280,6 +289,12 @@ static int ehca_sense_attributes(struct ehca_shca *shca)
 		HCA_CAP_MR_PGSIZE_1M,  0x100000,
 		HCA_CAP_MR_PGSIZE_16M, 0x1000000,
 	};
+
+	ehca_gen_dbg("Probing adapter %s...",
+		     shca->ofdev->node->full_name);
+	loc_code = of_get_property(shca->ofdev->node, "ibm,loc-code", NULL);
+	if (loc_code)
+		ehca_gen_dbg(" ... location lode=%s", loc_code);
 
 	rblock = ehca_alloc_fw_ctrlblock(GFP_KERNEL);
 	if (!rblock) {
@@ -289,7 +304,7 @@ static int ehca_sense_attributes(struct ehca_shca *shca)
 
 	h_ret = hipz_h_query_hca(shca->ipz_hca_handle, rblock);
 	if (h_ret != H_SUCCESS) {
-		ehca_gen_err("Cannot query device properties. h_ret=%li",
+		ehca_gen_err("Cannot query device properties. h_ret=%lli",
 			     h_ret);
 		ret = -EPERM;
 		goto sense_attributes1;
@@ -348,17 +363,35 @@ static int ehca_sense_attributes(struct ehca_shca *shca)
 
 	/* translate supported MR page sizes; always support 4K */
 	shca->hca_cap_mr_pgsize = EHCA_PAGESIZE;
-	if (ehca_mr_largepage) { /* support extra sizes only if enabled */
-		for (i = 0; i < ARRAY_SIZE(pgsize_map); i += 2)
-			if (rblock->memory_page_size_supported & pgsize_map[i])
-				shca->hca_cap_mr_pgsize |= pgsize_map[i + 1];
+	for (i = 0; i < ARRAY_SIZE(pgsize_map); i += 2)
+		if (rblock->memory_page_size_supported & pgsize_map[i])
+			shca->hca_cap_mr_pgsize |= pgsize_map[i + 1];
+
+	/* Set maximum number of CQs and QPs to calculate EQ size */
+	if (shca->max_num_qps == -1)
+		shca->max_num_qps = min_t(int, rblock->max_qp,
+					  EHCA_MAX_NUM_QUEUES);
+	else if (shca->max_num_qps < 1 || shca->max_num_qps > rblock->max_qp) {
+		ehca_gen_warn("The requested number of QPs is out of range "
+			      "(1 - %i) specified by HW. Value is set to %i",
+			      rblock->max_qp, rblock->max_qp);
+		shca->max_num_qps = rblock->max_qp;
+	}
+
+	if (shca->max_num_cqs == -1)
+		shca->max_num_cqs = min_t(int, rblock->max_cq,
+					  EHCA_MAX_NUM_QUEUES);
+	else if (shca->max_num_cqs < 1 || shca->max_num_cqs > rblock->max_cq) {
+		ehca_gen_warn("The requested number of CQs is out of range "
+			      "(1 - %i) specified by HW. Value is set to %i",
+			      rblock->max_cq, rblock->max_cq);
 	}
 
 	/* query max MTU from first port -- it's the same for all ports */
 	port = (struct hipz_query_port *)rblock;
 	h_ret = hipz_h_query_port(shca->ipz_hca_handle, 1, port);
 	if (h_ret != H_SUCCESS) {
-		ehca_gen_err("Cannot query port properties. h_ret=%li",
+		ehca_gen_err("Cannot query port properties. h_ret=%lli",
 			     h_ret);
 		ret = -EPERM;
 		goto sense_attributes1;
@@ -395,7 +428,7 @@ init_node_guid1:
 	return ret;
 }
 
-int ehca_init_device(struct ehca_shca *shca)
+static int ehca_init_device(struct ehca_shca *shca)
 {
 	int ret;
 
@@ -471,7 +504,7 @@ int ehca_init_device(struct ehca_shca *shca)
 	shca->ib_device.dealloc_fmr	    = ehca_dealloc_fmr;
 	shca->ib_device.attach_mcast	    = ehca_attach_mcast;
 	shca->ib_device.detach_mcast	    = ehca_detach_mcast;
-	/* shca->ib_device.process_mad	    = ehca_process_mad;	    */
+	shca->ib_device.process_mad	    = ehca_process_mad;
 	shca->ib_device.mmap		    = ehca_mmap;
 
 	if (EHCA_BMASK_GET(HCA_CAP_SRQ, shca->hca_cap)) {
@@ -511,7 +544,7 @@ static int ehca_create_aqp1(struct ehca_shca *shca, u32 port)
 	}
 	sport->ibcq_aqp1 = ibcq;
 
-	if (sport->ibqp_aqp1) {
+	if (sport->ibqp_sqp[IB_QPT_GSI]) {
 		ehca_err(&shca->ib_device, "AQP1 QP is already created.");
 		ret = -EPERM;
 		goto create_aqp1;
@@ -537,7 +570,7 @@ static int ehca_create_aqp1(struct ehca_shca *shca, u32 port)
 		ret = PTR_ERR(ibqp);
 		goto create_aqp1;
 	}
-	sport->ibqp_aqp1 = ibqp;
+	sport->ibqp_sqp[IB_QPT_GSI] = ibqp;
 
 	return 0;
 
@@ -550,7 +583,7 @@ static int ehca_destroy_aqp1(struct ehca_sport *sport)
 {
 	int ret;
 
-	ret = ib_destroy_qp(sport->ibqp_aqp1);
+	ret = ib_destroy_qp(sport->ibqp_sqp[IB_QPT_GSI]);
 	if (ret) {
 		ehca_gen_err("Cannot destroy AQP1 QP. ret=%i", ret);
 		return ret;
@@ -565,8 +598,7 @@ static int ehca_destroy_aqp1(struct ehca_sport *sport)
 
 static ssize_t ehca_show_debug_level(struct device_driver *ddp, char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "%d\n",
-			ehca_debug_level);
+	return snprintf(buf, PAGE_SIZE, "%d\n", ehca_debug_level);
 }
 
 static ssize_t ehca_store_debug_level(struct device_driver *ddp,
@@ -578,8 +610,8 @@ static ssize_t ehca_store_debug_level(struct device_driver *ddp,
 	return 1;
 }
 
-DRIVER_ATTR(debug_level, S_IRUSR | S_IWUSR,
-	    ehca_show_debug_level, ehca_store_debug_level);
+static DRIVER_ATTR(debug_level, S_IRUSR | S_IWUSR,
+		   ehca_show_debug_level, ehca_store_debug_level);
 
 static struct attribute *ehca_drv_attrs[] = {
 	&driver_attr_debug_level.attr,
@@ -588,6 +620,11 @@ static struct attribute *ehca_drv_attrs[] = {
 
 static struct attribute_group ehca_drv_attr_grp = {
 	.attrs = ehca_drv_attrs
+};
+
+static struct attribute_group *ehca_drv_attr_groups[] = {
+	&ehca_drv_attr_grp,
+	NULL,
 };
 
 #define EHCA_RESOURCE_ATTR(name)                                           \
@@ -645,18 +682,10 @@ static ssize_t ehca_show_adapter_handle(struct device *dev,
 {
 	struct ehca_shca *shca = dev->driver_data;
 
-	return sprintf(buf, "%lx\n", shca->ipz_hca_handle.handle);
+	return sprintf(buf, "%llx\n", shca->ipz_hca_handle.handle);
 
 }
 static DEVICE_ATTR(adapter_handle, S_IRUGO, ehca_show_adapter_handle, NULL);
-
-static ssize_t ehca_show_mr_largepage(struct device *dev,
-				      struct device_attribute *attr,
-				      char *buf)
-{
-	return sprintf(buf, "%d\n", ehca_mr_largepage);
-}
-static DEVICE_ATTR(mr_largepage, S_IRUGO, ehca_show_mr_largepage, NULL);
 
 static struct attribute *ehca_dev_attrs[] = {
 	&dev_attr_adapter_handle.attr,
@@ -674,7 +703,6 @@ static struct attribute *ehca_dev_attrs[] = {
 	&dev_attr_cur_mw.attr,
 	&dev_attr_max_pd.attr,
 	&dev_attr_max_ah.attr,
-	&dev_attr_mr_largepage.attr,
 	NULL
 };
 
@@ -688,7 +716,8 @@ static int __devinit ehca_probe(struct of_device *dev,
 	struct ehca_shca *shca;
 	const u64 *handle;
 	struct ib_pd *ibpd;
-	int ret;
+	int ret, i, eq_size;
+	unsigned long flags;
 
 	handle = of_get_property(dev->node, "ibm,hca-handle", NULL);
 	if (!handle) {
@@ -708,7 +737,15 @@ static int __devinit ehca_probe(struct of_device *dev,
 		ehca_gen_err("Cannot allocate shca memory.");
 		return -ENOMEM;
 	}
+
 	mutex_init(&shca->modify_mutex);
+	atomic_set(&shca->num_cqs, 0);
+	atomic_set(&shca->num_qps, 0);
+	shca->max_num_qps = ehca_max_qp;
+	shca->max_num_cqs = ehca_max_cq;
+
+	for (i = 0; i < ARRAY_SIZE(shca->sport); i++)
+		spin_lock_init(&shca->sport[i].mod_sqp_lock);
 
 	shca->ofdev = dev;
 	shca->ipz_hca_handle.handle = *handle;
@@ -726,8 +763,9 @@ static int __devinit ehca_probe(struct of_device *dev,
 		goto probe1;
 	}
 
+	eq_size = 2 * shca->max_num_cqs + 4 * shca->max_num_qps;
 	/* create event queues */
-	ret = ehca_create_eq(shca, &shca->eq, EHCA_EQ, 2048);
+	ret = ehca_create_eq(shca, &shca->eq, EHCA_EQ, eq_size);
 	if (ret) {
 		ehca_err(&shca->ib_device, "Cannot create EQ.");
 		goto probe1;
@@ -793,9 +831,9 @@ static int __devinit ehca_probe(struct of_device *dev,
 		ehca_err(&shca->ib_device,
 			 "Cannot create device attributes  ret=%d", ret);
 
-	spin_lock(&shca_list_lock);
+	spin_lock_irqsave(&shca_list_lock, flags);
 	list_add(&shca->shca_list, &shca_list);
-	spin_unlock(&shca_list_lock);
+	spin_unlock_irqrestore(&shca_list_lock, flags);
 
 	return 0;
 
@@ -841,6 +879,7 @@ probe1:
 static int __devexit ehca_remove(struct of_device *dev)
 {
 	struct ehca_shca *shca = dev->dev.driver_data;
+	unsigned long flags;
 	int ret;
 
 	sysfs_remove_group(&dev->dev.kobj, &ehca_dev_attr_grp);
@@ -878,9 +917,9 @@ static int __devexit ehca_remove(struct of_device *dev)
 
 	ib_dealloc_device(&shca->ib_device);
 
-	spin_lock(&shca_list_lock);
+	spin_lock_irqsave(&shca_list_lock, flags);
 	list_del(&shca->shca_list);
-	spin_unlock(&shca_list_lock);
+	spin_unlock_irqrestore(&shca_list_lock, flags);
 
 	return ret;
 }
@@ -893,12 +932,16 @@ static struct of_device_id ehca_device_table[] =
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, ehca_device_table);
 
 static struct of_platform_driver ehca_driver = {
 	.name        = "ehca",
 	.match_table = ehca_device_table,
 	.probe       = ehca_probe,
 	.remove      = ehca_remove,
+	.driver	     = {
+		.groups = ehca_drv_attr_groups,
+	},
 };
 
 void ehca_poll_eqs(unsigned long data)
@@ -912,7 +955,7 @@ void ehca_poll_eqs(unsigned long data)
 			struct ehca_eq *eq = &shca->eq;
 			int max = 3;
 			volatile u64 q_ofs, q_ofs2;
-			u64 flags;
+			unsigned long flags;
 			spin_lock_irqsave(&eq->spinlock, flags);
 			q_ofs = eq->ipz_queue.current_q_offset;
 			spin_unlock_irqrestore(&eq->spinlock, flags);
@@ -926,11 +969,46 @@ void ehca_poll_eqs(unsigned long data)
 				ehca_process_eq(shca, 0);
 		}
 	}
-	mod_timer(&poll_eqs_timer, jiffies + HZ);
+	mod_timer(&poll_eqs_timer, round_jiffies(jiffies + HZ));
 	spin_unlock(&shca_list_lock);
 }
 
-int __init ehca_module_init(void)
+static int ehca_mem_notifier(struct notifier_block *nb,
+			     unsigned long action, void *data)
+{
+	static unsigned long ehca_dmem_warn_time;
+	unsigned long flags;
+
+	switch (action) {
+	case MEM_CANCEL_OFFLINE:
+	case MEM_CANCEL_ONLINE:
+	case MEM_ONLINE:
+	case MEM_OFFLINE:
+		return NOTIFY_OK;
+	case MEM_GOING_ONLINE:
+	case MEM_GOING_OFFLINE:
+		/* only ok if no hca is attached to the lpar */
+		spin_lock_irqsave(&shca_list_lock, flags);
+		if (list_empty(&shca_list)) {
+			spin_unlock_irqrestore(&shca_list_lock, flags);
+			return NOTIFY_OK;
+		} else {
+			spin_unlock_irqrestore(&shca_list_lock, flags);
+			if (printk_timed_ratelimit(&ehca_dmem_warn_time,
+						   30 * 1000))
+				ehca_gen_err("DMEM operations are not allowed"
+					     "in conjunction with eHCA");
+			return NOTIFY_BAD;
+		}
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block ehca_mem_nb = {
+	.notifier_call = ehca_mem_notifier,
+};
+
+static int __init ehca_module_init(void)
 {
 	int ret;
 
@@ -957,9 +1035,11 @@ int __init ehca_module_init(void)
 		goto module_init2;
 	}
 
-	ret = sysfs_create_group(&ehca_driver.driver.kobj, &ehca_drv_attr_grp);
-	if (ret) /* only complain; we can live without attributes */
-		ehca_gen_err("Cannot create driver attributes  ret=%d", ret);
+	ret = register_memory_notifier(&ehca_mem_nb);
+	if (ret) {
+		ehca_gen_err("Failed registering memory add/remove notifier");
+		goto module_init3;
+	}
 
 	if (ehca_poll_all_eqs != 1) {
 		ehca_gen_err("WARNING!!!");
@@ -973,6 +1053,9 @@ int __init ehca_module_init(void)
 
 	return 0;
 
+module_init3:
+	ibmebus_unregister_driver(&ehca_driver);
+
 module_init2:
 	ehca_destroy_slab_caches();
 
@@ -981,13 +1064,14 @@ module_init1:
 	return ret;
 };
 
-void __exit ehca_module_exit(void)
+static void __exit ehca_module_exit(void)
 {
 	if (ehca_poll_all_eqs == 1)
 		del_timer_sync(&poll_eqs_timer);
 
-	sysfs_remove_group(&ehca_driver.driver.kobj, &ehca_drv_attr_grp);
 	ibmebus_unregister_driver(&ehca_driver);
+
+	unregister_memory_notifier(&ehca_mem_nb);
 
 	ehca_destroy_slab_caches();
 

@@ -41,13 +41,13 @@ module_param(video_nr, int, 0);
 static void usbvideo_Disconnect(struct usb_interface *intf);
 static void usbvideo_CameraRelease(struct uvd *uvd);
 
-static int usbvideo_v4l_ioctl(struct inode *inode, struct file *file,
+static long usbvideo_v4l_ioctl(struct file *file,
 			      unsigned int cmd, unsigned long arg);
 static int usbvideo_v4l_mmap(struct file *file, struct vm_area_struct *vma);
-static int usbvideo_v4l_open(struct inode *inode, struct file *file);
+static int usbvideo_v4l_open(struct file *file);
 static ssize_t usbvideo_v4l_read(struct file *file, char __user *buf,
 			     size_t count, loff_t *ppos);
-static int usbvideo_v4l_close(struct inode *inode, struct file *file);
+static int usbvideo_v4l_close(struct file *file);
 
 static int usbvideo_StartDataPump(struct uvd *uvd);
 static void usbvideo_StopDataPump(struct uvd *uvd);
@@ -468,8 +468,9 @@ static void usbvideo_ReportStatistics(const struct uvd *uvd)
 			percent = (100 * goodPackets) / allPackets;
 		else
 			percent = goodPackets / (allPackets / 100);
-		info("Packet Statistics: Total=%lu. Empty=%lu. Usage=%lu%%",
-		     allPackets, badPackets, percent);
+		dev_info(&uvd->dev->dev,
+			 "Packet Statistics: Total=%lu. Empty=%lu. Usage=%lu%%\n",
+			 allPackets, badPackets, percent);
 		if (uvd->iso_packet_len > 0) {
 			unsigned long allBytes, xferBytes;
 			char multiplier = ' ';
@@ -497,8 +498,9 @@ static void usbvideo_ReportStatistics(const struct uvd *uvd)
 					}
 				}
 			}
-			info("Transfer Statistics: Transferred=%lu%cB Usage=%lu%%",
-			     xferBytes, multiplier, percent);
+			dev_info(&uvd->dev->dev,
+				 "Transfer Statistics: Transferred=%lu%cB Usage=%lu%%\n",
+				 xferBytes, multiplier, percent);
 		}
 	}
 }
@@ -522,14 +524,14 @@ void usbvideo_TestPattern(struct uvd *uvd, int fullframe, int pmode)
 	struct usbvideo_frame *frame;
 	int num_cell = 0;
 	int scan_length = 0;
-	static int num_pass = 0;
+	static int num_pass;
 
 	if (uvd == NULL) {
-		err("%s: uvd == NULL", __FUNCTION__);
+		err("%s: uvd == NULL", __func__);
 		return;
 	}
 	if ((uvd->curframe < 0) || (uvd->curframe >= USBVIDEO_NUMFRAMES)) {
-		err("%s: uvd->curframe=%d.", __FUNCTION__, uvd->curframe);
+		err("%s: uvd->curframe=%d.", __func__, uvd->curframe);
 		return;
 	}
 
@@ -545,7 +547,7 @@ void usbvideo_TestPattern(struct uvd *uvd, int fullframe, int pmode)
 	{	/* For debugging purposes only */
 		char tmp[20];
 		usbvideo_VideosizeToString(tmp, sizeof(tmp), frame->request);
-		info("testpattern: frame=%s", tmp);
+		dev_info(&uvd->dev->dev, "testpattern: frame=%s\n", tmp);
 	}
 #endif
 	/* Form every scan line */
@@ -630,15 +632,15 @@ EXPORT_SYMBOL(usbvideo_HexDump);
 static int usbvideo_ClientIncModCount(struct uvd *uvd)
 {
 	if (uvd == NULL) {
-		err("%s: uvd == NULL", __FUNCTION__);
+		err("%s: uvd == NULL", __func__);
 		return -EINVAL;
 	}
 	if (uvd->handle == NULL) {
-		err("%s: uvd->handle == NULL", __FUNCTION__);
+		err("%s: uvd->handle == NULL", __func__);
 		return -EINVAL;
 	}
 	if (!try_module_get(uvd->handle->md_module)) {
-		err("%s: try_module_get() == 0", __FUNCTION__);
+		err("%s: try_module_get() == 0", __func__);
 		return -ENODEV;
 	}
 	return 0;
@@ -647,15 +649,15 @@ static int usbvideo_ClientIncModCount(struct uvd *uvd)
 static void usbvideo_ClientDecModCount(struct uvd *uvd)
 {
 	if (uvd == NULL) {
-		err("%s: uvd == NULL", __FUNCTION__);
+		err("%s: uvd == NULL", __func__);
 		return;
 	}
 	if (uvd->handle == NULL) {
-		err("%s: uvd->handle == NULL", __FUNCTION__);
+		err("%s: uvd->handle == NULL", __func__);
 		return;
 	}
 	if (uvd->handle->md_module == NULL) {
-		err("%s: uvd->handle->md_module == NULL", __FUNCTION__);
+		err("%s: uvd->handle->md_module == NULL", __func__);
 		return;
 	}
 	module_put(uvd->handle->md_module);
@@ -675,13 +677,13 @@ int usbvideo_register(
 
 	/* Check parameters for sanity */
 	if ((num_cams <= 0) || (pCams == NULL) || (cbTbl == NULL)) {
-		err("%s: Illegal call", __FUNCTION__);
+		err("%s: Illegal call", __func__);
 		return -EINVAL;
 	}
 
 	/* Check registration callback - must be set! */
 	if (cbTbl->probe == NULL) {
-		err("%s: probe() is required!", __FUNCTION__);
+		err("%s: probe() is required!", __func__);
 		return -EINVAL;
 	}
 
@@ -692,7 +694,7 @@ int usbvideo_register(
 		return -ENOMEM;
 	}
 	dbg("%s: Allocated $%p (%d. bytes) for %d. cameras",
-	    __FUNCTION__, cams, base_size, num_cams);
+	    __func__, cams, base_size, num_cams);
 
 	/* Copy callbacks, apply defaults for those that are not set */
 	memmove(&cams->cb, cbTbl, sizeof(cams->cb));
@@ -721,7 +723,7 @@ int usbvideo_register(
 			up->user_data = kmalloc(up->user_size, GFP_KERNEL);
 			if (up->user_data == NULL) {
 				err("%s: Failed to allocate user_data (%d. bytes)",
-				    __FUNCTION__, up->user_size);
+				    __func__, up->user_size);
 				while (i) {
 					up = &cams->cam[--i];
 					kfree(up->user_data);
@@ -730,7 +732,7 @@ int usbvideo_register(
 				return -ENOMEM;
 			}
 			dbg("%s: Allocated cams[%d].user_data=$%p (%d. bytes)",
-			     __FUNCTION__, i, up->user_data, up->user_size);
+			     __func__, i, up->user_data, up->user_size);
 		}
 	}
 
@@ -776,19 +778,19 @@ void usbvideo_Deregister(struct usbvideo **pCams)
 	int i;
 
 	if (pCams == NULL) {
-		err("%s: pCams == NULL", __FUNCTION__);
+		err("%s: pCams == NULL", __func__);
 		return;
 	}
 	cams = *pCams;
 	if (cams == NULL) {
-		err("%s: cams == NULL", __FUNCTION__);
+		err("%s: cams == NULL", __func__);
 		return;
 	}
 
-	dbg("%s: Deregistering %s driver.", __FUNCTION__, cams->drvName);
+	dbg("%s: Deregistering %s driver.", __func__, cams->drvName);
 	usb_deregister(&cams->usbdrv);
 
-	dbg("%s: Deallocating cams=$%p (%d. cameras)", __FUNCTION__, cams, cams->num_cameras);
+	dbg("%s: Deallocating cams=$%p (%d. cameras)", __func__, cams, cams->num_cameras);
 	for (i=0; i < cams->num_cameras; i++) {
 		struct uvd *up = &cams->cam[i];
 		int warning = 0;
@@ -802,16 +804,16 @@ void usbvideo_Deregister(struct usbvideo **pCams)
 		}
 		if (warning) {
 			err("%s: Warning: user_data=$%p user_size=%d.",
-			    __FUNCTION__, up->user_data, up->user_size);
+			    __func__, up->user_data, up->user_size);
 		} else {
 			dbg("%s: Freeing %d. $%p->user_data=$%p",
-			    __FUNCTION__, i, up, up->user_data);
+			    __func__, i, up, up->user_data);
 			kfree(up->user_data);
 		}
 	}
 	/* Whole array was allocated in one chunk */
 	dbg("%s: Freed %d uvd structures",
-	    __FUNCTION__, cams->num_cameras);
+	    __func__, cams->num_cameras);
 	kfree(cams);
 	*pCams = NULL;
 }
@@ -846,7 +848,7 @@ static void usbvideo_Disconnect(struct usb_interface *intf)
 	int i;
 
 	if (uvd == NULL) {
-		err("%s($%p): Illegal call.", __FUNCTION__, intf);
+		err("%s($%p): Illegal call.", __func__, intf);
 		return;
 	}
 
@@ -854,7 +856,7 @@ static void usbvideo_Disconnect(struct usb_interface *intf)
 
 	usbvideo_ClientIncModCount(uvd);
 	if (uvd->debug > 0)
-		info("%s(%p.)", __FUNCTION__, intf);
+		dev_info(&intf->dev, "%s(%p.)\n", __func__, intf);
 
 	mutex_lock(&uvd->lock);
 	uvd->remove_pending = 1; /* Now all ISO data will be ignored */
@@ -870,14 +872,15 @@ static void usbvideo_Disconnect(struct usb_interface *intf)
 
 	video_unregister_device(&uvd->vdev);
 	if (uvd->debug > 0)
-		info("%s: Video unregistered.", __FUNCTION__);
+		dev_info(&intf->dev, "%s: Video unregistered.\n", __func__);
 
 	if (uvd->user)
-		info("%s: In use, disconnect pending.", __FUNCTION__);
+		dev_info(&intf->dev, "%s: In use, disconnect pending.\n",
+			 __func__);
 	else
 		usbvideo_CameraRelease(uvd);
 	mutex_unlock(&uvd->lock);
-	info("USB camera disconnected.");
+	dev_info(&intf->dev, "USB camera disconnected.\n");
 
 	usbvideo_ClientDecModCount(uvd);
 }
@@ -895,7 +898,7 @@ static void usbvideo_Disconnect(struct usb_interface *intf)
 static void usbvideo_CameraRelease(struct uvd *uvd)
 {
 	if (uvd == NULL) {
-		err("%s: Illegal call", __FUNCTION__);
+		err("%s: Illegal call", __func__);
 		return;
 	}
 
@@ -939,19 +942,15 @@ static int usbvideo_find_struct(struct usbvideo *cams)
 	return rv;
 }
 
-static const struct file_operations usbvideo_fops = {
+static const struct v4l2_file_operations usbvideo_fops = {
 	.owner =  THIS_MODULE,
 	.open =   usbvideo_v4l_open,
 	.release =usbvideo_v4l_close,
 	.read =   usbvideo_v4l_read,
 	.mmap =   usbvideo_v4l_mmap,
 	.ioctl =  usbvideo_v4l_ioctl,
-	.compat_ioctl = v4l_compat_ioctl32,
-	.llseek = no_llseek,
 };
 static const struct video_device usbvideo_template = {
-	.owner =      THIS_MODULE,
-	.type =       VID_TYPE_CAPTURE,
 	.fops =       &usbvideo_fops,
 };
 
@@ -1011,18 +1010,21 @@ int usbvideo_RegisterVideoDevice(struct uvd *uvd)
 	char tmp1[20], tmp2[20];	/* Buffers for printing */
 
 	if (uvd == NULL) {
-		err("%s: Illegal call.", __FUNCTION__);
+		err("%s: Illegal call.", __func__);
 		return -EINVAL;
 	}
 	if (uvd->video_endp == 0) {
-		info("%s: No video endpoint specified; data pump disabled.", __FUNCTION__);
+		dev_info(&uvd->dev->dev,
+			 "%s: No video endpoint specified; data pump disabled.\n",
+			 __func__);
 	}
 	if (uvd->paletteBits == 0) {
-		err("%s: No palettes specified!", __FUNCTION__);
+		err("%s: No palettes specified!", __func__);
 		return -EINVAL;
 	}
 	if (uvd->defaultPalette == 0) {
-		info("%s: No default palette!", __FUNCTION__);
+		dev_info(&uvd->dev->dev, "%s: No default palette!\n",
+			 __func__);
 	}
 
 	uvd->max_frame_size = VIDEOSIZE_X(uvd->canvas) *
@@ -1031,24 +1033,29 @@ int usbvideo_RegisterVideoDevice(struct uvd *uvd)
 	usbvideo_VideosizeToString(tmp2, sizeof(tmp2), uvd->canvas);
 
 	if (uvd->debug > 0) {
-		info("%s: iface=%d. endpoint=$%02x paletteBits=$%08lx",
-		     __FUNCTION__, uvd->iface, uvd->video_endp, uvd->paletteBits);
+		dev_info(&uvd->dev->dev,
+			 "%s: iface=%d. endpoint=$%02x paletteBits=$%08lx\n",
+			 __func__, uvd->iface, uvd->video_endp,
+			 uvd->paletteBits);
 	}
-	if (video_register_device(&uvd->vdev, VFL_TYPE_GRABBER, video_nr) == -1) {
-		err("%s: video_register_device failed", __FUNCTION__);
+	if (uvd->dev == NULL) {
+		err("%s: uvd->dev == NULL", __func__);
+		return -EINVAL;
+	}
+	uvd->vdev.parent = &uvd->dev->dev;
+	uvd->vdev.release = video_device_release_empty;
+	if (video_register_device(&uvd->vdev, VFL_TYPE_GRABBER, video_nr) < 0) {
+		err("%s: video_register_device failed", __func__);
 		return -EPIPE;
 	}
 	if (uvd->debug > 1) {
-		info("%s: video_register_device() successful", __FUNCTION__);
-	}
-	if (uvd->dev == NULL) {
-		err("%s: uvd->dev == NULL", __FUNCTION__);
-		return -EINVAL;
+		dev_info(&uvd->dev->dev,
+			 "%s: video_register_device() successful\n", __func__);
 	}
 
-	info("%s on /dev/video%d: canvas=%s videosize=%s",
-	     (uvd->handle != NULL) ? uvd->handle->drvName : "???",
-	     uvd->vdev.minor, tmp2, tmp1);
+	dev_info(&uvd->dev->dev, "%s on /dev/video%d: canvas=%s videosize=%s\n",
+		 (uvd->handle != NULL) ? uvd->handle->drvName : "???",
+		 uvd->vdev.num, tmp2, tmp1);
 
 	usb_get_dev(uvd->dev);
 	return 0;
@@ -1102,7 +1109,7 @@ static int usbvideo_v4l_mmap(struct file *file, struct vm_area_struct *vma)
  * 27-Jan-2000 Used USBVIDEO_NUMSBUF as number of URB buffers.
  * 24-May-2000 Corrected to prevent race condition (MOD_xxx_USE_COUNT).
  */
-static int usbvideo_v4l_open(struct inode *inode, struct file *file)
+static int usbvideo_v4l_open(struct file *file)
 {
 	struct video_device *dev = video_devdata(file);
 	struct uvd *uvd = (struct uvd *) dev;
@@ -1110,14 +1117,14 @@ static int usbvideo_v4l_open(struct inode *inode, struct file *file)
 	int i, errCode = 0;
 
 	if (uvd->debug > 1)
-		info("%s($%p)", __FUNCTION__, dev);
+		dev_info(&uvd->dev->dev, "%s($%p)\n", __func__, dev);
 
-	if (0 < usbvideo_ClientIncModCount(uvd))
+	if (usbvideo_ClientIncModCount(uvd) < 0)
 		return -ENODEV;
 	mutex_lock(&uvd->lock);
 
 	if (uvd->user) {
-		err("%s: Someone tried to open an already opened device!", __FUNCTION__);
+		err("%s: Someone tried to open an already opened device!", __func__);
 		errCode = -EBUSY;
 	} else {
 		/* Clear statistics */
@@ -1133,7 +1140,7 @@ static int usbvideo_v4l_open(struct inode *inode, struct file *file)
 		RingQueue_Allocate(&uvd->dp, RING_QUEUE_SIZE);
 		if ((uvd->fbuf == NULL) ||
 		    (!RingQueue_IsAllocated(&uvd->dp))) {
-			err("%s: Failed to allocate fbuf or dp", __FUNCTION__);
+			err("%s: Failed to allocate fbuf or dp", __func__);
 			errCode = -ENOMEM;
 		} else {
 			/* Allocate all buffers */
@@ -1177,19 +1184,25 @@ static int usbvideo_v4l_open(struct inode *inode, struct file *file)
 		if (errCode == 0) {
 			if (VALID_CALLBACK(uvd, setupOnOpen)) {
 				if (uvd->debug > 1)
-					info("%s: setupOnOpen callback", __FUNCTION__);
+					dev_info(&uvd->dev->dev,
+						 "%s: setupOnOpen callback\n",
+						 __func__);
 				errCode = GET_CALLBACK(uvd, setupOnOpen)(uvd);
 				if (errCode < 0) {
 					err("%s: setupOnOpen callback failed (%d.).",
-					    __FUNCTION__, errCode);
+					    __func__, errCode);
 				} else if (uvd->debug > 1) {
-					info("%s: setupOnOpen callback successful", __FUNCTION__);
+					dev_info(&uvd->dev->dev,
+						 "%s: setupOnOpen callback successful\n",
+						 __func__);
 				}
 			}
 			if (errCode == 0) {
 				uvd->settingsAdjusted = 0;
 				if (uvd->debug > 1)
-					info("%s: Open succeeded.", __FUNCTION__);
+					dev_info(&uvd->dev->dev,
+						 "%s: Open succeeded.\n",
+						 __func__);
 				uvd->user++;
 				file->private_data = uvd;
 			}
@@ -1199,7 +1212,8 @@ static int usbvideo_v4l_open(struct inode *inode, struct file *file)
 	if (errCode != 0)
 		usbvideo_ClientDecModCount(uvd);
 	if (uvd->debug > 0)
-		info("%s: Returning %d.", __FUNCTION__, errCode);
+		dev_info(&uvd->dev->dev, "%s: Returning %d.\n", __func__,
+			 errCode);
 	return errCode;
 }
 
@@ -1215,14 +1229,14 @@ static int usbvideo_v4l_open(struct inode *inode, struct file *file)
  * 27-Jan-2000 Used USBVIDEO_NUMSBUF as number of URB buffers.
  * 24-May-2000 Moved MOD_DEC_USE_COUNT outside of code that can sleep.
  */
-static int usbvideo_v4l_close(struct inode *inode, struct file *file)
+static int usbvideo_v4l_close(struct file *file)
 {
 	struct video_device *dev = file->private_data;
 	struct uvd *uvd = (struct uvd *) dev;
 	int i;
 
 	if (uvd->debug > 1)
-		info("%s($%p)", __FUNCTION__, dev);
+		dev_info(&uvd->dev->dev, "%s($%p)\n", __func__, dev);
 
 	mutex_lock(&uvd->lock);
 	GET_CALLBACK(uvd, stopDataPump)(uvd);
@@ -1242,14 +1256,15 @@ static int usbvideo_v4l_close(struct inode *inode, struct file *file)
 	uvd->user--;
 	if (uvd->remove_pending) {
 		if (uvd->debug > 0)
-			info("usbvideo_v4l_close: Final disconnect.");
+			dev_info(&uvd->dev->dev, "%s: Final disconnect.\n",
+				 __func__);
 		usbvideo_CameraRelease(uvd);
 	}
 	mutex_unlock(&uvd->lock);
 	usbvideo_ClientDecModCount(uvd);
 
 	if (uvd->debug > 1)
-		info("%s: Completed.", __FUNCTION__);
+		dev_info(&uvd->dev->dev, "%s: Completed.\n", __func__);
 	file->private_data = NULL;
 	return 0;
 }
@@ -1262,8 +1277,7 @@ static int usbvideo_v4l_close(struct inode *inode, struct file *file)
  * History:
  * 22-Jan-2000 Corrected VIDIOCSPICT to reject unsupported settings.
  */
-static int usbvideo_v4l_do_ioctl(struct inode *inode, struct file *file,
-				 unsigned int cmd, void *arg)
+static long usbvideo_v4l_do_ioctl(struct file *file, unsigned int cmd, void *arg)
 {
 	struct uvd *uvd = file->private_data;
 
@@ -1363,8 +1377,9 @@ static int usbvideo_v4l_do_ioctl(struct inode *inode, struct file *file,
 			struct video_mmap *vm = arg;
 
 			if (uvd->debug >= 1) {
-				info("VIDIOCMCAPTURE: frame=%d. size=%dx%d, format=%d.",
-				     vm->frame, vm->width, vm->height, vm->format);
+				dev_info(&uvd->dev->dev,
+					 "VIDIOCMCAPTURE: frame=%d. size=%dx%d, format=%d.\n",
+					 vm->frame, vm->width, vm->height, vm->format);
 			}
 			/*
 			 * Check if the requested size is supported. If the requestor
@@ -1382,18 +1397,24 @@ static int usbvideo_v4l_do_ioctl(struct inode *inode, struct file *file,
 			if ((vm->width > VIDEOSIZE_X(uvd->canvas)) ||
 			    (vm->height > VIDEOSIZE_Y(uvd->canvas))) {
 				if (uvd->debug > 0) {
-					info("VIDIOCMCAPTURE: Size=%dx%d too large; "
-					     "allowed only up to %ldx%ld", vm->width, vm->height,
-					     VIDEOSIZE_X(uvd->canvas), VIDEOSIZE_Y(uvd->canvas));
+					dev_info(&uvd->dev->dev,
+						 "VIDIOCMCAPTURE: Size=%dx%d "
+						 "too large; allowed only up "
+						 "to %ldx%ld\n", vm->width,
+						 vm->height,
+						 VIDEOSIZE_X(uvd->canvas),
+						 VIDEOSIZE_Y(uvd->canvas));
 				}
 				return -EINVAL;
 			}
 			/* Check if the palette is supported */
 			if (((1L << vm->format) & uvd->paletteBits) == 0) {
 				if (uvd->debug > 0) {
-					info("VIDIOCMCAPTURE: format=%d. not supported"
-					     " (paletteBits=$%08lx)",
-					     vm->format, uvd->paletteBits);
+					dev_info(&uvd->dev->dev,
+						 "VIDIOCMCAPTURE: format=%d. "
+						 "not supported "
+						 "(paletteBits=$%08lx)\n",
+						 vm->format, uvd->paletteBits);
 				}
 				return -EINVAL;
 			}
@@ -1421,7 +1442,9 @@ static int usbvideo_v4l_do_ioctl(struct inode *inode, struct file *file,
 				return -EINVAL;
 
 			if (uvd->debug >= 1)
-				info("VIDIOCSYNC: syncing to frame %d.", *frameNum);
+				dev_info(&uvd->dev->dev,
+					 "VIDIOCSYNC: syncing to frame %d.\n",
+					 *frameNum);
 			if (uvd->flags & FLAGS_NO_DECODING)
 				ret = usbvideo_GetFrame(uvd, *frameNum);
 			else if (VALID_CALLBACK(uvd, getFrame)) {
@@ -1474,10 +1497,10 @@ static int usbvideo_v4l_do_ioctl(struct inode *inode, struct file *file,
 	return 0;
 }
 
-static int usbvideo_v4l_ioctl(struct inode *inode, struct file *file,
+static long usbvideo_v4l_ioctl(struct file *file,
 		       unsigned int cmd, unsigned long arg)
 {
-	return video_usercopy(inode, file, cmd, arg, usbvideo_v4l_do_ioctl);
+	return video_usercopy(file, cmd, arg, usbvideo_v4l_do_ioctl);
 }
 
 /*
@@ -1503,7 +1526,9 @@ static ssize_t usbvideo_v4l_read(struct file *file, char __user *buf,
 		return -EFAULT;
 
 	if (uvd->debug >= 1)
-		info("%s: %Zd. bytes, noblock=%d.", __FUNCTION__, count, noblock);
+		dev_info(&uvd->dev->dev,
+			 "%s: %Zd. bytes, noblock=%d.\n",
+			 __func__, count, noblock);
 
 	mutex_lock(&uvd->lock);
 
@@ -1550,7 +1575,7 @@ static ssize_t usbvideo_v4l_read(struct file *file, char __user *buf,
 	 */
 	if (frmx == -1) {
 		if (uvd->defaultPalette == 0) {
-			err("%s: No default palette; don't know what to do!", __FUNCTION__);
+			err("%s: No default palette; don't know what to do!", __func__);
 			count = -EFAULT;
 			goto read_done;
 		}
@@ -1622,7 +1647,7 @@ static ssize_t usbvideo_v4l_read(struct file *file, char __user *buf,
 	frame->seqRead_Index += count;
 	if (uvd->debug >= 1) {
 		err("%s: {copy} count used=%Zd, new seqRead_Index=%ld",
-			__FUNCTION__, count, frame->seqRead_Index);
+			__func__, count, frame->seqRead_Index);
 	}
 
 	/* Finally check if the frame is done with and "release" it */
@@ -1633,7 +1658,7 @@ static ssize_t usbvideo_v4l_read(struct file *file, char __user *buf,
 		/* Mark it as available to be used again. */
 		uvd->frame[frmx].frameState = FrameState_Unused;
 		if (usbvideo_NewFrame(uvd, (frmx + 1) % USBVIDEO_NUMFRAMES)) {
-			err("%s: usbvideo_NewFrame failed.", __FUNCTION__);
+			err("%s: usbvideo_NewFrame failed.", __func__);
 		}
 	}
 read_done:
@@ -1684,18 +1709,21 @@ static void usbvideo_IsocIrq(struct urb *urb)
 		return;
 #if 0
 	if (urb->actual_length > 0) {
-		info("urb=$%p status=%d. errcount=%d. length=%d.",
-		     urb, urb->status, urb->error_count, urb->actual_length);
+		dev_info(&uvd->dev->dev,
+			 "urb=$%p status=%d. errcount=%d. length=%d.\n",
+			 urb, urb->status, urb->error_count,
+			 urb->actual_length);
 	} else {
 		static int c = 0;
 		if (c++ % 100 == 0)
-			info("No Isoc data");
+			dev_info(&uvd->dev->dev, "No Isoc data\n");
 	}
 #endif
 
 	if (!uvd->streaming) {
 		if (uvd->debug >= 1)
-			info("Not streaming, but interrupt!");
+			dev_info(&uvd->dev->dev,
+				 "Not streaming, but interrupt!\n");
 		return;
 	}
 
@@ -1740,10 +1768,10 @@ static int usbvideo_StartDataPump(struct uvd *uvd)
 	int i, errFlag;
 
 	if (uvd->debug > 1)
-		info("%s($%p)", __FUNCTION__, uvd);
+		dev_info(&uvd->dev->dev, "%s($%p)\n", __func__, uvd);
 
 	if (!CAMERA_IS_OPERATIONAL(uvd)) {
-		err("%s: Camera is not operational", __FUNCTION__);
+		err("%s: Camera is not operational", __func__);
 		return -EFAULT;
 	}
 	uvd->curframe = -1;
@@ -1751,14 +1779,14 @@ static int usbvideo_StartDataPump(struct uvd *uvd)
 	/* Alternate interface 1 is is the biggest frame size */
 	i = usb_set_interface(dev, uvd->iface, uvd->ifaceAltActive);
 	if (i < 0) {
-		err("%s: usb_set_interface error", __FUNCTION__);
+		err("%s: usb_set_interface error", __func__);
 		uvd->last_error = i;
 		return -EBUSY;
 	}
 	if (VALID_CALLBACK(uvd, videoStart))
 		GET_CALLBACK(uvd, videoStart)(uvd);
 	else
-		err("%s: videoStart not set", __FUNCTION__);
+		err("%s: videoStart not set", __func__);
 
 	/* We double buffer the Iso lists */
 	for (i=0; i < USBVIDEO_NUMSBUF; i++) {
@@ -1783,12 +1811,14 @@ static int usbvideo_StartDataPump(struct uvd *uvd)
 	for (i=0; i < USBVIDEO_NUMSBUF; i++) {
 		errFlag = usb_submit_urb(uvd->sbuf[i].urb, GFP_KERNEL);
 		if (errFlag)
-			err("%s: usb_submit_isoc(%d) ret %d", __FUNCTION__, i, errFlag);
+			err("%s: usb_submit_isoc(%d) ret %d", __func__, i, errFlag);
 	}
 
 	uvd->streaming = 1;
 	if (uvd->debug > 1)
-		info("%s: streaming=1 video_endp=$%02x", __FUNCTION__, uvd->video_endp);
+		dev_info(&uvd->dev->dev,
+			 "%s: streaming=1 video_endp=$%02x\n", __func__,
+			 uvd->video_endp);
 	return 0;
 }
 
@@ -1810,14 +1840,14 @@ static void usbvideo_StopDataPump(struct uvd *uvd)
 		return;
 
 	if (uvd->debug > 1)
-		info("%s($%p)", __FUNCTION__, uvd);
+		dev_info(&uvd->dev->dev, "%s($%p)\n", __func__, uvd);
 
 	/* Unschedule all of the iso td's */
 	for (i=0; i < USBVIDEO_NUMSBUF; i++) {
 		usb_kill_urb(uvd->sbuf[i].urb);
 	}
 	if (uvd->debug > 1)
-		info("%s: streaming=0", __FUNCTION__);
+		dev_info(&uvd->dev->dev, "%s: streaming=0\n", __func__);
 	uvd->streaming = 0;
 
 	if (!uvd->remove_pending) {
@@ -1825,12 +1855,12 @@ static void usbvideo_StopDataPump(struct uvd *uvd)
 		if (VALID_CALLBACK(uvd, videoStop))
 			GET_CALLBACK(uvd, videoStop)(uvd);
 		else
-			err("%s: videoStop not set", __FUNCTION__);
+			err("%s: videoStop not set", __func__);
 
 		/* Set packet size to 0 */
 		j = usb_set_interface(uvd->dev, uvd->iface, uvd->ifaceAltInactive);
 		if (j < 0) {
-			err("%s: usb_set_interface() error %d.", __FUNCTION__, j);
+			err("%s: usb_set_interface() error %d.", __func__, j);
 			uvd->last_error = j;
 		}
 	}
@@ -1849,7 +1879,8 @@ static int usbvideo_NewFrame(struct uvd *uvd, int framenum)
 	int n;
 
 	if (uvd->debug > 1)
-		info("usbvideo_NewFrame($%p,%d.)", uvd, framenum);
+		dev_info(&uvd->dev->dev, "usbvideo_NewFrame($%p,%d.)\n", uvd,
+			 framenum);
 
 	/* If we're not grabbing a frame right now and the other frame is */
 	/*  ready to be grabbed into, then use it instead */
@@ -1954,12 +1985,14 @@ static int usbvideo_GetFrame(struct uvd *uvd, int frameNum)
 	struct usbvideo_frame *frame = &uvd->frame[frameNum];
 
 	if (uvd->debug >= 2)
-		info("%s($%p,%d.)", __FUNCTION__, uvd, frameNum);
+		dev_info(&uvd->dev->dev, "%s($%p,%d.)\n", __func__, uvd,
+			 frameNum);
 
 	switch (frame->frameState) {
 	case FrameState_Unused:
 		if (uvd->debug >= 2)
-			info("%s: FrameState_Unused", __FUNCTION__);
+			dev_info(&uvd->dev->dev, "%s: FrameState_Unused\n",
+				 __func__);
 		return -EINVAL;
 	case FrameState_Ready:
 	case FrameState_Grabbing:
@@ -1969,7 +2002,9 @@ static int usbvideo_GetFrame(struct uvd *uvd, int frameNum)
 	redo:
 		if (!CAMERA_IS_OPERATIONAL(uvd)) {
 			if (uvd->debug >= 2)
-				info("%s: Camera is not operational (1)", __FUNCTION__);
+				dev_info(&uvd->dev->dev,
+					 "%s: Camera is not operational (1)\n",
+					 __func__);
 			return -EIO;
 		}
 		ntries = 0;
@@ -1978,24 +2013,33 @@ static int usbvideo_GetFrame(struct uvd *uvd, int frameNum)
 			signalPending = signal_pending(current);
 			if (!CAMERA_IS_OPERATIONAL(uvd)) {
 				if (uvd->debug >= 2)
-					info("%s: Camera is not operational (2)", __FUNCTION__);
+					dev_info(&uvd->dev->dev,
+						 "%s: Camera is not "
+						 "operational (2)\n", __func__);
 				return -EIO;
 			}
 			assert(uvd->fbuf != NULL);
 			if (signalPending) {
 				if (uvd->debug >= 2)
-					info("%s: Signal=$%08x", __FUNCTION__, signalPending);
+					dev_info(&uvd->dev->dev,
+					"%s: Signal=$%08x\n", __func__,
+					signalPending);
 				if (uvd->flags & FLAGS_RETRY_VIDIOCSYNC) {
 					usbvideo_TestPattern(uvd, 1, 0);
 					uvd->curframe = -1;
 					uvd->stats.frame_num++;
 					if (uvd->debug >= 2)
-						info("%s: Forced test pattern screen", __FUNCTION__);
+						dev_info(&uvd->dev->dev,
+							 "%s: Forced test "
+							 "pattern screen\n",
+							 __func__);
 					return 0;
 				} else {
 					/* Standard answer: Interrupted! */
 					if (uvd->debug >= 2)
-						info("%s: Interrupted!", __FUNCTION__);
+						dev_info(&uvd->dev->dev,
+							 "%s: Interrupted!\n",
+							 __func__);
 					return -EINTR;
 				}
 			} else {
@@ -2005,17 +2049,19 @@ static int usbvideo_GetFrame(struct uvd *uvd, int frameNum)
 				else if (VALID_CALLBACK(uvd, processData))
 					GET_CALLBACK(uvd, processData)(uvd, frame);
 				else
-					err("%s: processData not set", __FUNCTION__);
+					err("%s: processData not set", __func__);
 			}
 		} while (frame->frameState == FrameState_Grabbing);
 		if (uvd->debug >= 2) {
-			info("%s: Grabbing done; state=%d. (%lu. bytes)",
-			     __FUNCTION__, frame->frameState, frame->seqRead_Length);
+			dev_info(&uvd->dev->dev,
+				 "%s: Grabbing done; state=%d. (%lu. bytes)\n",
+				 __func__, frame->frameState,
+				 frame->seqRead_Length);
 		}
 		if (frame->frameState == FrameState_Error) {
 			int ret = usbvideo_NewFrame(uvd, frameNum);
 			if (ret < 0) {
-				err("%s: usbvideo_NewFrame() failed (%d.)", __FUNCTION__, ret);
+				err("%s: usbvideo_NewFrame() failed (%d.)", __func__, ret);
 				return ret;
 			}
 			goto redo;
@@ -2047,7 +2093,9 @@ static int usbvideo_GetFrame(struct uvd *uvd, int frameNum)
 		}
 		frame->frameState = FrameState_Done_Hold;
 		if (uvd->debug >= 2)
-			info("%s: Entered FrameState_Done_Hold state.", __FUNCTION__);
+			dev_info(&uvd->dev->dev,
+				 "%s: Entered FrameState_Done_Hold state.\n",
+				 __func__);
 		return 0;
 
 	case FrameState_Done_Hold:
@@ -2058,12 +2106,14 @@ static int usbvideo_GetFrame(struct uvd *uvd, int frameNum)
 		 * it will be released back into the wild to roam freely.
 		 */
 		if (uvd->debug >= 2)
-			info("%s: FrameState_Done_Hold state.", __FUNCTION__);
+			dev_info(&uvd->dev->dev,
+				 "%s: FrameState_Done_Hold state.\n",
+				 __func__);
 		return 0;
 	}
 
 	/* Catch-all for other cases. We shall not be here. */
-	err("%s: Invalid state %d.", __FUNCTION__, frame->frameState);
+	err("%s: Invalid state %d.", __func__, frame->frameState);
 	frame->frameState = FrameState_Unused;
 	return 0;
 }
@@ -2159,7 +2209,7 @@ static void usbvideo_SoftwareContrastAdjustment(struct uvd *uvd,
 	const int ccm = 128; /* Color correction median - see below */
 
 	if ((uvd == NULL) || (frame == NULL)) {
-		err("%s: Illegal call.", __FUNCTION__);
+		err("%s: Illegal call.", __func__);
 		return;
 	}
 	adj = (uvd->vpic.contrast - 0x8000) >> 8; /* -128..+127 = -ccm..+(ccm-1)*/

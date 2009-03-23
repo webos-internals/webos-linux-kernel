@@ -30,18 +30,16 @@ static struct file_operations mark_ops = {
 	.open = my_open,
 };
 
-static int example_init(void)
+static int __init example_init(void)
 {
 	printk(KERN_ALERT "example init\n");
-	pentry_example = create_proc_entry("marker-example", 0444, NULL);
-	if (pentry_example)
-		pentry_example->proc_fops = &mark_ops;
-	else
+	pentry_example = proc_create("marker-example", 0444, NULL, &mark_ops);
+	if (!pentry_example)
 		return -EPERM;
 	return 0;
 }
 
-static void example_exit(void)
+static void __exit example_exit(void)
 {
 	printk(KERN_ALERT "example exit\n");
 	remove_proc_entry("marker-example", NULL);

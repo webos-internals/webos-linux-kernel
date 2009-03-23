@@ -12,7 +12,6 @@
 
 #include <linux/types.h>
 #include <linux/unistd.h>
-#include <linux/dirent.h>
 #include <linux/fs.h>
 #include <linux/posix_acl.h>
 #include <linux/mount.h>
@@ -20,30 +19,28 @@
 #include <linux/nfsd/debug.h>
 #include <linux/nfsd/nfsfh.h>
 #include <linux/nfsd/export.h>
-#include <linux/nfsd/auth.h>
 #include <linux/nfsd/stats.h>
 /*
  * nfsd version
  */
-#define NFSD_VERSION		"0.5"
 #define NFSD_SUPPORTED_MINOR_VERSION	0
 
-#ifdef __KERNEL__
 /*
- * Special flags for nfsd_permission. These must be different from MAY_READ,
- * MAY_WRITE, and MAY_EXEC.
+ * Flags for nfsd_permission
  */
-#define MAY_NOP			0
-#define MAY_SATTR		8
-#define MAY_TRUNC		16
-#define MAY_LOCK		32
-#define MAY_OWNER_OVERRIDE	64
-#define	MAY_LOCAL_ACCESS	128 /* IRIX doing local access check on device special file*/
-#if (MAY_SATTR | MAY_TRUNC | MAY_LOCK | MAY_OWNER_OVERRIDE | MAY_LOCAL_ACCESS) & (MAY_READ | MAY_WRITE | MAY_EXEC)
-# error "please use a different value for MAY_SATTR or MAY_TRUNC or MAY_LOCK or MAY_LOCAL_ACCESS or MAY_OWNER_OVERRIDE."
-#endif
-#define MAY_CREATE		(MAY_EXEC|MAY_WRITE)
-#define MAY_REMOVE		(MAY_EXEC|MAY_WRITE|MAY_TRUNC)
+#define NFSD_MAY_NOP		0
+#define NFSD_MAY_EXEC		1 /* == MAY_EXEC */
+#define NFSD_MAY_WRITE		2 /* == MAY_WRITE */
+#define NFSD_MAY_READ		4 /* == MAY_READ */
+#define NFSD_MAY_SATTR		8
+#define NFSD_MAY_TRUNC		16
+#define NFSD_MAY_LOCK		32
+#define NFSD_MAY_OWNER_OVERRIDE	64
+#define NFSD_MAY_LOCAL_ACCESS	128 /* IRIX doing local access check on device special file*/
+#define NFSD_MAY_BYPASS_GSS_ON_ROOT 256
+
+#define NFSD_MAY_CREATE		(NFSD_MAY_EXEC|NFSD_MAY_WRITE)
+#define NFSD_MAY_REMOVE		(NFSD_MAY_EXEC|NFSD_MAY_WRITE|NFSD_MAY_TRUNC)
 
 /*
  * Callback function for readdir
@@ -56,12 +53,21 @@ typedef int (*nfsd_dirop_t)(struct inode *, struct dentry *, int, int);
 extern struct svc_program	nfsd_program;
 extern struct svc_version	nfsd_version2, nfsd_version3,
 				nfsd_version4;
+extern struct mutex		nfsd_mutex;
 extern struct svc_serv		*nfsd_serv;
+
+extern struct seq_operations nfs_exports_op;
+
 /*
  * Function prototypes.
  */
 int		nfsd_svc(unsigned short port, int nrservs);
 int		nfsd_dispatch(struct svc_rqst *rqstp, __be32 *statp);
+
+int		nfsd_nrthreads(void);
+int		nfsd_nrpools(void);
+int		nfsd_get_nrthreads(int n, int *);
+int		nfsd_set_nrthreads(int n, int *);
 
 /* nfsd/vfs.c */
 int		fh_lock_parent(struct svc_fh *, struct dentry *);
@@ -70,9 +76,9 @@ void		nfsd_racache_shutdown(void);
 int		nfsd_cross_mnt(struct svc_rqst *rqstp, struct dentry **dpp,
 		                struct svc_export **expp);
 __be32		nfsd_lookup(struct svc_rqst *, struct svc_fh *,
-				const char *, int, struct svc_fh *);
+				const char *, unsigned int, struct svc_fh *);
 __be32		 nfsd_lookup_dentry(struct svc_rqst *, struct svc_fh *,
-				const char *, int,
+				const char *, unsigned int,
 				struct svc_export **, struct dentry **);
 __be32		nfsd_setattr(struct svc_rqst *, struct svc_fh *,
 				struct iattr *, int, time_t);
@@ -119,7 +125,7 @@ int		nfsd_truncate(struct svc_rqst *, struct svc_fh *,
 __be32		nfsd_readdir(struct svc_rqst *, struct svc_fh *,
 			     loff_t *, struct readdir_cd *, filldir_t);
 __be32		nfsd_statfs(struct svc_rqst *, struct svc_fh *,
-				struct kstatfs *);
+				struct kstatfs *, int access);
 
 int		nfsd_notify_change(struct inode *, struct iattr *);
 __be32		nfsd_permission(struct svc_rqst *, struct svc_export *,
@@ -323,10 +329,8 @@ extern struct timeval	nfssvc_boot;
 (FATTR4_WORD0_SIZE              | FATTR4_WORD0_ACL                                         )
 #define NFSD_WRITEABLE_ATTRS_WORD1                                                          \
 (FATTR4_WORD1_MODE              | FATTR4_WORD1_OWNER         | FATTR4_WORD1_OWNER_GROUP     \
- | FATTR4_WORD1_TIME_ACCESS_SET | FATTR4_WORD1_TIME_METADATA | FATTR4_WORD1_TIME_MODIFY_SET)
+ | FATTR4_WORD1_TIME_ACCESS_SET | FATTR4_WORD1_TIME_MODIFY_SET)
 
 #endif /* CONFIG_NFSD_V4 */
-
-#endif /* __KERNEL__ */
 
 #endif /* LINUX_NFSD_NFSD_H */

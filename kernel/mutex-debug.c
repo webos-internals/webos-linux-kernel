@@ -79,8 +79,8 @@ void debug_mutex_unlock(struct mutex *lock)
 	if (unlikely(!debug_locks))
 		return;
 
-	DEBUG_LOCKS_WARN_ON(lock->owner != current_thread_info());
 	DEBUG_LOCKS_WARN_ON(lock->magic != lock);
+	DEBUG_LOCKS_WARN_ON(lock->owner != current_thread_info());
 	DEBUG_LOCKS_WARN_ON(!lock->wait_list.prev && !lock->wait_list.next);
 	DEBUG_LOCKS_WARN_ON(lock->owner != current_thread_info());
 }
@@ -107,7 +107,7 @@ void debug_mutex_init(struct mutex *lock, const char *name,
  * use of the mutex is forbidden. The mutex must not be locked when
  * this function is called.
  */
-void fastcall mutex_destroy(struct mutex *lock)
+void mutex_destroy(struct mutex *lock)
 {
 	DEBUG_LOCKS_WARN_ON(mutex_is_locked(lock));
 	lock->magic = NULL;

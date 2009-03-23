@@ -4,40 +4,36 @@
 #include <linux/module.h>
 #include <linux/bitops.h>
 #include <linux/skbuff.h>
+#include <linux/math64.h>
 #include <linux/netfilter/x_tables.h>
 #include <linux/netfilter/xt_connbytes.h>
 #include <net/netfilter/nf_conntrack.h>
-
-#include <asm/div64.h>
+#include <net/netfilter/nf_conntrack_acct.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Harald Welte <laforge@netfilter.org>");
-MODULE_DESCRIPTION("iptables match for matching number of pkts/bytes per connection");
+MODULE_DESCRIPTION("Xtables: Number of packets/bytes per connection matching");
 MODULE_ALIAS("ipt_connbytes");
 MODULE_ALIAS("ip6t_connbytes");
 
 static bool
-match(const struct sk_buff *skb,
-      const struct net_device *in,
-      const struct net_device *out,
-      const struct xt_match *match,
-      const void *matchinfo,
-      int offset,
-      unsigned int protoff,
-      bool *hotdrop)
+connbytes_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 {
-	const struct xt_connbytes_info *sinfo = matchinfo;
+	const struct xt_connbytes_info *sinfo = par->matchinfo;
 	const struct nf_conn *ct;
 	enum ip_conntrack_info ctinfo;
 	u_int64_t what = 0;	/* initialize to make gcc happy */
 	u_int64_t bytes = 0;
 	u_int64_t pkts = 0;
-	const struct ip_conntrack_counter *counters;
+	const struct nf_conn_counter *counters;
 
 	ct = nf_ct_get(skb, &ctinfo);
 	if (!ct)
 		return false;
-	counters = ct->counters;
+
+	counters = nf_conn_acct_find(ct);
+	if (!counters)
+		return false;
 
 	switch (sinfo->what) {
 	case XT_CONNBYTES_PKTS:
@@ -86,7 +82,7 @@ match(const struct sk_buff *skb,
 			break;
 		}
 		if (pkts != 0)
-			what = div64_64(bytes, pkts);
+			what = div64_u64(bytes, pkts);
 		break;
 	}
 
@@ -96,13 +92,9 @@ match(const struct sk_buff *skb,
 		return what >= sinfo->count.from;
 }
 
-static bool check(const char *tablename,
-		  const void *ip,
-		  const struct xt_match *match,
-		  void *matchinfo,
-		  unsigned int hook_mask)
+static bool connbytes_mt_check(const struct xt_mtchk_param *par)
 {
-	const struct xt_connbytes_info *sinfo = matchinfo;
+	const struct xt_connbytes_info *sinfo = par->matchinfo;
 
 	if (sinfo->what != XT_CONNBYTES_PKTS &&
 	    sinfo->what != XT_CONNBYTES_BYTES &&
@@ -114,53 +106,40 @@ static bool check(const char *tablename,
 	    sinfo->direction != XT_CONNBYTES_DIR_BOTH)
 		return false;
 
-	if (nf_ct_l3proto_try_module_get(match->family) < 0) {
+	if (nf_ct_l3proto_try_module_get(par->family) < 0) {
 		printk(KERN_WARNING "can't load conntrack support for "
-				    "proto=%d\n", match->family);
+				    "proto=%u\n", par->family);
 		return false;
 	}
 
 	return true;
 }
 
-static void
-destroy(const struct xt_match *match, void *matchinfo)
+static void connbytes_mt_destroy(const struct xt_mtdtor_param *par)
 {
-	nf_ct_l3proto_module_put(match->family);
+	nf_ct_l3proto_module_put(par->family);
 }
 
-static struct xt_match xt_connbytes_match[] __read_mostly = {
-	{
-		.name		= "connbytes",
-		.family		= AF_INET,
-		.checkentry	= check,
-		.match		= match,
-		.destroy	= destroy,
-		.matchsize	= sizeof(struct xt_connbytes_info),
-		.me		= THIS_MODULE
-	},
-	{
-		.name		= "connbytes",
-		.family		= AF_INET6,
-		.checkentry	= check,
-		.match		= match,
-		.destroy	= destroy,
-		.matchsize	= sizeof(struct xt_connbytes_info),
-		.me		= THIS_MODULE
-	},
+static struct xt_match connbytes_mt_reg __read_mostly = {
+	.name       = "connbytes",
+	.revision   = 0,
+	.family     = NFPROTO_UNSPEC,
+	.checkentry = connbytes_mt_check,
+	.match      = connbytes_mt,
+	.destroy    = connbytes_mt_destroy,
+	.matchsize  = sizeof(struct xt_connbytes_info),
+	.me         = THIS_MODULE,
 };
 
-static int __init xt_connbytes_init(void)
+static int __init connbytes_mt_init(void)
 {
-	return xt_register_matches(xt_connbytes_match,
-				   ARRAY_SIZE(xt_connbytes_match));
+	return xt_register_match(&connbytes_mt_reg);
 }
 
-static void __exit xt_connbytes_fini(void)
+static void __exit connbytes_mt_exit(void)
 {
-	xt_unregister_matches(xt_connbytes_match,
-			      ARRAY_SIZE(xt_connbytes_match));
+	xt_unregister_match(&connbytes_mt_reg);
 }
 
-module_init(xt_connbytes_init);
-module_exit(xt_connbytes_fini);
+module_init(connbytes_mt_init);
+module_exit(connbytes_mt_exit);

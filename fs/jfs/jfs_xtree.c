@@ -20,7 +20,9 @@
  */
 
 #include <linux/fs.h>
+#include <linux/module.h>
 #include <linux/quotaops.h>
+#include <linux/seq_file.h>
 #include "jfs_incore.h"
 #include "jfs_filsys.h"
 #include "jfs_metapage.h"
@@ -905,8 +907,7 @@ int xtInsert(tid_t tid,		/* transaction id */
 	XT_PUTENTRY(xad, xflag, xoff, xlen, xaddr);
 
 	/* advance next available entry index */
-	p->header.nextindex =
-	    cpu_to_le16(le16_to_cpu(p->header.nextindex) + 1);
+	le16_add_cpu(&p->header.nextindex, 1);
 
 	/* Don't log it if there are no links to the file */
 	if (!test_cflag(COMMIT_Nolink, ip)) {
@@ -997,8 +998,7 @@ xtSplitUp(tid_t tid,
 			    split->addr);
 
 		/* advance next available entry index */
-		sp->header.nextindex =
-		    cpu_to_le16(le16_to_cpu(sp->header.nextindex) + 1);
+		le16_add_cpu(&sp->header.nextindex, 1);
 
 		/* Don't log it if there are no links to the file */
 		if (!test_cflag(COMMIT_Nolink, ip)) {
@@ -1167,9 +1167,7 @@ xtSplitUp(tid_t tid,
 				    JFS_SBI(ip->i_sb)->nbperpage, rcbn);
 
 			/* advance next available entry index. */
-			sp->header.nextindex =
-			    cpu_to_le16(le16_to_cpu(sp->header.nextindex) +
-					1);
+			le16_add_cpu(&sp->header.nextindex, 1);
 
 			/* Don't log it if there are no links to the file */
 			if (!test_cflag(COMMIT_Nolink, ip)) {
@@ -1738,8 +1736,7 @@ int xtExtend(tid_t tid,		/* transaction id */
 		XT_PUTENTRY(xad, XAD_NEW, xoff, len, xaddr);
 
 		/* advance next available entry index */
-		p->header.nextindex =
-		    cpu_to_le16(le16_to_cpu(p->header.nextindex) + 1);
+		le16_add_cpu(&p->header.nextindex, 1);
 	}
 
 	/* get back old entry */
@@ -1905,8 +1902,7 @@ printf("xtTailgate: xoff:0x%lx xlen:0x%x xaddr:0x%lx\n",
 		XT_PUTENTRY(xad, XAD_NEW, xoff, xlen, xaddr);
 
 		/* advance next available entry index */
-		p->header.nextindex =
-		    cpu_to_le16(le16_to_cpu(p->header.nextindex) + 1);
+		le16_add_cpu(&p->header.nextindex, 1);
 	}
 
 	/* get back old XAD */
@@ -2567,8 +2563,7 @@ int xtAppend(tid_t tid,		/* transaction id */
 	XT_PUTENTRY(xad, xflag, xoff, xlen, xaddr);
 
 	/* advance next available entry index */
-	p->header.nextindex =
-	    cpu_to_le16(le16_to_cpu(p->header.nextindex) + 1);
+	le16_add_cpu(&p->header.nextindex, 1);
 
 	xtlck->lwm.offset =
 	    (xtlck->lwm.offset) ? min(index,(int) xtlck->lwm.offset) : index;
@@ -2631,8 +2626,7 @@ int xtDelete(tid_t tid, struct inode *ip, s64 xoff, s32 xlen, int flag)
 	 * delete the entry from the leaf page
 	 */
 	nextindex = le16_to_cpu(p->header.nextindex);
-	p->header.nextindex =
-	    cpu_to_le16(le16_to_cpu(p->header.nextindex) - 1);
+	le16_add_cpu(&p->header.nextindex, -1);
 
 	/*
 	 * if the leaf page bocome empty, free the page
@@ -2795,9 +2789,7 @@ xtDeleteUp(tid_t tid, struct inode *ip,
 					(nextindex - index -
 					 1) << L2XTSLOTSIZE);
 
-			p->header.nextindex =
-			    cpu_to_le16(le16_to_cpu(p->header.nextindex) -
-					1);
+			le16_add_cpu(&p->header.nextindex, -1);
 			jfs_info("xtDeleteUp(entry): 0x%lx[%d]",
 				 (ulong) parent->bn, index);
 		}
@@ -3965,7 +3957,7 @@ s64 xtTruncate(tid_t tid, struct inode *ip, s64 newsize, int flag)
  *	xtTruncate_pmap()
  *
  * function:
- *	Perform truncate to zero lenghth for deleted file, leaving the
+ *	Perform truncate to zero length for deleted file, leaving the
  *	the xtree and working map untouched.  This allows the file to
  *	be accessed via open file handles, while the delete of the file
  *	is committed to disk.
@@ -4144,13 +4136,9 @@ s64 xtTruncate_pmap(tid_t tid, struct inode *ip, s64 committed_size)
 }
 
 #ifdef CONFIG_JFS_STATISTICS
-int jfs_xtstat_read(char *buffer, char **start, off_t offset, int length,
-		    int *eof, void *data)
+static int jfs_xtstat_proc_show(struct seq_file *m, void *v)
 {
-	int len = 0;
-	off_t begin;
-
-	len += sprintf(buffer,
+	seq_printf(m,
 		       "JFS Xtree statistics\n"
 		       "====================\n"
 		       "searches = %d\n"
@@ -4159,19 +4147,19 @@ int jfs_xtstat_read(char *buffer, char **start, off_t offset, int length,
 		       xtStat.search,
 		       xtStat.fastSearch,
 		       xtStat.split);
-
-	begin = offset;
-	*start = buffer + begin;
-	len -= begin;
-
-	if (len > length)
-		len = length;
-	else
-		*eof = 1;
-
-	if (len < 0)
-		len = 0;
-
-	return len;
+	return 0;
 }
+
+static int jfs_xtstat_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, jfs_xtstat_proc_show, NULL);
+}
+
+const struct file_operations jfs_xtstat_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= jfs_xtstat_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 #endif

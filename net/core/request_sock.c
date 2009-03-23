@@ -69,8 +69,6 @@ int reqsk_queue_alloc(struct request_sock_queue *queue,
 	return 0;
 }
 
-EXPORT_SYMBOL(reqsk_queue_alloc);
-
 void __reqsk_queue_destroy(struct request_sock_queue *queue)
 {
 	struct listen_sock *lopt;
@@ -90,8 +88,6 @@ void __reqsk_queue_destroy(struct request_sock_queue *queue)
 	else
 		kfree(lopt);
 }
-
-EXPORT_SYMBOL(__reqsk_queue_destroy);
 
 static inline struct listen_sock *reqsk_queue_yank_listen_sk(
 		struct request_sock_queue *queue)
@@ -127,11 +123,10 @@ void reqsk_queue_destroy(struct request_sock_queue *queue)
 		}
 	}
 
-	BUG_TRAP(lopt->qlen == 0);
+	WARN_ON(lopt->qlen != 0);
 	if (lopt_size > PAGE_SIZE)
 		vfree(lopt);
 	else
 		kfree(lopt);
 }
 
-EXPORT_SYMBOL(reqsk_queue_destroy);

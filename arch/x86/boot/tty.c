@@ -9,8 +9,6 @@
  * ----------------------------------------------------------------------- */
 
 /*
- * arch/i386/boot/tty.c
- *
  * Very simple screen I/O
  * XXX: Probably should add very simple serial I/O?
  */
@@ -76,7 +74,7 @@ static int kbd_pending(void)
 {
 	u8 pending;
 	asm volatile("int $0x16; setnz %0"
-		     : "=rm" (pending)
+		     : "=qm" (pending)
 		     : "a" (0x0100));
 	return pending;
 }

@@ -117,7 +117,7 @@ int xenbus_watch_pathfmt(struct xenbus_device *dev,
 	char *path;
 
 	va_start(ap, pathfmt);
-	path = kvasprintf(GFP_KERNEL, pathfmt, ap);
+	path = kvasprintf(GFP_NOIO | __GFP_HIGH, pathfmt, ap);
 	va_end(ap);
 
 	if (!path) {
@@ -136,7 +136,6 @@ EXPORT_SYMBOL_GPL(xenbus_watch_pathfmt);
 /**
  * xenbus_switch_state
  * @dev: xenbus device
- * @xbt: transaction handle
  * @state: new state
  *
  * Advertise in the store a change of the given driver to the given new_state.
@@ -267,7 +266,7 @@ EXPORT_SYMBOL_GPL(xenbus_dev_error);
  * @fmt: error message format
  *
  * Equivalent to xenbus_dev_error(dev, err, fmt, args), followed by
- * xenbus_switch_state(dev, NULL, XenbusStateClosing) to schedule an orderly
+ * xenbus_switch_state(dev, XenbusStateClosing) to schedule an orderly
  * closedown of this driver and its peer.
  */
 
@@ -399,7 +398,7 @@ int xenbus_map_ring_valloc(struct xenbus_device *dev, int gnt_ref, void **vaddr)
 
 	*vaddr = NULL;
 
-	area = alloc_vm_area(PAGE_SIZE);
+	area = xen_alloc_vm_area(PAGE_SIZE);
 	if (!area)
 		return -ENOMEM;
 
@@ -409,7 +408,7 @@ int xenbus_map_ring_valloc(struct xenbus_device *dev, int gnt_ref, void **vaddr)
 		BUG();
 
 	if (op.status != GNTST_okay) {
-		free_vm_area(area);
+		xen_free_vm_area(area);
 		xenbus_dev_fatal(dev, op.status,
 				 "mapping in shared page %d from domain %d",
 				 gnt_ref, dev->otherend_id);
@@ -508,7 +507,7 @@ int xenbus_unmap_ring_vfree(struct xenbus_device *dev, void *vaddr)
 		BUG();
 
 	if (op.status == GNTST_okay)
-		free_vm_area(area);
+		xen_free_vm_area(area);
 	else
 		xenbus_dev_error(dev, op.status,
 				 "unmapping page at handle %d error %d",

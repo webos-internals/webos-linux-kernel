@@ -66,6 +66,8 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 {
 	struct ehci_hcd		*ehci = hcd_to_ehci(hcd);
 	struct pci_dev		*pdev = to_pci_dev(hcd->self.controller);
+	struct pci_dev		*p_smbus;
+	u8			rev;
 	u32			temp;
 	int			retval;
 
@@ -129,7 +131,7 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 	switch (pdev->vendor) {
 	case PCI_VENDOR_ID_TDI:
 		if (pdev->device == PCI_DEVICE_ID_TDI_EHCI) {
-			ehci->is_tdi_rh_tt = 1;
+			hcd->has_tt = 1;
 			tdi_reset(ehci);
 		}
 		break;
@@ -150,6 +152,42 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 			if (pdev->revision < 0xa4)
 				ehci->no_selective_suspend = 1;
 			break;
+		}
+		break;
+	case PCI_VENDOR_ID_VIA:
+		if (pdev->device == 0x3104 && (pdev->revision & 0xf0) == 0x60) {
+			u8 tmp;
+
+			/* The VT6212 defaults to a 1 usec EHCI sleep time which
+			 * hogs the PCI bus *badly*. Setting bit 5 of 0x4B makes
+			 * that sleep time use the conventional 10 usec.
+			 */
+			pci_read_config_byte(pdev, 0x4b, &tmp);
+			if (tmp & 0x20)
+				break;
+			pci_write_config_byte(pdev, 0x4b, tmp | 0x20);
+		}
+		break;
+	case PCI_VENDOR_ID_ATI:
+		/* SB600 and old version of SB700 have a bug in EHCI controller,
+		 * which causes usb devices lose response in some cases.
+		 */
+		if ((pdev->device == 0x4386) || (pdev->device == 0x4396)) {
+			p_smbus = pci_get_device(PCI_VENDOR_ID_ATI,
+						 PCI_DEVICE_ID_ATI_SBX00_SMBUS,
+						 NULL);
+			if (!p_smbus)
+				break;
+			rev = p_smbus->revision;
+			if ((pdev->device == 0x4386) || (rev == 0x3a)
+			    || (rev == 0x3b)) {
+				u8 tmp;
+				ehci_info(ehci, "applying AMD SB600/SB700 USB "
+					"freeze workaround\n");
+				pci_read_config_byte(pdev, 0x53, &tmp);
+				pci_write_config_byte(pdev, 0x53, tmp | (1<<3));
+			}
+			pci_dev_put(p_smbus);
 		}
 		break;
 	}
@@ -181,15 +219,19 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 	/* Serial Bus Release Number is at PCI 0x60 offset */
 	pci_read_config_byte(pdev, 0x60, &ehci->sbrn);
 
-	/* Workaround current PCI init glitch:  wakeup bits aren't
-	 * being set from PCI PM capability.
+	/* Keep this around for a while just in case some EHCI
+	 * implementation uses legacy PCI PM support.  This test
+	 * can be removed on 17 Dec 2009 if the dev_warn() hasn't
+	 * been triggered by then.
 	 */
 	if (!device_can_wakeup(&pdev->dev)) {
 		u16	port_wake;
 
 		pci_read_config_word(pdev, 0x62, &port_wake);
-		if (port_wake & 0x0001)
-			device_init_wakeup(&pdev->dev, 1);
+		if (port_wake & 0x0001) {
+			dev_warn(&pdev->dev, "Enabling legacy PCI PM\n");
+			device_set_wakeup_capable(&pdev->dev, 1);
+		}
 	}
 
 #ifdef	CONFIG_USB_SUSPEND
@@ -207,6 +249,7 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 		ehci_warn(ehci, "selective suspend/wakeup unavailable\n");
 #endif
 
+	ehci_port_power(ehci, 1);
 	retval = ehci_pci_reinit(ehci, pdev);
 done:
 	return retval;
@@ -285,7 +328,7 @@ static int ehci_pci_resume(struct usb_hcd *hcd)
 	if (ehci_readl(ehci, &ehci->regs->configured_flag) == FLAG_CF) {
 		int	mask = INTR_MASK;
 
-		if (!device_may_wakeup(&hcd->self.root_hub->dev))
+		if (!hcd->self.root_hub->do_remote_wakeup)
 			mask &= ~STS_PCD;
 		ehci_writel(ehci, mask, &ehci->regs->intr_enable);
 		ehci_readl(ehci, &ehci->regs->intr_enable);
@@ -305,7 +348,7 @@ static int ehci_pci_resume(struct usb_hcd *hcd)
 	/* emptying the schedule aborts any urbs */
 	spin_lock_irq(&ehci->lock);
 	if (ehci->reclaim)
-		ehci->reclaim_ready = 1;
+		end_unlink_async(ehci);
 	ehci_work(ehci);
 	spin_unlock_irq(&ehci->lock);
 
@@ -315,7 +358,6 @@ static int ehci_pci_resume(struct usb_hcd *hcd)
 
 	/* here we "know" root ports should always stay powered */
 	ehci_port_power(ehci, 1);
-	ehci_handover_companion_ports(ehci);
 
 	hcd->state = HC_STATE_SUSPENDED;
 	return 0;
@@ -339,8 +381,8 @@ static const struct hc_driver ehci_pci_hc_driver = {
 	.reset =		ehci_pci_setup,
 	.start =		ehci_run,
 #ifdef	CONFIG_PM
-	.suspend =		ehci_pci_suspend,
-	.resume =		ehci_pci_resume,
+	.pci_suspend =		ehci_pci_suspend,
+	.pci_resume =		ehci_pci_resume,
 #endif
 	.stop =			ehci_stop,
 	.shutdown =		ehci_shutdown,
@@ -364,6 +406,8 @@ static const struct hc_driver ehci_pci_hc_driver = {
 	.hub_control =		ehci_hub_control,
 	.bus_suspend =		ehci_bus_suspend,
 	.bus_resume =		ehci_bus_resume,
+	.relinquish_port =	ehci_relinquish_port,
+	.port_handed_over =	ehci_port_handed_over,
 };
 
 /*-------------------------------------------------------------------------*/

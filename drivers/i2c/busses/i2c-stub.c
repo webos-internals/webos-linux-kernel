@@ -1,8 +1,8 @@
 /*
-    i2c-stub.c - Part of lm_sensors, Linux kernel modules for hardware
-              monitoring
+    i2c-stub.c - I2C/SMBus chip emulator
 
     Copyright (c) 2004 Mark M. Hoffman <mhoffman@lightlink.com>
+    Copyright (C) 2007 Jean Delvare <khali@linux-fr.org>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -33,17 +33,17 @@
 static unsigned short chip_addr[MAX_CHIPS];
 module_param_array(chip_addr, ushort, NULL, S_IRUGO);
 MODULE_PARM_DESC(chip_addr,
-		 "Chip addresses (up to 10, between 0x03 and 0x77)\n");
+		 "Chip addresses (up to 10, between 0x03 and 0x77)");
 
 struct stub_chip {
 	u8 pointer;
-	u8 bytes[256];
-	u16 words[256];
+	u16 words[256];		/* Byte operations use the LSB as per SMBus
+				   specification */
 };
 
 static struct stub_chip *stub_chips;
 
-/* Return -1 on error. */
+/* Return negative errno on error. */
 static s32 stub_xfer(struct i2c_adapter * adap, u16 addr, unsigned short flags,
 	char read_write, u8 command, int size, union i2c_smbus_data * data)
 {
@@ -75,7 +75,7 @@ static s32 stub_xfer(struct i2c_adapter * adap, u16 addr, unsigned short flags,
 					"wrote 0x%02x.\n",
 					addr, command);
 		} else {
-			data->byte = chip->bytes[chip->pointer++];
+			data->byte = chip->words[chip->pointer++] & 0xff;
 			dev_dbg(&adap->dev, "smbus byte - addr 0x%02x, "
 					"read  0x%02x.\n",
 					addr, data->byte);
@@ -86,12 +86,13 @@ static s32 stub_xfer(struct i2c_adapter * adap, u16 addr, unsigned short flags,
 
 	case I2C_SMBUS_BYTE_DATA:
 		if (read_write == I2C_SMBUS_WRITE) {
-			chip->bytes[command] = data->byte;
+			chip->words[command] &= 0xff00;
+			chip->words[command] |= data->byte;
 			dev_dbg(&adap->dev, "smbus byte data - addr 0x%02x, "
 					"wrote 0x%02x at 0x%02x.\n",
 					addr, data->byte, command);
 		} else {
-			data->byte = chip->bytes[command];
+			data->byte = chip->words[command] & 0xff;
 			dev_dbg(&adap->dev, "smbus byte data - addr 0x%02x, "
 					"read  0x%02x at 0x%02x.\n",
 					addr, data->byte, command);
@@ -119,7 +120,7 @@ static s32 stub_xfer(struct i2c_adapter * adap, u16 addr, unsigned short flags,
 
 	default:
 		dev_dbg(&adap->dev, "Unsupported I2C/SMBus command\n");
-		ret = -1;
+		ret = -EOPNOTSUPP;
 		break;
 	} /* switch (size) */
 
@@ -139,7 +140,7 @@ static const struct i2c_algorithm smbus_algorithm = {
 
 static struct i2c_adapter stub_adapter = {
 	.owner		= THIS_MODULE,
-	.class		= I2C_CLASS_HWMON,
+	.class		= I2C_CLASS_HWMON | I2C_CLASS_SPD,
 	.algo		= &smbus_algorithm,
 	.name		= "SMBus stub driver",
 };

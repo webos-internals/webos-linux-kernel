@@ -1,8 +1,4 @@
 /******************************************************************* 
- * ident "$Id: idt77252.h,v 1.2 2001/11/11 08:13:54 ecd Exp $"
- *
- * $Author: ecd $
- * $Date: 2001/11/11 08:13:54 $
  *
  * Copyright (c) 2000 ATecoM GmbH 
  *
@@ -177,10 +173,8 @@ struct scq_info
 };
 
 struct rx_pool {
-	struct sk_buff		*first;
-	struct sk_buff		**last;
+	struct sk_buff_head	queue;
 	unsigned int		len;
-	unsigned int		count;
 };
 
 struct aal1 {

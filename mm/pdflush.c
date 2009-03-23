@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2002, Linus Torvalds.
  *
- * 09Apr2002	akpm@zip.com.au
+ * 09Apr2002	Andrew Morton
  *		Initial version
  * 29Feb2004	kaos@sgi.com
  *		Move worker thread creation to kthread to avoid chewing
@@ -17,8 +17,8 @@
 #include <linux/gfp.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/fs.h>		// Needed by writeback.h
-#include <linux/writeback.h>	// Prototypes pdflush_operation()
+#include <linux/fs.h>		/* Needed by writeback.h	  */
+#include <linux/writeback.h>	/* Prototypes pdflush_operation() */
 #include <linux/kthread.h>
 #include <linux/cpuset.h>
 #include <linux/freezer.h>
@@ -130,7 +130,7 @@ static int __pdflush(struct pdflush_work *my_work)
 		 * Thread creation: For how long have there been zero
 		 * available threads?
 		 */
-		if (jiffies - last_empty_jifs > 1 * HZ) {
+		if (time_after(jiffies, last_empty_jifs + 1 * HZ)) {
 			/* unlocked list_empty() test is OK here */
 			if (list_empty(&pdflush_list)) {
 				/* unlocked test is OK here */
@@ -151,7 +151,7 @@ static int __pdflush(struct pdflush_work *my_work)
 		if (nr_pdflush_threads <= MIN_PDFLUSH_THREADS)
 			continue;
 		pdf = list_entry(pdflush_list.prev, struct pdflush_work, list);
-		if (jiffies - pdf->when_i_went_to_sleep > 1 * HZ) {
+		if (time_after(jiffies, pdf->when_i_went_to_sleep + 1 * HZ)) {
 			/* Limit exit rate */
 			pdf->when_i_went_to_sleep = jiffies;
 			break;					/* exeunt */
@@ -172,7 +172,16 @@ static int __pdflush(struct pdflush_work *my_work)
 static int pdflush(void *dummy)
 {
 	struct pdflush_work my_work;
-	cpumask_t cpus_allowed;
+	cpumask_var_t cpus_allowed;
+
+	/*
+	 * Since the caller doesn't even check kthread_run() worked, let's not
+	 * freak out too much if this fails.
+	 */
+	if (!alloc_cpumask_var(&cpus_allowed, GFP_KERNEL)) {
+		printk(KERN_WARNING "pdflush failed to allocate cpumask\n");
+		return 0;
+	}
 
 	/*
 	 * pdflush can spend a lot of time doing encryption via dm-crypt.  We
@@ -187,8 +196,9 @@ static int pdflush(void *dummy)
 	 * This is needed as pdflush's are dynamically created and destroyed.
 	 * The boottime pdflush's are easily placed w/o these 2 lines.
 	 */
-	cpus_allowed = cpuset_cpus_allowed(current);
-	set_cpus_allowed(current, cpus_allowed);
+	cpuset_cpus_allowed(current, cpus_allowed);
+	set_cpus_allowed_ptr(current, cpus_allowed);
+	free_cpumask_var(cpus_allowed);
 
 	return __pdflush(&my_work);
 }
@@ -207,7 +217,6 @@ int pdflush_operation(void (*fn)(unsigned long), unsigned long arg0)
 
 	spin_lock_irqsave(&pdflush_lock, flags);
 	if (list_empty(&pdflush_list)) {
-		spin_unlock_irqrestore(&pdflush_lock, flags);
 		ret = -1;
 	} else {
 		struct pdflush_work *pdf;
@@ -219,8 +228,9 @@ int pdflush_operation(void (*fn)(unsigned long), unsigned long arg0)
 		pdf->fn = fn;
 		pdf->arg0 = arg0;
 		wake_up_process(pdf->who);
-		spin_unlock_irqrestore(&pdflush_lock, flags);
 	}
+	spin_unlock_irqrestore(&pdflush_lock, flags);
+
 	return ret;
 }
 

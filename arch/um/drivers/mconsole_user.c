@@ -39,7 +39,7 @@ static struct mconsole_command commands[] = {
 /* Initialized in mconsole_init, which is an initcall */
 char mconsole_socket_name[256];
 
-int mconsole_reply_v0(struct mc_request *req, char *reply)
+static int mconsole_reply_v0(struct mc_request *req, char *reply)
 {
 	struct iovec iov;
 	struct msghdr msg;
@@ -83,9 +83,8 @@ int mconsole_get_request(int fd, struct mc_request *req)
 	int len;
 
 	req->originlen = sizeof(req->origin);
-	req->len = recvfrom(fd, &req->request, sizeof(req->request),
-			    MSG_DONTWAIT, (struct sockaddr *) req->origin,
-			    &req->originlen);
+	req->len = recvfrom(fd, &req->request, sizeof(req->request), 0,
+			    (struct sockaddr *) req->origin, &req->originlen);
 	if (req->len < 0)
 		return 0;
 

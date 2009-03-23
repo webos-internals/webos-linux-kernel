@@ -18,22 +18,15 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Martin Josefsson <gandalf@netfilter.org>");
-MODULE_DESCRIPTION("iptables helper match module");
+MODULE_DESCRIPTION("Xtables: Related connection matching");
 MODULE_ALIAS("ipt_helper");
 MODULE_ALIAS("ip6t_helper");
 
 
 static bool
-match(const struct sk_buff *skb,
-      const struct net_device *in,
-      const struct net_device *out,
-      const struct xt_match *match,
-      const void *matchinfo,
-      int offset,
-      unsigned int protoff,
-      bool *hotdrop)
+helper_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 {
-	const struct xt_helper_info *info = matchinfo;
+	const struct xt_helper_info *info = par->matchinfo;
 	const struct nf_conn *ct;
 	const struct nf_conn_help *master_help;
 	const struct nf_conntrack_helper *helper;
@@ -61,61 +54,44 @@ match(const struct sk_buff *skb,
 	return ret;
 }
 
-static bool check(const char *tablename,
-		  const void *inf,
-		  const struct xt_match *match,
-		  void *matchinfo,
-		  unsigned int hook_mask)
+static bool helper_mt_check(const struct xt_mtchk_param *par)
 {
-	struct xt_helper_info *info = matchinfo;
+	struct xt_helper_info *info = par->matchinfo;
 
-	if (nf_ct_l3proto_try_module_get(match->family) < 0) {
+	if (nf_ct_l3proto_try_module_get(par->family) < 0) {
 		printk(KERN_WARNING "can't load conntrack support for "
-				    "proto=%d\n", match->family);
+				    "proto=%u\n", par->family);
 		return false;
 	}
 	info->name[29] = '\0';
 	return true;
 }
 
-static void
-destroy(const struct xt_match *match, void *matchinfo)
+static void helper_mt_destroy(const struct xt_mtdtor_param *par)
 {
-	nf_ct_l3proto_module_put(match->family);
+	nf_ct_l3proto_module_put(par->family);
 }
 
-static struct xt_match xt_helper_match[] __read_mostly = {
-	{
-		.name		= "helper",
-		.family		= AF_INET,
-		.checkentry	= check,
-		.match		= match,
-		.destroy	= destroy,
-		.matchsize	= sizeof(struct xt_helper_info),
-		.me		= THIS_MODULE,
-	},
-	{
-		.name		= "helper",
-		.family		= AF_INET6,
-		.checkentry	= check,
-		.match		= match,
-		.destroy	= destroy,
-		.matchsize	= sizeof(struct xt_helper_info),
-		.me		= THIS_MODULE,
-	},
+static struct xt_match helper_mt_reg __read_mostly = {
+	.name       = "helper",
+	.revision   = 0,
+	.family     = NFPROTO_UNSPEC,
+	.checkentry = helper_mt_check,
+	.match      = helper_mt,
+	.destroy    = helper_mt_destroy,
+	.matchsize  = sizeof(struct xt_helper_info),
+	.me         = THIS_MODULE,
 };
 
-static int __init xt_helper_init(void)
+static int __init helper_mt_init(void)
 {
-	return xt_register_matches(xt_helper_match,
-				   ARRAY_SIZE(xt_helper_match));
+	return xt_register_match(&helper_mt_reg);
 }
 
-static void __exit xt_helper_fini(void)
+static void __exit helper_mt_exit(void)
 {
-	xt_unregister_matches(xt_helper_match, ARRAY_SIZE(xt_helper_match));
+	xt_unregister_match(&helper_mt_reg);
 }
 
-module_init(xt_helper_init);
-module_exit(xt_helper_fini);
-
+module_init(helper_mt_init);
+module_exit(helper_mt_exit);

@@ -150,8 +150,6 @@ struct CYZ_BOOT_CTRL {
  *	architectures and compilers.
  */
 
-#include <asm/types.h>
-
 typedef __u64  ucdouble;		/* 64 bits, unsigned */
 typedef __u32  uclong;			/* 32 bits, unsigned */
 typedef __u16  ucshort;		/* 16 bits, unsigned */
@@ -177,7 +175,7 @@ struct	CUSTOM_REG {
 	__u32	fpga_version;		/* FPGA Version Number Register */
 	__u32	cpu_start;		/* CPU start Register (write) */
 	__u32	cpu_stop;		/* CPU stop Register (write) */
-	__u32	misc_reg;		/* Miscelaneous Register */
+	__u32	misc_reg;		/* Miscellaneous Register */
 	__u32	idt_mode;		/* IDT mode Register */
 	__u32	uart_irq_status;	/* UART IRQ status Register */
 	__u32	clear_timer0_irq;	/* Clear timer interrupt Register */
@@ -550,11 +548,11 @@ struct cyclades_icount {
 
 struct cyclades_port {
 	int                     magic;
+	struct tty_port		port;
 	struct cyclades_card	*card;
 	int			line;
 	int			flags; 		/* defined in tty.h */
 	int                     type;		/* UART type */
-	struct tty_struct 	*tty;
 	int			read_status_mask;
 	int			ignore_status_mask;
 	int			timeout;
@@ -567,13 +565,8 @@ struct cyclades_port {
 	int			chip_rev;
 	int			custom_divisor;
 	u8			x_char; /* to be pushed out ASAP */
-	int			close_delay;
-	unsigned short		closing_wait;
-	int			count;	/* # of fd on device */
 	int                     breakon;
 	int                     breakoff;
-	int			blocked_open; /* # of blocked opens */
-	unsigned char 		*xmit_buf;
 	int			xmit_head;
 	int			xmit_tail;
 	int			xmit_cnt;
@@ -583,16 +576,14 @@ struct cyclades_port {
 	struct cyclades_monitor	mon;
 	struct cyclades_idle_stats	idle_stats;
 	struct cyclades_icount	icount;
-	wait_queue_head_t       open_wait;
-	wait_queue_head_t       close_wait;
 	struct completion       shutdown_wait;
 	wait_queue_head_t       delta_msr_wait;
 	int throttle;
 };
 
 #define	CLOSING_WAIT_DELAY	30*HZ
-#define CY_CLOSING_WAIT_NONE	65535
-#define CY_CLOSING_WAIT_INF	0
+#define CY_CLOSING_WAIT_NONE	ASYNC_CLOSING_WAIT_NONE
+#define CY_CLOSING_WAIT_INF	ASYNC_CLOSING_WAIT_INF
 
 
 #define CyMAX_CHIPS_PER_CARD	8

@@ -4,15 +4,10 @@
  * to extract and format the required data.
  */
 
+#include <linux/mm.h>
+#include <linux/sched.h>
 #include <linux/thread_info.h>
-
-#define DEFINE(sym, val) \
-        asm volatile("\n->" #sym " %0 " #val : : "i" (val))
-
-#define BLANK() asm volatile("\n->" : : )
-
-#define OFFSET(sym, str, mem) \
-        DEFINE(sym, offsetof(struct str, mem));
+#include <linux/kbuild.h>
 
 void foo(void)
 {
@@ -24,4 +19,8 @@ void foo(void)
 	OFFSET(TI_rar_saved, thread_info, rar_saved);
 	OFFSET(TI_rsr_saved, thread_info, rsr_saved);
 	OFFSET(TI_restart_block, thread_info, restart_block);
+	BLANK();
+	OFFSET(TSK_active_mm, task_struct, active_mm);
+	BLANK();
+	OFFSET(MM_pgd, mm_struct, pgd);
 }

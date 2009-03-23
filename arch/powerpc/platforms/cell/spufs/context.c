@@ -52,6 +52,7 @@ struct spu_context *alloc_spu_context(struct spu_gang *gang)
 	init_waitqueue_head(&ctx->wbox_wq);
 	init_waitqueue_head(&ctx->stop_wq);
 	init_waitqueue_head(&ctx->mfc_wq);
+	init_waitqueue_head(&ctx->run_wq);
 	ctx->state = SPU_STATE_SAVED;
 	ctx->ops = &spu_backing_ops;
 	ctx->owner = get_task_mm(current);
@@ -77,6 +78,7 @@ void destroy_spu_context(struct kref *kref)
 {
 	struct spu_context *ctx;
 	ctx = container_of(kref, struct spu_context, kref);
+	spu_context_nospu_trace(destroy_spu_context__enter, ctx);
 	mutex_lock(&ctx->state_mutex);
 	spu_deactivate(ctx);
 	mutex_unlock(&ctx->state_mutex);
@@ -87,6 +89,7 @@ void destroy_spu_context(struct kref *kref)
 		kref_put(ctx->prof_priv_kref, ctx->prof_priv_release);
 	BUG_ON(!list_empty(&ctx->rq));
 	atomic_dec(&nr_spu_contexts);
+	kfree(ctx->switch_log);
 	kfree(ctx);
 }
 
@@ -105,7 +108,16 @@ int put_spu_context(struct spu_context *ctx)
 void spu_forget(struct spu_context *ctx)
 {
 	struct mm_struct *mm;
-	spu_acquire_saved(ctx);
+
+	/*
+	 * This is basically an open-coded spu_acquire_saved, except that
+	 * we don't acquire the state mutex interruptible, and we don't
+	 * want this context to be rescheduled on release.
+	 */
+	mutex_lock(&ctx->state_mutex);
+	if (ctx->state != SPU_STATE_SAVED)
+		spu_deactivate(ctx);
+
 	mm = ctx->owner;
 	ctx->owner = NULL;
 	mmput(mm);
@@ -118,62 +130,40 @@ void spu_unmap_mappings(struct spu_context *ctx)
 	if (ctx->local_store)
 		unmap_mapping_range(ctx->local_store, 0, LS_SIZE, 1);
 	if (ctx->mfc)
-		unmap_mapping_range(ctx->mfc, 0, 0x1000, 1);
+		unmap_mapping_range(ctx->mfc, 0, SPUFS_MFC_MAP_SIZE, 1);
 	if (ctx->cntl)
-		unmap_mapping_range(ctx->cntl, 0, 0x1000, 1);
+		unmap_mapping_range(ctx->cntl, 0, SPUFS_CNTL_MAP_SIZE, 1);
 	if (ctx->signal1)
-		unmap_mapping_range(ctx->signal1, 0, PAGE_SIZE, 1);
+		unmap_mapping_range(ctx->signal1, 0, SPUFS_SIGNAL_MAP_SIZE, 1);
 	if (ctx->signal2)
-		unmap_mapping_range(ctx->signal2, 0, PAGE_SIZE, 1);
+		unmap_mapping_range(ctx->signal2, 0, SPUFS_SIGNAL_MAP_SIZE, 1);
 	if (ctx->mss)
-		unmap_mapping_range(ctx->mss, 0, 0x1000, 1);
+		unmap_mapping_range(ctx->mss, 0, SPUFS_MSS_MAP_SIZE, 1);
 	if (ctx->psmap)
-		unmap_mapping_range(ctx->psmap, 0, 0x20000, 1);
+		unmap_mapping_range(ctx->psmap, 0, SPUFS_PS_MAP_SIZE, 1);
 	mutex_unlock(&ctx->mapping_lock);
-}
-
-/**
- * spu_acquire_runnable - lock spu contex and make sure it is in runnable state
- * @ctx:	spu contex to lock
- *
- * Note:
- *	Returns 0 and with the context locked on success
- *	Returns negative error and with the context _unlocked_ on failure.
- */
-int spu_acquire_runnable(struct spu_context *ctx, unsigned long flags)
-{
-	int ret = -EINVAL;
-
-	spu_acquire(ctx);
-	if (ctx->state == SPU_STATE_SAVED) {
-		/*
-		 * Context is about to be freed, so we can't acquire it anymore.
-		 */
-		if (!ctx->owner)
-			goto out_unlock;
-		ret = spu_activate(ctx, flags);
-		if (ret)
-			goto out_unlock;
-	}
-
-	return 0;
-
- out_unlock:
-	spu_release(ctx);
-	return ret;
 }
 
 /**
  * spu_acquire_saved - lock spu contex and make sure it is in saved state
  * @ctx:	spu contex to lock
  */
-void spu_acquire_saved(struct spu_context *ctx)
+int spu_acquire_saved(struct spu_context *ctx)
 {
-	spu_acquire(ctx);
+	int ret;
+
+	spu_context_nospu_trace(spu_acquire_saved__enter, ctx);
+
+	ret = spu_acquire(ctx);
+	if (ret)
+		return ret;
+
 	if (ctx->state != SPU_STATE_SAVED) {
 		set_bit(SPU_SCHED_WAS_ACTIVE, &ctx->sched_flags);
 		spu_deactivate(ctx);
 	}
+
+	return 0;
 }
 
 /**
@@ -184,7 +174,8 @@ void spu_release_saved(struct spu_context *ctx)
 {
 	BUG_ON(ctx->state != SPU_STATE_SAVED);
 
-	if (test_and_clear_bit(SPU_SCHED_WAS_ACTIVE, &ctx->sched_flags))
+	if (test_and_clear_bit(SPU_SCHED_WAS_ACTIVE, &ctx->sched_flags) &&
+			test_bit(SPU_SCHED_SPU_RUN, &ctx->sched_flags))
 		spu_activate(ctx, 0);
 
 	spu_release(ctx);

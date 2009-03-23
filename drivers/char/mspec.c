@@ -180,7 +180,7 @@ mspec_close(struct vm_area_struct *vma)
 		my_page = vdata->maddr[index];
 		vdata->maddr[index] = 0;
 		if (!mspec_zero_block(my_page, PAGE_SIZE))
-			uncached_free_page(my_page);
+			uncached_free_page(my_page, 1);
 		else
 			printk(KERN_WARNING "mspec_close(): "
 			       "failed to zero page %ld\n", my_page);
@@ -193,32 +193,30 @@ mspec_close(struct vm_area_struct *vma)
 }
 
 /*
- * mspec_nopfn
+ * mspec_fault
  *
  * Creates a mspec page and maps it to user space.
  */
-static unsigned long
-mspec_nopfn(struct vm_area_struct *vma, unsigned long address)
+static int
+mspec_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	unsigned long paddr, maddr;
 	unsigned long pfn;
-	int index;
+	pgoff_t index = vmf->pgoff;
 	struct vma_data *vdata = vma->vm_private_data;
 
-	BUG_ON(address < vdata->vm_start || address >= vdata->vm_end);
-	index = (address - vdata->vm_start) >> PAGE_SHIFT;
 	maddr = (volatile unsigned long) vdata->maddr[index];
 	if (maddr == 0) {
-		maddr = uncached_alloc_page(numa_node_id());
+		maddr = uncached_alloc_page(numa_node_id(), 1);
 		if (maddr == 0)
-			return NOPFN_OOM;
+			return VM_FAULT_OOM;
 
 		spin_lock(&vdata->lock);
 		if (vdata->maddr[index] == 0) {
 			vdata->count++;
 			vdata->maddr[index] = maddr;
 		} else {
-			uncached_free_page(maddr);
+			uncached_free_page(maddr, 1);
 			maddr = vdata->maddr[index];
 		}
 		spin_unlock(&vdata->lock);
@@ -231,13 +229,20 @@ mspec_nopfn(struct vm_area_struct *vma, unsigned long address)
 
 	pfn = paddr >> PAGE_SHIFT;
 
-	return pfn;
+	/*
+	 * vm_insert_pfn can fail with -EBUSY, but in that case it will
+	 * be because another thread has installed the pte first, so it
+	 * is no problem.
+	 */
+	vm_insert_pfn(vma, (unsigned long)vmf->virtual_address, pfn);
+
+	return VM_FAULT_NOPAGE;
 }
 
 static struct vm_operations_struct mspec_vm_ops = {
 	.open = mspec_open,
 	.close = mspec_close,
-	.nopfn = mspec_nopfn
+	.fault = mspec_fault,
 };
 
 /*
@@ -283,7 +288,7 @@ mspec_mmap(struct file *file, struct vm_area_struct *vma,
 	vdata->refcnt = ATOMIC_INIT(1);
 	vma->vm_private_data = vdata;
 
-	vma->vm_flags |= (VM_IO | VM_RESERVED | VM_PFNMAP);
+	vma->vm_flags |= (VM_IO | VM_RESERVED | VM_PFNMAP | VM_DONTEXPAND);
 	if (vdata->type == MSPEC_FETCHOP || vdata->type == MSPEC_UNCACHED)
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	vma->vm_ops = &mspec_vm_ops;
@@ -367,7 +372,7 @@ mspec_init(void)
 				int nasid;
 				unsigned long phys;
 
-				scratch_page[nid] = uncached_alloc_page(nid);
+				scratch_page[nid] = uncached_alloc_page(nid, 1);
 				if (scratch_page[nid] == 0)
 					goto free_scratch_pages;
 				phys = __pa(scratch_page[nid]);
@@ -414,7 +419,7 @@ mspec_init(void)
  free_scratch_pages:
 	for_each_node(nid) {
 		if (scratch_page[nid] != 0)
-			uncached_free_page(scratch_page[nid]);
+			uncached_free_page(scratch_page[nid], 1);
 	}
 	return ret;
 }
@@ -431,7 +436,7 @@ mspec_exit(void)
 
 		for_each_node(nid) {
 			if (scratch_page[nid] != 0)
-				uncached_free_page(scratch_page[nid]);
+				uncached_free_page(scratch_page[nid], 1);
 		}
 	}
 }

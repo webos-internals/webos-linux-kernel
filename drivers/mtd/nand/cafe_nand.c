@@ -1,6 +1,9 @@
 /*
  * Driver for One Laptop Per Child ‘CAFÉ’ controller, aka Marvell 88ALP01
  *
+ * The data sheet for this device can be found at:
+ *    http://www.marvell.com/products/pcconn/88ALP01.jsp
+ *
  * Copyright © 2006 Red Hat, Inc.
  * Copyright © 2006 David Woodhouse <dwmw2@infradead.org>
  */
@@ -11,6 +14,7 @@
 #undef DEBUG
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/nand.h>
+#include <linux/mtd/partitions.h>
 #include <linux/rslib.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
@@ -52,6 +56,7 @@
 
 struct cafe_priv {
 	struct nand_chip nand;
+	struct mtd_partition *parts;
 	struct pci_dev *pdev;
 	void __iomem *mmio;
 	struct rs_control *rs;
@@ -83,6 +88,10 @@ module_param(checkecc, int, 0644);
 static unsigned int numtimings;
 static int timing[3];
 module_param_array(timing, int, &numtimings, 0644);
+
+#ifdef CONFIG_MTD_PARTITIONS
+static const char *part_probes[] = { "cmdlinepart", "RedBoot", NULL };
+#endif
 
 /* Hrm. Why isn't this already conditional on something in the struct device? */
 #define cafe_dev_dbg(dev, args...) do { if (debug) dev_dbg(dev, ##args); } while(0)
@@ -622,6 +631,10 @@ static int __devinit cafe_nand_probe(struct pci_dev *pdev,
 	struct cafe_priv *cafe;
 	uint32_t ctrl;
 	int err = 0;
+#ifdef CONFIG_MTD_PARTITIONS
+	struct mtd_partition *parts;
+	int nr_parts;
+#endif
 
 	/* Very old versions shared the same PCI ident for all three
 	   functions on the chip. Verify the class too... */
@@ -787,7 +800,21 @@ static int __devinit cafe_nand_probe(struct pci_dev *pdev,
 		goto out_irq;
 
 	pci_set_drvdata(pdev, mtd);
+
+	/* We register the whole device first, separate from the partitions */
 	add_mtd_device(mtd);
+
+#ifdef CONFIG_MTD_PARTITIONS
+#ifdef CONFIG_MTD_CMDLINE_PARTS
+	mtd->name = "cafe_nand";
+#endif
+	nr_parts = parse_mtd_partitions(mtd, part_probes, &parts, 0);
+	if (nr_parts > 0) {
+		cafe->parts = parts;
+		dev_info(&cafe->pdev->dev, "%d partitions found\n", nr_parts);
+		add_mtd_partitions(mtd, parts, nr_parts);
+	}
+#endif
 	goto out;
 
  out_irq:
@@ -821,7 +848,8 @@ static void __devexit cafe_nand_remove(struct pci_dev *pdev)
 }
 
 static struct pci_device_id cafe_nand_tbl[] = {
-	{ 0x11ab, 0x4100, PCI_ANY_ID, PCI_ANY_ID },
+	{ PCI_VENDOR_ID_MARVELL, PCI_DEVICE_ID_MARVELL_88ALP01_NAND,
+	  PCI_ANY_ID, PCI_ANY_ID },
 	{ }
 };
 

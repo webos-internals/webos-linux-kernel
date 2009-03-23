@@ -1,6 +1,4 @@
 /*
- * $Id: usbmouse.c,v 1.15 2001/12/27 10:37:41 vojtech Exp $
- *
  *  Copyright (c) 1999-2001 Vojtech Pavlik
  *
  *  USB HIDBP Mouse support
@@ -32,6 +30,11 @@
 #include <linux/init.h>
 #include <linux/usb/input.h>
 #include <linux/hid.h>
+
+/* for apple IDs */
+#ifdef CONFIG_USB_HID_MODULE
+#include "../hid-ids.h"
+#endif
 
 /*
  * Version Information
@@ -242,7 +245,8 @@ static int __init usb_mouse_init(void)
 {
 	int retval = usb_register(&usb_mouse_driver);
 	if (retval == 0)
-		info(DRIVER_VERSION ":" DRIVER_DESC);
+		printk(KERN_INFO KBUILD_MODNAME ": " DRIVER_VERSION ":"
+				DRIVER_DESC "\n");
 	return retval;
 }
 

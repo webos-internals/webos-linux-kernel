@@ -10,7 +10,7 @@
  See the WWW-page: http://www.uni-mainz.de/~langm000/linux.html for latest
  updates, info and ADF-files for adapters supported by this driver.
 
- Alan Cox <alan@redhat.com>
+ Alan Cox <alan@lxorguk.ukuu.org.uk>
  Updated for Linux 2.5.45 to use the new error handler, cleaned up the
  lock macros and did a few unavoidable locking tweaks, plus one locking
  fix in the irq and completion path.
@@ -1501,7 +1501,6 @@ static struct scsi_host_template ibmmca_driver_template = {
           .sg_tablesize   = 16,
           .cmd_per_lun    = 1,
           .use_clustering = ENABLE_CLUSTERING,
-          .use_sg_chaining = ENABLE_SG_CHAINING,
 };
 
 static int ibmmca_probe(struct device *dev)

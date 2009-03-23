@@ -18,16 +18,6 @@
 #include "memory.h"
 #include "config.h"
 
-#ifdef CONFIG_DLM_DEBUG
-int dlm_register_debugfs(void);
-void dlm_unregister_debugfs(void);
-#else
-static inline int dlm_register_debugfs(void) { return 0; }
-static inline void dlm_unregister_debugfs(void) { }
-#endif
-int dlm_netlink_init(void);
-void dlm_netlink_exit(void);
-
 static int __init init_dlm(void)
 {
 	int error;
@@ -56,10 +46,16 @@ static int __init init_dlm(void)
 	if (error)
 		goto out_user;
 
+	error = dlm_plock_init();
+	if (error)
+		goto out_netlink;
+
 	printk("DLM (built %s %s) installed\n", __DATE__, __TIME__);
 
 	return 0;
 
+ out_netlink:
+	dlm_netlink_exit();
  out_user:
 	dlm_user_exit();
  out_debug:
@@ -76,6 +72,7 @@ static int __init init_dlm(void)
 
 static void __exit exit_dlm(void)
 {
+	dlm_plock_exit();
 	dlm_netlink_exit();
 	dlm_user_exit();
 	dlm_config_exit();

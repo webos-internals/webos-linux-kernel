@@ -839,6 +839,7 @@ static void cm_work_handler(struct work_struct *_work)
 	unsigned long flags;
 	int empty;
 	int ret = 0;
+	int destroy_id;
 
 	spin_lock_irqsave(&cm_id_priv->lock, flags);
 	empty = list_empty(&cm_id_priv->work_list);
@@ -857,9 +858,9 @@ static void cm_work_handler(struct work_struct *_work)
 			destroy_cm_id(&cm_id_priv->id);
 		}
 		BUG_ON(atomic_read(&cm_id_priv->refcount)==0);
+		destroy_id = test_bit(IWCM_F_CALLBACK_DESTROY, &cm_id_priv->flags);
 		if (iwcm_deref_id(cm_id_priv)) {
-			if (test_bit(IWCM_F_CALLBACK_DESTROY,
-				     &cm_id_priv->flags)) {
+			if (destroy_id) {
 				BUG_ON(!list_empty(&cm_id_priv->work_list));
 				free_cm_id(cm_id_priv);
 			}
@@ -941,8 +942,7 @@ static int iwcm_init_qp_init_attr(struct iwcm_id_private *cm_id_priv,
 	case IW_CM_STATE_CONN_RECV:
 	case IW_CM_STATE_ESTABLISHED:
 		*qp_attr_mask = IB_QP_STATE | IB_QP_ACCESS_FLAGS;
-		qp_attr->qp_access_flags = IB_ACCESS_LOCAL_WRITE |
-					   IB_ACCESS_REMOTE_WRITE|
+		qp_attr->qp_access_flags = IB_ACCESS_REMOTE_WRITE|
 					   IB_ACCESS_REMOTE_READ;
 		ret = 0;
 		break;

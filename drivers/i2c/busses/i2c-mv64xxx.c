@@ -1,6 +1,6 @@
 /*
- * Driver for the i2c controller on the Marvell line of host bridges for MIPS
- * and PPC (e.g, gt642[46]0, mv643[46]0, mv644[46]0).
+ * Driver for the i2c controller on the Marvell line of host bridges
+ * (e.g, gt642[46]0, mv643[46]0, mv644[46]0, and Orion SoC family).
  *
  * Author: Mark A. Greer <mgreer@mvista.com>
  *
@@ -14,7 +14,7 @@
 #include <linux/spinlock.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
-#include <linux/mv643xx.h>
+#include <linux/mv643xx_i2c.h>
 #include <linux/platform_device.h>
 
 #include <asm/io.h>
@@ -86,6 +86,7 @@ struct mv64xxx_i2c_data {
 	u32			cntl_bits;
 	void __iomem		*reg_base;
 	u32			reg_base_p;
+	u32			reg_size;
 	u32			addr1;
 	u32			addr2;
 	u32			bytes_left;
@@ -463,28 +464,30 @@ static int __devinit
 mv64xxx_i2c_map_regs(struct platform_device *pd,
 	struct mv64xxx_i2c_data *drv_data)
 {
-	struct resource	*r;
+	int size;
+	struct resource	*r = platform_get_resource(pd, IORESOURCE_MEM, 0);
 
-	if ((r = platform_get_resource(pd, IORESOURCE_MEM, 0)) &&
-		request_mem_region(r->start, MV64XXX_I2C_REG_BLOCK_SIZE,
-			drv_data->adapter.name)) {
+	if (!r)
+		return -ENODEV;
 
-		drv_data->reg_base = ioremap(r->start,
-			MV64XXX_I2C_REG_BLOCK_SIZE);
-		drv_data->reg_base_p = r->start;
-	} else
-		return -ENOMEM;
+	size = r->end - r->start + 1;
+
+	if (!request_mem_region(r->start, size, drv_data->adapter.name))
+		return -EBUSY;
+
+	drv_data->reg_base = ioremap(r->start, size);
+	drv_data->reg_base_p = r->start;
+	drv_data->reg_size = size;
 
 	return 0;
 }
 
-static void __devexit
+static void
 mv64xxx_i2c_unmap_regs(struct mv64xxx_i2c_data *drv_data)
 {
 	if (drv_data->reg_base) {
 		iounmap(drv_data->reg_base);
-		release_mem_region(drv_data->reg_base_p,
-			MV64XXX_I2C_REG_BLOCK_SIZE);
+		release_mem_region(drv_data->reg_base_p, drv_data->reg_size);
 	}
 
 	drv_data->reg_base = NULL;
@@ -524,12 +527,10 @@ mv64xxx_i2c_probe(struct platform_device *pd)
 		goto exit_unmap_regs;
 	}
 	drv_data->adapter.dev.parent = &pd->dev;
-	drv_data->adapter.id = I2C_HW_MV64XXX;
 	drv_data->adapter.algo = &mv64xxx_i2c_algo;
 	drv_data->adapter.owner = THIS_MODULE;
-	drv_data->adapter.class = I2C_CLASS_HWMON;
+	drv_data->adapter.class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
 	drv_data->adapter.timeout = pdata->timeout;
-	drv_data->adapter.retries = pdata->retries;
 	drv_data->adapter.nr = pd->id;
 	platform_set_drvdata(pd, drv_data);
 	i2c_set_adapdata(&drv_data->adapter, drv_data);
@@ -576,7 +577,7 @@ mv64xxx_i2c_remove(struct platform_device *dev)
 
 static struct platform_driver mv64xxx_i2c_driver = {
 	.probe	= mv64xxx_i2c_probe,
-	.remove	= mv64xxx_i2c_remove,
+	.remove	= __devexit_p(mv64xxx_i2c_remove),
 	.driver	= {
 		.owner	= THIS_MODULE,
 		.name	= MV64XXX_I2C_CTLR_NAME,

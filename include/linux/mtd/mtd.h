@@ -1,6 +1,4 @@
 /*
- * $Id: mtd.h,v 1.61 2005/11/07 11:14:54 gleixner Exp $
- *
  * Copyright (C) 1999-2003 David Woodhouse <dwmw2@infradead.org> et al.
  *
  * Released under GPL
@@ -17,6 +15,8 @@
 #include <linux/mtd/compatmac.h>
 #include <mtd/mtd-abi.h>
 
+#include <asm/div64.h>
+
 #define MTD_CHAR_MAJOR 90
 #define MTD_BLOCK_MAJOR 31
 #define MAX_MTD_DEVICES 32
@@ -27,18 +27,20 @@
 #define MTD_ERASE_DONE          0x08
 #define MTD_ERASE_FAILED        0x10
 
+#define MTD_FAIL_ADDR_UNKNOWN -1LL
+
 /* If the erase fails, fail_addr might indicate exactly which block failed.  If
-   fail_addr = 0xffffffff, the failure was not at the device level or was not
+   fail_addr = MTD_FAIL_ADDR_UNKNOWN, the failure was not at the device level or was not
    specific to any particular block. */
 struct erase_info {
 	struct mtd_info *mtd;
-	u_int32_t addr;
-	u_int32_t len;
-	u_int32_t fail_addr;
+	uint64_t addr;
+	uint64_t len;
+	uint64_t fail_addr;
 	u_long time;
 	u_long retries;
-	u_int dev;
-	u_int cell;
+	unsigned dev;
+	unsigned cell;
 	void (*callback) (struct erase_info *self);
 	u_long priv;
 	u_char state;
@@ -46,9 +48,9 @@ struct erase_info {
 };
 
 struct mtd_erase_region_info {
-	u_int32_t offset;			/* At which this region starts, from the beginning of the MTD */
-	u_int32_t erasesize;		/* For this region */
-	u_int32_t numblocks;		/* Number of blocks of erasesize in this region */
+	uint64_t offset;			/* At which this region starts, from the beginning of the MTD */
+	uint32_t erasesize;		/* For this region */
+	uint32_t numblocks;		/* Number of blocks of erasesize in this region */
 	unsigned long *lockmap;		/* If keeping bitmap of locks */
 };
 
@@ -83,7 +85,7 @@ typedef enum {
  * @datbuf:	data buffer - if NULL only oob data are read/written
  * @oobbuf:	oob data buffer
  *
- * Note, it is allowed to read more then one OOB area at one go, but not write.
+ * Note, it is allowed to read more than one OOB area at one go, but not write.
  * The interface assumes that the OOB write requests program only one page's
  * OOB area.
  */
@@ -100,14 +102,14 @@ struct mtd_oob_ops {
 
 struct mtd_info {
 	u_char type;
-	u_int32_t flags;
-	u_int32_t size;	 // Total size of the MTD
+	uint32_t flags;
+	uint64_t size;	 // Total size of the MTD
 
 	/* "Major" erase size for the device. Naïve users may take this
 	 * to be the only erase size available, or may use the more detailed
 	 * information below if they desire
 	 */
-	u_int32_t erasesize;
+	uint32_t erasesize;
 	/* Minimal writable flash unit size. In case of NOR flash it is 1 (even
 	 * though individual bits can be cleared), in case of NAND flash it is
 	 * one NAND page (or half, or one-fourths of it), in case of ECC-ed NOR
@@ -115,13 +117,23 @@ struct mtd_info {
 	 * Any driver registering a struct mtd_info must ensure a writesize of
 	 * 1 or larger.
 	 */
-	u_int32_t writesize;
+	uint32_t writesize;
 
-	u_int32_t oobsize;   // Amount of OOB data per block (e.g. 16)
-	u_int32_t oobavail;  // Available OOB bytes per block
+	uint32_t oobsize;   // Amount of OOB data per block (e.g. 16)
+	uint32_t oobavail;  // Available OOB bytes per block
+
+	/*
+	 * If erasesize is a power of 2 then the shift is stored in
+	 * erasesize_shift otherwise erasesize_shift is zero. Ditto writesize.
+	 */
+	unsigned int erasesize_shift;
+	unsigned int writesize_shift;
+	/* Masks based on erasesize_shift and writesize_shift */
+	unsigned int erasesize_mask;
+	unsigned int writesize_mask;
 
 	// Kernel-only stuff starts here.
-	char *name;
+	const char *name;
 	int index;
 
 	/* ecc layout structure pointer - read only ! */
@@ -143,14 +155,25 @@ struct mtd_info {
 	int (*erase) (struct mtd_info *mtd, struct erase_info *instr);
 
 	/* This stuff for eXecute-In-Place */
-	int (*point) (struct mtd_info *mtd, loff_t from, size_t len, size_t *retlen, u_char **mtdbuf);
+	/* phys is optional and may be set to NULL */
+	int (*point) (struct mtd_info *mtd, loff_t from, size_t len,
+			size_t *retlen, void **virt, resource_size_t *phys);
 
 	/* We probably shouldn't allow XIP if the unpoint isn't a NULL */
-	void (*unpoint) (struct mtd_info *mtd, u_char * addr, loff_t from, size_t len);
+	void (*unpoint) (struct mtd_info *mtd, loff_t from, size_t len);
 
 
 	int (*read) (struct mtd_info *mtd, loff_t from, size_t len, size_t *retlen, u_char *buf);
 	int (*write) (struct mtd_info *mtd, loff_t to, size_t len, size_t *retlen, const u_char *buf);
+
+	/* In blackbox flight recorder like scenarios we want to make successful
+	   writes in interrupt context. panic_write() is only intended to be
+	   called when its known the kernel is about to panic and we need the
+	   write to succeed. Since the kernel is not going to be running for much
+	   longer, this function can break locks and delay to ensure the write
+	   succeeds (but not sleep). */
+
+	int (*panic_write) (struct mtd_info *mtd, loff_t to, size_t len, size_t *retlen, const u_char *buf);
 
 	int (*read_oob) (struct mtd_info *mtd, loff_t from,
 			 struct mtd_oob_ops *ops);
@@ -179,8 +202,8 @@ struct mtd_info {
 	void (*sync) (struct mtd_info *mtd);
 
 	/* Chip-supported device locking */
-	int (*lock) (struct mtd_info *mtd, loff_t ofs, size_t len);
-	int (*unlock) (struct mtd_info *mtd, loff_t ofs, size_t len);
+	int (*lock) (struct mtd_info *mtd, loff_t ofs, uint64_t len);
+	int (*unlock) (struct mtd_info *mtd, loff_t ofs, uint64_t len);
 
 	/* Power Management functions */
 	int (*suspend) (struct mtd_info *mtd);
@@ -210,6 +233,35 @@ struct mtd_info {
 	void (*put_device) (struct mtd_info *mtd);
 };
 
+static inline uint32_t mtd_div_by_eb(uint64_t sz, struct mtd_info *mtd)
+{
+	if (mtd->erasesize_shift)
+		return sz >> mtd->erasesize_shift;
+	do_div(sz, mtd->erasesize);
+	return sz;
+}
+
+static inline uint32_t mtd_mod_by_eb(uint64_t sz, struct mtd_info *mtd)
+{
+	if (mtd->erasesize_shift)
+		return sz & mtd->erasesize_mask;
+	return do_div(sz, mtd->erasesize);
+}
+
+static inline uint32_t mtd_div_by_ws(uint64_t sz, struct mtd_info *mtd)
+{
+	if (mtd->writesize_shift)
+		return sz >> mtd->writesize_shift;
+	do_div(sz, mtd->writesize);
+	return sz;
+}
+
+static inline uint32_t mtd_mod_by_ws(uint64_t sz, struct mtd_info *mtd)
+{
+	if (mtd->writesize_shift)
+		return sz & mtd->writesize_mask;
+	return do_div(sz, mtd->writesize);
+}
 
 	/* Kernel-side ioctl definitions */
 
@@ -263,7 +315,11 @@ static inline void mtd_erase_callback(struct erase_info *instr)
 			printk(KERN_INFO args);		\
 	} while(0)
 #else /* CONFIG_MTD_DEBUG */
-#define DEBUG(n, args...) do { } while(0)
+#define DEBUG(n, args...)				\
+	do {						\
+		if (0)					\
+			printk(KERN_INFO args);		\
+	} while(0)
 
 #endif /* CONFIG_MTD_DEBUG */
 

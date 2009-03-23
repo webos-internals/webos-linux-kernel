@@ -22,7 +22,7 @@
 #ifndef __CONNECTOR_H
 #define __CONNECTOR_H
 
-#include <asm/types.h>
+#include <linux/types.h>
 
 #define CN_IDX_CONNECTOR		0xffffffff
 #define CN_VAL_CONNECTOR		0xffffffff
@@ -38,8 +38,9 @@
 #define CN_W1_VAL			0x1
 #define CN_IDX_V86D			0x4
 #define CN_VAL_V86D_UVESAFB		0x1
+#define CN_IDX_BB			0x5	/* BlackBoard, from the TSP GPL sampling framework */
 
-#define CN_NETLINK_USERS		5
+#define CN_NETLINK_USERS		6
 
 /*
  * Maximum connector's message size.
@@ -112,7 +113,6 @@ struct cn_queue_dev {
 	struct list_head queue_list;
 	spinlock_t queue_lock;
 
-	int netlink_groups;
 	struct sock *nls;
 };
 
@@ -133,15 +133,13 @@ struct cn_callback_data {
 
 struct cn_callback_entry {
 	struct list_head callback_entry;
-	struct cn_callback *cb;
 	struct work_struct work;
 	struct cn_queue_dev *pdev;
 
 	struct cn_callback_id id;
 	struct cn_callback_data data;
 
-	int seq, group;
-	struct sock *nls;
+	u32 seq, group;
 };
 
 struct cn_ctl_entry {
@@ -172,8 +170,6 @@ void cn_queue_free_dev(struct cn_queue_dev *dev);
 int cn_cb_equal(struct cb_id *, struct cb_id *);
 
 void cn_queue_wrapper(struct work_struct *work);
-
-extern int cn_already_initialized;
 
 #endif				/* __KERNEL__ */
 #endif				/* __CONNECTOR_H */

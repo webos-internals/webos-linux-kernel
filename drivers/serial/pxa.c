@@ -45,9 +45,10 @@
 #include <linux/clk.h>
 
 #include <asm/io.h>
-#include <asm/hardware.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
-#include <asm/arch/pxa-regs.h>
+#include <mach/pxa-regs.h>
+#include <mach/regs-uart.h>
 
 
 struct uart_pxa_port {
@@ -101,7 +102,7 @@ static void serial_pxa_stop_rx(struct uart_port *port)
 
 static inline void receive_chars(struct uart_pxa_port *up, int *status)
 {
-	struct tty_struct *tty = up->port.info->tty;
+	struct tty_struct *tty = up->port.info->port.tty;
 	unsigned int ch, flag;
 	int max_count = 256;
 
@@ -534,6 +535,11 @@ serial_pxa_set_termios(struct uart_port *port, struct ktermios *termios,
 
 	serial_out(up, UART_IER, up->ier);
 
+	if (termios->c_cflag & CRTSCTS)
+		up->mcr |= UART_MCR_AFE;
+	else
+		up->mcr &= ~UART_MCR_AFE;
+
 	serial_out(up, UART_LCR, cval | UART_LCR_DLAB);/* set DLAB */
 	serial_out(up, UART_DLL, quot & 0xff);		/* LS of divisor */
 	serial_out(up, UART_DLM, quot >> 8);		/* MS of divisor */
@@ -761,7 +767,7 @@ static int serial_pxa_probe(struct platform_device *dev)
 	if (!sport)
 		return -ENOMEM;
 
-	sport->clk = clk_get(&dev->dev, "UARTCLK");
+	sport->clk = clk_get(&dev->dev, NULL);
 	if (IS_ERR(sport->clk)) {
 		ret = PTR_ERR(sport->clk);
 		goto err_free;
@@ -833,6 +839,7 @@ static struct platform_driver serial_pxa_driver = {
 	.resume		= serial_pxa_resume,
 	.driver		= {
 	        .name	= "pxa2xx-uart",
+		.owner	= THIS_MODULE,
 	},
 };
 
@@ -861,4 +868,4 @@ module_init(serial_pxa_init);
 module_exit(serial_pxa_exit);
 
 MODULE_LICENSE("GPL");
-
+MODULE_ALIAS("platform:pxa2xx-uart");

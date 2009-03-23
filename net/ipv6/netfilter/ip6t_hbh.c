@@ -21,7 +21,7 @@
 #include <linux/netfilter_ipv6/ip6t_opts.h>
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("IPv6 opts match");
+MODULE_DESCRIPTION("Xtables: IPv6 Hop-By-Hop and Destination Header match");
 MODULE_AUTHOR("Andras Kis-Szabo <kisza@sch.bme.hu>");
 MODULE_ALIAS("ip6t_dst");
 
@@ -42,18 +42,11 @@ MODULE_ALIAS("ip6t_dst");
  */
 
 static bool
-match(const struct sk_buff *skb,
-      const struct net_device *in,
-      const struct net_device *out,
-      const struct xt_match *match,
-      const void *matchinfo,
-      int offset,
-      unsigned int protoff,
-      bool *hotdrop)
+hbh_mt6(const struct sk_buff *skb, const struct xt_match_param *par)
 {
 	struct ipv6_opt_hdr _optsh;
 	const struct ipv6_opt_hdr *oh;
-	const struct ip6t_opts *optinfo = matchinfo;
+	const struct ip6t_opts *optinfo = par->matchinfo;
 	unsigned int temp;
 	unsigned int ptr;
 	unsigned int hdrlen = 0;
@@ -65,16 +58,16 @@ match(const struct sk_buff *skb,
 	unsigned int optlen;
 	int err;
 
-	err = ipv6_find_hdr(skb, &ptr, match->data, NULL);
+	err = ipv6_find_hdr(skb, &ptr, par->match->data, NULL);
 	if (err < 0) {
 		if (err != -ENOENT)
-			*hotdrop = true;
+			*par->hotdrop = true;
 		return false;
 	}
 
 	oh = skb_header_pointer(skb, ptr, sizeof(_optsh), &_optsh);
 	if (oh == NULL) {
-		*hotdrop = true;
+		*par->hotdrop = true;
 		return false;
 	}
 
@@ -101,8 +94,6 @@ match(const struct sk_buff *skb,
 	hdrlen -= 2;
 	if (!(optinfo->flags & IP6T_OPTS_OPTS)) {
 		return ret;
-	} else if (optinfo->flags & IP6T_OPTS_NSTRICT) {
-		pr_debug("Not strict - not implemented");
 	} else {
 		pr_debug("Strict ");
 		pr_debug("#%d ", optinfo->optsnr);
@@ -169,53 +160,53 @@ match(const struct sk_buff *skb,
 	return false;
 }
 
-/* Called when user tries to insert an entry of this type. */
-static bool
-checkentry(const char *tablename,
-	   const void *entry,
-	   const struct xt_match *match,
-	   void *matchinfo,
-	   unsigned int hook_mask)
+static bool hbh_mt6_check(const struct xt_mtchk_param *par)
 {
-	const struct ip6t_opts *optsinfo = matchinfo;
+	const struct ip6t_opts *optsinfo = par->matchinfo;
 
 	if (optsinfo->invflags & ~IP6T_OPTS_INV_MASK) {
 		pr_debug("ip6t_opts: unknown flags %X\n", optsinfo->invflags);
 		return false;
 	}
+
+	if (optsinfo->flags & IP6T_OPTS_NSTRICT) {
+		pr_debug("ip6t_opts: Not strict - not implemented");
+		return false;
+	}
+
 	return true;
 }
 
-static struct xt_match opts_match[] __read_mostly = {
+static struct xt_match hbh_mt6_reg[] __read_mostly = {
 	{
 		.name		= "hbh",
-		.family		= AF_INET6,
-		.match		= match,
+		.family		= NFPROTO_IPV6,
+		.match		= hbh_mt6,
 		.matchsize	= sizeof(struct ip6t_opts),
-		.checkentry	= checkentry,
+		.checkentry	= hbh_mt6_check,
 		.me		= THIS_MODULE,
 		.data		= NEXTHDR_HOP,
 	},
 	{
 		.name		= "dst",
-		.family		= AF_INET6,
-		.match		= match,
+		.family		= NFPROTO_IPV6,
+		.match		= hbh_mt6,
 		.matchsize	= sizeof(struct ip6t_opts),
-		.checkentry	= checkentry,
+		.checkentry	= hbh_mt6_check,
 		.me		= THIS_MODULE,
 		.data		= NEXTHDR_DEST,
 	},
 };
 
-static int __init ip6t_hbh_init(void)
+static int __init hbh_mt6_init(void)
 {
-	return xt_register_matches(opts_match, ARRAY_SIZE(opts_match));
+	return xt_register_matches(hbh_mt6_reg, ARRAY_SIZE(hbh_mt6_reg));
 }
 
-static void __exit ip6t_hbh_fini(void)
+static void __exit hbh_mt6_exit(void)
 {
-	xt_unregister_matches(opts_match, ARRAY_SIZE(opts_match));
+	xt_unregister_matches(hbh_mt6_reg, ARRAY_SIZE(hbh_mt6_reg));
 }
 
-module_init(ip6t_hbh_init);
-module_exit(ip6t_hbh_fini);
+module_init(hbh_mt6_init);
+module_exit(hbh_mt6_exit);

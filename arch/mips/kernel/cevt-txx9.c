@@ -112,7 +112,6 @@ static struct clock_event_device txx9tmr_clock_event_device = {
 	.name		= "TXx9",
 	.features	= CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
 	.rating		= 200,
-	.cpumask	= CPU_MASK_CPU0,
 	.set_mode	= txx9tmr_set_mode,
 	.set_next_event	= txx9tmr_set_next_event,
 };
@@ -150,6 +149,7 @@ void __init txx9_clockevent_init(unsigned long baseaddr, int irq,
 		clockevent_delta2ns(0xffffffff >> (32 - TXX9_TIMER_BITS), cd);
 	cd->min_delta_ns = clockevent_delta2ns(0xf, cd);
 	cd->irq = irq;
+	cd->cpumask = cpumask_of(0),
 	clockevents_register_device(cd);
 	setup_irq(irq, &txx9tmr_irq);
 	printk(KERN_INFO "TXx9: clockevent device at 0x%lx, irq %d\n",
@@ -161,6 +161,9 @@ void __init txx9_tmr_init(unsigned long baseaddr)
 	struct txx9_tmr_reg __iomem *tmrptr;
 
 	tmrptr = ioremap(baseaddr, sizeof(struct txx9_tmr_reg));
+	/* Start once to make CounterResetEnable effective */
+	__raw_writel(TXx9_TMTCR_CRE | TXx9_TMTCR_TCE, &tmrptr->tcr);
+	/* Stop and reset the counter */
 	__raw_writel(TXx9_TMTCR_CRE, &tmrptr->tcr);
 	__raw_writel(0, &tmrptr->tisr);
 	__raw_writel(0xffffffff, &tmrptr->cpra);

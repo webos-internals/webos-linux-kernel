@@ -47,8 +47,7 @@ _GLOBAL(slb_allocate_realmode)
 	 * it to VSID 0, which is reserved as a bad VSID - one which
 	 * will never have any pages in it.  */
 
-	/* Check if hitting the linear mapping of the vmalloc/ioremap
-	 * kernel space
+	/* Check if hitting the linear mapping or some other kernel space
 	*/
 	bne	cr7,1f
 
@@ -62,7 +61,18 @@ BEGIN_FTR_SECTION
 END_FTR_SECTION_IFCLR(CPU_FTR_1T_SEGMENT)
 	b	slb_finish_load_1T
 
-1:	/* vmalloc/ioremap mapping encoding bits, the "li" instructions below
+1:
+#ifdef CONFIG_SPARSEMEM_VMEMMAP
+	/* Check virtual memmap region. To be patches at kernel boot */
+	cmpldi	cr0,r9,0xf
+	bne	1f
+_GLOBAL(slb_miss_kernel_load_vmemmap)
+	li	r11,0
+	b	6f
+1:
+#endif /* CONFIG_SPARSEMEM_VMEMMAP */
+
+	/* vmalloc/ioremap mapping encoding bits, the "li" instructions below
 	 * will be patched by the kernel at boot
 	 */
 BEGIN_FTR_SECTION
@@ -227,8 +237,9 @@ END_FW_FTR_SECTION_IFSET(FW_FEATURE_ISERIES)
 
 7:	ld	r10,PACASTABRR(r13)
 	addi	r10,r10,1
-	/* use a cpu feature mask if we ever change our slb size */
-	cmpldi	r10,SLB_NUM_ENTRIES
+	/* This gets soft patched on boot. */
+_GLOBAL(slb_compare_rr_to_size)
+	cmpldi	r10,0
 
 	blt+	4f
 	li	r10,SLB_NUM_BOLTED

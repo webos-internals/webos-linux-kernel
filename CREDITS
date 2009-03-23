@@ -317,6 +317,14 @@ S: 2322 37th Ave SW
 S: Seattle, Washington 98126-2010
 S: USA
 
+N: Muli Ben-Yehuda
+E: mulix@mulix.org
+E: muli@il.ibm.com
+W: http://www.mulix.org
+D: trident OSS sound driver, x86-64 dma-ops and Calgary IOMMU,
+D: KVM and Xen bits and other misc. hackery.
+S: Haifa, Israel
+
 N: Johannes Berg
 E: johannes@sipsolutions.net
 W: http://johannes.sipsolutions.net/
@@ -361,10 +369,10 @@ P: 1024/8462A731 4C 55 86 34 44 59 A7 99  2B 97 88 4A 88 9A 0D 97
 D: sun4 port, Sparc hacker
 
 N: Hugh Blemings
-E: hugh@misc.nu
-W: http://misc.nu/hugh/
-D: Author and maintainer of the Keyspan USB to Serial drivers
-S: Po Box 234
+E: hugh@blemings.org
+W: http://blemings.org/hugh
+D: Original author of the Keyspan USB to serial drivers, random PowerPC hacker
+S: PO Box 234
 S: Belconnen ACT 2616
 S: Australia
 
@@ -403,6 +411,8 @@ D: Linux CD and Support Giveaway List
 N: Erik Inge Bolsø
 E: knan@mo.himolde.no
 D: Misc kernel hacks
+D: Updated PC speaker driver for 2.3
+S: Norway
 
 N: Andreas E. Bombe
 E: andreas.bombe@munich.netsurf.de
@@ -453,6 +463,11 @@ D: Linux/PA-RISC hacker
 S: 1200 Goldenrod Dr.
 S: Nampa, Idaho 83686
 S: USA
+
+N: Dirk J. Brandewie
+E: dirk.j.brandewie@intel.com
+E: linux-wimax@intel.com
+D: Intel Wireless WiMAX Connection 2400 SDIO driver
 
 N: Derrick J. Brashear
 E: shadow@dementia.org
@@ -508,12 +523,8 @@ D: REINER SCT cyberJack pinpad/e-com USB chipcard reader driver
 S: Germany
 
 N: Adrian Bunk
-E: bunk@stusta.de
 P: 1024D/4F12B400  B29C E71E FE19 6755 5C8A  84D4 99FC EA98 4F12 B400
 D: misc kernel hacking and testing
-S: Grasmeierstrasse 11
-S: 80805 Muenchen
-S: Germany
 
 N: Ray Burr
 E: ryb@nightmare.com
@@ -591,6 +602,11 @@ S: 3F, 65 Tajen street
 S: Tamsui town, Taipei county,
 S: Taiwan 251
 S: Republic of China
+
+N: Reinette Chatre
+E: reinette.chatre@intel.com
+D: WiMedia Link Protocol implementation
+D: UWB stack bits and pieces
 
 N: Michael Elizabeth Chastain
 E: mec@shout.net
@@ -1124,6 +1140,9 @@ S: 1150 Ringwood Court
 S: San Jose, California 95131
 S: USA
 
+N: Adam Fritzler
+E: mid@zigamorph.net
+
 N: Fernando Fuganti
 E: fuganti@conectiva.com.br
 E: fuganti@netbank.com.br
@@ -1352,6 +1371,14 @@ D: MTRR emulation with Centaur MCRs
 S: Gen Stedmanstraat 212
 S: 5623 HZ Eindhoven
 S: The Netherlands
+
+N: Oliver Hartkopp
+E: oliver.hartkopp@volkswagen.de
+W: http://www.volkswagen.de
+D: Controller Area Network (network layer core)
+S: Brieffach 1776
+S: 38436 Wolfsburg
+S: Germany
 
 N: Andrew Haylett
 E: ajh@primag.co.uk
@@ -1636,14 +1663,14 @@ S: Chapel Hill, North Carolina 27514-4818
 S: USA
 
 N: Dave Jones
-E: davej@codemonkey.org.uk
+E: davej@redhat.com
 W: http://www.codemonkey.org.uk
-D: x86 errata/setup maintenance.
-D: AGPGART driver.
+D: Assorted VIA x86 support.
+D: 2.5 AGPGART overhaul.
 D: CPUFREQ maintenance.
-D: Backport/Forwardport merge monkey.
-D: Various Janitor work.
-S: United Kingdom
+D: Fedora kernel maintainence.
+D: Misc/Other.
+S: 314 Littleton Rd, Westford, MA 01886, USA
 
 N: Martin Josfsson
 E: gandalf@wlug.westbo.se
@@ -1659,7 +1686,7 @@ E: ajoshi@shell.unixbox.com
 D: fbdev hacking
 
 N: Jesper Juhl
-E: jesper.juhl@gmail.com
+E: jj@chaosbits.net
 D: Various fixes, cleanups and minor features all over the tree.
 D: Wrote initial version of the hdaps driver (since passed on to others).
 S: Lemnosvej 1, 3.tv
@@ -2097,6 +2124,11 @@ N: H.J. Lu
 E: hjl@gnu.ai.mit.edu
 D: GCC + libraries hacker
 
+N: Yanir Lubetkin
+E: yanirx.lubatkin@intel.com
+E: linux-wimax@intel.com
+D: Intel Wireless WiMAX Connection 2400 driver
+
 N: Michal Ludvig
 E: michal@logix.cz
 E: michal.ludvig@asterisk.co.nz
@@ -2134,7 +2166,6 @@ D: Initial implementation of VC's, pty's and select()
 
 N: Pavel Machek
 E: pavel@ucw.cz
-E: pavel@suse.cz
 D: Softcursor for vga, hypertech cdrom support, vcsa bugfix, nbd
 D: sun4/330 port, capabilities for elf, speedup for rm on ext2, USB,
 D: work on suspend-to-ram/disk, killing duplicates from ioctl32
@@ -2602,8 +2633,9 @@ S: Perth, Western Australia
 S: Australia
 
 N: Miguel Ojeda Sandonis
-E: maxextreme@gmail.com
-W: http://maxextreme.googlepages.com/
+E: miguel.ojeda.sandonis@gmail.com
+W: http://miguelojeda.es
+W: http://jair.lab.fi.uva.es/~migojed/
 D: Author of the ks0108, cfag12864b and cfag12864bfb auxiliary display drivers.
 D: Maintainer of the auxiliary display drivers tree (drivers/auxdisplay/*)
 S: C/ Mieses 20, 9-B
@@ -2670,12 +2702,25 @@ S: RR #5, 497 Pole Line Road
 S: Thunder Bay, Ontario
 S: CANADA P7C 5M9
 
+N: Inaky Perez-Gonzalez
+E: inaky.perez-gonzalez@intel.com
+E: linux-wimax@intel.com
+E: inakypg@yahoo.com
+D: WiMAX stack
+D: Intel Wireless WiMAX Connection 2400 driver
+
 N: Yuri Per
 E: yuri@pts.mipt.ru
 D: Some smbfs fixes
 S: Demonstratsii 8-382
 S: Tula 300000
 S: Russia
+
+N: Inaky Perez-Gonzalez
+E: inaky.perez-gonzalez@intel.com
+D: UWB stack, HWA-RC driver and HWA-HC drivers
+D: Wireless USB additions to the USB stack
+D: WiMedia Link Protocol bits and pieces
 
 N: Gordon Peters
 E: GordPeters@smarttech.com
@@ -3109,6 +3154,12 @@ S: Post Office Box 64132
 S: Sunnyvale, California 94088-4132
 S: USA
 
+N: Stas Sergeev
+E: stsp@users.sourceforge.net
+D: PCM PC-Speaker driver
+D: misc fixes
+S: Russia
+
 N: Simon Shapiro
 E: shimon@i-Connect.Net
 W: http://www.-i-Connect.Net/~shimon
@@ -3306,6 +3357,14 @@ S: Universit=E9 de Rennes I
 S: F-35042 Rennes Cedex
 S: France
 
+N: Urs Thuermann
+E: urs.thuermann@volkswagen.de
+W: http://www.volkswagen.de
+D: Controller Area Network (network layer core)
+S: Brieffach 1776
+S: 38436 Wolfsburg
+S: Germany
+
 N: Jon Tombs
 E: jon@gte.esi.us.es
 W: http://www.esi.us.es/~jon
@@ -3320,8 +3379,7 @@ S: Spain
 N: Linus Torvalds
 E: torvalds@linux-foundation.org
 D: Original kernel hacker
-S: 12725 SW Millikan Way, Suite 400
-S: Beaverton, Oregon 97005
+S: Portland, Oregon 97005
 S: USA
 
 N: Marcelo Tosatti
@@ -3680,7 +3738,7 @@ S: 93149 Nittenau
 S: Germany
 
 N: Gertjan van Wingerde
-E: gwingerde@home.nl
+E: gwingerde@gmail.com
 D: Ralink rt2x00 WLAN driver
 D: Minix V2 file-system
 D: Misc fixes
@@ -3727,14 +3785,11 @@ S: The Netherlands
 
 N: David Woodhouse
 E: dwmw2@infradead.org
-D: ARCnet stuff, Applicom board driver, SO_BINDTODEVICE,
-D: some Alpha platform porting from 2.0, Memory Technology Devices,
-D: Acquire watchdog timer, PC speaker driver maintenance,
+D: JFFS2 file system, Memory Technology Device subsystem,
 D: various other stuff that annoyed me by not working.
-S: c/o Red Hat Engineering
-S: Rustat House
-S: 60 Clifton Road
-S: Cambridge. CB1 7EG
+S: c/o Intel Corporation
+S: Pipers Way
+S: Swindon. SN3 1RJ
 S: England
 
 N: Chris Wright

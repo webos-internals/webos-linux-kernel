@@ -22,18 +22,26 @@
  *
  */
 
+#include <linux/module.h>
 #include <linux/sched.h>		/* wake_up() */
 #include <linux/mutex.h>		/* struct mutex */
 #include <linux/rwsem.h>		/* struct rw_semaphore */
 #include <linux/pm.h>			/* pm_message_t */
 #include <linux/device.h>
+#include <linux/stringify.h>
+
+/* number of supported soundcards */
+#ifdef CONFIG_SND_DYNAMIC_MINORS
+#define SNDRV_CARDS 32
+#else
+#define SNDRV_CARDS 8		/* don't change - minor numbers */
+#endif
+
+#define CONFIG_SND_MAJOR	116	/* standard configuration */
 
 /* forward declarations */
 #ifdef CONFIG_PCI
 struct pci_dev;
-#endif
-#ifdef CONFIG_SBUS
-struct sbus_dev;
 #endif
 
 /* device allocation stuff */
@@ -53,6 +61,7 @@ typedef int __bitwise snd_device_type_t;
 #define	SNDRV_DEV_INFO		((__force snd_device_type_t) 0x1006)
 #define	SNDRV_DEV_BUS		((__force snd_device_type_t) 0x1007)
 #define	SNDRV_DEV_CODEC		((__force snd_device_type_t) 0x1008)
+#define	SNDRV_DEV_JACK          ((__force snd_device_type_t) 0x1009)
 #define	SNDRV_DEV_LOWLEVEL	((__force snd_device_type_t) 0x2000)
 
 typedef int __bitwise snd_device_state_t;
@@ -104,7 +113,7 @@ struct snd_card {
 	char shortname[32];		/* short name of this soundcard */
 	char longname[80];		/* name of this soundcard */
 	char mixername[80];		/* mixer name */
-	char components[80];		/* card components delimited with
+	char components[128];		/* card components delimited with
 								space */
 	struct module *module;		/* top-level module */
 
@@ -267,8 +276,8 @@ int snd_minor_info_done(void);
 int snd_minor_info_oss_init(void);
 int snd_minor_info_oss_done(void);
 #else
-#define snd_minor_info_oss_init() /*NOP*/
-#define snd_minor_info_oss_done() /*NOP*/
+static inline int snd_minor_info_oss_init(void) { return 0; }
+static inline int snd_minor_info_oss_done(void) { return 0; }
 #endif
 
 /* memory.c */
@@ -300,7 +309,7 @@ int snd_card_file_add(struct snd_card *card, struct file *file);
 int snd_card_file_remove(struct snd_card *card, struct file *file);
 
 #ifndef snd_card_set_dev
-#define snd_card_set_dev(card,devptr) ((card)->dev = (devptr))
+#define snd_card_set_dev(card, devptr) ((card)->dev = (devptr))
 #endif
 
 /* device.c */
@@ -344,7 +353,7 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
  * snd_printk - printk wrapper
  * @fmt: format string
  *
- * Works like print() but prints the file and the line of the caller
+ * Works like printk() but prints the file and the line of the caller
  * when configured with CONFIG_SND_VERBOSE_PRINTK.
  */
 #define snd_printk(fmt, args...) \
@@ -356,14 +365,12 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 
 #ifdef CONFIG_SND_DEBUG
 
-#define __ASTRING__(x) #x
-
 #ifdef CONFIG_SND_VERBOSE_PRINTK
 /**
  * snd_printd - debug printk
  * @fmt: format string
  *
- * Compiled only when Works like snd_printk() for debugging purpose.
+ * Works like snd_printk() for debugging purposes.
  * Ignored when CONFIG_SND_DEBUG is not set.
  */
 #define snd_printd(fmt, args...) \
@@ -372,43 +379,51 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 #define snd_printd(fmt, args...) \
 	printk(fmt ,##args)
 #endif
-/**
- * snd_assert - run-time assertion macro
- * @expr: expression
- *
- * This macro checks the expression in run-time and invokes the commands
- * given in the rest arguments if the assertion is failed.
- * When CONFIG_SND_DEBUG is not set, the expression is executed but
- * not checked.
- */
-#define snd_assert(expr, args...) do {					\
-	if (unlikely(!(expr))) {					\
-		snd_printk(KERN_ERR "BUG? (%s)\n", __ASTRING__(expr));	\
-		dump_stack();						\
-		args;							\
-	}								\
-} while (0)
 
-#define snd_BUG() do {				\
-	snd_printk(KERN_ERR "BUG?\n");		\
-	dump_stack();				\
-} while (0)
+/**
+ * snd_BUG - give a BUG warning message and stack trace
+ *
+ * Calls WARN() if CONFIG_SND_DEBUG is set.
+ * Ignored when CONFIG_SND_DEBUG is not set.
+ */
+#define snd_BUG()		WARN(1, "BUG?\n")
+
+/**
+ * snd_BUG_ON - debugging check macro
+ * @cond: condition to evaluate
+ *
+ * When CONFIG_SND_DEBUG is set, this macro evaluates the given condition,
+ * and call WARN() and returns the value if it's non-zero.
+ * 
+ * When CONFIG_SND_DEBUG is not set, this just returns zero, and the given
+ * condition is ignored.
+ *
+ * NOTE: the argument won't be evaluated at all when CONFIG_SND_DEBUG=n.
+ * Thus, don't put any statement that influences on the code behavior,
+ * such as pre/post increment, to the argument of this macro.
+ * If you want to evaluate and give a warning, use standard WARN_ON().
+ */
+#define snd_BUG_ON(cond)	WARN((cond), "BUG? (%s)\n", __stringify(cond))
 
 #else /* !CONFIG_SND_DEBUG */
 
-#define snd_printd(fmt, args...)	/* nothing */
-#define snd_assert(expr, args...)	(void)(expr)
-#define snd_BUG()			/* nothing */
+#define snd_printd(fmt, args...)	do { } while (0)
+#define snd_BUG()			do { } while (0)
+static inline int __snd_bug_on(int cond)
+{
+	return 0;
+}
+#define snd_BUG_ON(cond)	__snd_bug_on(0 && (cond))  /* always false */
 
 #endif /* CONFIG_SND_DEBUG */
 
-#ifdef CONFIG_SND_DEBUG_DETECT
+#ifdef CONFIG_SND_DEBUG_VERBOSE
 /**
  * snd_printdd - debug printk
  * @format: format string
  *
- * Compiled only when Works like snd_printk() for debugging purpose.
- * Ignored when CONFIG_SND_DEBUG_DETECT is not set.
+ * Works like snd_printk() for debugging purposes.
+ * Ignored when CONFIG_SND_DEBUG_VERBOSE is not set.
  */
 #define snd_printdd(format, args...) snd_printk(format, ##args)
 #else
@@ -432,7 +447,7 @@ struct snd_pci_quirk {
 	unsigned short subvendor;	/* PCI subvendor ID */
 	unsigned short subdevice;	/* PCI subdevice ID */
 	int value;			/* value */
-#ifdef CONFIG_SND_DEBUG_DETECT
+#ifdef CONFIG_SND_DEBUG_VERBOSE
 	const char *name;		/* name of the device (optional) */
 #endif
 };
@@ -440,7 +455,7 @@ struct snd_pci_quirk {
 #define _SND_PCI_QUIRK_ID(vend,dev) \
 	.subvendor = (vend), .subdevice = (dev)
 #define SND_PCI_QUIRK_ID(vend,dev) {_SND_PCI_QUIRK_ID(vend, dev)}
-#ifdef CONFIG_SND_DEBUG_DETECT
+#ifdef CONFIG_SND_DEBUG_VERBOSE
 #define SND_PCI_QUIRK(vend,dev,xname,val) \
 	{_SND_PCI_QUIRK_ID(vend, dev), .value = (val), .name = (xname)}
 #else

@@ -35,15 +35,17 @@ module_param_named(led, dvb_usb_af9005_led, bool, 0644);
 MODULE_PARM_DESC(led, "enable led (default: 1).");
 
 /* eeprom dump */
-int dvb_usb_af9005_dump_eeprom = 0;
+static int dvb_usb_af9005_dump_eeprom;
 module_param_named(dump_eeprom, dvb_usb_af9005_dump_eeprom, int, 0);
 MODULE_PARM_DESC(dump_eeprom, "dump contents of the eeprom.");
 
+DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
+
 /* remote control decoder */
-int (*rc_decode) (struct dvb_usb_device * d, u8 * data, int len, u32 * event,
-		  int *state);
-void *rc_keys;
-int *rc_keys_size;
+static int (*rc_decode) (struct dvb_usb_device *d, u8 *data, int len,
+		u32 *event, int *state);
+static void *rc_keys;
+static int *rc_keys_size;
 
 u8 regmask[8] = { 0x01, 0x03, 0x07, 0x0f, 0x1f, 0x3f, 0x7f, 0xff };
 
@@ -52,8 +54,8 @@ struct af9005_device_state {
 	int led_state;
 };
 
-int af9005_usb_generic_rw(struct dvb_usb_device *d, u8 * wbuf, u16 wlen,
-			  u8 * rbuf, u16 rlen, int delay_ms)
+static int af9005_usb_generic_rw(struct dvb_usb_device *d, u8 *wbuf, u16 wlen,
+			  u8 *rbuf, u16 rlen, int delay_ms)
 {
 	int actlen, ret = -ENOMEM;
 
@@ -96,12 +98,7 @@ int af9005_usb_generic_rw(struct dvb_usb_device *d, u8 * wbuf, u16 wlen,
 	return ret;
 }
 
-int af9005_usb_generic_write(struct dvb_usb_device *d, u8 * buf, u16 len)
-{
-	return af9005_usb_generic_rw(d, buf, len, NULL, 0, 0);
-}
-
-int af9005_generic_read_write(struct dvb_usb_device *d, u16 reg,
+static int af9005_generic_read_write(struct dvb_usb_device *d, u16 reg,
 			      int readwrite, int type, u8 * values, int len)
 {
 	struct af9005_device_state *st = d->priv;
@@ -763,7 +760,7 @@ static int af9005_boot_packet(struct usb_device *udev, int type, u8 * reply)
 	return 0;
 }
 
-int af9005_download_firmware(struct usb_device *udev, const struct firmware *fw)
+static int af9005_download_firmware(struct usb_device *udev, const struct firmware *fw)
 {
 	int i, packets, ret, act_len;
 
@@ -1020,12 +1017,14 @@ static struct dvb_usb_device_properties af9005_properties;
 static int af9005_usb_probe(struct usb_interface *intf,
 			    const struct usb_device_id *id)
 {
-	return dvb_usb_device_init(intf, &af9005_properties, THIS_MODULE, NULL);
+	return dvb_usb_device_init(intf, &af9005_properties,
+				   THIS_MODULE, NULL, adapter_nr);
 }
 
 static struct usb_device_id af9005_usb_table[] = {
 	{USB_DEVICE(USB_VID_AFATECH, USB_PID_AFATECH_AF9005)},
 	{USB_DEVICE(USB_VID_TERRATEC, USB_PID_TERRATEC_CINERGY_T_USB_XE)},
+	{USB_DEVICE(USB_VID_ANSONIC, USB_PID_ANSONIC_DVBT_USB)},
 	{0},
 };
 
@@ -1075,7 +1074,7 @@ static struct dvb_usb_device_properties af9005_properties = {
 	.rc_key_map_size = 0,
 	.rc_query = af9005_rc_query,
 
-	.num_device_descs = 2,
+	.num_device_descs = 3,
 	.devices = {
 		    {.name = "Afatech DVB-T USB1.1 stick",
 		     .cold_ids = {&af9005_usb_table[0], NULL},
@@ -1083,6 +1082,10 @@ static struct dvb_usb_device_properties af9005_properties = {
 		     },
 		    {.name = "TerraTec Cinergy T USB XE",
 		     .cold_ids = {&af9005_usb_table[1], NULL},
+		     .warm_ids = {NULL},
+		     },
+		    {.name = "Ansonic DVB-T USB1.1 stick",
+		     .cold_ids = {&af9005_usb_table[2], NULL},
 		     .warm_ids = {NULL},
 		     },
 		    {NULL},

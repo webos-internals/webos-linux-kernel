@@ -1,6 +1,6 @@
 /*
  *   pata_pcmcia.c - PCMCIA PATA controller driver.
- *   Copyright 2005-2006 Red Hat Inc <alan@redhat.com>, all rights reserved.
+ *   Copyright 2005-2006 Red Hat Inc, all rights reserved.
  *   PCMCIA ident update Copyright 2006 Marcin Juszkiewicz
  *						<openembedded@hrw.one.pl>
  *
@@ -42,7 +42,7 @@
 
 
 #define DRV_NAME "pata_pcmcia"
-#define DRV_VERSION "0.3.2"
+#define DRV_VERSION "0.3.3"
 
 /*
  *	Private data structure to glue stuff together
@@ -86,51 +86,125 @@ static int pcmcia_set_mode(struct ata_link *link, struct ata_device **r_failed_d
 	return ata_do_set_mode(link, r_failed_dev);
 }
 
+/**
+ *	pcmcia_set_mode_8bit	-	PCMCIA specific mode setup
+ *	@link: link
+ *	@r_failed_dev: Return pointer for failed device
+ *
+ *	For the simple emulated 8bit stuff the less we do the better.
+ */
+
+static int pcmcia_set_mode_8bit(struct ata_link *link,
+				struct ata_device **r_failed_dev)
+{
+	return 0;
+}
+
+/**
+ *	ata_data_xfer_8bit	 -	Transfer data by 8bit PIO
+ *	@dev: device to target
+ *	@buf: data buffer
+ *	@buflen: buffer length
+ *	@rw: read/write
+ *
+ *	Transfer data from/to the device data register by 8 bit PIO.
+ *
+ *	LOCKING:
+ *	Inherited from caller.
+ */
+
+static unsigned int ata_data_xfer_8bit(struct ata_device *dev,
+				unsigned char *buf, unsigned int buflen, int rw)
+{
+	struct ata_port *ap = dev->link->ap;
+
+	if (rw == READ)
+		ioread8_rep(ap->ioaddr.data_addr, buf, buflen);
+	else
+		iowrite8_rep(ap->ioaddr.data_addr, buf, buflen);
+
+	return buflen;
+}
+
+
 static struct scsi_host_template pcmcia_sht = {
-	.module			= THIS_MODULE,
-	.name			= DRV_NAME,
-	.ioctl			= ata_scsi_ioctl,
-	.queuecommand		= ata_scsi_queuecmd,
-	.can_queue		= ATA_DEF_QUEUE,
-	.this_id		= ATA_SHT_THIS_ID,
-	.sg_tablesize		= LIBATA_MAX_PRD,
-	.cmd_per_lun		= ATA_SHT_CMD_PER_LUN,
-	.emulated		= ATA_SHT_EMULATED,
-	.use_clustering		= ATA_SHT_USE_CLUSTERING,
-	.proc_name		= DRV_NAME,
-	.dma_boundary		= ATA_DMA_BOUNDARY,
-	.slave_configure	= ata_scsi_slave_config,
-	.slave_destroy		= ata_scsi_slave_destroy,
-	.bios_param		= ata_std_bios_param,
+	ATA_PIO_SHT(DRV_NAME),
 };
 
 static struct ata_port_operations pcmcia_port_ops = {
-	.set_mode	= pcmcia_set_mode,
-	.tf_load	= ata_tf_load,
-	.tf_read	= ata_tf_read,
-	.check_status 	= ata_check_status,
-	.exec_command	= ata_exec_command,
-	.dev_select 	= ata_std_dev_select,
-
-	.freeze		= ata_bmdma_freeze,
-	.thaw		= ata_bmdma_thaw,
-	.error_handler	= ata_bmdma_error_handler,
-	.post_internal_cmd = ata_bmdma_post_internal_cmd,
+	.inherits	= &ata_sff_port_ops,
+	.sff_data_xfer	= ata_sff_data_xfer_noirq,
 	.cable_detect	= ata_cable_40wire,
+	.set_mode	= pcmcia_set_mode,
+};
 
-	.qc_prep 	= ata_qc_prep,
-	.qc_issue	= ata_qc_issue_prot,
-
-	.data_xfer	= ata_data_xfer_noirq,
-
-	.irq_clear	= ata_bmdma_irq_clear,
-	.irq_on		= ata_irq_on,
-
-	.port_start	= ata_sff_port_start,
+static struct ata_port_operations pcmcia_8bit_port_ops = {
+	.inherits	= &ata_sff_port_ops,
+	.sff_data_xfer	= ata_data_xfer_8bit,
+	.cable_detect	= ata_cable_40wire,
+	.set_mode	= pcmcia_set_mode_8bit,
 };
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
+
+
+struct pcmcia_config_check {
+	unsigned long ctl_base;
+	int skip_vcc;
+	int is_kme;
+};
+
+static int pcmcia_check_one_config(struct pcmcia_device *pdev,
+				   cistpl_cftable_entry_t *cfg,
+				   cistpl_cftable_entry_t *dflt,
+				   unsigned int vcc,
+				   void *priv_data)
+{
+	struct pcmcia_config_check *stk = priv_data;
+
+	/* Check for matching Vcc, unless we're desperate */
+	if (!stk->skip_vcc) {
+		if (cfg->vcc.present & (1 << CISTPL_POWER_VNOM)) {
+			if (vcc != cfg->vcc.param[CISTPL_POWER_VNOM] / 10000)
+				return -ENODEV;
+		} else if (dflt->vcc.present & (1 << CISTPL_POWER_VNOM)) {
+			if (vcc != dflt->vcc.param[CISTPL_POWER_VNOM] / 10000)
+				return -ENODEV;
+		}
+	}
+
+	if (cfg->vpp1.present & (1 << CISTPL_POWER_VNOM))
+		pdev->conf.Vpp = cfg->vpp1.param[CISTPL_POWER_VNOM] / 10000;
+	else if (dflt->vpp1.present & (1 << CISTPL_POWER_VNOM))
+		pdev->conf.Vpp = dflt->vpp1.param[CISTPL_POWER_VNOM] / 10000;
+
+	if ((cfg->io.nwin > 0) || (dflt->io.nwin > 0)) {
+		cistpl_io_t *io = (cfg->io.nwin) ? &cfg->io : &dflt->io;
+		pdev->io.BasePort1 = io->win[0].base;
+		pdev->io.IOAddrLines = io->flags & CISTPL_IO_LINES_MASK;
+		if (!(io->flags & CISTPL_IO_16BIT))
+			pdev->io.Attributes1 = IO_DATA_PATH_WIDTH_8;
+		if (io->nwin == 2) {
+			pdev->io.NumPorts1 = 8;
+			pdev->io.BasePort2 = io->win[1].base;
+			pdev->io.NumPorts2 = (stk->is_kme) ? 2 : 1;
+			if (pcmcia_request_io(pdev, &pdev->io) != 0)
+				return -ENODEV;
+			stk->ctl_base = pdev->io.BasePort2;
+		} else if ((io->nwin == 1) && (io->win[0].len >= 16)) {
+			pdev->io.NumPorts1 = io->win[0].len;
+			pdev->io.NumPorts2 = 0;
+			if (pcmcia_request_io(pdev, &pdev->io) != 0)
+				return -ENODEV;
+			stk->ctl_base = pdev->io.BasePort1 + 0x0e;
+		} else
+			return -ENODEV;
+		/* If we've got this far, we're done */
+		return 0;
+	}
+	return -ENODEV;
+}
 
 /**
  *	pcmcia_init_one		-	attach a PCMCIA interface
@@ -145,17 +219,12 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 	struct ata_host *host;
 	struct ata_port *ap;
 	struct ata_pcmcia_info *info;
-	tuple_t tuple;
-	struct {
-		unsigned short buf[128];
-		cisparse_t parse;
-		config_info_t conf;
-		cistpl_cftable_entry_t dflt;
-	} *stk = NULL;
-	cistpl_cftable_entry_t *cfg;
-	int pass, last_ret = 0, last_fn = 0, is_kme = 0, ret = -ENOMEM;
+	struct pcmcia_config_check *stk = NULL;
+	int last_ret = 0, last_fn = 0, is_kme = 0, ret = -ENOMEM, p;
 	unsigned long io_base, ctl_base;
 	void __iomem *io_addr, *ctl_addr;
+	int n_ports = 1;
+	struct ata_port_operations *ops = &pcmcia_port_ops;
 
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
 	if (info == NULL)
@@ -174,96 +243,27 @@ static int pcmcia_init_one(struct pcmcia_device *pdev)
 	pdev->conf.Attributes = CONF_ENABLE_IRQ;
 	pdev->conf.IntType = INT_MEMORY_AND_IO;
 
-	/* Allocate resoure probing structures */
-
-	stk = kzalloc(sizeof(*stk), GFP_KERNEL);
-	if (!stk)
-		goto out1;
-
-	cfg = &stk->parse.cftable_entry;
-
-	/* Tuples we are walking */
-	tuple.TupleData = (cisdata_t *)&stk->buf;
-	tuple.TupleOffset = 0;
-	tuple.TupleDataMax = 255;
-	tuple.Attributes = 0;
-
 	/* See if we have a manufacturer identifier. Use it to set is_kme for
 	   vendor quirks */
 	is_kme = ((pdev->manf_id == MANFID_KME) &&
 		  ((pdev->card_id == PRODID_KME_KXLC005_A) ||
 		   (pdev->card_id == PRODID_KME_KXLC005_B)));
 
-	/* Not sure if this is right... look up the current Vcc */
-	CS_CHECK(GetConfigurationInfo, pcmcia_get_configuration_info(pdev, &stk->conf));
-/*	link->conf.Vcc = stk->conf.Vcc; */
+	/* Allocate resoure probing structures */
 
-	pass = io_base = ctl_base = 0;
-	tuple.DesiredTuple = CISTPL_CFTABLE_ENTRY;
-	tuple.Attributes = 0;
-	CS_CHECK(GetFirstTuple, pcmcia_get_first_tuple(pdev, &tuple));
+	stk = kzalloc(sizeof(*stk), GFP_KERNEL);
+	if (!stk)
+		goto out1;
+	stk->is_kme = is_kme;
+	stk->skip_vcc = io_base = ctl_base = 0;
 
-	/* Now munch the resources looking for a suitable set */
-	while (1) {
-		if (pcmcia_get_tuple_data(pdev, &tuple) != 0)
-			goto next_entry;
-		if (pcmcia_parse_tuple(pdev, &tuple, &stk->parse) != 0)
-			goto next_entry;
-		/* Check for matching Vcc, unless we're desperate */
-		if (!pass) {
-			if (cfg->vcc.present & (1 << CISTPL_POWER_VNOM)) {
-				if (stk->conf.Vcc != cfg->vcc.param[CISTPL_POWER_VNOM] / 10000)
-					goto next_entry;
-			} else if (stk->dflt.vcc.present & (1 << CISTPL_POWER_VNOM)) {
-				if (stk->conf.Vcc != stk->dflt.vcc.param[CISTPL_POWER_VNOM] / 10000)
-					goto next_entry;
-			}
-		}
-
-		if (cfg->vpp1.present & (1 << CISTPL_POWER_VNOM))
-			pdev->conf.Vpp = cfg->vpp1.param[CISTPL_POWER_VNOM] / 10000;
-		else if (stk->dflt.vpp1.present & (1 << CISTPL_POWER_VNOM))
-			pdev->conf.Vpp = stk->dflt.vpp1.param[CISTPL_POWER_VNOM] / 10000;
-
-		if ((cfg->io.nwin > 0) || (stk->dflt.io.nwin > 0)) {
-			cistpl_io_t *io = (cfg->io.nwin) ? &cfg->io : &stk->dflt.io;
-			pdev->conf.ConfigIndex = cfg->index;
-			pdev->io.BasePort1 = io->win[0].base;
-			pdev->io.IOAddrLines = io->flags & CISTPL_IO_LINES_MASK;
-			if (!(io->flags & CISTPL_IO_16BIT))
-				pdev->io.Attributes1 = IO_DATA_PATH_WIDTH_8;
-			if (io->nwin == 2) {
-				pdev->io.NumPorts1 = 8;
-				pdev->io.BasePort2 = io->win[1].base;
-				pdev->io.NumPorts2 = (is_kme) ? 2 : 1;
-				if (pcmcia_request_io(pdev, &pdev->io) != 0)
-					goto next_entry;
-				io_base = pdev->io.BasePort1;
-				ctl_base = pdev->io.BasePort2;
-			} else if ((io->nwin == 1) && (io->win[0].len >= 16)) {
-				pdev->io.NumPorts1 = io->win[0].len;
-				pdev->io.NumPorts2 = 0;
-				if (pcmcia_request_io(pdev, &pdev->io) != 0)
-					goto next_entry;
-				io_base = pdev->io.BasePort1;
-				ctl_base = pdev->io.BasePort1 + 0x0e;
-			} else
-				goto next_entry;
-			/* If we've got this far, we're done */
-			break;
-		}
-next_entry:
-		if (cfg->flags & CISTPL_CFTABLE_DEFAULT)
-			memcpy(&stk->dflt, cfg, sizeof(stk->dflt));
-		if (pass) {
-			CS_CHECK(GetNextTuple, pcmcia_get_next_tuple(pdev, &tuple));
-		} else if (pcmcia_get_next_tuple(pdev, &tuple) != 0) {
-			CS_CHECK(GetFirstTuple, pcmcia_get_first_tuple(pdev, &tuple));
-			memset(&stk->dflt, 0, sizeof(stk->dflt));
-			pass++;
-		}
+	if (pcmcia_loop_config(pdev, pcmcia_check_one_config, stk)) {
+		stk->skip_vcc = 1;
+		if (pcmcia_loop_config(pdev, pcmcia_check_one_config, stk))
+			goto failed; /* No suitable config found */
 	}
-
+	io_base = pdev->io.BasePort1;
+	ctl_base = stk->ctl_base;
 	CS_CHECK(RequestIRQ, pcmcia_request_irq(pdev, &pdev->irq));
 	CS_CHECK(RequestConfiguration, pcmcia_request_configuration(pdev, &pdev->conf));
 
@@ -282,30 +282,35 @@ next_entry:
 	/* FIXME: Could be more ports at base + 0x10 but we only deal with
 	   one right now */
 	if (pdev->io.NumPorts1 >= 0x20)
-		printk(KERN_WARNING DRV_NAME ": second channel not yet supported.\n");
+		n_ports = 2;
 
+	if (pdev->manf_id == 0x0097 && pdev->card_id == 0x1620)
+		ops = &pcmcia_8bit_port_ops;
 	/*
 	 *	Having done the PCMCIA plumbing the ATA side is relatively
 	 *	sane.
 	 */
 	ret = -ENOMEM;
-	host = ata_host_alloc(&pdev->dev, 1);
+	host = ata_host_alloc(&pdev->dev, n_ports);
 	if (!host)
 		goto failed;
-	ap = host->ports[0];
 
-	ap->ops = &pcmcia_port_ops;
-	ap->pio_mask = 1;		/* ISA so PIO 0 cycles */
-	ap->flags |= ATA_FLAG_SLAVE_POSS;
-	ap->ioaddr.cmd_addr = io_addr;
-	ap->ioaddr.altstatus_addr = ctl_addr;
-	ap->ioaddr.ctl_addr = ctl_addr;
-	ata_std_ports(&ap->ioaddr);
+	for (p = 0; p < n_ports; p++) {
+		ap = host->ports[p];
 
-	ata_port_desc(ap, "cmd 0x%lx ctl 0x%lx", io_base, ctl_base);
+		ap->ops = ops;
+		ap->pio_mask = 1;		/* ISA so PIO 0 cycles */
+		ap->flags |= ATA_FLAG_SLAVE_POSS;
+		ap->ioaddr.cmd_addr = io_addr + 0x10 * p;
+		ap->ioaddr.altstatus_addr = ctl_addr + 0x10 * p;
+		ap->ioaddr.ctl_addr = ctl_addr + 0x10 * p;
+		ata_sff_std_ports(&ap->ioaddr);
+
+		ata_port_desc(ap, "cmd 0x%lx ctl 0x%lx", io_base, ctl_base);
+	}
 
 	/* activate */
-	ret = ata_host_activate(host, pdev->irq.AssignedIRQ, ata_interrupt,
+	ret = ata_host_activate(host, pdev->irq.AssignedIRQ, ata_sff_interrupt,
 				IRQF_SHARED, &pcmcia_sht);
 	if (ret)
 		goto failed;
@@ -360,6 +365,8 @@ static struct pcmcia_device_id pcmcia_devices[] = {
 	PCMCIA_DEVICE_MANF_CARD(0x0032, 0x0704),
 	PCMCIA_DEVICE_MANF_CARD(0x0032, 0x2904),
 	PCMCIA_DEVICE_MANF_CARD(0x0045, 0x0401),	/* SanDisk CFA */
+	PCMCIA_DEVICE_MANF_CARD(0x004f, 0x0000),	/* Kingston */
+	PCMCIA_DEVICE_MANF_CARD(0x0097, 0x1620), 	/* TI emulated */
 	PCMCIA_DEVICE_MANF_CARD(0x0098, 0x0000),	/* Toshiba */
 	PCMCIA_DEVICE_MANF_CARD(0x00a4, 0x002d),
 	PCMCIA_DEVICE_MANF_CARD(0x00ce, 0x0000),	/* Samsung */
@@ -379,9 +386,9 @@ static struct pcmcia_device_id pcmcia_devices[] = {
 	PCMCIA_DEVICE_PROD_ID12("EXP   ", "CD-ROM", 0x0a5c52fd, 0x66536591),
 	PCMCIA_DEVICE_PROD_ID12("EXP   ", "PnPIDE", 0x0a5c52fd, 0x0c694728),
 	PCMCIA_DEVICE_PROD_ID12("FREECOM", "PCCARD-IDE", 0x5714cbf7, 0x48e0ab8e),
-	PCMCIA_DEVICE_PROD_ID12("Hyperstone", "Model1", 0x3d5b9ef5, 0xca6ab420),
 	PCMCIA_DEVICE_PROD_ID12("HITACHI", "FLASH", 0xf4f43949, 0x9eb86aae),
 	PCMCIA_DEVICE_PROD_ID12("HITACHI", "microdrive", 0xf4f43949, 0xa6d76178),
+	PCMCIA_DEVICE_PROD_ID12("Hyperstone", "Model1", 0x3d5b9ef5, 0xca6ab420),
 	PCMCIA_DEVICE_PROD_ID12("IBM", "microdrive", 0xb569a6e5, 0xa6d76178),
 	PCMCIA_DEVICE_PROD_ID12("IBM", "IBM17JSSFP20", 0xb569a6e5, 0xf2508753),
 	PCMCIA_DEVICE_PROD_ID12("KINGSTON", "CF8GB", 0x2e6d1829, 0xacbe682e),
@@ -389,6 +396,7 @@ static struct pcmcia_device_id pcmcia_devices[] = {
 	PCMCIA_DEVICE_PROD_ID12("IO DATA", "PCIDE", 0x547e66dc, 0x5c5ab149),
 	PCMCIA_DEVICE_PROD_ID12("IO DATA", "PCIDEII", 0x547e66dc, 0xb3662674),
 	PCMCIA_DEVICE_PROD_ID12("LOOKMEET", "CBIDE2      ", 0xe37be2b5, 0x8671043b),
+	PCMCIA_DEVICE_PROD_ID12("M-Systems", "CF300", 0x7ed2ad87, 0x7e9e78ee),
 	PCMCIA_DEVICE_PROD_ID12("M-Systems", "CF500", 0x7ed2ad87, 0x7a13045c),
 	PCMCIA_DEVICE_PROD_ID2("NinjaATA-", 0xebe0bd79),
 	PCMCIA_DEVICE_PROD_ID12("PCMCIA", "CD-ROM", 0x281f1c5d, 0x66536591),
@@ -399,6 +407,7 @@ static struct pcmcia_device_id pcmcia_devices[] = {
 	PCMCIA_DEVICE_PROD_ID12("SMI VENDOR", "SMI PRODUCT", 0x30896c92, 0x703cc5f6),
 	PCMCIA_DEVICE_PROD_ID12("TOSHIBA", "MK2001MPL", 0xb4585a1a, 0x3489e003),
 	PCMCIA_DEVICE_PROD_ID1("TRANSCEND    512M   ", 0xd0909443),
+	PCMCIA_DEVICE_PROD_ID12("TRANSCEND", "TS1GCF45", 0x709b1bf1, 0xf68b6f32),
 	PCMCIA_DEVICE_PROD_ID12("TRANSCEND", "TS1GCF80", 0x709b1bf1, 0x2a54d4b1),
 	PCMCIA_DEVICE_PROD_ID12("TRANSCEND", "TS2GCF120", 0x709b1bf1, 0x969aa4f2),
 	PCMCIA_DEVICE_PROD_ID12("TRANSCEND", "TS4GCF120", 0x709b1bf1, 0xf54a91c8),
@@ -407,6 +416,7 @@ static struct pcmcia_device_id pcmcia_devices[] = {
 	PCMCIA_DEVICE_PROD_ID1("STI Flash", 0xe4a13209),
 	PCMCIA_DEVICE_PROD_ID12("STI", "Flash 5.0", 0xbf2df18d, 0x8cb57a0e),
 	PCMCIA_MFC_DEVICE_PROD_ID12(1, "SanDisk", "ConnectPlus", 0x7a954bd9, 0x74be00c6),
+	PCMCIA_DEVICE_PROD_ID2("Flash Card", 0x5a362506),
 	PCMCIA_DEVICE_NULL,
 };
 

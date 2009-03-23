@@ -19,46 +19,8 @@
 
 #include "sysfs.h"
 
-static int object_depth(struct sysfs_dirent *sd)
-{
-	int depth = 0;
-
-	for (; sd->s_parent; sd = sd->s_parent)
-		depth++;
-
-	return depth;
-}
-
-static int object_path_length(struct sysfs_dirent * sd)
-{
-	int length = 1;
-
-	for (; sd->s_parent; sd = sd->s_parent)
-		length += strlen(sd->s_name) + 1;
-
-	return length;
-}
-
-static void fill_object_path(struct sysfs_dirent *sd, char *buffer, int length)
-{
-	--length;
-	for (; sd->s_parent; sd = sd->s_parent) {
-		int cur = strlen(sd->s_name);
-
-		/* back up enough to print this bus id with '/' */
-		length -= cur;
-		strncpy(buffer + length, sd->s_name, cur);
-		*(buffer + --length) = '/';
-	}
-}
-
-/**
- *	sysfs_create_link - create symlink between two objects.
- *	@kobj:	object whose directory we're creating the link in.
- *	@target:	object we're pointing to.
- *	@name:		name of the symlink.
- */
-int sysfs_create_link(struct kobject * kobj, struct kobject * target, const char * name)
+static int sysfs_do_create_link(struct kobject *kobj, struct kobject *target,
+				const char *name, int warn)
 {
 	struct sysfs_dirent *parent_sd = NULL;
 	struct sysfs_dirent *target_sd = NULL;
@@ -98,7 +60,10 @@ int sysfs_create_link(struct kobject * kobj, struct kobject * target, const char
 	target_sd = NULL;	/* reference is now owned by the symlink */
 
 	sysfs_addrm_start(&acxt, parent_sd);
-	error = sysfs_add_one(&acxt, sd);
+	if (warn)
+		error = sysfs_add_one(&acxt, sd);
+	else
+		error = __sysfs_add_one(&acxt, sd);
 	sysfs_addrm_finish(&acxt);
 
 	if (error)
@@ -112,6 +77,32 @@ int sysfs_create_link(struct kobject * kobj, struct kobject * target, const char
 	return error;
 }
 
+/**
+ *	sysfs_create_link - create symlink between two objects.
+ *	@kobj:	object whose directory we're creating the link in.
+ *	@target:	object we're pointing to.
+ *	@name:		name of the symlink.
+ */
+int sysfs_create_link(struct kobject *kobj, struct kobject *target,
+		      const char *name)
+{
+	return sysfs_do_create_link(kobj, target, name, 1);
+}
+
+/**
+ *	sysfs_create_link_nowarn - create symlink between two objects.
+ *	@kobj:	object whose directory we're creating the link in.
+ *	@target:	object we're pointing to.
+ *	@name:		name of the symlink.
+ *
+ *	This function does the same as sysf_create_link(), but it
+ *	doesn't warn if the link already exists.
+ */
+int sysfs_create_link_nowarn(struct kobject *kobj, struct kobject *target,
+			     const char *name)
+{
+	return sysfs_do_create_link(kobj, target, name, 0);
+}
 
 /**
  *	sysfs_remove_link - remove symlink in object's directory.
@@ -121,27 +112,64 @@ int sysfs_create_link(struct kobject * kobj, struct kobject * target, const char
 
 void sysfs_remove_link(struct kobject * kobj, const char * name)
 {
-	sysfs_hash_and_remove(kobj->sd, name);
+	struct sysfs_dirent *parent_sd = NULL;
+
+	if (!kobj)
+		parent_sd = &sysfs_root;
+	else
+		parent_sd = kobj->sd;
+
+	sysfs_hash_and_remove(parent_sd, name);
 }
 
-static int sysfs_get_target_path(struct sysfs_dirent * parent_sd,
-				 struct sysfs_dirent * target_sd, char *path)
+static int sysfs_get_target_path(struct sysfs_dirent *parent_sd,
+				 struct sysfs_dirent *target_sd, char *path)
 {
-	char * s;
-	int depth, size;
+	struct sysfs_dirent *base, *sd;
+	char *s = path;
+	int len = 0;
 
-	depth = object_depth(parent_sd);
-	size = object_path_length(target_sd) + depth * 3 - 1;
-	if (size > PATH_MAX)
+	/* go up to the root, stop at the base */
+	base = parent_sd;
+	while (base->s_parent) {
+		sd = target_sd->s_parent;
+		while (sd->s_parent && base != sd)
+			sd = sd->s_parent;
+
+		if (base == sd)
+			break;
+
+		strcpy(s, "../");
+		s += 3;
+		base = base->s_parent;
+	}
+
+	/* determine end of target string for reverse fillup */
+	sd = target_sd;
+	while (sd->s_parent && sd != base) {
+		len += strlen(sd->s_name) + 1;
+		sd = sd->s_parent;
+	}
+
+	/* check limits */
+	if (len < 2)
+		return -EINVAL;
+	len--;
+	if ((s - path) + len > PATH_MAX)
 		return -ENAMETOOLONG;
 
-	pr_debug("%s: depth = %d, size = %d\n", __FUNCTION__, depth, size);
+	/* reverse fillup of target string from target to base */
+	sd = target_sd;
+	while (sd->s_parent && sd != base) {
+		int slen = strlen(sd->s_name);
 
-	for (s = path; depth--; s += 3)
-		strcpy(s,"../");
+		len -= slen;
+		strncpy(s + len, sd->s_name, slen);
+		if (len)
+			s[--len] = '/';
 
-	fill_object_path(target_sd, path, size);
-	pr_debug("%s: path = '%s'\n", __FUNCTION__, path);
+		sd = sd->s_parent;
+	}
 
 	return 0;
 }

@@ -229,22 +229,22 @@ static unsigned int speedstep_detect_chipset (void)
 	return 0;
 }
 
-static unsigned int _speedstep_get(cpumask_t cpus)
+static unsigned int _speedstep_get(const struct cpumask *cpus)
 {
 	unsigned int speed;
 	cpumask_t cpus_allowed;
 
 	cpus_allowed = current->cpus_allowed;
-	set_cpus_allowed(current, cpus);
+	set_cpus_allowed_ptr(current, cpus);
 	speed = speedstep_get_processor_frequency(speedstep_processor);
-	set_cpus_allowed(current, cpus_allowed);
+	set_cpus_allowed_ptr(current, &cpus_allowed);
 	dprintk("detected %u kHz as current frequency\n", speed);
 	return speed;
 }
 
 static unsigned int speedstep_get(unsigned int cpu)
 {
-	return _speedstep_get(cpumask_of_cpu(cpu));
+	return _speedstep_get(cpumask_of(cpu));
 }
 
 /**
@@ -279,20 +279,20 @@ static int speedstep_target (struct cpufreq_policy *policy,
 
 	cpus_allowed = current->cpus_allowed;
 
-	for_each_cpu_mask(i, policy->cpus) {
+	for_each_cpu(i, policy->cpus) {
 		freqs.cpu = i;
 		cpufreq_notify_transition(&freqs, CPUFREQ_PRECHANGE);
 	}
 
 	/* switch to physical CPU where state is to be changed */
-	set_cpus_allowed(current, policy->cpus);
+	set_cpus_allowed_ptr(current, policy->cpus);
 
 	speedstep_set_state(newstate);
 
 	/* allow to be run on all CPUs */
-	set_cpus_allowed(current, cpus_allowed);
+	set_cpus_allowed_ptr(current, &cpus_allowed);
 
-	for_each_cpu_mask(i, policy->cpus) {
+	for_each_cpu(i, policy->cpus) {
 		freqs.cpu = i;
 		cpufreq_notify_transition(&freqs, CPUFREQ_POSTCHANGE);
 	}
@@ -322,11 +322,11 @@ static int speedstep_cpu_init(struct cpufreq_policy *policy)
 
 	/* only run on CPU to be set, or on its sibling */
 #ifdef CONFIG_SMP
-	policy->cpus = per_cpu(cpu_sibling_map, policy->cpu);
+	cpumask_copy(policy->cpus, &per_cpu(cpu_sibling_map, policy->cpu));
 #endif
 
 	cpus_allowed = current->cpus_allowed;
-	set_cpus_allowed(current, policy->cpus);
+	set_cpus_allowed_ptr(current, policy->cpus);
 
 	/* detect low and high frequency and transition latency */
 	result = speedstep_get_freqs(speedstep_processor,
@@ -334,7 +334,7 @@ static int speedstep_cpu_init(struct cpufreq_policy *policy)
 				     &speedstep_freqs[SPEEDSTEP_HIGH].frequency,
 				     &policy->cpuinfo.transition_latency,
 				     &speedstep_set_state);
-	set_cpus_allowed(current, cpus_allowed);
+	set_cpus_allowed_ptr(current, &cpus_allowed);
 	if (result)
 		return result;
 
@@ -431,7 +431,7 @@ static void __exit speedstep_exit(void)
 }
 
 
-MODULE_AUTHOR ("Dave Jones <davej@codemonkey.org.uk>, Dominik Brodowski <linux@brodo.de>");
+MODULE_AUTHOR ("Dave Jones <davej@redhat.com>, Dominik Brodowski <linux@brodo.de>");
 MODULE_DESCRIPTION ("Speedstep driver for Intel mobile processors on chipsets with ICH-M southbridges.");
 MODULE_LICENSE ("GPL");
 

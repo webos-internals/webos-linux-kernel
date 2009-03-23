@@ -14,9 +14,9 @@
 #define MOUSEDEV_MIX		31
 
 #include <linux/slab.h>
+#include <linux/smp_lock.h>
 #include <linux/poll.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/input.h>
 #include <linux/random.h>
@@ -415,6 +415,7 @@ static void mousedev_free(struct device *dev)
 {
 	struct mousedev *mousedev = container_of(dev, struct mousedev, dev);
 
+	input_put_device(mousedev->handle.dev);
 	kfree(mousedev);
 }
 
@@ -518,7 +519,6 @@ static int mousedev_release(struct inode *inode, struct file *file)
 	struct mousedev_client *client = file->private_data;
 	struct mousedev *mousedev = client->mousedev;
 
-	mousedev_fasync(-1, file, 0);
 	mousedev_detach_client(mousedev, client);
 	kfree(client);
 
@@ -545,16 +545,21 @@ static int mousedev_open(struct inode *inode, struct file *file)
 	if (i >= MOUSEDEV_MINORS)
 		return -ENODEV;
 
+	lock_kernel();
 	error = mutex_lock_interruptible(&mousedev_table_mutex);
-	if (error)
+	if (error) {
+		unlock_kernel();
 		return error;
+	}
 	mousedev = mousedev_table[i];
 	if (mousedev)
 		get_device(&mousedev->dev);
 	mutex_unlock(&mousedev_table_mutex);
 
-	if (!mousedev)
+	if (!mousedev) {
+		unlock_kernel();
 		return -ENODEV;
+	}
 
 	client = kzalloc(sizeof(struct mousedev_client), GFP_KERNEL);
 	if (!client) {
@@ -573,6 +578,7 @@ static int mousedev_open(struct inode *inode, struct file *file)
 		goto err_free_client;
 
 	file->private_data = client;
+	unlock_kernel();
 	return 0;
 
  err_free_client:
@@ -580,6 +586,7 @@ static int mousedev_open(struct inode *inode, struct file *file)
 	kfree(client);
  err_put_mousedev:
 	put_device(&mousedev->dev);
+	unlock_kernel();
 	return error;
 }
 
@@ -866,13 +873,12 @@ static struct mousedev *mousedev_create(struct input_dev *dev,
 
 	mousedev->minor = minor;
 	mousedev->exist = 1;
-	mousedev->handle.dev = dev;
+	mousedev->handle.dev = input_get_device(dev);
 	mousedev->handle.name = mousedev->name;
 	mousedev->handle.handler = handler;
 	mousedev->handle.private = mousedev;
 
-	strlcpy(mousedev->dev.bus_id, mousedev->name,
-		sizeof(mousedev->dev.bus_id));
+	dev_set_name(&mousedev->dev, mousedev->name);
 	mousedev->dev.class = &input_class;
 	if (dev)
 		mousedev->dev.parent = &dev->dev;
@@ -1033,7 +1039,7 @@ static const struct input_device_id mousedev_ids[] = {
 		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
 			INPUT_DEVICE_ID_MATCH_KEYBIT |
 			INPUT_DEVICE_ID_MATCH_ABSBIT,
-		.evbit = { BIT(EV_KEY) | BIT(EV_ABS) | BIT(EV_SYN) },
+		.evbit = { BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS) },
 		.keybit = { [BIT_WORD(BTN_LEFT)] = BIT_MASK(BTN_LEFT) },
 		.absbit = { BIT_MASK(ABS_X) | BIT_MASK(ABS_Y) },
 	},	/* Mouse-like device with absolute X and Y but ordinary

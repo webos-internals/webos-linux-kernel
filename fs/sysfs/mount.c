@@ -16,6 +16,7 @@
 #include <linux/mount.h>
 #include <linux/pagemap.h>
 #include <linux/init.h>
+#include <linux/module.h>
 
 #include "sysfs.h"
 
@@ -61,7 +62,7 @@ static int sysfs_fill_super(struct super_block *sb, void *data, int silent)
 	/* instantiate and link root dentry */
 	root = d_alloc_root(inode);
 	if (!root) {
-		pr_debug("%s: could not get root dentry!\n",__FUNCTION__);
+		pr_debug("%s: could not get root dentry!\n",__func__);
 		iput(inode);
 		return -ENOMEM;
 	}
@@ -115,3 +116,17 @@ out_err:
 	sysfs_dir_cachep = NULL;
 	goto out;
 }
+
+#undef sysfs_get
+struct sysfs_dirent *sysfs_get(struct sysfs_dirent *sd)
+{
+	return __sysfs_get(sd);
+}
+EXPORT_SYMBOL_GPL(sysfs_get);
+
+#undef sysfs_put
+void sysfs_put(struct sysfs_dirent *sd)
+{
+	__sysfs_put(sd);
+}
+EXPORT_SYMBOL_GPL(sysfs_put);

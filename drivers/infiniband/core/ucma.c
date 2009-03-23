@@ -31,6 +31,7 @@
  */
 
 #include <linux/completion.h>
+#include <linux/file.h>
 #include <linux/mutex.h>
 #include <linux/poll.h>
 #include <linux/idr.h>
@@ -80,9 +81,7 @@ struct ucma_multicast {
 
 	u64			uid;
 	struct list_head	list;
-	struct sockaddr		addr;
-	u8			pad[sizeof(struct sockaddr_in6) -
-				    sizeof(struct sockaddr)];
+	struct sockaddr_storage	addr;
 };
 
 struct ucma_event {
@@ -602,18 +601,18 @@ static ssize_t ucma_query_route(struct ucma_file *file,
 		return PTR_ERR(ctx);
 
 	memset(&resp, 0, sizeof resp);
-	addr = &ctx->cm_id->route.addr.src_addr;
+	addr = (struct sockaddr *) &ctx->cm_id->route.addr.src_addr;
 	memcpy(&resp.src_addr, addr, addr->sa_family == AF_INET ?
 				     sizeof(struct sockaddr_in) :
 				     sizeof(struct sockaddr_in6));
-	addr = &ctx->cm_id->route.addr.dst_addr;
+	addr = (struct sockaddr *) &ctx->cm_id->route.addr.dst_addr;
 	memcpy(&resp.dst_addr, addr, addr->sa_family == AF_INET ?
 				     sizeof(struct sockaddr_in) :
 				     sizeof(struct sockaddr_in6));
 	if (!ctx->cm_id->device)
 		goto out;
 
-	resp.node_guid = ctx->cm_id->device->node_guid;
+	resp.node_guid = (__force __u64) ctx->cm_id->device->node_guid;
 	resp.port_num = ctx->cm_id->port_num;
 	switch (rdma_node_get_transport(ctx->cm_id->device->node_type)) {
 	case RDMA_TRANSPORT_IB:
@@ -905,14 +904,14 @@ static ssize_t ucma_join_multicast(struct ucma_file *file,
 
 	mutex_lock(&file->mut);
 	mc = ucma_alloc_multicast(ctx);
-	if (IS_ERR(mc)) {
-		ret = PTR_ERR(mc);
+	if (!mc) {
+		ret = -ENOMEM;
 		goto err1;
 	}
 
 	mc->uid = cmd.uid;
 	memcpy(&mc->addr, &cmd.addr, sizeof cmd.addr);
-	ret = rdma_join_multicast(ctx->cm_id, &mc->addr, mc);
+	ret = rdma_join_multicast(ctx->cm_id, (struct sockaddr *) &mc->addr, mc);
 	if (ret)
 		goto err2;
 
@@ -928,7 +927,7 @@ static ssize_t ucma_join_multicast(struct ucma_file *file,
 	return 0;
 
 err3:
-	rdma_leave_multicast(ctx->cm_id, &mc->addr);
+	rdma_leave_multicast(ctx->cm_id, (struct sockaddr *) &mc->addr);
 	ucma_cleanup_mc_events(mc);
 err2:
 	mutex_lock(&mut);
@@ -974,7 +973,7 @@ static ssize_t ucma_leave_multicast(struct ucma_file *file,
 		goto out;
 	}
 
-	rdma_leave_multicast(mc->ctx->cm_id, &mc->addr);
+	rdma_leave_multicast(mc->ctx->cm_id, (struct sockaddr *) &mc->addr);
 	mutex_lock(&mc->ctx->file->mut);
 	ucma_cleanup_mc_events(mc);
 	list_del(&mc->list);
@@ -988,6 +987,96 @@ static ssize_t ucma_leave_multicast(struct ucma_file *file,
 			 &resp, sizeof(resp)))
 		ret = -EFAULT;
 out:
+	return ret;
+}
+
+static void ucma_lock_files(struct ucma_file *file1, struct ucma_file *file2)
+{
+	/* Acquire mutex's based on pointer comparison to prevent deadlock. */
+	if (file1 < file2) {
+		mutex_lock(&file1->mut);
+		mutex_lock(&file2->mut);
+	} else {
+		mutex_lock(&file2->mut);
+		mutex_lock(&file1->mut);
+	}
+}
+
+static void ucma_unlock_files(struct ucma_file *file1, struct ucma_file *file2)
+{
+	if (file1 < file2) {
+		mutex_unlock(&file2->mut);
+		mutex_unlock(&file1->mut);
+	} else {
+		mutex_unlock(&file1->mut);
+		mutex_unlock(&file2->mut);
+	}
+}
+
+static void ucma_move_events(struct ucma_context *ctx, struct ucma_file *file)
+{
+	struct ucma_event *uevent, *tmp;
+
+	list_for_each_entry_safe(uevent, tmp, &ctx->file->event_list, list)
+		if (uevent->ctx == ctx)
+			list_move_tail(&uevent->list, &file->event_list);
+}
+
+static ssize_t ucma_migrate_id(struct ucma_file *new_file,
+			       const char __user *inbuf,
+			       int in_len, int out_len)
+{
+	struct rdma_ucm_migrate_id cmd;
+	struct rdma_ucm_migrate_resp resp;
+	struct ucma_context *ctx;
+	struct file *filp;
+	struct ucma_file *cur_file;
+	int ret = 0;
+
+	if (copy_from_user(&cmd, inbuf, sizeof(cmd)))
+		return -EFAULT;
+
+	/* Get current fd to protect against it being closed */
+	filp = fget(cmd.fd);
+	if (!filp)
+		return -ENOENT;
+
+	/* Validate current fd and prevent destruction of id. */
+	ctx = ucma_get_ctx(filp->private_data, cmd.id);
+	if (IS_ERR(ctx)) {
+		ret = PTR_ERR(ctx);
+		goto file_put;
+	}
+
+	cur_file = ctx->file;
+	if (cur_file == new_file) {
+		resp.events_reported = ctx->events_reported;
+		goto response;
+	}
+
+	/*
+	 * Migrate events between fd's, maintaining order, and avoiding new
+	 * events being added before existing events.
+	 */
+	ucma_lock_files(cur_file, new_file);
+	mutex_lock(&mut);
+
+	list_move_tail(&ctx->list, &new_file->ctx_list);
+	ucma_move_events(ctx, new_file);
+	ctx->file = new_file;
+	resp.events_reported = ctx->events_reported;
+
+	mutex_unlock(&mut);
+	ucma_unlock_files(cur_file, new_file);
+
+response:
+	if (copy_to_user((void __user *)(unsigned long)cmd.response,
+			 &resp, sizeof(resp)))
+		ret = -EFAULT;
+
+	ucma_put_ctx(ctx);
+file_put:
+	fput(filp);
 	return ret;
 }
 
@@ -1012,6 +1101,7 @@ static ssize_t (*ucma_cmd_table[])(struct ucma_file *file,
 	[RDMA_USER_CM_CMD_NOTIFY]	= ucma_notify,
 	[RDMA_USER_CM_CMD_JOIN_MCAST]	= ucma_join_multicast,
 	[RDMA_USER_CM_CMD_LEAVE_MCAST]	= ucma_leave_multicast,
+	[RDMA_USER_CM_CMD_MIGRATE_ID]	= ucma_migrate_id
 };
 
 static ssize_t ucma_write(struct file *filp, const char __user *buf,
@@ -1056,6 +1146,14 @@ static unsigned int ucma_poll(struct file *filp, struct poll_table_struct *wait)
 	return mask;
 }
 
+/*
+ * ucma_open() does not need the BKL:
+ *
+ *  - no global state is referred to;
+ *  - there is no ioctl method to race against;
+ *  - no further module initialization is required for open to work
+ *    after the device is registered.
+ */
 static int ucma_open(struct inode *inode, struct file *filp)
 {
 	struct ucma_file *file;

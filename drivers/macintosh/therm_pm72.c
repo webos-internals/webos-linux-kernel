@@ -121,14 +121,16 @@
 #include <linux/reboot.h>
 #include <linux/kmod.h>
 #include <linux/i2c.h>
+#include <linux/kthread.h>
+#include <linux/mutex.h>
+#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/io.h>
 #include <asm/system.h>
 #include <asm/sections.h>
-#include <asm/of_device.h>
 #include <asm/macio.h>
-#include <asm/of_platform.h>
 
 #include "therm_pm72.h"
 
@@ -161,14 +163,14 @@ static struct slots_pid_state		slots_state;
 static int				state;
 static int				cpu_count;
 static int				cpu_pid_type;
-static pid_t				ctrl_task;
+static struct task_struct		*ctrl_task;
 static struct completion		ctrl_complete;
 static int				critical_state;
 static int				rackmac;
 static s32				dimm_output_clamp;
 static int 				fcu_rpm_shift;
 static int				fcu_tickle_ticks;
-static DECLARE_MUTEX(driver_lock);
+static DEFINE_MUTEX(driver_lock);
 
 /*
  * We have 3 types of CPU PID control. One is "split" old style control
@@ -728,9 +730,9 @@ static void fetch_cpu_pumps_minmax(void)
 static ssize_t show_##name(struct device *dev, struct device_attribute *attr, char *buf)	\
 {								\
 	ssize_t r;						\
-	down(&driver_lock);					\
+	mutex_lock(&driver_lock);					\
 	r = sprintf(buf, "%d.%03d", FIX32TOPRINT(data));	\
-	up(&driver_lock);					\
+	mutex_unlock(&driver_lock);					\
 	return r;						\
 }
 #define BUILD_SHOW_FUNC_INT(name, data)				\
@@ -1156,6 +1158,8 @@ static void do_monitor_cpu_rack(struct cpu_pid_state *state)
  */
 static int init_cpu_state(struct cpu_pid_state *state, int index)
 {
+	int err;
+
 	state->index = index;
 	state->first = 1;
 	state->rpm = (cpu_pid_type == CPU_PID_TYPE_RACKMAC) ? 4000 : 1000;
@@ -1181,18 +1185,21 @@ static int init_cpu_state(struct cpu_pid_state *state, int index)
 	DBG("CPU %d Using %d power history entries\n", index, state->count_power);
 
 	if (index == 0) {
-		device_create_file(&of_dev->dev, &dev_attr_cpu0_temperature);
-		device_create_file(&of_dev->dev, &dev_attr_cpu0_voltage);
-		device_create_file(&of_dev->dev, &dev_attr_cpu0_current);
-		device_create_file(&of_dev->dev, &dev_attr_cpu0_exhaust_fan_rpm);
-		device_create_file(&of_dev->dev, &dev_attr_cpu0_intake_fan_rpm);
+		err = device_create_file(&of_dev->dev, &dev_attr_cpu0_temperature);
+		err |= device_create_file(&of_dev->dev, &dev_attr_cpu0_voltage);
+		err |= device_create_file(&of_dev->dev, &dev_attr_cpu0_current);
+		err |= device_create_file(&of_dev->dev, &dev_attr_cpu0_exhaust_fan_rpm);
+		err |= device_create_file(&of_dev->dev, &dev_attr_cpu0_intake_fan_rpm);
 	} else {
-		device_create_file(&of_dev->dev, &dev_attr_cpu1_temperature);
-		device_create_file(&of_dev->dev, &dev_attr_cpu1_voltage);
-		device_create_file(&of_dev->dev, &dev_attr_cpu1_current);
-		device_create_file(&of_dev->dev, &dev_attr_cpu1_exhaust_fan_rpm);
-		device_create_file(&of_dev->dev, &dev_attr_cpu1_intake_fan_rpm);
+		err = device_create_file(&of_dev->dev, &dev_attr_cpu1_temperature);
+		err |= device_create_file(&of_dev->dev, &dev_attr_cpu1_voltage);
+		err |= device_create_file(&of_dev->dev, &dev_attr_cpu1_current);
+		err |= device_create_file(&of_dev->dev, &dev_attr_cpu1_exhaust_fan_rpm);
+		err |= device_create_file(&of_dev->dev, &dev_attr_cpu1_intake_fan_rpm);
 	}
+	if (err)
+		printk(KERN_WARNING "Failed to create some of the atribute"
+			"files for CPU %d\n", index);
 
 	return 0;
  fail:
@@ -1328,6 +1335,7 @@ static int init_backside_state(struct backside_pid_state *state)
 {
 	struct device_node *u3;
 	int u3h = 1; /* conservative by default */
+	int err;
 
 	/*
 	 * There are different PID params for machines with U3 and machines
@@ -1379,8 +1387,11 @@ static int init_backside_state(struct backside_pid_state *state)
 	if (state->monitor == NULL)
 		return -ENODEV;
 
-	device_create_file(&of_dev->dev, &dev_attr_backside_temperature);
-	device_create_file(&of_dev->dev, &dev_attr_backside_fan_pwm);
+	err = device_create_file(&of_dev->dev, &dev_attr_backside_temperature);
+	err |= device_create_file(&of_dev->dev, &dev_attr_backside_fan_pwm);
+	if (err)
+		printk(KERN_WARNING "Failed to create attribute file(s)"
+			" for backside fan\n");
 
 	return 0;
 }
@@ -1491,6 +1502,8 @@ static void do_monitor_drives(struct drives_pid_state *state)
  */
 static int init_drives_state(struct drives_pid_state *state)
 {
+	int err;
+
 	state->ticks = 1;
 	state->first = 1;
 	state->rpm = 1000;
@@ -1499,8 +1512,11 @@ static int init_drives_state(struct drives_pid_state *state)
 	if (state->monitor == NULL)
 		return -ENODEV;
 
-	device_create_file(&of_dev->dev, &dev_attr_drives_temperature);
-	device_create_file(&of_dev->dev, &dev_attr_drives_fan_rpm);
+	err = device_create_file(&of_dev->dev, &dev_attr_drives_temperature);
+	err |= device_create_file(&of_dev->dev, &dev_attr_drives_fan_rpm);
+	if (err)
+		printk(KERN_WARNING "Failed to create attribute file(s)"
+			" for drives bay fan\n");
 
 	return 0;
 }
@@ -1621,7 +1637,9 @@ static int init_dimms_state(struct dimm_pid_state *state)
 	if (state->monitor == NULL)
 		return -ENODEV;
 
-       	device_create_file(&of_dev->dev, &dev_attr_dimms_temperature);
+	if (device_create_file(&of_dev->dev, &dev_attr_dimms_temperature))
+		printk(KERN_WARNING "Failed to create attribute file"
+			" for DIMM temperature\n");
 
 	return 0;
 }
@@ -1731,6 +1749,8 @@ static void do_monitor_slots(struct slots_pid_state *state)
  */
 static int init_slots_state(struct slots_pid_state *state)
 {
+	int err;
+
 	state->ticks = 1;
 	state->first = 1;
 	state->pwm = 50;
@@ -1739,8 +1759,11 @@ static int init_slots_state(struct slots_pid_state *state)
 	if (state->monitor == NULL)
 		return -ENODEV;
 
-	device_create_file(&of_dev->dev, &dev_attr_slots_temperature);
-	device_create_file(&of_dev->dev, &dev_attr_slots_fan_pwm);
+	err = device_create_file(&of_dev->dev, &dev_attr_slots_temperature);
+	err |= device_create_file(&of_dev->dev, &dev_attr_slots_fan_pwm);
+	if (err)
+		printk(KERN_WARNING "Failed to create attribute file(s)"
+			" for slots bay fan\n");
 
 	return 0;
 }
@@ -1779,15 +1802,13 @@ static int call_critical_overtemp(void)
  */
 static int main_control_loop(void *x)
 {
-	daemonize("kfand");
-
 	DBG("main_control_loop started\n");
 
-	down(&driver_lock);
+	mutex_lock(&driver_lock);
 
 	if (start_fcu() < 0) {
 		printk(KERN_ERR "kfand: failed to start FCU\n");
-		up(&driver_lock);
+		mutex_unlock(&driver_lock);
 		goto out;
 	}
 
@@ -1802,14 +1823,14 @@ static int main_control_loop(void *x)
 
 	fcu_tickle_ticks = FCU_TICKLE_TICKS;
 
-	up(&driver_lock);
+	mutex_unlock(&driver_lock);
 
 	while (state == state_attached) {
 		unsigned long elapsed, start;
 
 		start = jiffies;
 
-		down(&driver_lock);
+		mutex_lock(&driver_lock);
 
 		/* Tickle the FCU just in case */
 		if (--fcu_tickle_ticks < 0) {
@@ -1841,7 +1862,7 @@ static int main_control_loop(void *x)
 			do_monitor_slots(&slots_state);
 		else
 			do_monitor_drives(&drives_state);
-		up(&driver_lock);
+		mutex_unlock(&driver_lock);
 
 		if (critical_state == 1) {
 			printk(KERN_WARNING "Temperature control detected a critical condition\n");
@@ -1956,7 +1977,7 @@ static void start_control_loops(void)
 {
 	init_completion(&ctrl_complete);
 
-	ctrl_task = kernel_thread(main_control_loop, NULL, SIGCHLD | CLONE_KERNEL);
+	ctrl_task = kthread_run(main_control_loop, NULL, "kfand");
 }
 
 /*
@@ -1964,7 +1985,7 @@ static void start_control_loops(void)
  */
 static void stop_control_loops(void)
 {
-	if (ctrl_task != 0)
+	if (ctrl_task)
 		wait_for_completion(&ctrl_complete);
 }
 
@@ -1999,13 +2020,13 @@ static void detach_fcu(void)
  */
 static int therm_pm72_attach(struct i2c_adapter *adapter)
 {
-	down(&driver_lock);
+	mutex_lock(&driver_lock);
 
 	/* Check state */
 	if (state == state_detached)
 		state = state_attaching;
 	if (state != state_attaching) {
-		up(&driver_lock);
+		mutex_unlock(&driver_lock);
 		return 0;
 	}
 
@@ -2034,7 +2055,7 @@ static int therm_pm72_attach(struct i2c_adapter *adapter)
 		state = state_attached;
 		start_control_loops();
 	}
-	up(&driver_lock);
+	mutex_unlock(&driver_lock);
 
 	return 0;
 }
@@ -2045,16 +2066,16 @@ static int therm_pm72_attach(struct i2c_adapter *adapter)
  */
 static int therm_pm72_detach(struct i2c_adapter *adapter)
 {
-	down(&driver_lock);
+	mutex_lock(&driver_lock);
 
 	if (state != state_detached)
 		state = state_detaching;
 
 	/* Stop control loops if any */
 	DBG("stopping control loops\n");
-	up(&driver_lock);
+	mutex_unlock(&driver_lock);
 	stop_control_loops();
-	down(&driver_lock);
+	mutex_lock(&driver_lock);
 
 	if (u3_0 != NULL && !strcmp(adapter->name, "u3 0")) {
 		DBG("lost U3-0, disposing control loops\n");
@@ -2070,7 +2091,7 @@ static int therm_pm72_detach(struct i2c_adapter *adapter)
 	if (u3_0 == NULL && u3_1 == NULL)
 		state = state_detached;
 
-	up(&driver_lock);
+	mutex_unlock(&driver_lock);
 
 	return 0;
 }
