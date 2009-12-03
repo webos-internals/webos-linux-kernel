@@ -13,10 +13,13 @@
 #include <asm/lppaca.h>
 #include <asm/paca.h>
 #include <asm/sections.h>
+#include <asm/pgtable.h>
 
 /* This symbol is provided by the linker - let it fill in the paca
  * field correctly */
 extern unsigned long __toc_start;
+
+#ifdef CONFIG_PPC_BOOK3S
 
 /*
  * The structure which the hypervisor knows about - this structure
@@ -41,6 +44,10 @@ struct lppaca lppaca[] = {
 	},
 };
 
+#endif /* CONFIG_PPC_BOOK3S */
+
+#ifdef CONFIG_PPC_STD_MMU_64
+
 /*
  * 3 persistent SLBs are registered here.  The buffer will be zero
  * initially, hence will all be invaild until we actually write them.
@@ -51,6 +58,8 @@ struct slb_shadow slb_shadow[] __cacheline_aligned = {
 		.buffer_length = sizeof(struct slb_shadow),
 	},
 };
+
+#endif /* CONFIG_PPC_STD_MMU_64 */
 
 /* The Paca is an array with one entry per processor.  Each contains an
  * lppaca, which contains the information shared between the
@@ -77,15 +86,21 @@ void __init initialise_pacas(void)
 	for (cpu = 0; cpu < NR_CPUS; cpu++) {
 		struct paca_struct *new_paca = &paca[cpu];
 
+#ifdef CONFIG_PPC_BOOK3S
 		new_paca->lppaca_ptr = &lppaca[cpu];
+#else
+		new_paca->kernel_pgd = swapper_pg_dir;
+#endif
 		new_paca->lock_token = 0x8000;
 		new_paca->paca_index = cpu;
 		new_paca->kernel_toc = kernel_toc;
 		new_paca->kernelbase = (unsigned long) _stext;
 		new_paca->kernel_msr = MSR_KERNEL;
 		new_paca->hw_cpu_id = 0xffff;
-		new_paca->slb_shadow_ptr = &slb_shadow[cpu];
 		new_paca->__current = &init_task;
+#ifdef CONFIG_PPC_STD_MMU_64
+		new_paca->slb_shadow_ptr = &slb_shadow[cpu];
+#endif /* CONFIG_PPC_STD_MMU_64 */
 
 	}
 }

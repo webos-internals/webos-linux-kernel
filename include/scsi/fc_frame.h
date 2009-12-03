@@ -37,13 +37,6 @@
 #define	FC_FRAME_HEADROOM	32	/* headroom for VLAN + FCoE headers */
 #define	FC_FRAME_TAILROOM	8	/* trailer space for FCoE */
 
-/*
- * Information about an individual fibre channel frame received or to be sent.
- * The buffer may be in up to 4 additional non-contiguous sections,
- * but the linear section must hold the frame header.
- */
-#define FC_FRAME_SG_LEN		4	/* scatter/gather list maximum length */
-
 #define fp_skb(fp)	(&((fp)->skb))
 #define fr_hdr(fp)	((fp)->skb.data)
 #define fr_len(fp)	((fp)->skb.len)
@@ -54,8 +47,7 @@
 #define fr_eof(fp)	(fr_cb(fp)->fr_eof)
 #define fr_flags(fp)	(fr_cb(fp)->fr_flags)
 #define fr_max_payload(fp)	(fr_cb(fp)->fr_max_payload)
-#define fr_cmd(fp)	(fr_cb(fp)->fr_cmd)
-#define fr_dir(fp)	(fr_cmd(fp)->sc_data_direction)
+#define fr_fsp(fp)	(fr_cb(fp)->fr_fsp)
 #define fr_crc(fp)	(fr_cb(fp)->fr_crc)
 
 struct fc_frame {
@@ -66,7 +58,7 @@ struct fcoe_rcv_info {
 	struct packet_type  *ptype;
 	struct fc_lport	*fr_dev;	/* transport layer private pointer */
 	struct fc_seq	*fr_seq;	/* for use with exchange manager */
-	struct scsi_cmnd *fr_cmd;	/* for use of scsi command */
+	struct fc_fcp_pkt *fr_fsp;	/* for the corresponding fcp I/O */
 	u32		fr_crc;
 	u16		fr_max_payload;	/* max FC payload */
 	enum fc_sof	fr_sof;		/* start of frame delimiter */
@@ -216,20 +208,6 @@ static inline u8 fc_frame_rctl(const struct fc_frame *fp)
 static inline bool fc_frame_is_cmd(const struct fc_frame *fp)
 {
 	return fc_frame_rctl(fp) == FC_RCTL_DD_UNSOL_CMD;
-}
-
-static inline bool fc_frame_is_read(const struct fc_frame *fp)
-{
-	if (fc_frame_is_cmd(fp) && fr_cmd(fp))
-		return fr_dir(fp) == DMA_FROM_DEVICE;
-	return false;
-}
-
-static inline bool fc_frame_is_write(const struct fc_frame *fp)
-{
-	if (fc_frame_is_cmd(fp) && fr_cmd(fp))
-		return fr_dir(fp) == DMA_TO_DEVICE;
-	return false;
 }
 
 /*

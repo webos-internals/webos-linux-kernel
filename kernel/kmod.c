@@ -24,7 +24,6 @@
 #include <linux/unistd.h>
 #include <linux/kmod.h>
 #include <linux/slab.h>
-#include <linux/mnt_namespace.h>
 #include <linux/completion.h>
 #include <linux/file.h>
 #include <linux/fdtable.h>
@@ -38,6 +37,8 @@
 #include <linux/suspend.h>
 #include <asm/uaccess.h>
 
+#include <trace/events/module.h>
+
 extern int max_threads;
 
 static struct workqueue_struct *khelper_wq;
@@ -50,7 +51,8 @@ static struct workqueue_struct *khelper_wq;
 char modprobe_path[KMOD_PATH_LEN] = "/sbin/modprobe";
 
 /**
- * request_module - try to load a kernel module
+ * __request_module - try to load a kernel module
+ * @wait: wait (or not) for the operation to complete
  * @fmt: printf style format string for the name of the module
  * @...: arguments as specified in the format string
  *
@@ -63,7 +65,7 @@ char modprobe_path[KMOD_PATH_LEN] = "/sbin/modprobe";
  * If module auto-loading support is disabled then this function
  * becomes a no-operation.
  */
-int request_module(const char *fmt, ...)
+int __request_module(bool wait, const char *fmt, ...)
 {
 	va_list args;
 	char module_name[MODULE_NAME_LEN];
@@ -77,6 +79,10 @@ int request_module(const char *fmt, ...)
 	static atomic_t kmod_concurrent = ATOMIC_INIT(0);
 #define MAX_KMOD_CONCURRENT 50	/* Completely arbitrary value - KAO */
 	static int kmod_loop_msg;
+
+	ret = security_kernel_module_request();
+	if (ret)
+		return ret;
 
 	va_start(args, fmt);
 	ret = vsnprintf(module_name, MODULE_NAME_LEN, fmt, args);
@@ -108,11 +114,14 @@ int request_module(const char *fmt, ...)
 		return -ENOMEM;
 	}
 
-	ret = call_usermodehelper(modprobe_path, argv, envp, 1);
+	trace_module_request(module_name, wait, _RET_IP_);
+
+	ret = call_usermodehelper(modprobe_path, argv, envp,
+			wait ? UMH_WAIT_PROC : UMH_WAIT_EXEC);
 	atomic_dec(&kmod_concurrent);
 	return ret;
 }
-EXPORT_SYMBOL(request_module);
+EXPORT_SYMBOL(__request_module);
 #endif /* CONFIG_MODULES */
 
 struct subprocess_info {
@@ -167,7 +176,7 @@ static int ____call_usermodehelper(void *data)
 	}
 
 	/* We can run anywhere, unlike our parent keventd(). */
-	set_cpus_allowed_ptr(current, CPU_MASK_ALL_PTR);
+	set_cpus_allowed_ptr(current, cpu_all_mask);
 
 	/*
 	 * Our parent is keventd, which runs with elevated scheduling priority.
@@ -368,8 +377,10 @@ struct subprocess_info *call_usermodehelper_setup(char *path, char **argv,
 	sub_info->argv = argv;
 	sub_info->envp = envp;
 	sub_info->cred = prepare_usermodehelper_creds();
-	if (!sub_info->cred)
+	if (!sub_info->cred) {
+		kfree(sub_info);
 		return NULL;
+	}
 
   out:
 	return sub_info;
@@ -459,6 +470,7 @@ int call_usermodehelper_exec(struct subprocess_info *sub_info,
 	int retval = 0;
 
 	BUG_ON(atomic_read(&sub_info->cred->usage) != 1);
+	validate_creds(sub_info->cred);
 
 	helper_lock();
 	if (sub_info->path[0] == '\0')

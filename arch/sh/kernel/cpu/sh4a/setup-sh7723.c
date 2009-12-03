@@ -13,8 +13,12 @@
 #include <linux/mm.h>
 #include <linux/serial_sci.h>
 #include <linux/uio_driver.h>
+#include <linux/usb/r8a66597.h>
+#include <linux/sh_timer.h>
+#include <linux/io.h>
 #include <asm/clock.h>
 #include <asm/mmzone.h>
+#include <cpu/sh7723.h>
 
 static struct uio_info vpu_platform_data = {
 	.name = "VPU5",
@@ -42,6 +46,9 @@ static struct platform_device vpu_device = {
 	},
 	.resource	= vpu_resources,
 	.num_resources	= ARRAY_SIZE(vpu_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_VPU,
+	},
 };
 
 static struct uio_info veu0_platform_data = {
@@ -70,6 +77,9 @@ static struct platform_device veu0_device = {
 	},
 	.resource	= veu0_resources,
 	.num_resources	= ARRAY_SIZE(veu0_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_VEU2H0,
+	},
 };
 
 static struct uio_info veu1_platform_data = {
@@ -98,6 +108,244 @@ static struct platform_device veu1_device = {
 	},
 	.resource	= veu1_resources,
 	.num_resources	= ARRAY_SIZE(veu1_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_VEU2H1,
+	},
+};
+
+static struct sh_timer_config cmt_platform_data = {
+	.name = "CMT",
+	.channel_offset = 0x60,
+	.timer_bit = 5,
+	.clk = "cmt0",
+	.clockevent_rating = 125,
+	.clocksource_rating = 125,
+};
+
+static struct resource cmt_resources[] = {
+	[0] = {
+		.name	= "CMT",
+		.start	= 0x044a0060,
+		.end	= 0x044a006b,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= 104,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device cmt_device = {
+	.name		= "sh_cmt",
+	.id		= 0,
+	.dev = {
+		.platform_data	= &cmt_platform_data,
+	},
+	.resource	= cmt_resources,
+	.num_resources	= ARRAY_SIZE(cmt_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_CMT,
+	},
+};
+
+static struct sh_timer_config tmu0_platform_data = {
+	.name = "TMU0",
+	.channel_offset = 0x04,
+	.timer_bit = 0,
+	.clk = "tmu0",
+	.clockevent_rating = 200,
+};
+
+static struct resource tmu0_resources[] = {
+	[0] = {
+		.name	= "TMU0",
+		.start	= 0xffd80008,
+		.end	= 0xffd80013,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= 16,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device tmu0_device = {
+	.name		= "sh_tmu",
+	.id		= 0,
+	.dev = {
+		.platform_data	= &tmu0_platform_data,
+	},
+	.resource	= tmu0_resources,
+	.num_resources	= ARRAY_SIZE(tmu0_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_TMU0,
+	},
+};
+
+static struct sh_timer_config tmu1_platform_data = {
+	.name = "TMU1",
+	.channel_offset = 0x10,
+	.timer_bit = 1,
+	.clk = "tmu0",
+	.clocksource_rating = 200,
+};
+
+static struct resource tmu1_resources[] = {
+	[0] = {
+		.name	= "TMU1",
+		.start	= 0xffd80014,
+		.end	= 0xffd8001f,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= 17,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device tmu1_device = {
+	.name		= "sh_tmu",
+	.id		= 1,
+	.dev = {
+		.platform_data	= &tmu1_platform_data,
+	},
+	.resource	= tmu1_resources,
+	.num_resources	= ARRAY_SIZE(tmu1_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_TMU0,
+	},
+};
+
+static struct sh_timer_config tmu2_platform_data = {
+	.name = "TMU2",
+	.channel_offset = 0x1c,
+	.timer_bit = 2,
+	.clk = "tmu0",
+};
+
+static struct resource tmu2_resources[] = {
+	[0] = {
+		.name	= "TMU2",
+		.start	= 0xffd80020,
+		.end	= 0xffd8002b,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= 18,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device tmu2_device = {
+	.name		= "sh_tmu",
+	.id		= 2,
+	.dev = {
+		.platform_data	= &tmu2_platform_data,
+	},
+	.resource	= tmu2_resources,
+	.num_resources	= ARRAY_SIZE(tmu2_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_TMU0,
+	},
+};
+
+static struct sh_timer_config tmu3_platform_data = {
+	.name = "TMU3",
+	.channel_offset = 0x04,
+	.timer_bit = 0,
+	.clk = "tmu1",
+};
+
+static struct resource tmu3_resources[] = {
+	[0] = {
+		.name	= "TMU3",
+		.start	= 0xffd90008,
+		.end	= 0xffd90013,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= 57,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device tmu3_device = {
+	.name		= "sh_tmu",
+	.id		= 3,
+	.dev = {
+		.platform_data	= &tmu3_platform_data,
+	},
+	.resource	= tmu3_resources,
+	.num_resources	= ARRAY_SIZE(tmu3_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_TMU1,
+	},
+};
+
+static struct sh_timer_config tmu4_platform_data = {
+	.name = "TMU4",
+	.channel_offset = 0x10,
+	.timer_bit = 1,
+	.clk = "tmu1",
+};
+
+static struct resource tmu4_resources[] = {
+	[0] = {
+		.name	= "TMU4",
+		.start	= 0xffd90014,
+		.end	= 0xffd9001f,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= 58,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device tmu4_device = {
+	.name		= "sh_tmu",
+	.id		= 4,
+	.dev = {
+		.platform_data	= &tmu4_platform_data,
+	},
+	.resource	= tmu4_resources,
+	.num_resources	= ARRAY_SIZE(tmu4_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_TMU1,
+	},
+};
+
+static struct sh_timer_config tmu5_platform_data = {
+	.name = "TMU5",
+	.channel_offset = 0x1c,
+	.timer_bit = 2,
+	.clk = "tmu1",
+};
+
+static struct resource tmu5_resources[] = {
+	[0] = {
+		.name	= "TMU5",
+		.start	= 0xffd90020,
+		.end	= 0xffd9002b,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= 57,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device tmu5_device = {
+	.name		= "sh_tmu",
+	.id		= 5,
+	.dev = {
+		.platform_data	= &tmu5_platform_data,
+	},
+	.resource	= tmu5_resources,
+	.num_resources	= ARRAY_SIZE(tmu5_resources),
+	.archdata = {
+		.hwblk_id = HWBLK_TMU1,
+	},
 };
 
 static struct plat_sci_port sci_platform_data[] = {
@@ -106,31 +354,37 @@ static struct plat_sci_port sci_platform_data[] = {
 		.flags          = UPF_BOOT_AUTOCONF,
 		.type           = PORT_SCIF,
 		.irqs           = { 80, 80, 80, 80 },
+		.clk		= "scif0",
 	},{
 		.mapbase        = 0xffe10000,
 		.flags          = UPF_BOOT_AUTOCONF,
 		.type           = PORT_SCIF,
 		.irqs           = { 81, 81, 81, 81 },
+		.clk		= "scif1",
 	},{
 		.mapbase        = 0xffe20000,
 		.flags          = UPF_BOOT_AUTOCONF,
 		.type           = PORT_SCIF,
 		.irqs           = { 82, 82, 82, 82 },
+		.clk		= "scif2",
 	},{
 		.mapbase	= 0xa4e30000,
 		.flags		= UPF_BOOT_AUTOCONF,
 		.type		= PORT_SCIFA,
 		.irqs		= { 56, 56, 56, 56 },
+		.clk		= "scif3",
 	},{
 		.mapbase	= 0xa4e40000,
 		.flags		= UPF_BOOT_AUTOCONF,
 		.type		= PORT_SCIFA,
 		.irqs		= { 88, 88, 88, 88 },
+		.clk		= "scif4",
 	},{
 		.mapbase	= 0xa4e50000,
 		.flags		= UPF_BOOT_AUTOCONF,
 		.type		= PORT_SCIFA,
 		.irqs		= { 109, 109, 109, 109 },
+		.clk		= "scif5",
 	}, {
 		.flags = 0,
 	}
@@ -172,11 +426,17 @@ static struct platform_device rtc_device = {
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(rtc_resources),
 	.resource	= rtc_resources,
+	.archdata = {
+		.hwblk_id = HWBLK_RTC,
+	},
+};
+
+static struct r8a66597_platdata r8a66597_data = {
+	.on_chip = 1,
 };
 
 static struct resource sh7723_usb_host_resources[] = {
 	[0] = {
-		.name	= "r8a66597_hcd",
 		.start	= 0xa4d80000,
 		.end	= 0xa4d800ff,
 		.flags	= IORESOURCE_MEM,
@@ -184,7 +444,7 @@ static struct resource sh7723_usb_host_resources[] = {
 	[1] = {
 		.start	= 65,
 		.end	= 65,
-		.flags	= IORESOURCE_IRQ,
+		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_LOW,
 	},
 };
 
@@ -194,9 +454,13 @@ static struct platform_device sh7723_usb_host_device = {
 	.dev = {
 		.dma_mask		= NULL,         /*  not use dma */
 		.coherent_dma_mask	= 0xffffffff,
+		.platform_data		= &r8a66597_data,
 	},
 	.num_resources	= ARRAY_SIZE(sh7723_usb_host_resources),
 	.resource	= sh7723_usb_host_resources,
+	.archdata = {
+		.hwblk_id = HWBLK_USB,
+	},
 };
 
 static struct resource iic_resources[] = {
@@ -218,9 +482,19 @@ static struct platform_device iic_device = {
 	.id             = 0, /* "i2c0" clock */
 	.num_resources  = ARRAY_SIZE(iic_resources),
 	.resource       = iic_resources,
+	.archdata = {
+		.hwblk_id = HWBLK_IIC,
+	},
 };
 
 static struct platform_device *sh7723_devices[] __initdata = {
+	&cmt_device,
+	&tmu0_device,
+	&tmu1_device,
+	&tmu2_device,
+	&tmu3_device,
+	&tmu4_device,
+	&tmu5_device,
 	&sci_device,
 	&rtc_device,
 	&iic_device,
@@ -232,12 +506,6 @@ static struct platform_device *sh7723_devices[] __initdata = {
 
 static int __init sh7723_devices_setup(void)
 {
-	clk_always_enable("meram0"); /* MERAM */
-	clk_always_enable("rtc0"); /* RTC */
-	clk_always_enable("veu1"); /* VEU2H1 */
-	clk_always_enable("veu0"); /* VEU2H0 */
-	clk_always_enable("vpu0"); /* VPU */
-
 	platform_resource_setup_memory(&vpu_device, "vpu", 2 << 20);
 	platform_resource_setup_memory(&veu0_device, "veu0", 2 << 20);
 	platform_resource_setup_memory(&veu1_device, "veu1", 2 << 20);
@@ -245,7 +513,32 @@ static int __init sh7723_devices_setup(void)
 	return platform_add_devices(sh7723_devices,
 				    ARRAY_SIZE(sh7723_devices));
 }
-__initcall(sh7723_devices_setup);
+arch_initcall(sh7723_devices_setup);
+
+static struct platform_device *sh7723_early_devices[] __initdata = {
+	&cmt_device,
+	&tmu0_device,
+	&tmu1_device,
+	&tmu2_device,
+	&tmu3_device,
+	&tmu4_device,
+	&tmu5_device,
+};
+
+void __init plat_early_device_setup(void)
+{
+	early_platform_add_devices(sh7723_early_devices,
+				   ARRAY_SIZE(sh7723_early_devices));
+}
+
+#define RAMCR_CACHE_L2FC	0x0002
+#define RAMCR_CACHE_L2E		0x0001
+#define L2_CACHE_ENABLE		(RAMCR_CACHE_L2E|RAMCR_CACHE_L2FC)
+void __uses_jump_to_uncached l2_cache_init(void)
+{
+	/* Enable L2 cache */
+	ctrl_outl(L2_CACHE_ENABLE, RAMCR);
+}
 
 enum {
 	UNUSED=0,

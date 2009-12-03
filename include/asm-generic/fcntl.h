@@ -74,6 +74,28 @@
 #define F_GETSIG	11	/* for sockets. */
 #endif
 
+#ifndef CONFIG_64BIT
+#ifndef F_GETLK64
+#define F_GETLK64	12	/*  using 'struct flock64' */
+#define F_SETLK64	13
+#define F_SETLKW64	14
+#endif
+#endif
+
+#ifndef F_SETOWN_EX
+#define F_SETOWN_EX	15
+#define F_GETOWN_EX	16
+#endif
+
+#define F_OWNER_TID	0
+#define F_OWNER_PID	1
+#define F_OWNER_PGRP	2
+
+struct f_owner_ex {
+	int	type;
+	pid_t	pid;
+};
+
 /* for F_[GET|SET]FL */
 #define FD_CLOEXEC	1	/* actually anything with low bit set goes */
 
@@ -117,20 +139,14 @@
 struct flock {
 	short	l_type;
 	short	l_whence;
-	off_t	l_start;
-	off_t	l_len;
-	pid_t	l_pid;
+	__kernel_off_t	l_start;
+	__kernel_off_t	l_len;
+	__kernel_pid_t	l_pid;
 	__ARCH_FLOCK_PAD
 };
 #endif
 
 #ifndef CONFIG_64BIT
-
-#ifndef F_GETLK64
-#define F_GETLK64	12	/*  using 'struct flock64' */
-#define F_SETLK64	13
-#define F_SETLKW64	14
-#endif
 
 #ifndef HAVE_ARCH_STRUCT_FLOCK64
 #ifndef __ARCH_FLOCK64_PAD
@@ -140,9 +156,9 @@ struct flock {
 struct flock64 {
 	short  l_type;
 	short  l_whence;
-	loff_t l_start;
-	loff_t l_len;
-	pid_t  l_pid;
+	__kernel_loff_t l_start;
+	__kernel_loff_t l_len;
+	__kernel_pid_t  l_pid;
 	__ARCH_FLOCK64_PAD
 };
 #endif

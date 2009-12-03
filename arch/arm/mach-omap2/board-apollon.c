@@ -51,6 +51,7 @@
 
 #define APOLLON_FLASH_CS	0
 #define APOLLON_ETH_CS		1
+#define APOLLON_ETHR_GPIO_IRQ	74
 
 static struct mtd_partition apollon_partitions[] = {
 	{
@@ -86,7 +87,7 @@ static struct mtd_partition apollon_partitions[] = {
 	},
 };
 
-static struct flash_platform_data apollon_flash_data = {
+static struct onenand_platform_data apollon_flash_data = {
 	.parts		= apollon_partitions,
 	.nr_parts	= ARRAY_SIZE(apollon_partitions),
 };
@@ -98,7 +99,7 @@ static struct resource apollon_flash_resource[] = {
 };
 
 static struct platform_device apollon_onenand_device = {
-	.name		= "onenand",
+	.name		= "onenand-flash",
 	.id		= -1,
 	.dev		= {
 		.platform_data	= &apollon_flash_data,
@@ -247,18 +248,6 @@ out:
 	clk_put(gpmc_fck);
 }
 
-static void __init omap_apollon_init_irq(void)
-{
-	omap2_init_common_hw();
-	omap_init_irq();
-	omap_gpio_init();
-	apollon_init_smc91x();
-}
-
-static struct omap_uart_config apollon_uart_config __initdata = {
-	.enabled_uarts = (1 << 0) | (0 << 1) | (0 << 2),
-};
-
 static struct omap_usb_config apollon_usb_config __initdata = {
 	.register_dev	= 1,
 	.hmc_mode	= 0x14,	/* 0:dev 1:host1 2:disable */
@@ -271,10 +260,18 @@ static struct omap_lcd_config apollon_lcd_config __initdata = {
 };
 
 static struct omap_board_config_kernel apollon_config[] = {
-	{ OMAP_TAG_UART,	&apollon_uart_config },
-	{ OMAP_TAG_USB,		&apollon_usb_config },
 	{ OMAP_TAG_LCD,		&apollon_lcd_config },
 };
+
+static void __init omap_apollon_init_irq(void)
+{
+	omap_board_config = apollon_config;
+	omap_board_config_size = ARRAY_SIZE(apollon_config);
+	omap2_init_common_hw(NULL, NULL);
+	omap_init_irq();
+	omap_gpio_init();
+	apollon_init_smc91x();
+}
 
 static void __init apollon_led_init(void)
 {
@@ -299,6 +296,7 @@ static void __init apollon_usb_init(void)
 	omap_cfg_reg(P21_242X_GPIO12);
 	gpio_request(12, "USB suspend");
 	gpio_direction_output(12, 0);
+	omap_usb_init(&apollon_usb_config);
 }
 
 static void __init omap_apollon_init(void)
@@ -323,8 +321,6 @@ static void __init omap_apollon_init(void)
 	 * if not needed.
 	 */
 	platform_add_devices(apollon_devices, ARRAY_SIZE(apollon_devices));
-	omap_board_config = apollon_config;
-	omap_board_config_size = ARRAY_SIZE(apollon_config);
 	omap_serial_init();
 }
 

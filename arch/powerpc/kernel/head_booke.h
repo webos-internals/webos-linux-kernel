@@ -10,29 +10,38 @@
 		mtspr	SPRN_IVOR##vector_number,r26;	\
 		sync
 
+#if (THREAD_SHIFT < 15)
+#define ALLOC_STACK_FRAME(reg, val)			\
+	addi reg,reg,val
+#else
+#define ALLOC_STACK_FRAME(reg, val)			\
+	addis	reg,reg,val@ha;				\
+	addi	reg,reg,val@l
+#endif
+
 #define NORMAL_EXCEPTION_PROLOG						     \
-	mtspr	SPRN_SPRG0,r10;		/* save two registers to work with */\
-	mtspr	SPRN_SPRG1,r11;						     \
-	mtspr	SPRN_SPRG4W,r1;						     \
+	mtspr	SPRN_SPRG_WSCRATCH0,r10;/* save two registers to work with */\
+	mtspr	SPRN_SPRG_WSCRATCH1,r11;				     \
+	mtspr	SPRN_SPRG_WSCRATCH2,r1;					     \
 	mfcr	r10;			/* save CR in r10 for now	   */\
 	mfspr	r11,SPRN_SRR1;		/* check whether user or kernel    */\
 	andi.	r11,r11,MSR_PR;						     \
 	beq	1f;							     \
-	mfspr	r1,SPRN_SPRG3;		/* if from user, start at top of   */\
+	mfspr	r1,SPRN_SPRG_THREAD;	/* if from user, start at top of   */\
 	lwz	r1,THREAD_INFO-THREAD(r1); /* this thread's kernel stack   */\
-	addi	r1,r1,THREAD_SIZE;					     \
+	ALLOC_STACK_FRAME(r1, THREAD_SIZE);				     \
 1:	subi	r1,r1,INT_FRAME_SIZE;	/* Allocate an exception frame     */\
 	mr	r11,r1;							     \
 	stw	r10,_CCR(r11);          /* save various registers	   */\
 	stw	r12,GPR12(r11);						     \
 	stw	r9,GPR9(r11);						     \
-	mfspr	r10,SPRN_SPRG0;						     \
+	mfspr	r10,SPRN_SPRG_RSCRATCH0;					\
 	stw	r10,GPR10(r11);						     \
-	mfspr	r12,SPRN_SPRG1;						     \
+	mfspr	r12,SPRN_SPRG_RSCRATCH1;				     \
 	stw	r12,GPR11(r11);						     \
 	mflr	r10;							     \
 	stw	r10,_LINK(r11);						     \
-	mfspr	r10,SPRN_SPRG4R;					     \
+	mfspr	r10,SPRN_SPRG_RSCRATCH2;				     \
 	mfspr	r12,SPRN_SRR0;						     \
 	stw	r10,GPR1(r11);						     \
 	mfspr	r9,SPRN_SRR1;						     \
@@ -60,21 +69,11 @@
  * providing configurations that micro-optimize space usage.
  */
 
-/* CRIT_SPRG only used in critical exception handling */
-#define CRIT_SPRG	SPRN_SPRG2
-/* MCHECK_SPRG only used in machine check exception handling */
-#define MCHECK_SPRG	SPRN_SPRG6W
-
-#define MCHECK_STACK_BASE	mcheckirq_ctx
+#define MC_STACK_BASE		mcheckirq_ctx
 #define CRIT_STACK_BASE		critirq_ctx
 
 /* only on e500mc/e200 */
-#define DEBUG_STACK_BASE	dbgirq_ctx
-#ifdef CONFIG_PPC_E500MC
-#define DEBUG_SPRG		SPRN_SPRG9
-#else
-#define DEBUG_SPRG		SPRN_SPRG6W
-#endif
+#define DBG_STACK_BASE		dbgirq_ctx
 
 #define EXC_LVL_FRAME_OVERHEAD	(THREAD_SIZE - INT_FRAME_SIZE - EXC_LVL_SIZE)
 
@@ -101,7 +100,7 @@
  * critical/machine check exception stack at low physical addresses.
  */
 #define EXC_LEVEL_EXCEPTION_PROLOG(exc_level, exc_level_srr0, exc_level_srr1) \
-	mtspr	exc_level##_SPRG,r8;					     \
+	mtspr	SPRN_SPRG_WSCRATCH_##exc_level,r8;			     \
 	BOOKE_LOAD_EXC_LEVEL_STACK(exc_level);/* r8 points to the exc_level stack*/ \
 	stw	r9,GPR9(r8);		/* save various registers	   */\
 	mfcr	r9;			/* save CR in r9 for now	   */\
@@ -110,7 +109,7 @@
 	stw	r9,_CCR(r8);		/* save CR on stack		   */\
 	mfspr	r10,exc_level_srr1;	/* check whether user or kernel    */\
 	andi.	r10,r10,MSR_PR;						     \
-	mfspr	r11,SPRN_SPRG3;		/* if from user, start at top of   */\
+	mfspr	r11,SPRN_SPRG_THREAD;	/* if from user, start at top of   */\
 	lwz	r11,THREAD_INFO-THREAD(r11); /* this thread's kernel stack */\
 	addi	r11,r11,EXC_LVL_FRAME_OVERHEAD;	/* allocate stack frame    */\
 	beq	1f;							     \
@@ -131,7 +130,7 @@
 	lwz	r9,TI_TASK-EXC_LVL_FRAME_OVERHEAD(r11);			     \
 	stw	r9,TI_TASK-EXC_LVL_FRAME_OVERHEAD(r8);			     \
 	mr	r11,r8;							     \
-2:	mfspr	r8,exc_level##_SPRG;					     \
+2:	mfspr	r8,SPRN_SPRG_RSCRATCH_##exc_level;			     \
 	stw	r12,GPR12(r11);		/* save various registers	   */\
 	mflr	r10;							     \
 	stw	r10,_LINK(r11);						     \
@@ -152,9 +151,9 @@
 #define CRITICAL_EXCEPTION_PROLOG \
 		EXC_LEVEL_EXCEPTION_PROLOG(CRIT, SPRN_CSRR0, SPRN_CSRR1)
 #define DEBUG_EXCEPTION_PROLOG \
-		EXC_LEVEL_EXCEPTION_PROLOG(DEBUG, SPRN_DSRR0, SPRN_DSRR1)
+		EXC_LEVEL_EXCEPTION_PROLOG(DBG, SPRN_DSRR0, SPRN_DSRR1)
 #define MCHECK_EXCEPTION_PROLOG \
-		EXC_LEVEL_EXCEPTION_PROLOG(MCHECK, SPRN_MCSRR0, SPRN_MCSRR1)
+		EXC_LEVEL_EXCEPTION_PROLOG(MC, SPRN_MCSRR0, SPRN_MCSRR1)
 
 /*
  * Exception vectors.
@@ -247,7 +246,7 @@ label:
 	 * off DE in the DSRR1 value and clearing the debug status.	      \
 	 */								      \
 	mfspr	r10,SPRN_DBSR;		/* check single-step/branch taken */  \
-	andis.	r10,r10,DBSR_IC@h;					      \
+	andis.	r10,r10,(DBSR_IC|DBSR_BT)@h;				      \
 	beq+	2f;							      \
 									      \
 	lis	r10,KERNELBASE@h;	/* check if exception in vectors */   \
@@ -262,7 +261,7 @@ label:
 									      \
 	/* here it looks like we got an inappropriate debug exception. */     \
 1:	rlwinm	r9,r9,0,~MSR_DE;	/* clear DE in the CDRR1 value */     \
-	lis	r10,DBSR_IC@h;		/* clear the IC event */	      \
+	lis	r10,(DBSR_IC|DBSR_BT)@h;	/* clear the IC event */      \
 	mtspr	SPRN_DBSR,r10;						      \
 	/* restore state and get out */					      \
 	lwz	r10,_CCR(r11);						      \
@@ -273,13 +272,13 @@ label:
 	mtspr	SPRN_DSRR1,r9;						      \
 	lwz	r9,GPR9(r11);						      \
 	lwz	r12,GPR12(r11);						      \
-	mtspr	DEBUG_SPRG,r8;						      \
-	BOOKE_LOAD_EXC_LEVEL_STACK(DEBUG); /* r8 points to the debug stack */ \
+	mtspr	SPRN_SPRG_WSCRATCH_DBG,r8;				      \
+	BOOKE_LOAD_EXC_LEVEL_STACK(DBG); /* r8 points to the debug stack */ \
 	lwz	r10,GPR10(r8);						      \
 	lwz	r11,GPR11(r8);						      \
-	mfspr	r8,DEBUG_SPRG;						      \
+	mfspr	r8,SPRN_SPRG_RSCRATCH_DBG;				      \
 									      \
-	RFDI;								      \
+	PPC_RFDI;							      \
 	b	.;							      \
 									      \
 	/* continue normal handling for a debug exception... */		      \
@@ -300,7 +299,7 @@ label:
 	 * off DE in the CSRR1 value and clearing the debug status.	      \
 	 */								      \
 	mfspr	r10,SPRN_DBSR;		/* check single-step/branch taken */  \
-	andis.	r10,r10,DBSR_IC@h;					      \
+	andis.	r10,r10,(DBSR_IC|DBSR_BT)@h;				      \
 	beq+	2f;							      \
 									      \
 	lis	r10,KERNELBASE@h;	/* check if exception in vectors */   \
@@ -308,14 +307,14 @@ label:
 	cmplw	r12,r10;						      \
 	blt+	2f;			/* addr below exception vectors */    \
 									      \
-	lis	r10,DebugCrit@h;						      \
+	lis	r10,DebugCrit@h;					      \
 	ori	r10,r10,DebugCrit@l;					      \
 	cmplw	r12,r10;						      \
 	bgt+	2f;			/* addr above exception vectors */    \
 									      \
 	/* here it looks like we got an inappropriate debug exception. */     \
 1:	rlwinm	r9,r9,0,~MSR_DE;	/* clear DE in the CSRR1 value */     \
-	lis	r10,DBSR_IC@h;		/* clear the IC event */	      \
+	lis	r10,(DBSR_IC|DBSR_BT)@h;	/* clear the IC event */      \
 	mtspr	SPRN_DBSR,r10;						      \
 	/* restore state and get out */					      \
 	lwz	r10,_CCR(r11);						      \
@@ -326,11 +325,11 @@ label:
 	mtspr	SPRN_CSRR1,r9;						      \
 	lwz	r9,GPR9(r11);						      \
 	lwz	r12,GPR12(r11);						      \
-	mtspr	CRIT_SPRG,r8;						      \
+	mtspr	SPRN_SPRG_WSCRATCH_CRIT,r8;				      \
 	BOOKE_LOAD_EXC_LEVEL_STACK(CRIT); /* r8 points to the debug stack */  \
 	lwz	r10,GPR10(r8);						      \
 	lwz	r11,GPR11(r8);						      \
-	mfspr	r8,CRIT_SPRG;						      \
+	mfspr	r8,SPRN_SPRG_RSCRATCH_CRIT;				      \
 									      \
 	rfci;								      \
 	b	.;							      \

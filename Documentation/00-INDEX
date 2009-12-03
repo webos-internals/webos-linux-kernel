@@ -82,10 +82,14 @@ block/
 	- info on the Block I/O (BIO) layer.
 blockdev/
 	- info on block devices & drivers
+btmrvl.txt
+	- info on Marvell Bluetooth driver usage.
 cachetlb.txt
 	- describes the cache/TLB flushing interfaces Linux uses.
 cdrom/
 	- directory with information on the CD-ROM drivers that Linux has.
+cgroups/
+	- cgroups features, including cpusets and memory controller.
 connector/
 	- docs on the netlink based userspace<->kernel space communication mod.
 console/
@@ -98,8 +102,6 @@ cpu-load.txt
 	- document describing how CPU load statistics are collected.
 cpuidle/
 	- info on CPU_IDLE, CPU idle state management subsystem.
-cpusets.txt
-	- documents the cpusets feature; assign CPUs and Mem to a set of tasks.
 cputopology.txt
 	- documentation on how CPU topology info is exported via sysfs.
 cris/

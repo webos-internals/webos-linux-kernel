@@ -10,6 +10,7 @@
 #include <linux/clockchips.h>
 #include <linux/interrupt.h>
 #include <linux/percpu.h>
+#include <linux/smp.h>
 
 #include <asm/smtc_ipi.h>
 #include <asm/time.h>
@@ -172,11 +173,12 @@ void smtc_distribute_timer(int vpe)
 	unsigned int mtflags;
 	int cpu;
 	struct clock_event_device *cd;
-	unsigned long nextstamp = 0L;
+	unsigned long nextstamp;
 	unsigned long reference;
 
 
 repeat:
+	nextstamp = 0L;
 	for_each_online_cpu(cpu) {
 	    /*
 	     * Find virtual CPUs within the current VPE who have
@@ -245,7 +247,7 @@ irqreturn_t c0_compare_interrupt(int irq, void *dev_id)
 }
 
 
-int __cpuinit mips_clockevent_init(void)
+int __cpuinit smtc_clockevent_init(void)
 {
 	uint64_t mips_freq = mips_hpt_frequency;
 	unsigned int cpu = smp_processor_id();

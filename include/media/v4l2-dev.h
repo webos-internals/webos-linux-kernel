@@ -40,6 +40,8 @@ struct v4l2_file_operations {
 	unsigned int (*poll) (struct file *, struct poll_table_struct *);
 	long (*ioctl) (struct file *, unsigned int, unsigned long);
 	long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);
+	unsigned long (*get_unmapped_area) (struct file *, unsigned long,
+				unsigned long, unsigned long, unsigned long);
 	int (*mmap) (struct file *, struct vm_area_struct *);
 	int (*open) (struct file *);
 	int (*release) (struct file *);
@@ -98,8 +100,10 @@ struct video_device
 
    Also note that vdev->minor is set to -1 if the registration failed. */
 int __must_check video_register_device(struct video_device *vdev, int type, int nr);
-int __must_check video_register_device_index(struct video_device *vdev,
-						int type, int nr, int index);
+
+/* Same as video_register_device, but no warning is issued if the desired
+   device node number was already in use. */
+int __must_check video_register_device_no_warn(struct video_device *vdev, int type, int nr);
 
 /* Unregister video devices. Will do nothing if vdev == NULL or
    vdev->minor < 0. */

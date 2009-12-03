@@ -33,7 +33,10 @@
 #include <linux/mqueue.h>
 #include <linux/hardirq.h>
 #include <linux/utsname.h>
+#include <linux/ftrace.h>
 #include <linux/kernel_stat.h>
+#include <linux/personality.h>
+#include <linux/random.h>
 
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
@@ -281,13 +284,12 @@ int set_dabr(unsigned long dabr)
 		return ppc_md.set_dabr(dabr);
 
 	/* XXX should we have a CPU_FTR_HAS_DABR ? */
-#if defined(CONFIG_PPC64) || defined(CONFIG_6xx)
+#if defined(CONFIG_BOOKE)
+	mtspr(SPRN_DAC1, dabr);
+#elif defined(CONFIG_PPC_BOOK3S)
 	mtspr(SPRN_DABR, dabr);
 #endif
 
-#if defined(CONFIG_BOOKE)
-	mtspr(SPRN_DAC1, dabr);
-#endif
 
 	return 0;
 }
@@ -369,14 +371,15 @@ struct task_struct *__switch_to(struct task_struct *prev,
 
 #endif /* CONFIG_SMP */
 
-	if (unlikely(__get_cpu_var(current_dabr) != new->thread.dabr))
-		set_dabr(new->thread.dabr);
-
 #if defined(CONFIG_BOOKE)
 	/* If new thread DAC (HW breakpoint) is the same then leave it */
 	if (new->thread.dabr)
 		set_dabr(new->thread.dabr);
+#else
+	if (unlikely(__get_cpu_var(current_dabr) != new->thread.dabr))
+		set_dabr(new->thread.dabr);
 #endif
+
 
 	new_thread = &new->thread;
 	old_thread = &current->thread;
@@ -525,7 +528,7 @@ void show_regs(struct pt_regs * regs)
 
 	for (i = 0;  i < 32;  i++) {
 		if ((i % REGS_PER_LINE) == 0)
-			printk("\n" KERN_INFO "GPR%02d: ", i);
+			printk("\nGPR%02d: ", i);
 		printk(REG " ", regs->gpr[i]);
 		if (i == LAST_VOLATILE && !FULL_REGS(regs))
 			break;
@@ -595,7 +598,7 @@ void prepare_to_copy(struct task_struct *tsk)
 /*
  * Copy a thread..
  */
-int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
+int copy_thread(unsigned long clone_flags, unsigned long usp,
 		unsigned long unused, struct task_struct *p,
 		struct pt_regs *regs)
 {
@@ -647,7 +650,7 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	p->thread.ksp_limit = (unsigned long)task_stack_page(p) +
 				_ALIGN_UP(sizeof(struct thread_info), 16);
 
-#ifdef CONFIG_PPC64
+#ifdef CONFIG_PPC_STD_MMU_64
 	if (cpu_has_feature(CPU_FTR_SLB)) {
 		unsigned long sp_vsid;
 		unsigned long llp = mmu_psize_defs[mmu_linear_psize].sllp;
@@ -661,6 +664,7 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 		sp_vsid |= SLB_VSID_KERNEL | llp;
 		p->thread.ksp_vsid = sp_vsid;
 	}
+#endif /* CONFIG_PPC_STD_MMU_64 */
 
 	/*
 	 * The PPC64 ABI makes use of a TOC to contain function 
@@ -668,6 +672,7 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	 * to the TOC entry.  The first entry is a pointer to the actual
 	 * function.
  	 */
+#ifdef CONFIG_PPC64
 	kregs->nip = *((unsigned long *)ret_from_fork);
 #else
 	kregs->nip = (unsigned long)ret_from_fork;
@@ -1008,6 +1013,18 @@ void show_stack(struct task_struct *tsk, unsigned long *stack)
 	unsigned long sp, ip, lr, newsp;
 	int count = 0;
 	int firstframe = 1;
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+	int curr_frame = current->curr_ret_stack;
+	extern void return_to_handler(void);
+	unsigned long rth = (unsigned long)return_to_handler;
+	unsigned long mrth = -1;
+#ifdef CONFIG_PPC64
+	extern void mod_return_to_handler(void);
+	rth = *(unsigned long *)rth;
+	mrth = (unsigned long)mod_return_to_handler;
+	mrth = *(unsigned long *)mrth;
+#endif
+#endif
 
 	sp = (unsigned long) stack;
 	if (tsk == NULL)
@@ -1030,6 +1047,13 @@ void show_stack(struct task_struct *tsk, unsigned long *stack)
 		ip = stack[STACK_FRAME_LR_SAVE];
 		if (!firstframe || ip != lr) {
 			printk("["REG"] ["REG"] %pS", sp, ip, (void *)ip);
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
+			if ((ip == rth || ip == mrth) && curr_frame >= 0) {
+				printk(" (%pS)",
+				       (void *)current->ret_stack[curr_frame].ret);
+				curr_frame--;
+			}
+#endif
 			if (firstframe)
 				printk(" (unreliable)");
 			printk("\n");
@@ -1122,3 +1146,58 @@ void thread_info_cache_init(void)
 }
 
 #endif /* THREAD_SHIFT < PAGE_SHIFT */
+
+unsigned long arch_align_stack(unsigned long sp)
+{
+	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
+		sp -= get_random_int() & ~PAGE_MASK;
+	return sp & ~0xf;
+}
+
+static inline unsigned long brk_rnd(void)
+{
+        unsigned long rnd = 0;
+
+	/* 8MB for 32bit, 1GB for 64bit */
+	if (is_32bit_task())
+		rnd = (long)(get_random_int() % (1<<(23-PAGE_SHIFT)));
+	else
+		rnd = (long)(get_random_int() % (1<<(30-PAGE_SHIFT)));
+
+	return rnd << PAGE_SHIFT;
+}
+
+unsigned long arch_randomize_brk(struct mm_struct *mm)
+{
+	unsigned long base = mm->brk;
+	unsigned long ret;
+
+#ifdef CONFIG_PPC_STD_MMU_64
+	/*
+	 * If we are using 1TB segments and we are allowed to randomise
+	 * the heap, we can put it above 1TB so it is backed by a 1TB
+	 * segment. Otherwise the heap will be in the bottom 1TB
+	 * which always uses 256MB segments and this may result in a
+	 * performance penalty.
+	 */
+	if (!is_32bit_task() && (mmu_highuser_ssize == MMU_SEGSIZE_1T))
+		base = max_t(unsigned long, mm->brk, 1UL << SID_SHIFT_1T);
+#endif
+
+	ret = PAGE_ALIGN(base + brk_rnd());
+
+	if (ret < mm->brk)
+		return mm->brk;
+
+	return ret;
+}
+
+unsigned long randomize_et_dyn(unsigned long base)
+{
+	unsigned long ret = PAGE_ALIGN(base + brk_rnd());
+
+	if (ret < base)
+		return base;
+
+	return ret;
+}

@@ -5,9 +5,7 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  *
- * Copyright (c) 2007 Philipp Zabel <philipp.zabel@gmail.com>
- * Improved support for DAPM and audio routing/mixing capabilities,
- * added TLV support.
+ * Copyright (c) 2007-2009 Philipp Zabel <philipp.zabel@gmail.com>
  *
  * Modified by Richard Purdie <richard@openedhand.com> to fit into SoC
  * codec model.
@@ -19,23 +17,31 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/types.h>
-#include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
-#include <linux/ioctl.h>
+#include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
+#include <linux/workqueue.h>
 #include <sound/core.h>
 #include <sound/control.h>
 #include <sound/initval.h>
-#include <sound/info.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/tlv.h>
+#include <sound/uda1380.h>
 
 #include "uda1380.h"
 
-#define UDA1380_VERSION "0.6"
+static struct snd_soc_codec *uda1380_codec;
+
+/* codec private data */
+struct uda1380_priv {
+	struct snd_soc_codec codec;
+	u16 reg_cache[UDA1380_CACHEREGNUM];
+	unsigned int dac_clk;
+	struct work_struct work;
+};
 
 /*
  * uda1380 register cache
@@ -51,6 +57,8 @@ static const u16 uda1380_reg[UDA1380_CACHEREGNUM] = {
 	0x0000, 0x0000, 0x0000, 0x0000,
 	0x0000, 0x8000, 0x0002, 0x0000,
 };
+
+static unsigned long uda1380_cache_dirty;
 
 /*
  * read uda1380 register cache
@@ -73,8 +81,11 @@ static inline void uda1380_write_reg_cache(struct snd_soc_codec *codec,
 	u16 reg, unsigned int value)
 {
 	u16 *cache = codec->reg_cache;
+
 	if (reg >= UDA1380_CACHEREGNUM)
 		return;
+	if ((reg >= 0x10) && (cache[reg] != value))
+		set_bit(reg - 0x10, &uda1380_cache_dirty);
 	cache[reg] = value;
 }
 
@@ -113,12 +124,28 @@ static int uda1380_write(struct snd_soc_codec *codec, unsigned int reg,
 					(data[0]<<8) | data[1]);
 			return -EIO;
 		}
+		if (reg >= 0x10)
+			clear_bit(reg - 0x10, &uda1380_cache_dirty);
 		return 0;
 	} else
 		return -EIO;
 }
 
 #define uda1380_reset(c)	uda1380_write(c, UDA1380_RESET, 0)
+
+static void uda1380_flush_work(struct work_struct *work)
+{
+	int bit, reg;
+
+	for_each_bit(bit, &uda1380_cache_dirty, UDA1380_CACHEREGNUM - 0x10) {
+		reg = 0x10 + bit;
+		pr_debug("uda1380: flush reg %x val %x:\n", reg,
+				uda1380_read_reg_cache(uda1380_codec, reg));
+		uda1380_write(uda1380_codec, reg,
+				uda1380_read_reg_cache(uda1380_codec, reg));
+		clear_bit(bit, &uda1380_cache_dirty);
+	}
+}
 
 /* declarations of ALSA reg_elem_REAL controls */
 static const char *uda1380_deemp[] = {
@@ -254,7 +281,6 @@ static const struct snd_kcontrol_new uda1380_snd_controls[] = {
 	SOC_SINGLE("DAC Polarity inverting Switch", UDA1380_MIXER, 15, 1, 0),	/* DA_POL_INV */
 	SOC_ENUM("Noise Shaper", uda1380_sel_ns_enum),				/* SEL_NS */
 	SOC_ENUM("Digital Mixer Signal Control", uda1380_mix_enum),		/* MIX_POS, MIX */
-	SOC_SINGLE("Silence Switch", UDA1380_MIXER, 7, 1, 0),			/* SILENCE, force DAC output to silence */
 	SOC_SINGLE("Silence Detector Switch", UDA1380_MIXER, 6, 1, 0),		/* SDET_ON */
 	SOC_ENUM("Silence Detector Setting", uda1380_sdet_enum),		/* SD_VALUE */
 	SOC_ENUM("Oversampling Input", uda1380_os_enum),			/* OS */
@@ -270,21 +296,6 @@ static const struct snd_kcontrol_new uda1380_snd_controls[] = {
 	/* -5.5, -8, -11.5, -14 dBFS */
 	SOC_SINGLE("AGC Switch", UDA1380_AGC, 0, 1, 0),
 };
-
-/* add non dapm controls */
-static int uda1380_add_controls(struct snd_soc_codec *codec)
-{
-	int err, i;
-
-	for (i = 0; i < ARRAY_SIZE(uda1380_snd_controls); i++) {
-		err = snd_ctl_add(codec->card,
-			snd_soc_cnew(&uda1380_snd_controls[i], codec, NULL));
-		if (err < 0)
-			return err;
-	}
-
-	return 0;
-}
 
 /* Input mux */
 static const struct snd_kcontrol_new uda1380_input_mux_control =
@@ -371,7 +382,7 @@ static int uda1380_add_widgets(struct snd_soc_codec *codec)
 	return 0;
 }
 
-static int uda1380_set_dai_fmt(struct snd_soc_dai *codec_dai,
+static int uda1380_set_dai_fmt_both(struct snd_soc_dai *codec_dai,
 		unsigned int fmt)
 {
 	struct snd_soc_codec *codec = codec_dai->codec;
@@ -381,16 +392,75 @@ static int uda1380_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	iface = uda1380_read_reg_cache(codec, UDA1380_IFACE);
 	iface &= ~(R01_SFORI_MASK | R01_SIM | R01_SFORO_MASK);
 
-	/* FIXME: how to select I2S for DATAO and MSB for DATAI correctly? */
 	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_I2S:
 		iface |= R01_SFORI_I2S | R01_SFORO_I2S;
 		break;
 	case SND_SOC_DAIFMT_LSB:
-		iface |= R01_SFORI_LSB16 | R01_SFORO_I2S;
+		iface |= R01_SFORI_LSB16 | R01_SFORO_LSB16;
 		break;
 	case SND_SOC_DAIFMT_MSB:
-		iface |= R01_SFORI_MSB | R01_SFORO_I2S;
+		iface |= R01_SFORI_MSB | R01_SFORO_MSB;
+	}
+
+	/* DATAI is slave only, so in single-link mode, this has to be slave */
+	if ((fmt & SND_SOC_DAIFMT_MASTER_MASK) != SND_SOC_DAIFMT_CBS_CFS)
+		return -EINVAL;
+
+	uda1380_write(codec, UDA1380_IFACE, iface);
+
+	return 0;
+}
+
+static int uda1380_set_dai_fmt_playback(struct snd_soc_dai *codec_dai,
+		unsigned int fmt)
+{
+	struct snd_soc_codec *codec = codec_dai->codec;
+	int iface;
+
+	/* set up DAI based upon fmt */
+	iface = uda1380_read_reg_cache(codec, UDA1380_IFACE);
+	iface &= ~R01_SFORI_MASK;
+
+	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
+	case SND_SOC_DAIFMT_I2S:
+		iface |= R01_SFORI_I2S;
+		break;
+	case SND_SOC_DAIFMT_LSB:
+		iface |= R01_SFORI_LSB16;
+		break;
+	case SND_SOC_DAIFMT_MSB:
+		iface |= R01_SFORI_MSB;
+	}
+
+	/* DATAI is slave only, so this has to be slave */
+	if ((fmt & SND_SOC_DAIFMT_MASTER_MASK) != SND_SOC_DAIFMT_CBS_CFS)
+		return -EINVAL;
+
+	uda1380_write(codec, UDA1380_IFACE, iface);
+
+	return 0;
+}
+
+static int uda1380_set_dai_fmt_capture(struct snd_soc_dai *codec_dai,
+		unsigned int fmt)
+{
+	struct snd_soc_codec *codec = codec_dai->codec;
+	int iface;
+
+	/* set up DAI based upon fmt */
+	iface = uda1380_read_reg_cache(codec, UDA1380_IFACE);
+	iface &= ~(R01_SIM | R01_SFORO_MASK);
+
+	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
+	case SND_SOC_DAIFMT_I2S:
+		iface |= R01_SFORO_I2S;
+		break;
+	case SND_SOC_DAIFMT_LSB:
+		iface |= R01_SFORO_LSB16;
+		break;
+	case SND_SOC_DAIFMT_MSB:
+		iface |= R01_SFORO_MSB;
 	}
 
 	if ((fmt & SND_SOC_DAIFMT_MASTER_MASK) == SND_SOC_DAIFMT_CBM_CFM)
@@ -401,41 +471,29 @@ static int uda1380_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	return 0;
 }
 
-/*
- * Flush reg cache
- * We can only write the interpolator and decimator registers
- * when the DAI is being clocked by the CPU DAI. It's up to the
- * machine and cpu DAI driver to do this before we are called.
- */
-static int uda1380_pcm_prepare(struct snd_pcm_substream *substream,
-			       struct snd_soc_dai *dai)
+static int uda1380_trigger(struct snd_pcm_substream *substream, int cmd,
+		struct snd_soc_dai *dai)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_device *socdev = rtd->socdev;
-	struct snd_soc_codec *codec = socdev->codec;
-	int reg, reg_start, reg_end, clk;
+	struct snd_soc_codec *codec = socdev->card->codec;
+	struct uda1380_priv *uda1380 = codec->private_data;
+	int mixer = uda1380_read_reg_cache(codec, UDA1380_MIXER);
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		reg_start = UDA1380_MVOL;
-		reg_end = UDA1380_MIXER;
-	} else {
-		reg_start = UDA1380_DEC;
-		reg_end = UDA1380_AGC;
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		uda1380_write_reg_cache(codec, UDA1380_MIXER,
+					mixer & ~R14_SILENCE);
+		schedule_work(&uda1380->work);
+		break;
+	case SNDRV_PCM_TRIGGER_STOP:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		uda1380_write_reg_cache(codec, UDA1380_MIXER,
+					mixer | R14_SILENCE);
+		schedule_work(&uda1380->work);
+		break;
 	}
-
-	/* FIXME disable DAC_CLK */
-	clk = uda1380_read_reg_cache(codec, UDA1380_CLK);
-	uda1380_write(codec, UDA1380_CLK, clk & ~R00_DAC_CLK);
-
-	for (reg = reg_start; reg <= reg_end; reg++) {
-		pr_debug("uda1380: flush reg %x val %x:", reg,
-				uda1380_read_reg_cache(codec, reg));
-		uda1380_write(codec, reg, uda1380_read_reg_cache(codec, reg));
-	}
-
-	/* FIXME enable DAC_CLK */
-	uda1380_write(codec, UDA1380_CLK, clk | R00_DAC_CLK);
-
 	return 0;
 }
 
@@ -445,7 +503,7 @@ static int uda1380_pcm_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_device *socdev = rtd->socdev;
-	struct snd_soc_codec *codec = socdev->codec;
+	struct snd_soc_codec *codec = socdev->card->codec;
 	u16 clk = uda1380_read_reg_cache(codec, UDA1380_CLK);
 
 	/* set WSPLL power and divider if running from this clock */
@@ -484,7 +542,7 @@ static void uda1380_pcm_shutdown(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_device *socdev = rtd->socdev;
-	struct snd_soc_codec *codec = socdev->codec;
+	struct snd_soc_codec *codec = socdev->card->codec;
 	u16 clk = uda1380_read_reg_cache(codec, UDA1380_CLK);
 
 	/* shut down WSPLL power if running from this clock */
@@ -499,24 +557,6 @@ static void uda1380_pcm_shutdown(struct snd_pcm_substream *substream,
 		clk &= ~(R00_EN_ADC | R00_EN_DEC);
 
 	uda1380_write(codec, UDA1380_CLK, clk);
-}
-
-static int uda1380_mute(struct snd_soc_dai *codec_dai, int mute)
-{
-	struct snd_soc_codec *codec = codec_dai->codec;
-	u16 mute_reg = uda1380_read_reg_cache(codec, UDA1380_DEEMP) & ~R13_MTM;
-
-	/* FIXME: mute(codec,0) is called when the magician clock is already
-	 * set to WSPLL, but for some unknown reason writing to interpolator
-	 * registers works only when clocked by SYSCLK */
-	u16 clk = uda1380_read_reg_cache(codec, UDA1380_CLK);
-	uda1380_write(codec, UDA1380_CLK, ~R00_DAC_CLK & clk);
-	if (mute)
-		uda1380_write(codec, UDA1380_DEEMP, mute_reg | R13_MTM);
-	else
-		uda1380_write(codec, UDA1380_DEEMP, mute_reg);
-	uda1380_write(codec, UDA1380_CLK, clk);
-	return 0;
 }
 
 static int uda1380_set_bias_level(struct snd_soc_codec *codec,
@@ -544,6 +584,27 @@ static int uda1380_set_bias_level(struct snd_soc_codec *codec,
 		       SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_22050 |\
 		       SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000)
 
+static struct snd_soc_dai_ops uda1380_dai_ops = {
+	.hw_params	= uda1380_pcm_hw_params,
+	.shutdown	= uda1380_pcm_shutdown,
+	.trigger	= uda1380_trigger,
+	.set_fmt	= uda1380_set_dai_fmt_both,
+};
+
+static struct snd_soc_dai_ops uda1380_dai_ops_playback = {
+	.hw_params	= uda1380_pcm_hw_params,
+	.shutdown	= uda1380_pcm_shutdown,
+	.trigger	= uda1380_trigger,
+	.set_fmt	= uda1380_set_dai_fmt_playback,
+};
+
+static struct snd_soc_dai_ops uda1380_dai_ops_capture = {
+	.hw_params	= uda1380_pcm_hw_params,
+	.shutdown	= uda1380_pcm_shutdown,
+	.trigger	= uda1380_trigger,
+	.set_fmt	= uda1380_set_dai_fmt_capture,
+};
+
 struct snd_soc_dai uda1380_dai[] = {
 {
 	.name = "UDA1380",
@@ -559,13 +620,7 @@ struct snd_soc_dai uda1380_dai[] = {
 		.channels_max = 2,
 		.rates = UDA1380_RATES,
 		.formats = SNDRV_PCM_FMTBIT_S16_LE,},
-	.ops = {
-		.hw_params = uda1380_pcm_hw_params,
-		.shutdown = uda1380_pcm_shutdown,
-		.prepare = uda1380_pcm_prepare,
-		.digital_mute = uda1380_mute,
-		.set_fmt = uda1380_set_dai_fmt,
-	},
+	.ops = &uda1380_dai_ops,
 },
 { /* playback only - dual interface */
 	.name = "UDA1380",
@@ -576,13 +631,7 @@ struct snd_soc_dai uda1380_dai[] = {
 		.rates = UDA1380_RATES,
 		.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	},
-	.ops = {
-		.hw_params = uda1380_pcm_hw_params,
-		.shutdown = uda1380_pcm_shutdown,
-		.prepare = uda1380_pcm_prepare,
-		.digital_mute = uda1380_mute,
-		.set_fmt = uda1380_set_dai_fmt,
-	},
+	.ops = &uda1380_dai_ops_playback,
 },
 { /* capture only - dual interface*/
 	.name = "UDA1380",
@@ -593,12 +642,7 @@ struct snd_soc_dai uda1380_dai[] = {
 		.rates = UDA1380_RATES,
 		.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	},
-	.ops = {
-		.hw_params = uda1380_pcm_hw_params,
-		.shutdown = uda1380_pcm_shutdown,
-		.prepare = uda1380_pcm_prepare,
-		.set_fmt = uda1380_set_dai_fmt,
-	},
+	.ops = &uda1380_dai_ops_capture,
 },
 };
 EXPORT_SYMBOL_GPL(uda1380_dai);
@@ -606,7 +650,7 @@ EXPORT_SYMBOL_GPL(uda1380_dai);
 static int uda1380_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
-	struct snd_soc_codec *codec = socdev->codec;
+	struct snd_soc_codec *codec = socdev->card->codec;
 
 	uda1380_set_bias_level(codec, SND_SOC_BIAS_OFF);
 	return 0;
@@ -615,7 +659,7 @@ static int uda1380_suspend(struct platform_device *pdev, pm_message_t state)
 static int uda1380_resume(struct platform_device *pdev)
 {
 	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
-	struct snd_soc_codec *codec = socdev->codec;
+	struct snd_soc_codec *codec = socdev->card->codec;
 	int i;
 	u8 data[2];
 	u16 *cache = codec->reg_cache;
@@ -631,41 +675,33 @@ static int uda1380_resume(struct platform_device *pdev)
 	return 0;
 }
 
-/*
- * initialise the UDA1380 driver
- * register mixer and dsp interfaces with the kernel
- */
-static int uda1380_init(struct snd_soc_device *socdev, int dac_clk)
+static int uda1380_probe(struct platform_device *pdev)
 {
-	struct snd_soc_codec *codec = socdev->codec;
+	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
+	struct snd_soc_codec *codec;
+	struct uda1380_platform_data *pdata;
 	int ret = 0;
 
-	codec->name = "UDA1380";
-	codec->owner = THIS_MODULE;
-	codec->read = uda1380_read_reg_cache;
-	codec->write = uda1380_write;
-	codec->set_bias_level = uda1380_set_bias_level;
-	codec->dai = uda1380_dai;
-	codec->num_dai = ARRAY_SIZE(uda1380_dai);
-	codec->reg_cache = kmemdup(uda1380_reg, sizeof(uda1380_reg),
-				   GFP_KERNEL);
-	if (codec->reg_cache == NULL)
-		return -ENOMEM;
-	codec->reg_cache_size = ARRAY_SIZE(uda1380_reg);
-	codec->reg_cache_step = 1;
-	uda1380_reset(codec);
+	if (uda1380_codec == NULL) {
+		dev_err(&pdev->dev, "Codec device not registered\n");
+		return -ENODEV;
+	}
+
+	socdev->card->codec = uda1380_codec;
+	codec = uda1380_codec;
+	pdata = codec->dev->platform_data;
 
 	/* register pcms */
 	ret = snd_soc_new_pcms(socdev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1);
 	if (ret < 0) {
-		pr_err("uda1380: failed to create pcms\n");
+		dev_err(codec->dev, "failed to create pcms: %d\n", ret);
 		goto pcm_err;
 	}
 
 	/* power on device */
 	uda1380_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 	/* set clock input */
-	switch (dac_clk) {
+	switch (pdata->dac_clk) {
 	case UDA1380_DAC_CLK_SYSCLK:
 		uda1380_write(codec, UDA1380_CLK, 0);
 		break;
@@ -674,12 +710,12 @@ static int uda1380_init(struct snd_soc_device *socdev, int dac_clk)
 		break;
 	}
 
-	/* uda1380 init */
-	uda1380_add_controls(codec);
+	snd_soc_add_controls(codec, uda1380_snd_controls,
+				ARRAY_SIZE(uda1380_snd_controls));
 	uda1380_add_widgets(codec);
 	ret = snd_soc_init_card(socdev);
 	if (ret < 0) {
-		pr_err("uda1380: failed to register card\n");
+		dev_err(codec->dev, "failed to register card: %d\n", ret);
 		goto card_err;
 	}
 
@@ -689,36 +725,164 @@ card_err:
 	snd_soc_free_pcms(socdev);
 	snd_soc_dapm_free(socdev);
 pcm_err:
-	kfree(codec->reg_cache);
 	return ret;
 }
 
-static struct snd_soc_device *uda1380_socdev;
+/* power down chip */
+static int uda1380_remove(struct platform_device *pdev)
+{
+	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
+	struct snd_soc_codec *codec = socdev->card->codec;
+
+	if (codec->control_data)
+		uda1380_set_bias_level(codec, SND_SOC_BIAS_OFF);
+
+	snd_soc_free_pcms(socdev);
+	snd_soc_dapm_free(socdev);
+
+	return 0;
+}
+
+struct snd_soc_codec_device soc_codec_dev_uda1380 = {
+	.probe = 	uda1380_probe,
+	.remove = 	uda1380_remove,
+	.suspend = 	uda1380_suspend,
+	.resume =	uda1380_resume,
+};
+EXPORT_SYMBOL_GPL(soc_codec_dev_uda1380);
+
+static int uda1380_register(struct uda1380_priv *uda1380)
+{
+	int ret, i;
+	struct snd_soc_codec *codec = &uda1380->codec;
+	struct uda1380_platform_data *pdata = codec->dev->platform_data;
+
+	if (uda1380_codec) {
+		dev_err(codec->dev, "Another UDA1380 is registered\n");
+		return -EINVAL;
+	}
+
+	if (!pdata || !pdata->gpio_power || !pdata->gpio_reset)
+		return -EINVAL;
+
+	ret = gpio_request(pdata->gpio_power, "uda1380 power");
+	if (ret)
+		goto err_out;
+	ret = gpio_request(pdata->gpio_reset, "uda1380 reset");
+	if (ret)
+		goto err_gpio;
+
+	gpio_direction_output(pdata->gpio_power, 1);
+
+	/* we may need to have the clock running here - pH5 */
+	gpio_direction_output(pdata->gpio_reset, 1);
+	udelay(5);
+	gpio_set_value(pdata->gpio_reset, 0);
+
+	mutex_init(&codec->mutex);
+	INIT_LIST_HEAD(&codec->dapm_widgets);
+	INIT_LIST_HEAD(&codec->dapm_paths);
+
+	codec->private_data = uda1380;
+	codec->name = "UDA1380";
+	codec->owner = THIS_MODULE;
+	codec->read = uda1380_read_reg_cache;
+	codec->write = uda1380_write;
+	codec->bias_level = SND_SOC_BIAS_OFF;
+	codec->set_bias_level = uda1380_set_bias_level;
+	codec->dai = uda1380_dai;
+	codec->num_dai = ARRAY_SIZE(uda1380_dai);
+	codec->reg_cache_size = ARRAY_SIZE(uda1380_reg);
+	codec->reg_cache = &uda1380->reg_cache;
+	codec->reg_cache_step = 1;
+
+	memcpy(codec->reg_cache, uda1380_reg, sizeof(uda1380_reg));
+
+	ret = uda1380_reset(codec);
+	if (ret < 0) {
+		dev_err(codec->dev, "Failed to issue reset\n");
+		goto err_reset;
+	}
+
+	INIT_WORK(&uda1380->work, uda1380_flush_work);
+
+	for (i = 0; i < ARRAY_SIZE(uda1380_dai); i++)
+		uda1380_dai[i].dev = codec->dev;
+
+	uda1380_codec = codec;
+
+	ret = snd_soc_register_codec(codec);
+	if (ret != 0) {
+		dev_err(codec->dev, "Failed to register codec: %d\n", ret);
+		goto err_reset;
+	}
+
+	ret = snd_soc_register_dais(uda1380_dai, ARRAY_SIZE(uda1380_dai));
+	if (ret != 0) {
+		dev_err(codec->dev, "Failed to register DAIs: %d\n", ret);
+		goto err_dai;
+	}
+
+	return 0;
+
+err_dai:
+	snd_soc_unregister_codec(codec);
+err_reset:
+	gpio_set_value(pdata->gpio_power, 0);
+	gpio_free(pdata->gpio_reset);
+err_gpio:
+	gpio_free(pdata->gpio_power);
+err_out:
+	return ret;
+}
+
+static void uda1380_unregister(struct uda1380_priv *uda1380)
+{
+	struct snd_soc_codec *codec = &uda1380->codec;
+	struct uda1380_platform_data *pdata = codec->dev->platform_data;
+
+	snd_soc_unregister_dais(uda1380_dai, ARRAY_SIZE(uda1380_dai));
+	snd_soc_unregister_codec(&uda1380->codec);
+
+	gpio_set_value(pdata->gpio_power, 0);
+	gpio_free(pdata->gpio_reset);
+	gpio_free(pdata->gpio_power);
+
+	kfree(uda1380);
+	uda1380_codec = NULL;
+}
 
 #if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
-
-static int uda1380_i2c_probe(struct i2c_client *i2c,
-			     const struct i2c_device_id *id)
+static __devinit int uda1380_i2c_probe(struct i2c_client *i2c,
+				      const struct i2c_device_id *id)
 {
-	struct snd_soc_device *socdev = uda1380_socdev;
-	struct uda1380_setup_data *setup = socdev->codec_data;
-	struct snd_soc_codec *codec = socdev->codec;
+	struct uda1380_priv *uda1380;
+	struct snd_soc_codec *codec;
 	int ret;
 
-	i2c_set_clientdata(i2c, codec);
+	uda1380 = kzalloc(sizeof(struct uda1380_priv), GFP_KERNEL);
+	if (uda1380 == NULL)
+		return -ENOMEM;
+
+	codec = &uda1380->codec;
+	codec->hw_write = (hw_write_t)i2c_master_send;
+
+	i2c_set_clientdata(i2c, uda1380);
 	codec->control_data = i2c;
 
-	ret = uda1380_init(socdev, setup->dac_clk);
-	if (ret < 0)
-		pr_err("uda1380: failed to initialise UDA1380\n");
+	codec->dev = &i2c->dev;
+
+	ret = uda1380_register(uda1380);
+	if (ret != 0)
+		kfree(uda1380);
 
 	return ret;
 }
 
-static int uda1380_i2c_remove(struct i2c_client *client)
+static int __devexit uda1380_i2c_remove(struct i2c_client *i2c)
 {
-	struct snd_soc_codec *codec = i2c_get_clientdata(client);
-	kfree(codec->reg_cache);
+	struct uda1380_priv *uda1380 = i2c_get_clientdata(i2c);
+	uda1380_unregister(uda1380);
 	return 0;
 }
 
@@ -734,122 +898,28 @@ static struct i2c_driver uda1380_i2c_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe =    uda1380_i2c_probe,
-	.remove =   uda1380_i2c_remove,
+	.remove =   __devexit_p(uda1380_i2c_remove),
 	.id_table = uda1380_i2c_id,
 };
-
-static int uda1380_add_i2c_device(struct platform_device *pdev,
-				  const struct uda1380_setup_data *setup)
-{
-	struct i2c_board_info info;
-	struct i2c_adapter *adapter;
-	struct i2c_client *client;
-	int ret;
-
-	ret = i2c_add_driver(&uda1380_i2c_driver);
-	if (ret != 0) {
-		dev_err(&pdev->dev, "can't add i2c driver\n");
-		return ret;
-	}
-
-	memset(&info, 0, sizeof(struct i2c_board_info));
-	info.addr = setup->i2c_address;
-	strlcpy(info.type, "uda1380", I2C_NAME_SIZE);
-
-	adapter = i2c_get_adapter(setup->i2c_bus);
-	if (!adapter) {
-		dev_err(&pdev->dev, "can't get i2c adapter %d\n",
-			setup->i2c_bus);
-		goto err_driver;
-	}
-
-	client = i2c_new_device(adapter, &info);
-	i2c_put_adapter(adapter);
-	if (!client) {
-		dev_err(&pdev->dev, "can't add i2c device at 0x%x\n",
-			(unsigned int)info.addr);
-		goto err_driver;
-	}
-
-	return 0;
-
-err_driver:
-	i2c_del_driver(&uda1380_i2c_driver);
-	return -ENODEV;
-}
 #endif
-
-static int uda1380_probe(struct platform_device *pdev)
-{
-	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
-	struct uda1380_setup_data *setup;
-	struct snd_soc_codec *codec;
-	int ret;
-
-	pr_info("UDA1380 Audio Codec %s", UDA1380_VERSION);
-
-	setup = socdev->codec_data;
-	codec = kzalloc(sizeof(struct snd_soc_codec), GFP_KERNEL);
-	if (codec == NULL)
-		return -ENOMEM;
-
-	socdev->codec = codec;
-	mutex_init(&codec->mutex);
-	INIT_LIST_HEAD(&codec->dapm_widgets);
-	INIT_LIST_HEAD(&codec->dapm_paths);
-
-	uda1380_socdev = socdev;
-	ret = -ENODEV;
-
-#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
-	if (setup->i2c_address) {
-		codec->hw_write = (hw_write_t)i2c_master_send;
-		ret = uda1380_add_i2c_device(pdev, setup);
-	}
-#endif
-
-	if (ret != 0)
-		kfree(codec);
-	return ret;
-}
-
-/* power down chip */
-static int uda1380_remove(struct platform_device *pdev)
-{
-	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
-	struct snd_soc_codec *codec = socdev->codec;
-
-	if (codec->control_data)
-		uda1380_set_bias_level(codec, SND_SOC_BIAS_OFF);
-
-	snd_soc_free_pcms(socdev);
-	snd_soc_dapm_free(socdev);
-#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
-	i2c_unregister_device(codec->control_data);
-	i2c_del_driver(&uda1380_i2c_driver);
-#endif
-	kfree(codec);
-
-	return 0;
-}
-
-struct snd_soc_codec_device soc_codec_dev_uda1380 = {
-	.probe = 	uda1380_probe,
-	.remove = 	uda1380_remove,
-	.suspend = 	uda1380_suspend,
-	.resume =	uda1380_resume,
-};
-EXPORT_SYMBOL_GPL(soc_codec_dev_uda1380);
 
 static int __init uda1380_modinit(void)
 {
-	return snd_soc_register_dais(uda1380_dai, ARRAY_SIZE(uda1380_dai));
+	int ret;
+#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+	ret = i2c_add_driver(&uda1380_i2c_driver);
+	if (ret != 0)
+		pr_err("Failed to register UDA1380 I2C driver: %d\n", ret);
+#endif
+	return 0;
 }
 module_init(uda1380_modinit);
 
 static void __exit uda1380_exit(void)
 {
-	snd_soc_unregister_dais(uda1380_dai, ARRAY_SIZE(uda1380_dai));
+#if defined(CONFIG_I2C) || defined(CONFIG_I2C_MODULE)
+	i2c_del_driver(&uda1380_i2c_driver);
+#endif
 }
 module_exit(uda1380_exit);
 

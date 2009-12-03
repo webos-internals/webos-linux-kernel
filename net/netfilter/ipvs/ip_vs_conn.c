@@ -22,6 +22,9 @@
  *
  */
 
+#define KMSG_COMPONENT "IPVS"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
 #include <linux/interrupt.h>
 #include <linux/in.h>
 #include <linux/net.h>
@@ -150,8 +153,8 @@ static inline int ip_vs_conn_hash(struct ip_vs_conn *cp)
 		atomic_inc(&cp->refcnt);
 		ret = 1;
 	} else {
-		IP_VS_ERR("ip_vs_conn_hash(): request for already hashed, "
-			  "called from %p\n", __builtin_return_address(0));
+		pr_err("%s(): request for already hashed, called from %pF\n",
+		       __func__, __builtin_return_address(0));
 		ret = 0;
 	}
 
@@ -260,7 +263,10 @@ struct ip_vs_conn *ip_vs_ct_in_get
 	list_for_each_entry(cp, &ip_vs_conn_tab[hash], c_list) {
 		if (cp->af == af &&
 		    ip_vs_addr_equal(af, s_addr, &cp->caddr) &&
-		    ip_vs_addr_equal(af, d_addr, &cp->vaddr) &&
+		    /* protocol should only be IPPROTO_IP if
+		     * d_addr is a fwmark */
+		    ip_vs_addr_equal(protocol == IPPROTO_IP ? AF_UNSPEC : af,
+		                     d_addr, &cp->vaddr) &&
 		    s_port == cp->cport && d_port == cp->vport &&
 		    cp->flags & IP_VS_CONN_F_TEMPLATE &&
 		    protocol == cp->protocol) {
@@ -686,7 +692,7 @@ ip_vs_conn_new(int af, int proto, const union nf_inet_addr *caddr, __be16 cport,
 
 	cp = kmem_cache_zalloc(ip_vs_conn_cachep, GFP_ATOMIC);
 	if (cp == NULL) {
-		IP_VS_ERR_RL("ip_vs_conn_new: no memory available.\n");
+		IP_VS_ERR_RL("%s(): no memory\n", __func__);
 		return NULL;
 	}
 
@@ -698,7 +704,9 @@ ip_vs_conn_new(int af, int proto, const union nf_inet_addr *caddr, __be16 cport,
 	cp->cport	   = cport;
 	ip_vs_addr_copy(af, &cp->vaddr, vaddr);
 	cp->vport	   = vport;
-	ip_vs_addr_copy(af, &cp->daddr, daddr);
+	/* proto should only be IPPROTO_IP if d_addr is a fwmark */
+	ip_vs_addr_copy(proto == IPPROTO_IP ? AF_UNSPEC : af,
+			&cp->daddr, daddr);
 	cp->dport          = dport;
 	cp->flags	   = flags;
 	spin_lock_init(&cp->lock);
@@ -1068,10 +1076,10 @@ int __init ip_vs_conn_init(void)
 		return -ENOMEM;
 	}
 
-	IP_VS_INFO("Connection hash table configured "
-		   "(size=%d, memory=%ldKbytes)\n",
-		   IP_VS_CONN_TAB_SIZE,
-		   (long)(IP_VS_CONN_TAB_SIZE*sizeof(struct list_head))/1024);
+	pr_info("Connection hash table configured "
+		"(size=%d, memory=%ldKbytes)\n",
+		IP_VS_CONN_TAB_SIZE,
+		(long)(IP_VS_CONN_TAB_SIZE*sizeof(struct list_head))/1024);
 	IP_VS_DBG(0, "Each connection entry needs %Zd bytes at least\n",
 		  sizeof(struct ip_vs_conn));
 

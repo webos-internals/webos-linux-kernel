@@ -145,6 +145,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
@@ -298,7 +299,7 @@ struct ewrk3_private {
    ** Public Functions
  */
 static int ewrk3_open(struct net_device *dev);
-static int ewrk3_queue_pkt(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t ewrk3_queue_pkt(struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t ewrk3_interrupt(int irq, void *dev_id);
 static int ewrk3_close(struct net_device *dev);
 static void set_multicast_list(struct net_device *dev);
@@ -387,6 +388,18 @@ static int __init ewrk3_probe1(struct net_device *dev, u_long iobase, int irq)
 
 	return err;
 }
+
+static const struct net_device_ops ewrk3_netdev_ops = {
+	.ndo_open		= ewrk3_open,
+	.ndo_start_xmit		= ewrk3_queue_pkt,
+	.ndo_stop		= ewrk3_close,
+	.ndo_set_multicast_list = set_multicast_list,
+	.ndo_do_ioctl		= ewrk3_ioctl,
+	.ndo_tx_timeout		= ewrk3_timeout,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_validate_addr	= eth_validate_addr,
+};
 
 static int __init
 ewrk3_hw_init(struct net_device *dev, u_long iobase)
@@ -603,16 +616,11 @@ ewrk3_hw_init(struct net_device *dev, u_long iobase)
 		printk(version);
 	}
 	/* The EWRK3-specific entries in the device structure. */
-	dev->open = ewrk3_open;
-	dev->hard_start_xmit = ewrk3_queue_pkt;
-	dev->stop = ewrk3_close;
-	dev->set_multicast_list = set_multicast_list;
-	dev->do_ioctl = ewrk3_ioctl;
+	dev->netdev_ops = &ewrk3_netdev_ops;
 	if (lp->adapter_name[4] == '3')
 		SET_ETHTOOL_OPS(dev, &ethtool_ops_203);
 	else
 		SET_ETHTOOL_OPS(dev, &ethtool_ops);
-	dev->tx_timeout = ewrk3_timeout;
 	dev->watchdog_timeo = QUEUE_PKT_TIMEOUT;
 
 	dev->mem_start = 0;
@@ -757,7 +765,7 @@ static void ewrk3_timeout(struct net_device *dev)
 /*
    ** Writes a socket buffer to the free page queue
  */
-static int ewrk3_queue_pkt (struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t ewrk3_queue_pkt(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ewrk3_private *lp = netdev_priv(dev);
 	u_long iobase = dev->base_addr;
@@ -861,12 +869,12 @@ static int ewrk3_queue_pkt (struct sk_buff *skb, struct net_device *dev)
 	if (inb (EWRK3_FMQC) == 0)
 		netif_stop_queue (dev);
 
-	return 0;
+	return NETDEV_TX_OK;
 
 err_out:
 	ENABLE_IRQs;
 	spin_unlock_irq (&lp->hw_lock);
-	return 1;
+	return NETDEV_TX_BUSY;
 }
 
 /*

@@ -42,7 +42,6 @@ MODULE_LICENSE("GPL");
 
 #define ACPI_WMI_CLASS "wmi"
 
-#undef PREFIX
 #define PREFIX "ACPI: WMI: "
 
 static DEFINE_MUTEX(wmi_data_lock);
@@ -81,6 +80,7 @@ static struct wmi_block wmi_blocks;
 
 static int acpi_wmi_remove(struct acpi_device *device, int type);
 static int acpi_wmi_add(struct acpi_device *device);
+static void acpi_wmi_notify(struct acpi_device *device, u32 event);
 
 static const struct acpi_device_id wmi_device_ids[] = {
 	{"PNP0C14", 0},
@@ -96,6 +96,7 @@ static struct acpi_driver acpi_wmi_driver = {
 	.ops = {
 		.add = acpi_wmi_add,
 		.remove = acpi_wmi_remove,
+		.notify = acpi_wmi_notify,
 		},
 };
 
@@ -268,7 +269,7 @@ u32 method_id, const struct acpi_buffer *in, struct acpi_buffer *out)
 	acpi_status status;
 	struct acpi_object_list input;
 	union acpi_object params[3];
-	char method[4] = "WM";
+	char method[5] = "WM";
 
 	if (!find_guid(guid_string, &wblock))
 		return AE_ERROR;
@@ -326,8 +327,8 @@ struct acpi_buffer *out)
 	acpi_status status, wc_status = AE_ERROR;
 	struct acpi_object_list input, wc_input;
 	union acpi_object wc_params[1], wq_params[1];
-	char method[4];
-	char wc_method[4] = "WC";
+	char method[5];
+	char wc_method[5] = "WC";
 
 	if (!guid_string || !out)
 		return AE_BAD_PARAMETER;
@@ -408,7 +409,7 @@ const struct acpi_buffer *in)
 	acpi_handle handle;
 	struct acpi_object_list input;
 	union acpi_object params[2];
-	char method[4] = "WS";
+	char method[5] = "WS";
 
 	if (!guid_string || !in)
 		return AE_BAD_DATA;
@@ -643,12 +644,11 @@ acpi_wmi_ec_space_handler(u32 function, acpi_physical_address address,
 	}
 }
 
-static void acpi_wmi_notify(acpi_handle handle, u32 event, void *data)
+static void acpi_wmi_notify(struct acpi_device *device, u32 event)
 {
 	struct guid_block *block;
 	struct wmi_block *wblock;
 	struct list_head *p;
-	struct acpi_device *device = data;
 
 	list_for_each(p, &wmi_blocks.list) {
 		wblock = list_entry(p, struct wmi_block, list);
@@ -669,9 +669,6 @@ static void acpi_wmi_notify(acpi_handle handle, u32 event, void *data)
 
 static int acpi_wmi_remove(struct acpi_device *device, int type)
 {
-	acpi_remove_notify_handler(device->handle, ACPI_DEVICE_NOTIFY,
-		acpi_wmi_notify);
-
 	acpi_remove_address_space_handler(device->handle,
 				ACPI_ADR_SPACE_EC, &acpi_wmi_ec_space_handler);
 
@@ -682,13 +679,6 @@ static int __init acpi_wmi_add(struct acpi_device *device)
 {
 	acpi_status status;
 	int result = 0;
-
-	status = acpi_install_notify_handler(device->handle, ACPI_DEVICE_NOTIFY,
-		acpi_wmi_notify, device);
-	if (ACPI_FAILURE(status)) {
-		printk(KERN_ERR PREFIX "Error installing notify handler\n");
-		return -ENODEV;
-	}
 
 	status = acpi_install_address_space_handler(device->handle,
 						    ACPI_ADR_SPACE_EC,

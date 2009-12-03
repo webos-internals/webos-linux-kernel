@@ -71,8 +71,6 @@
 
 #define MIPS_REVISION_CORID (((*(volatile u32 *)ioremap(MIPS_REVISION_REG, 4)) >> 10) & 0x3f)
 
-extern int mips_revision_corid;
-
 #define MIPS_REVISION_SCON_OTHER	   0
 #define MIPS_REVISION_SCON_SOCITSC	   1
 #define MIPS_REVISION_SCON_SOCITSCP	   2
@@ -88,8 +86,6 @@ extern int mips_revision_corid;
 #define MIPS_REVISION_SCONID (((*(volatile u32 *)ioremap(MIPS_REVISION_REG, 4)) >> 24) & 0xff)
 
 extern int mips_revision_sconid;
-
-extern void mips_reboot_setup(void);
 
 #ifdef CONFIG_PCI
 extern void mips_pcibios_init(void);

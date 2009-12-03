@@ -116,7 +116,7 @@ static void dwc_sync_desc_for_cpu(struct dw_dma_chan *dwc, struct dw_desc *desc)
 {
 	struct dw_desc	*child;
 
-	list_for_each_entry(child, &desc->txd.tx_list, desc_node)
+	list_for_each_entry(child, &desc->tx_list, desc_node)
 		dma_sync_single_for_cpu(chan2parent(&dwc->chan),
 				child->txd.phys, sizeof(child->lli),
 				DMA_TO_DEVICE);
@@ -137,11 +137,11 @@ static void dwc_desc_put(struct dw_dma_chan *dwc, struct dw_desc *desc)
 		dwc_sync_desc_for_cpu(dwc, desc);
 
 		spin_lock_bh(&dwc->lock);
-		list_for_each_entry(child, &desc->txd.tx_list, desc_node)
+		list_for_each_entry(child, &desc->tx_list, desc_node)
 			dev_vdbg(chan2dev(&dwc->chan),
 					"moving child desc %p to freelist\n",
 					child);
-		list_splice_init(&desc->txd.tx_list, &dwc->free_list);
+		list_splice_init(&desc->tx_list, &dwc->free_list);
 		dev_vdbg(chan2dev(&dwc->chan), "moving desc %p to freelist\n", desc);
 		list_add(&desc->desc_node, &dwc->free_list);
 		spin_unlock_bh(&dwc->lock);
@@ -209,19 +209,28 @@ dwc_descriptor_complete(struct dw_dma_chan *dwc, struct dw_desc *desc)
 	param = txd->callback_param;
 
 	dwc_sync_desc_for_cpu(dwc, desc);
-	list_splice_init(&txd->tx_list, &dwc->free_list);
+	list_splice_init(&desc->tx_list, &dwc->free_list);
 	list_move(&desc->desc_node, &dwc->free_list);
 
-	/*
-	 * We use dma_unmap_page() regardless of how the buffers were
-	 * mapped before they were submitted...
-	 */
-	if (!(txd->flags & DMA_COMPL_SKIP_DEST_UNMAP))
-		dma_unmap_page(chan2parent(&dwc->chan), desc->lli.dar,
-			       desc->len, DMA_FROM_DEVICE);
-	if (!(txd->flags & DMA_COMPL_SKIP_SRC_UNMAP))
-		dma_unmap_page(chan2parent(&dwc->chan), desc->lli.sar,
-			       desc->len, DMA_TO_DEVICE);
+	if (!dwc->chan.private) {
+		struct device *parent = chan2parent(&dwc->chan);
+		if (!(txd->flags & DMA_COMPL_SKIP_DEST_UNMAP)) {
+			if (txd->flags & DMA_COMPL_DEST_UNMAP_SINGLE)
+				dma_unmap_single(parent, desc->lli.dar,
+						desc->len, DMA_FROM_DEVICE);
+			else
+				dma_unmap_page(parent, desc->lli.dar,
+						desc->len, DMA_FROM_DEVICE);
+		}
+		if (!(txd->flags & DMA_COMPL_SKIP_SRC_UNMAP)) {
+			if (txd->flags & DMA_COMPL_SRC_UNMAP_SINGLE)
+				dma_unmap_single(parent, desc->lli.sar,
+						desc->len, DMA_TO_DEVICE);
+			else
+				dma_unmap_page(parent, desc->lli.sar,
+						desc->len, DMA_TO_DEVICE);
+		}
+	}
 
 	/*
 	 * The API requires that no submissions are done from a
@@ -289,7 +298,7 @@ static void dwc_scan_descriptors(struct dw_dma *dw, struct dw_dma_chan *dwc)
 			/* This one is currently in progress */
 			return;
 
-		list_for_each_entry(child, &desc->txd.tx_list, desc_node)
+		list_for_each_entry(child, &desc->tx_list, desc_node)
 			if (child->lli.llp == llp)
 				/* Currently in progress */
 				return;
@@ -356,12 +365,88 @@ static void dwc_handle_error(struct dw_dma *dw, struct dw_dma_chan *dwc)
 	dev_printk(KERN_CRIT, chan2dev(&dwc->chan),
 			"  cookie: %d\n", bad_desc->txd.cookie);
 	dwc_dump_lli(dwc, &bad_desc->lli);
-	list_for_each_entry(child, &bad_desc->txd.tx_list, desc_node)
+	list_for_each_entry(child, &bad_desc->tx_list, desc_node)
 		dwc_dump_lli(dwc, &child->lli);
 
 	/* Pretend the descriptor completed successfully */
 	dwc_descriptor_complete(dwc, bad_desc);
 }
+
+/* --------------------- Cyclic DMA API extensions -------------------- */
+
+inline dma_addr_t dw_dma_get_src_addr(struct dma_chan *chan)
+{
+	struct dw_dma_chan *dwc = to_dw_dma_chan(chan);
+	return channel_readl(dwc, SAR);
+}
+EXPORT_SYMBOL(dw_dma_get_src_addr);
+
+inline dma_addr_t dw_dma_get_dst_addr(struct dma_chan *chan)
+{
+	struct dw_dma_chan *dwc = to_dw_dma_chan(chan);
+	return channel_readl(dwc, DAR);
+}
+EXPORT_SYMBOL(dw_dma_get_dst_addr);
+
+/* called with dwc->lock held and all DMAC interrupts disabled */
+static void dwc_handle_cyclic(struct dw_dma *dw, struct dw_dma_chan *dwc,
+		u32 status_block, u32 status_err, u32 status_xfer)
+{
+	if (status_block & dwc->mask) {
+		void (*callback)(void *param);
+		void *callback_param;
+
+		dev_vdbg(chan2dev(&dwc->chan), "new cyclic period llp 0x%08x\n",
+				channel_readl(dwc, LLP));
+		dma_writel(dw, CLEAR.BLOCK, dwc->mask);
+
+		callback = dwc->cdesc->period_callback;
+		callback_param = dwc->cdesc->period_callback_param;
+		if (callback) {
+			spin_unlock(&dwc->lock);
+			callback(callback_param);
+			spin_lock(&dwc->lock);
+		}
+	}
+
+	/*
+	 * Error and transfer complete are highly unlikely, and will most
+	 * likely be due to a configuration error by the user.
+	 */
+	if (unlikely(status_err & dwc->mask) ||
+			unlikely(status_xfer & dwc->mask)) {
+		int i;
+
+		dev_err(chan2dev(&dwc->chan), "cyclic DMA unexpected %s "
+				"interrupt, stopping DMA transfer\n",
+				status_xfer ? "xfer" : "error");
+		dev_err(chan2dev(&dwc->chan),
+			"  SAR: 0x%x DAR: 0x%x LLP: 0x%x CTL: 0x%x:%08x\n",
+			channel_readl(dwc, SAR),
+			channel_readl(dwc, DAR),
+			channel_readl(dwc, LLP),
+			channel_readl(dwc, CTL_HI),
+			channel_readl(dwc, CTL_LO));
+
+		channel_clear_bit(dw, CH_EN, dwc->mask);
+		while (dma_readl(dw, CH_EN) & dwc->mask)
+			cpu_relax();
+
+		/* make sure DMA does not restart by loading a new list */
+		channel_writel(dwc, LLP, 0);
+		channel_writel(dwc, CTL_LO, 0);
+		channel_writel(dwc, CTL_HI, 0);
+
+		dma_writel(dw, CLEAR.BLOCK, dwc->mask);
+		dma_writel(dw, CLEAR.ERROR, dwc->mask);
+		dma_writel(dw, CLEAR.XFER, dwc->mask);
+
+		for (i = 0; i < dwc->cdesc->periods; i++)
+			dwc_dump_lli(dwc, &dwc->cdesc->desc[i]->lli);
+	}
+}
+
+/* ------------------------------------------------------------------------- */
 
 static void dw_dma_tasklet(unsigned long data)
 {
@@ -382,7 +467,10 @@ static void dw_dma_tasklet(unsigned long data)
 	for (i = 0; i < dw->dma.chancnt; i++) {
 		dwc = &dw->chan[i];
 		spin_lock(&dwc->lock);
-		if (status_err & (1 << i))
+		if (test_bit(DW_DMA_IS_CYCLIC, &dwc->flags))
+			dwc_handle_cyclic(dw, dwc, status_block, status_err,
+					status_xfer);
+		else if (status_err & (1 << i))
 			dwc_handle_error(dw, dwc);
 		else if ((status_block | status_xfer) & (1 << i))
 			dwc_scan_descriptors(dw, dwc);
@@ -529,7 +617,7 @@ dwc_prep_dma_memcpy(struct dma_chan *chan, dma_addr_t dest, dma_addr_t src,
 					prev->txd.phys, sizeof(prev->lli),
 					DMA_TO_DEVICE);
 			list_add_tail(&desc->desc_node,
-					&first->txd.tx_list);
+					&first->tx_list);
 		}
 		prev = desc;
 	}
@@ -579,8 +667,6 @@ dwc_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 	reg_width = dws->reg_width;
 	prev = first = NULL;
 
-	sg_len = dma_map_sg(chan2parent(chan), sgl, sg_len, direction);
-
 	switch (direction) {
 	case DMA_TO_DEVICE:
 		ctllo = (DWC_DEFAULT_CTLLO
@@ -621,7 +707,7 @@ dwc_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 						sizeof(prev->lli),
 						DMA_TO_DEVICE);
 				list_add_tail(&desc->desc_node,
-						&first->txd.tx_list);
+						&first->tx_list);
 			}
 			prev = desc;
 			total_len += len;
@@ -667,7 +753,7 @@ dwc_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 						sizeof(prev->lli),
 						DMA_TO_DEVICE);
 				list_add_tail(&desc->desc_node,
-						&first->txd.tx_list);
+						&first->tx_list);
 			}
 			prev = desc;
 			total_len += len;
@@ -823,10 +909,10 @@ static int dwc_alloc_chan_resources(struct dma_chan *chan)
 			break;
 		}
 
+		INIT_LIST_HEAD(&desc->tx_list);
 		dma_async_tx_descriptor_init(&desc->txd, chan);
 		desc->txd.tx_submit = dwc_tx_submit;
 		desc->txd.flags = DMA_CTRL_ACK;
-		INIT_LIST_HEAD(&desc->txd.tx_list);
 		desc->txd.phys = dma_map_single(chan2parent(chan), &desc->lli,
 				sizeof(desc->lli), DMA_TO_DEVICE);
 		dwc_desc_put(dwc, desc);
@@ -883,6 +969,257 @@ static void dwc_free_chan_resources(struct dma_chan *chan)
 
 	dev_vdbg(chan2dev(chan), "free_chan_resources done\n");
 }
+
+/* --------------------- Cyclic DMA API extensions -------------------- */
+
+/**
+ * dw_dma_cyclic_start - start the cyclic DMA transfer
+ * @chan: the DMA channel to start
+ *
+ * Must be called with soft interrupts disabled. Returns zero on success or
+ * -errno on failure.
+ */
+int dw_dma_cyclic_start(struct dma_chan *chan)
+{
+	struct dw_dma_chan	*dwc = to_dw_dma_chan(chan);
+	struct dw_dma		*dw = to_dw_dma(dwc->chan.device);
+
+	if (!test_bit(DW_DMA_IS_CYCLIC, &dwc->flags)) {
+		dev_err(chan2dev(&dwc->chan), "missing prep for cyclic DMA\n");
+		return -ENODEV;
+	}
+
+	spin_lock(&dwc->lock);
+
+	/* assert channel is idle */
+	if (dma_readl(dw, CH_EN) & dwc->mask) {
+		dev_err(chan2dev(&dwc->chan),
+			"BUG: Attempted to start non-idle channel\n");
+		dev_err(chan2dev(&dwc->chan),
+			"  SAR: 0x%x DAR: 0x%x LLP: 0x%x CTL: 0x%x:%08x\n",
+			channel_readl(dwc, SAR),
+			channel_readl(dwc, DAR),
+			channel_readl(dwc, LLP),
+			channel_readl(dwc, CTL_HI),
+			channel_readl(dwc, CTL_LO));
+		spin_unlock(&dwc->lock);
+		return -EBUSY;
+	}
+
+	dma_writel(dw, CLEAR.BLOCK, dwc->mask);
+	dma_writel(dw, CLEAR.ERROR, dwc->mask);
+	dma_writel(dw, CLEAR.XFER, dwc->mask);
+
+	/* setup DMAC channel registers */
+	channel_writel(dwc, LLP, dwc->cdesc->desc[0]->txd.phys);
+	channel_writel(dwc, CTL_LO, DWC_CTLL_LLP_D_EN | DWC_CTLL_LLP_S_EN);
+	channel_writel(dwc, CTL_HI, 0);
+
+	channel_set_bit(dw, CH_EN, dwc->mask);
+
+	spin_unlock(&dwc->lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(dw_dma_cyclic_start);
+
+/**
+ * dw_dma_cyclic_stop - stop the cyclic DMA transfer
+ * @chan: the DMA channel to stop
+ *
+ * Must be called with soft interrupts disabled.
+ */
+void dw_dma_cyclic_stop(struct dma_chan *chan)
+{
+	struct dw_dma_chan	*dwc = to_dw_dma_chan(chan);
+	struct dw_dma		*dw = to_dw_dma(dwc->chan.device);
+
+	spin_lock(&dwc->lock);
+
+	channel_clear_bit(dw, CH_EN, dwc->mask);
+	while (dma_readl(dw, CH_EN) & dwc->mask)
+		cpu_relax();
+
+	spin_unlock(&dwc->lock);
+}
+EXPORT_SYMBOL(dw_dma_cyclic_stop);
+
+/**
+ * dw_dma_cyclic_prep - prepare the cyclic DMA transfer
+ * @chan: the DMA channel to prepare
+ * @buf_addr: physical DMA address where the buffer starts
+ * @buf_len: total number of bytes for the entire buffer
+ * @period_len: number of bytes for each period
+ * @direction: transfer direction, to or from device
+ *
+ * Must be called before trying to start the transfer. Returns a valid struct
+ * dw_cyclic_desc if successful or an ERR_PTR(-errno) if not successful.
+ */
+struct dw_cyclic_desc *dw_dma_cyclic_prep(struct dma_chan *chan,
+		dma_addr_t buf_addr, size_t buf_len, size_t period_len,
+		enum dma_data_direction direction)
+{
+	struct dw_dma_chan		*dwc = to_dw_dma_chan(chan);
+	struct dw_cyclic_desc		*cdesc;
+	struct dw_cyclic_desc		*retval = NULL;
+	struct dw_desc			*desc;
+	struct dw_desc			*last = NULL;
+	struct dw_dma_slave		*dws = chan->private;
+	unsigned long			was_cyclic;
+	unsigned int			reg_width;
+	unsigned int			periods;
+	unsigned int			i;
+
+	spin_lock_bh(&dwc->lock);
+	if (!list_empty(&dwc->queue) || !list_empty(&dwc->active_list)) {
+		spin_unlock_bh(&dwc->lock);
+		dev_dbg(chan2dev(&dwc->chan),
+				"queue and/or active list are not empty\n");
+		return ERR_PTR(-EBUSY);
+	}
+
+	was_cyclic = test_and_set_bit(DW_DMA_IS_CYCLIC, &dwc->flags);
+	spin_unlock_bh(&dwc->lock);
+	if (was_cyclic) {
+		dev_dbg(chan2dev(&dwc->chan),
+				"channel already prepared for cyclic DMA\n");
+		return ERR_PTR(-EBUSY);
+	}
+
+	retval = ERR_PTR(-EINVAL);
+	reg_width = dws->reg_width;
+	periods = buf_len / period_len;
+
+	/* Check for too big/unaligned periods and unaligned DMA buffer. */
+	if (period_len > (DWC_MAX_COUNT << reg_width))
+		goto out_err;
+	if (unlikely(period_len & ((1 << reg_width) - 1)))
+		goto out_err;
+	if (unlikely(buf_addr & ((1 << reg_width) - 1)))
+		goto out_err;
+	if (unlikely(!(direction & (DMA_TO_DEVICE | DMA_FROM_DEVICE))))
+		goto out_err;
+
+	retval = ERR_PTR(-ENOMEM);
+
+	if (periods > NR_DESCS_PER_CHANNEL)
+		goto out_err;
+
+	cdesc = kzalloc(sizeof(struct dw_cyclic_desc), GFP_KERNEL);
+	if (!cdesc)
+		goto out_err;
+
+	cdesc->desc = kzalloc(sizeof(struct dw_desc *) * periods, GFP_KERNEL);
+	if (!cdesc->desc)
+		goto out_err_alloc;
+
+	for (i = 0; i < periods; i++) {
+		desc = dwc_desc_get(dwc);
+		if (!desc)
+			goto out_err_desc_get;
+
+		switch (direction) {
+		case DMA_TO_DEVICE:
+			desc->lli.dar = dws->tx_reg;
+			desc->lli.sar = buf_addr + (period_len * i);
+			desc->lli.ctllo = (DWC_DEFAULT_CTLLO
+					| DWC_CTLL_DST_WIDTH(reg_width)
+					| DWC_CTLL_SRC_WIDTH(reg_width)
+					| DWC_CTLL_DST_FIX
+					| DWC_CTLL_SRC_INC
+					| DWC_CTLL_FC_M2P
+					| DWC_CTLL_INT_EN);
+			break;
+		case DMA_FROM_DEVICE:
+			desc->lli.dar = buf_addr + (period_len * i);
+			desc->lli.sar = dws->rx_reg;
+			desc->lli.ctllo = (DWC_DEFAULT_CTLLO
+					| DWC_CTLL_SRC_WIDTH(reg_width)
+					| DWC_CTLL_DST_WIDTH(reg_width)
+					| DWC_CTLL_DST_INC
+					| DWC_CTLL_SRC_FIX
+					| DWC_CTLL_FC_P2M
+					| DWC_CTLL_INT_EN);
+			break;
+		default:
+			break;
+		}
+
+		desc->lli.ctlhi = (period_len >> reg_width);
+		cdesc->desc[i] = desc;
+
+		if (last) {
+			last->lli.llp = desc->txd.phys;
+			dma_sync_single_for_device(chan2parent(chan),
+					last->txd.phys, sizeof(last->lli),
+					DMA_TO_DEVICE);
+		}
+
+		last = desc;
+	}
+
+	/* lets make a cyclic list */
+	last->lli.llp = cdesc->desc[0]->txd.phys;
+	dma_sync_single_for_device(chan2parent(chan), last->txd.phys,
+			sizeof(last->lli), DMA_TO_DEVICE);
+
+	dev_dbg(chan2dev(&dwc->chan), "cyclic prepared buf 0x%08x len %zu "
+			"period %zu periods %d\n", buf_addr, buf_len,
+			period_len, periods);
+
+	cdesc->periods = periods;
+	dwc->cdesc = cdesc;
+
+	return cdesc;
+
+out_err_desc_get:
+	while (i--)
+		dwc_desc_put(dwc, cdesc->desc[i]);
+out_err_alloc:
+	kfree(cdesc);
+out_err:
+	clear_bit(DW_DMA_IS_CYCLIC, &dwc->flags);
+	return (struct dw_cyclic_desc *)retval;
+}
+EXPORT_SYMBOL(dw_dma_cyclic_prep);
+
+/**
+ * dw_dma_cyclic_free - free a prepared cyclic DMA transfer
+ * @chan: the DMA channel to free
+ */
+void dw_dma_cyclic_free(struct dma_chan *chan)
+{
+	struct dw_dma_chan	*dwc = to_dw_dma_chan(chan);
+	struct dw_dma		*dw = to_dw_dma(dwc->chan.device);
+	struct dw_cyclic_desc	*cdesc = dwc->cdesc;
+	int			i;
+
+	dev_dbg(chan2dev(&dwc->chan), "cyclic free\n");
+
+	if (!cdesc)
+		return;
+
+	spin_lock_bh(&dwc->lock);
+
+	channel_clear_bit(dw, CH_EN, dwc->mask);
+	while (dma_readl(dw, CH_EN) & dwc->mask)
+		cpu_relax();
+
+	dma_writel(dw, CLEAR.BLOCK, dwc->mask);
+	dma_writel(dw, CLEAR.ERROR, dwc->mask);
+	dma_writel(dw, CLEAR.XFER, dwc->mask);
+
+	spin_unlock_bh(&dwc->lock);
+
+	for (i = 0; i < cdesc->periods; i++)
+		dwc_desc_put(dwc, cdesc->desc[i]);
+
+	kfree(cdesc->desc);
+	kfree(cdesc);
+
+	clear_bit(DW_DMA_IS_CYCLIC, &dwc->flags);
+}
+EXPORT_SYMBOL(dw_dma_cyclic_free);
 
 /*----------------------------------------------------------------------*/
 
@@ -1011,7 +1348,7 @@ static int __init dw_probe(struct platform_device *pdev)
 	dma_writel(dw, CFG, DW_CFG_DMA_EN);
 
 	printk(KERN_INFO "%s: DesignWare DMA Controller, %d channels\n",
-			pdev->dev.bus_id, dw->dma.chancnt);
+			dev_name(&pdev->dev), dw->dma.chancnt);
 
 	dma_async_device_register(&dw->dma);
 
@@ -1070,8 +1407,9 @@ static void dw_shutdown(struct platform_device *pdev)
 	clk_disable(dw->clk);
 }
 
-static int dw_suspend_late(struct platform_device *pdev, pm_message_t mesg)
+static int dw_suspend_noirq(struct device *dev)
 {
+	struct platform_device *pdev = to_platform_device(dev);
 	struct dw_dma	*dw = platform_get_drvdata(pdev);
 
 	dw_dma_off(platform_get_drvdata(pdev));
@@ -1079,23 +1417,27 @@ static int dw_suspend_late(struct platform_device *pdev, pm_message_t mesg)
 	return 0;
 }
 
-static int dw_resume_early(struct platform_device *pdev)
+static int dw_resume_noirq(struct device *dev)
 {
+	struct platform_device *pdev = to_platform_device(dev);
 	struct dw_dma	*dw = platform_get_drvdata(pdev);
 
 	clk_enable(dw->clk);
 	dma_writel(dw, CFG, DW_CFG_DMA_EN);
 	return 0;
-
 }
+
+static struct dev_pm_ops dw_dev_pm_ops = {
+	.suspend_noirq = dw_suspend_noirq,
+	.resume_noirq = dw_resume_noirq,
+};
 
 static struct platform_driver dw_driver = {
 	.remove		= __exit_p(dw_remove),
 	.shutdown	= dw_shutdown,
-	.suspend_late	= dw_suspend_late,
-	.resume_early	= dw_resume_early,
 	.driver = {
 		.name	= "dw_dmac",
+		.pm	= &dw_dev_pm_ops,
 	},
 };
 

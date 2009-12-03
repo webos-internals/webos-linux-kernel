@@ -62,8 +62,8 @@ typedef struct {
 	u32 read_tim;			/* READ_TIM,   R */
 } omap_mpu_timer_regs_t;
 
-#define omap_mpu_timer_base(n)						\
-((volatile omap_mpu_timer_regs_t*)IO_ADDRESS(OMAP_MPU_TIMER_BASE +	\
+#define omap_mpu_timer_base(n)							\
+((volatile omap_mpu_timer_regs_t*)OMAP1_IO_ADDRESS(OMAP_MPU_TIMER_BASE +	\
 				 (n)*OMAP_MPU_TIMER_OFFSET))
 
 static inline unsigned long omap_mpu_timer_read(int nr)
@@ -198,7 +198,7 @@ static struct irqaction omap_mpu_timer2_irq = {
 	.handler	= omap_mpu_timer2_interrupt,
 };
 
-static cycle_t mpu_read(void)
+static cycle_t mpu_read(struct clocksource *cs)
 {
 	return ~omap_mpu_timer_read(1);
 }

@@ -25,6 +25,8 @@
 #include <asm/syscalls.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
+#include <asm/cacheflush.h>
+#include <asm/cachectl.h>
 
 static inline long
 do_mmap2(unsigned long addr, unsigned long len, unsigned long prot,
@@ -63,6 +65,15 @@ asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
 	unsigned long prot, unsigned long flags,
 	unsigned long fd, unsigned long pgoff)
 {
+	/*
+	 * The shift for mmap2 is constant, regardless of PAGE_SIZE
+	 * setting.
+	 */
+	if (pgoff & ((1 << (PAGE_SHIFT - 12)) - 1))
+		return -EINVAL;
+
+	pgoff >>= PAGE_SHIFT - 12;
+
 	return do_mmap2(addr, len, prot, flags, fd, pgoff);
 }
 
@@ -78,8 +89,6 @@ asmlinkage int sys_ipc(uint call, int first, int second,
 
 	version = call >> 16; /* hack for backward compatibility */
 	call &= 0xffff;
-
-	trace_mark(kernel_arch_ipc_call, "call %u first %d", call, first);
 
 	if (call <= SEMTIMEDOP)
 		switch (call) {
@@ -170,6 +179,47 @@ asmlinkage int sys_ipc(uint call, int first, int second,
 		}
 
 	return -EINVAL;
+}
+
+/* sys_cacheflush -- flush (part of) the processor cache.  */
+asmlinkage int sys_cacheflush(unsigned long addr, unsigned long len, int op)
+{
+	struct vm_area_struct *vma;
+
+	if ((op <= 0) || (op > (CACHEFLUSH_D_PURGE|CACHEFLUSH_I)))
+		return -EINVAL;
+
+	/*
+	 * Verify that the specified address region actually belongs
+	 * to this process.
+	 */
+	if (addr + len < addr)
+		return -EFAULT;
+
+	down_read(&current->mm->mmap_sem);
+	vma = find_vma (current->mm, addr);
+	if (vma == NULL || addr < vma->vm_start || addr + len > vma->vm_end) {
+		up_read(&current->mm->mmap_sem);
+		return -EFAULT;
+	}
+
+	switch (op & CACHEFLUSH_D_PURGE) {
+		case CACHEFLUSH_D_INVAL:
+			__flush_invalidate_region((void *)addr, len);
+			break;
+		case CACHEFLUSH_D_WB:
+			__flush_wback_region((void *)addr, len);
+			break;
+		case CACHEFLUSH_D_PURGE:
+			__flush_purge_region((void *)addr, len);
+			break;
+	}
+
+	if (op & CACHEFLUSH_I)
+		flush_cache_all();
+
+	up_read(&current->mm->mmap_sem);
+	return 0;
 }
 
 asmlinkage int sys_uname(struct old_utsname __user *name)

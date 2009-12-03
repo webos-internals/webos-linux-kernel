@@ -15,7 +15,6 @@
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/sysfs.h>
-#include <linux/device.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/interrupt.h>
@@ -444,8 +443,8 @@ static irqreturn_t pcf50633_irq(int irq, void *data)
 	dev_dbg(pcf->dev, "pcf50633_irq\n");
 
 	get_device(pcf->dev);
-	disable_irq(pcf->irq);
-	schedule_work(&pcf->irq_work);
+	disable_irq_nosync(pcf->irq);
+	queue_work(pcf->work_queue, &pcf->irq_work);
 
 	return IRQ_HANDLED;
 }
@@ -576,6 +575,7 @@ static int __devinit pcf50633_probe(struct i2c_client *client,
 	pcf->dev = &client->dev;
 	pcf->i2c_client = client;
 	pcf->irq = client->irq;
+	pcf->work_queue = create_singlethread_workqueue("pcf50633");
 
 	INIT_WORK(&pcf->irq_work, pcf50633_irq_worker);
 
@@ -619,7 +619,7 @@ static int __devinit pcf50633_probe(struct i2c_client *client,
 
 		pdev->dev.parent = pcf->dev;
 		pdev->dev.platform_data = &pdata->reg_init_data[i];
-		pdev->dev.driver_data = pcf;
+		dev_set_drvdata(&pdev->dev, pcf);
 		pcf->regulator_pdev[i] = pdev;
 
 		platform_device_add(pdev);
@@ -652,6 +652,7 @@ static int __devinit pcf50633_probe(struct i2c_client *client,
 	return 0;
 
 err:
+	destroy_workqueue(pcf->work_queue);
 	kfree(pcf);
 	return ret;
 }
@@ -662,6 +663,7 @@ static int __devexit pcf50633_remove(struct i2c_client *client)
 	int i;
 
 	free_irq(pcf->irq, pcf);
+	destroy_workqueue(pcf->work_queue);
 
 	platform_device_unregister(pcf->input_pdev);
 	platform_device_unregister(pcf->rtc_pdev);
@@ -706,5 +708,5 @@ MODULE_DESCRIPTION("I2C chip driver for NXP PCF50633 PMU");
 MODULE_AUTHOR("Harald Welte <laforge@openmoko.org>");
 MODULE_LICENSE("GPL");
 
-module_init(pcf50633_init);
+subsys_initcall(pcf50633_init);
 module_exit(pcf50633_exit);

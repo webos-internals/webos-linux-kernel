@@ -37,6 +37,7 @@ char atl1e_driver_version[] = DRV_VERSION;
  */
 static struct pci_device_id atl1e_pci_tbl[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_ATTANSIC, PCI_DEVICE_ID_ATTANSIC_L1E)},
+	{PCI_DEVICE(PCI_VENDOR_ID_ATTANSIC, 0x1066)},
 	/* required last entry */
 	{ 0 }
 };
@@ -452,10 +453,6 @@ static int atl1e_mii_ioctl(struct net_device *netdev,
 		break;
 
 	case SIOCGMIIREG:
-		if (!capable(CAP_NET_ADMIN)) {
-			retval = -EPERM;
-			goto out;
-		}
 		if (atl1e_read_phy_reg(&adapter->hw, data->reg_num & 0x1F,
 				    &data->val_out)) {
 			retval = -EIO;
@@ -464,10 +461,6 @@ static int atl1e_mii_ioctl(struct net_device *netdev,
 		break;
 
 	case SIOCSMIIREG:
-		if (!capable(CAP_NET_ADMIN)) {
-			retval = -EPERM;
-			goto out;
-		}
 		if (data->reg_num & ~(0x1F)) {
 			retval = -EFAULT;
 			goto out;
@@ -642,7 +635,11 @@ static void atl1e_clean_tx_ring(struct atl1e_adapter *adapter)
 	for (index = 0; index < ring_count; index++) {
 		tx_buffer = &tx_ring->tx_buffer[index];
 		if (tx_buffer->dma) {
-			pci_unmap_page(pdev, tx_buffer->dma,
+			if (tx_buffer->flags & ATL1E_TX_PCIMAP_SINGLE)
+				pci_unmap_single(pdev, tx_buffer->dma,
+					tx_buffer->length, PCI_DMA_TODEVICE);
+			else if (tx_buffer->flags & ATL1E_TX_PCIMAP_PAGE)
+				pci_unmap_page(pdev, tx_buffer->dma,
 					tx_buffer->length, PCI_DMA_TODEVICE);
 			tx_buffer->dma = 0;
 		}
@@ -1153,7 +1150,7 @@ static struct net_device_stats *atl1e_get_stats(struct net_device *netdev)
 {
 	struct atl1e_adapter *adapter = netdev_priv(netdev);
 	struct atl1e_hw_stats  *hw_stats = &adapter->hw_stats;
-	struct net_device_stats *net_stats = &adapter->net_stats;
+	struct net_device_stats *net_stats = &netdev->stats;
 
 	net_stats->rx_packets = hw_stats->rx_ok;
 	net_stats->tx_packets = hw_stats->tx_ok;
@@ -1181,7 +1178,7 @@ static struct net_device_stats *atl1e_get_stats(struct net_device *netdev)
 	net_stats->tx_aborted_errors = hw_stats->tx_abort_col;
 	net_stats->tx_window_errors  = hw_stats->tx_late_col;
 
-	return &adapter->net_stats;
+	return net_stats;
 }
 
 static void atl1e_update_hw_stats(struct atl1e_adapter *adapter)
@@ -1227,7 +1224,11 @@ static bool atl1e_clean_tx_irq(struct atl1e_adapter *adapter)
 	while (next_to_clean != hw_next_to_clean) {
 		tx_buffer = &tx_ring->tx_buffer[next_to_clean];
 		if (tx_buffer->dma) {
-			pci_unmap_page(adapter->pdev, tx_buffer->dma,
+			if (tx_buffer->flags & ATL1E_TX_PCIMAP_SINGLE)
+				pci_unmap_single(adapter->pdev, tx_buffer->dma,
+					tx_buffer->length, PCI_DMA_TODEVICE);
+			else if (tx_buffer->flags & ATL1E_TX_PCIMAP_PAGE)
+				pci_unmap_page(adapter->pdev, tx_buffer->dma,
 					tx_buffer->length, PCI_DMA_TODEVICE);
 			tx_buffer->dma = 0;
 		}
@@ -1309,7 +1310,7 @@ static irqreturn_t atl1e_intr(int irq, void *data)
 
 		/* link event */
 		if (status & (ISR_GPHY | ISR_MANUAL)) {
-			adapter->net_stats.tx_carrier_errors++;
+			netdev->stats.tx_carrier_errors++;
 			atl1e_link_chg_event(adapter);
 			break;
 		}
@@ -1326,9 +1327,9 @@ static irqreturn_t atl1e_intr(int irq, void *data)
 			AT_WRITE_REG(hw, REG_IMR,
 				     IMR_NORMAL_MASK & ~ISR_RX_EVENT);
 			AT_WRITE_FLUSH(hw);
-			if (likely(netif_rx_schedule_prep(
+			if (likely(napi_schedule_prep(
 				   &adapter->napi)))
-				__netif_rx_schedule(&adapter->napi);
+				__napi_schedule(&adapter->napi);
 		}
 	} while (--max_ints > 0);
 	/* re-enable Interrupt*/
@@ -1514,7 +1515,7 @@ static int atl1e_clean(struct napi_struct *napi, int budget)
 	/* If no Tx and not enough Rx work done, exit the polling mode */
 	if (work_done < budget) {
 quit_polling:
-		netif_rx_complete(napi);
+		napi_complete(napi);
 		imr_data = AT_READ_REG(&adapter->hw, REG_IMR);
 		AT_WRITE_REG(&adapter->hw, REG_IMR, imr_data | ISR_RX_EVENT);
 		/* test debug */
@@ -1601,7 +1602,7 @@ static u16 atl1e_cal_tdp_req(const struct sk_buff *skb)
 	}
 
 	if (skb_is_gso(skb)) {
-		if (skb->protocol == ntohs(ETH_P_IP) ||
+		if (skb->protocol == htons(ETH_P_IP) ||
 		   (skb_shinfo(skb)->gso_type == SKB_GSO_TCPV6)) {
 			proto_hdr_len = skb_transport_offset(skb) +
 					tcp_hdrlen(skb);
@@ -1748,6 +1749,7 @@ static void atl1e_tx_map(struct atl1e_adapter *adapter,
 		tx_buffer->length = map_len;
 		tx_buffer->dma = pci_map_single(adapter->pdev,
 					skb->data, hdr_len, PCI_DMA_TODEVICE);
+		ATL1E_SET_PCIMAP_TYPE(tx_buffer, ATL1E_TX_PCIMAP_SINGLE);
 		mapped_len += map_len;
 		use_tpd->buffer_addr = cpu_to_le64(tx_buffer->dma);
 		use_tpd->word2 = (use_tpd->word2 & (~TPD_BUFLEN_MASK)) |
@@ -1773,6 +1775,7 @@ static void atl1e_tx_map(struct atl1e_adapter *adapter,
 		tx_buffer->dma =
 			pci_map_single(adapter->pdev, skb->data + mapped_len,
 					map_len, PCI_DMA_TODEVICE);
+		ATL1E_SET_PCIMAP_TYPE(tx_buffer, ATL1E_TX_PCIMAP_SINGLE);
 		mapped_len  += map_len;
 		use_tpd->buffer_addr = cpu_to_le64(tx_buffer->dma);
 		use_tpd->word2 = (use_tpd->word2 & (~TPD_BUFLEN_MASK)) |
@@ -1794,8 +1797,7 @@ static void atl1e_tx_map(struct atl1e_adapter *adapter,
 			memcpy(use_tpd, tpd, sizeof(struct atl1e_tpd_desc));
 
 			tx_buffer = atl1e_get_tx_buffer(adapter, use_tpd);
-			if (tx_buffer->skb)
-				BUG();
+			BUG_ON(tx_buffer->skb);
 
 			tx_buffer->skb = NULL;
 			tx_buffer->length =
@@ -1809,6 +1811,7 @@ static void atl1e_tx_map(struct atl1e_adapter *adapter,
 						(i * MAX_TX_BUF_LEN),
 						tx_buffer->length,
 						PCI_DMA_TODEVICE);
+			ATL1E_SET_PCIMAP_TYPE(tx_buffer, ATL1E_TX_PCIMAP_PAGE);
 			use_tpd->buffer_addr = cpu_to_le64(tx_buffer->dma);
 			use_tpd->word2 = (use_tpd->word2 & (~TPD_BUFLEN_MASK)) |
 					((cpu_to_le32(tx_buffer->length) &
@@ -1839,7 +1842,8 @@ static void atl1e_tx_queue(struct atl1e_adapter *adapter, u16 count,
 	AT_WRITE_REG(&adapter->hw, REG_MB_TPD_PROD_IDX, tx_ring->next_to_use);
 }
 
-static int atl1e_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
+static netdev_tx_t atl1e_xmit_frame(struct sk_buff *skb,
+					  struct net_device *netdev)
 {
 	struct atl1e_adapter *adapter = netdev_priv(netdev);
 	unsigned long flags;
@@ -1878,7 +1882,7 @@ static int atl1e_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 				TPD_VLAN_SHIFT;
 	}
 
-	if (skb->protocol == ntohs(ETH_P_8021Q))
+	if (skb->protocol == htons(ETH_P_8021Q))
 		tpd->word3 |= 1 << TPD_VL_TAGGED_SHIFT;
 
 	if (skb_network_offset(skb) != ETH_HLEN)
@@ -1894,7 +1898,7 @@ static int atl1e_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	atl1e_tx_map(adapter, skb, tpd);
 	atl1e_tx_queue(adapter, tpd_req, tpd);
 
-	netdev->trans_start = jiffies;
+	netdev->trans_start = jiffies; /* NETIF_F_LLTX driver :( */
 	spin_unlock_irqrestore(&adapter->tx_lock, flags);
 	return NETDEV_TX_OK;
 }
@@ -2326,8 +2330,8 @@ static int __devinit atl1e_probe(struct pci_dev *pdev,
 	 * various kernel subsystems to support the mechanics required by a
 	 * fixed-high-32-bit system.
 	 */
-	if ((pci_set_dma_mask(pdev, DMA_32BIT_MASK) != 0) ||
-	    (pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK) != 0)) {
+	if ((pci_set_dma_mask(pdev, DMA_BIT_MASK(32)) != 0) ||
+	    (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32)) != 0)) {
 		dev_err(&pdev->dev, "No usable DMA configuration,aborting\n");
 		goto err_dma;
 	}
@@ -2496,6 +2500,9 @@ atl1e_io_error_detected(struct pci_dev *pdev, pci_channel_state_t state)
 	struct atl1e_adapter *adapter = netdev_priv(netdev);
 
 	netif_device_detach(netdev);
+
+	if (state == pci_channel_io_perm_failure)
+		return PCI_ERS_RESULT_DISCONNECT;
 
 	if (netif_running(netdev))
 		atl1e_down(adapter);

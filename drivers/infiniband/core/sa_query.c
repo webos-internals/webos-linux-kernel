@@ -109,10 +109,10 @@ static struct ib_client sa_client = {
 	.remove = ib_sa_remove_one
 };
 
-static spinlock_t idr_lock;
+static DEFINE_SPINLOCK(idr_lock);
 static DEFINE_IDR(query_idr);
 
-static spinlock_t tid_lock;
+static DEFINE_SPINLOCK(tid_lock);
 static u32 tid;
 
 #define PATH_REC_FIELD(field) \
@@ -395,6 +395,8 @@ static void update_sm_ah(struct work_struct *work)
 	}
 
 	spin_lock_irq(&port->ah_lock);
+	if (port->sm_ah)
+		kref_put(&port->sm_ah->ref, free_sm_ah);
 	port->sm_ah = new_ah;
 	spin_unlock_irq(&port->ah_lock);
 
@@ -1074,9 +1076,6 @@ static void ib_sa_remove_one(struct ib_device *device)
 static int __init ib_sa_init(void)
 {
 	int ret;
-
-	spin_lock_init(&idr_lock);
-	spin_lock_init(&tid_lock);
 
 	get_random_bytes(&tid, sizeof tid);
 

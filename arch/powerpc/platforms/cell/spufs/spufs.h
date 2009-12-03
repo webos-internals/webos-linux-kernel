@@ -241,9 +241,9 @@ struct spufs_tree_descr {
 	size_t size;
 };
 
-extern struct spufs_tree_descr spufs_dir_contents[];
-extern struct spufs_tree_descr spufs_dir_nosched_contents[];
-extern struct spufs_tree_descr spufs_dir_debug_contents[];
+extern const struct spufs_tree_descr spufs_dir_contents[];
+extern const struct spufs_tree_descr spufs_dir_nosched_contents[];
+extern const struct spufs_tree_descr spufs_dir_debug_contents[];
 
 /* system call implementation */
 extern struct spufs_calls spufs_calls;
@@ -358,7 +358,7 @@ struct spufs_coredump_reader {
 	u64 (*get)(struct spu_context *ctx);
 	size_t size;
 };
-extern struct spufs_coredump_reader spufs_coredump_read[];
+extern const struct spufs_coredump_reader spufs_coredump_read[];
 extern int spufs_coredump_num_notes;
 
 extern int spu_init_csa(struct spu_state *csa);
@@ -372,10 +372,5 @@ extern void spu_free_lscsa(struct spu_state *csa);
 
 extern void spuctx_switch_state(struct spu_context *ctx,
 		enum spu_utilization_state new_state);
-
-#define spu_context_trace(name, ctx, spu) \
-	trace_mark(name, "ctx %p spu %p", ctx, spu);
-#define spu_context_nospu_trace(name, ctx) \
-	trace_mark(name, "ctx %p", ctx);
 
 #endif

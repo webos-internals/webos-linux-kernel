@@ -98,6 +98,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
@@ -240,9 +241,10 @@ static int hp100_probe1(struct net_device *dev, int ioaddr, u_char bus,
 
 static int hp100_open(struct net_device *dev);
 static int hp100_close(struct net_device *dev);
-static int hp100_start_xmit(struct sk_buff *skb, struct net_device *dev);
-static int hp100_start_xmit_bm(struct sk_buff *skb,
-			       struct net_device *dev);
+static netdev_tx_t hp100_start_xmit(struct sk_buff *skb,
+				    struct net_device *dev);
+static netdev_tx_t hp100_start_xmit_bm(struct sk_buff *skb,
+				       struct net_device *dev);
 static void hp100_rx(struct net_device *dev);
 static struct net_device_stats *hp100_get_stats(struct net_device *dev);
 static void hp100_misc_interrupt(struct net_device *dev);
@@ -580,7 +582,7 @@ static int __devinit hp100_probe1(struct net_device *dev, int ioaddr,
 			 * Also, we can have EISA Busmaster cards (not tested),
 			 * so beware !!! - Jean II */
 			if((bus == HP100_BUS_PCI) &&
-			   (pci_set_dma_mask(pci_dev, DMA_32BIT_MASK))) {
+			   (pci_set_dma_mask(pci_dev, DMA_BIT_MASK(32)))) {
 				/* Gracefully fallback to shared memory */
 				goto busmasterfail;
 			}
@@ -1483,7 +1485,8 @@ static int hp100_check_lan(struct net_device *dev)
  */
 
 /* tx function for busmaster mode */
-static int hp100_start_xmit_bm(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t hp100_start_xmit_bm(struct sk_buff *skb,
+				       struct net_device *dev)
 {
 	unsigned long flags;
 	int i, ok_flag;
@@ -1495,16 +1498,11 @@ static int hp100_start_xmit_bm(struct sk_buff *skb, struct net_device *dev)
 	hp100_outw(0x4210, TRACE);
 	printk("hp100: %s: start_xmit_bm\n", dev->name);
 #endif
-
-	if (skb == NULL) {
-		return 0;
-	}
-
 	if (skb->len <= 0)
-		return 0;
+		goto drop;
 
 	if (lp->chip == HP100_CHIPID_SHASTA && skb_padto(skb, ETH_ZLEN))
-		return 0;
+		return NETDEV_TX_OK;
 
 	/* Get Tx ring tail pointer */
 	if (lp->txrtail->next == lp->txrhead) {
@@ -1514,10 +1512,10 @@ static int hp100_start_xmit_bm(struct sk_buff *skb, struct net_device *dev)
 #endif
 		/* not waited long enough since last tx? */
 		if (time_before(jiffies, dev->trans_start + HZ))
-			return -EAGAIN;
+			goto drop;
 
 		if (hp100_check_lan(dev))
-			return -EIO;
+			goto drop;
 
 		if (lp->lan_type == HP100_LAN_100 && lp->hub_status < 0) {
 			/* we have a 100Mb/s adapter but it isn't connected to hub */
@@ -1551,7 +1549,7 @@ static int hp100_start_xmit_bm(struct sk_buff *skb, struct net_device *dev)
 		}
 
 		dev->trans_start = jiffies;
-		return -EAGAIN;
+		goto drop;
 	}
 
 	/*
@@ -1590,7 +1588,11 @@ static int hp100_start_xmit_bm(struct sk_buff *skb, struct net_device *dev)
 	lp->stats.tx_bytes += skb->len;
 	dev->trans_start = jiffies;
 
-	return 0;
+	return NETDEV_TX_OK;
+
+drop:
+	dev_kfree_skb(skb);
+	return NETDEV_TX_OK;
 }
 
 
@@ -1636,7 +1638,8 @@ static void hp100_clean_txring(struct net_device *dev)
 }
 
 /* tx function for slave modes */
-static int hp100_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t hp100_start_xmit(struct sk_buff *skb,
+				    struct net_device *dev)
 {
 	unsigned long flags;
 	int i, ok_flag;
@@ -1648,16 +1651,11 @@ static int hp100_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	hp100_outw(0x4212, TRACE);
 	printk("hp100: %s: start_xmit\n", dev->name);
 #endif
-
-	if (skb == NULL) {
-		return 0;
-	}
-
 	if (skb->len <= 0)
-		return 0;
+		goto drop;
 
 	if (hp100_check_lan(dev))
-		return -EIO;
+		goto drop;
 
 	/* If there is not enough free memory on the card... */
 	i = hp100_inl(TX_MEM_FREE) & 0x7fffffff;
@@ -1671,7 +1669,7 @@ static int hp100_start_xmit(struct sk_buff *skb, struct net_device *dev)
 			printk("hp100: %s: trans_start timing problem\n",
 			       dev->name);
 #endif
-			return -EAGAIN;
+			goto drop;
 		}
 		if (lp->lan_type == HP100_LAN_100 && lp->hub_status < 0) {
 			/* we have a 100Mb/s adapter but it isn't connected to hub */
@@ -1705,7 +1703,7 @@ static int hp100_start_xmit(struct sk_buff *skb, struct net_device *dev)
 			}
 		}
 		dev->trans_start = jiffies;
-		return -EAGAIN;
+		goto drop;
 	}
 
 	for (i = 0; i < 6000 && (hp100_inb(OPTION_MSW) & HP100_TX_CMD); i++) {
@@ -1758,7 +1756,12 @@ static int hp100_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	printk("hp100: %s: start_xmit: end\n", dev->name);
 #endif
 
-	return 0;
+	return NETDEV_TX_OK;
+
+drop:
+	dev_kfree_skb(skb);
+	return NETDEV_TX_OK;
+
 }
 
 
@@ -2864,7 +2867,7 @@ static int __init hp100_eisa_probe (struct device *gendev)
 	printk("hp100: %s: EISA adapter found at 0x%x\n", dev->name,
 	       dev->base_addr);
 #endif
-	gendev->driver_data = dev;
+	dev_set_drvdata(gendev, dev);
 	return 0;
  out1:
 	free_netdev(dev);
@@ -2873,7 +2876,7 @@ static int __init hp100_eisa_probe (struct device *gendev)
 
 static int __devexit hp100_eisa_remove (struct device *gendev)
 {
-	struct net_device *dev = gendev->driver_data;
+	struct net_device *dev = dev_get_drvdata(gendev);
 	cleanup_dev(dev);
 	return 0;
 }

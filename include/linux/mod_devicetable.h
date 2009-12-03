@@ -399,6 +399,17 @@ struct i2c_device_id {
 			__attribute__((aligned(sizeof(kernel_ulong_t))));
 };
 
+/* spi */
+
+#define SPI_NAME_SIZE	32
+#define SPI_MODULE_PREFIX "spi:"
+
+struct spi_device_id {
+	char name[SPI_NAME_SIZE];
+	kernel_ulong_t driver_data	/* Data private to the driver */
+			__attribute__((aligned(sizeof(kernel_ulong_t))));
+};
+
 /* dmi */
 enum dmi_field {
 	DMI_NONE,
@@ -453,5 +464,14 @@ struct dmi_system_id {
 #endif
 
 #define DMI_MATCH(a, b)	{ a, b }
+
+#define PLATFORM_NAME_SIZE	20
+#define PLATFORM_MODULE_PREFIX	"platform:"
+
+struct platform_device_id {
+	char name[PLATFORM_NAME_SIZE];
+	kernel_ulong_t driver_data
+			__attribute__((aligned(sizeof(kernel_ulong_t))));
+};
 
 #endif /* LINUX_MOD_DEVICETABLE_H */

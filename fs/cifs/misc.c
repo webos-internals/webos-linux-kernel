@@ -32,7 +32,6 @@
 
 extern mempool_t *cifs_sm_req_poolp;
 extern mempool_t *cifs_req_poolp;
-extern struct task_struct *oplockThread;
 
 /* The xid serves as a useful identifier for each incoming vfs request,
    in a similar way to the mid which is useful to track each sent smb,
@@ -500,6 +499,7 @@ is_valid_oplock_break(struct smb_hdr *buf, struct TCP_Server_Info *srv)
 	struct cifsTconInfo *tcon;
 	struct cifsInodeInfo *pCifsInode;
 	struct cifsFileInfo *netfile;
+	int rc;
 
 	cFYI(1, ("Checking for oplock break or dnotify response"));
 	if ((pSMB->hdr.Command == SMB_COM_NT_TRANSACT) &&
@@ -562,30 +562,40 @@ is_valid_oplock_break(struct smb_hdr *buf, struct TCP_Server_Info *srv)
 				continue;
 
 			cifs_stats_inc(&tcon->num_oplock_brks);
-			write_lock(&GlobalSMBSeslock);
+			read_lock(&GlobalSMBSeslock);
 			list_for_each(tmp2, &tcon->openFileList) {
 				netfile = list_entry(tmp2, struct cifsFileInfo,
 						     tlist);
 				if (pSMB->Fid != netfile->netfid)
 					continue;
 
-				write_unlock(&GlobalSMBSeslock);
-				read_unlock(&cifs_tcp_ses_lock);
+				/*
+				 * don't do anything if file is about to be
+				 * closed anyway.
+				 */
+				if (netfile->closePend) {
+					read_unlock(&GlobalSMBSeslock);
+					read_unlock(&cifs_tcp_ses_lock);
+					return true;
+				}
+
 				cFYI(1, ("file id match, oplock break"));
 				pCifsInode = CIFS_I(netfile->pInode);
 				pCifsInode->clientCanCacheAll = false;
 				if (pSMB->OplockLevel == 0)
 					pCifsInode->clientCanCacheRead = false;
-				pCifsInode->oplockPending = true;
-				AllocOplockQEntry(netfile->pInode,
-						  netfile->netfid, tcon);
-				cFYI(1, ("about to wake up oplock thread"));
-				if (oplockThread)
-					wake_up_process(oplockThread);
-
+				rc = slow_work_enqueue(&netfile->oplock_break);
+				if (rc) {
+					cERROR(1, ("failed to enqueue oplock "
+						   "break: %d\n", rc));
+				} else {
+					netfile->oplock_break_cancelled = false;
+				}
+				read_unlock(&GlobalSMBSeslock);
+				read_unlock(&cifs_tcp_ses_lock);
 				return true;
 			}
-			write_unlock(&GlobalSMBSeslock);
+			read_unlock(&GlobalSMBSeslock);
 			read_unlock(&cifs_tcp_ses_lock);
 			cFYI(1, ("No matching file for oplock break"));
 			return true;
@@ -633,77 +643,6 @@ dump_smb(struct smb_hdr *smb_buf, int smb_buf_length)
 	}
 	printk(" | %s\n", debug_line);
 	return;
-}
-
-/* Windows maps these to the user defined 16 bit Unicode range since they are
-   reserved symbols (along with \ and /), otherwise illegal to store
-   in filenames in NTFS */
-#define UNI_ASTERIK     (__u16) ('*' + 0xF000)
-#define UNI_QUESTION    (__u16) ('?' + 0xF000)
-#define UNI_COLON       (__u16) (':' + 0xF000)
-#define UNI_GRTRTHAN    (__u16) ('>' + 0xF000)
-#define UNI_LESSTHAN    (__u16) ('<' + 0xF000)
-#define UNI_PIPE        (__u16) ('|' + 0xF000)
-#define UNI_SLASH       (__u16) ('\\' + 0xF000)
-
-/* Convert 16 bit Unicode pathname from wire format to string in current code
-   page.  Conversion may involve remapping up the seven characters that are
-   only legal in POSIX-like OS (if they are present in the string). Path
-   names are little endian 16 bit Unicode on the wire */
-int
-cifs_convertUCSpath(char *target, const __le16 *source, int maxlen,
-		    const struct nls_table *cp)
-{
-	int i, j, len;
-	__u16 src_char;
-
-	for (i = 0, j = 0; i < maxlen; i++) {
-		src_char = le16_to_cpu(source[i]);
-		switch (src_char) {
-			case 0:
-				goto cUCS_out; /* BB check this BB */
-			case UNI_COLON:
-				target[j] = ':';
-				break;
-			case UNI_ASTERIK:
-				target[j] = '*';
-				break;
-			case UNI_QUESTION:
-				target[j] = '?';
-				break;
-			/* BB We can not handle remapping slash until
-			   all the calls to build_path_from_dentry
-			   are modified, as they use slash as separator BB */
-			/* case UNI_SLASH:
-				target[j] = '\\';
-				break;*/
-			case UNI_PIPE:
-				target[j] = '|';
-				break;
-			case UNI_GRTRTHAN:
-				target[j] = '>';
-				break;
-			case UNI_LESSTHAN:
-				target[j] = '<';
-				break;
-			default:
-				len = cp->uni2char(src_char, &target[j],
-						NLS_MAX_CHARSET_SIZE);
-				if (len > 0) {
-					j += len;
-					continue;
-				} else {
-					target[j] = '?';
-				}
-		}
-		j++;
-		/* make sure we do not overrun callers allocated temp buffer */
-		if (j >= (2 * NAME_MAX))
-			break;
-	}
-cUCS_out:
-	target[j] = 0;
-	return j;
 }
 
 /* Convert 16 bit Unicode pathname to wire format from string in current code
@@ -775,4 +714,18 @@ cifsConvertToUCS(__le16 *target, const char *source, int maxlen,
 
 ctoUCS_out:
 	return i;
+}
+
+void
+cifs_autodisable_serverino(struct cifs_sb_info *cifs_sb)
+{
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM) {
+		cifs_sb->mnt_cifs_flags &= ~CIFS_MOUNT_SERVER_INUM;
+		cERROR(1, ("Autodisabling the use of server inode numbers on "
+			   "%s. This server doesn't seem to support them "
+			   "properly. Hardlinks will not be recognized on this "
+			   "mount. Consider mounting with the \"noserverino\" "
+			   "option to silence this message.",
+			   cifs_sb->tcon->treeName));
+	}
 }

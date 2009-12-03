@@ -50,11 +50,10 @@
 
 #define TI_TRANSFER_TIMEOUT	2
 
-#define TI_DEFAULT_LOW_LATENCY	0
 #define TI_DEFAULT_CLOSING_WAIT	4000		/* in .01 secs */
 
 /* supported setserial flags */
-#define TI_SET_SERIAL_FLAGS	(ASYNC_LOW_LATENCY)
+#define TI_SET_SERIAL_FLAGS	0
 
 /* read urb states */
 #define TI_READ_URB_RUNNING	0
@@ -98,11 +97,9 @@ struct ti_device {
 /* Function Declarations */
 
 static int ti_startup(struct usb_serial *serial);
-static void ti_shutdown(struct usb_serial *serial);
-static int ti_open(struct tty_struct *tty, struct usb_serial_port *port,
-		struct file *file);
-static void ti_close(struct tty_struct *tty, struct usb_serial_port *port,
-		struct file *file);
+static void ti_release(struct usb_serial *serial);
+static int ti_open(struct tty_struct *tty, struct usb_serial_port *port);
+static void ti_close(struct usb_serial_port *port);
 static int ti_write(struct tty_struct *tty, struct usb_serial_port *port,
 		const unsigned char *data, int count);
 static int ti_write_room(struct tty_struct *tty);
@@ -161,7 +158,6 @@ static int ti_buf_get(struct circ_buf *cb, char *buf, int count);
 
 /* module parameters */
 static int debug;
-static int low_latency = TI_DEFAULT_LOW_LATENCY;
 static int closing_wait = TI_DEFAULT_CLOSING_WAIT;
 static ushort vendor_3410[TI_EXTRA_VID_PID_COUNT];
 static unsigned int vendor_3410_count;
@@ -194,7 +190,6 @@ static struct usb_device_id ti_id_table_5052[5+TI_EXTRA_VID_PID_COUNT+1] = {
 	{ USB_DEVICE(TI_VENDOR_ID, TI_5152_BOOT_PRODUCT_ID) },
 	{ USB_DEVICE(TI_VENDOR_ID, TI_5052_EEPROM_PRODUCT_ID) },
 	{ USB_DEVICE(TI_VENDOR_ID, TI_5052_FIRMWARE_PRODUCT_ID) },
-	{ USB_DEVICE(IBM_VENDOR_ID, IBM_4543_PRODUCT_ID) },
 };
 
 static struct usb_device_id ti_id_table_combined[14+2*TI_EXTRA_VID_PID_COUNT+1] = {
@@ -233,7 +228,7 @@ static struct usb_serial_driver ti_1port_device = {
 	.id_table		= ti_id_table_3410,
 	.num_ports		= 1,
 	.attach			= ti_startup,
-	.shutdown		= ti_shutdown,
+	.release		= ti_release,
 	.open			= ti_open,
 	.close			= ti_close,
 	.write			= ti_write,
@@ -261,7 +256,7 @@ static struct usb_serial_driver ti_2port_device = {
 	.id_table		= ti_id_table_5052,
 	.num_ports		= 2,
 	.attach			= ti_startup,
-	.shutdown		= ti_shutdown,
+	.release		= ti_release,
 	.open			= ti_open,
 	.close			= ti_close,
 	.write			= ti_write,
@@ -295,10 +290,6 @@ MODULE_FIRMWARE("mts_edge.fw");
 
 module_param(debug, bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(debug, "Enable debugging, 0=no, 1=yes");
-
-module_param(low_latency, bool, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(low_latency,
-		"TTY low_latency flag, 0=off, 1=on, default is off");
 
 module_param(closing_wait, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(closing_wait,
@@ -448,7 +439,6 @@ static int ti_startup(struct usb_serial *serial)
 		spin_lock_init(&tport->tp_lock);
 		tport->tp_uart_base_addr = (i == 0 ?
 				TI_UART1_BASE_ADDR : TI_UART2_BASE_ADDR);
-		tport->tp_flags = low_latency ? ASYNC_LOW_LATENCY : 0;
 		tport->tp_closing_wait = closing_wait;
 		init_waitqueue_head(&tport->tp_msr_wait);
 		init_waitqueue_head(&tport->tp_write_wait);
@@ -481,7 +471,7 @@ free_tdev:
 }
 
 
-static void ti_shutdown(struct usb_serial *serial)
+static void ti_release(struct usb_serial *serial)
 {
 	int i;
 	struct ti_device *tdev = usb_get_serial_data(serial);
@@ -494,17 +484,14 @@ static void ti_shutdown(struct usb_serial *serial)
 		if (tport) {
 			ti_buf_free(tport->tp_write_buf);
 			kfree(tport);
-			usb_set_serial_port_data(serial->port[i], NULL);
 		}
 	}
 
 	kfree(tdev);
-	usb_set_serial_data(serial, NULL);
 }
 
 
-static int ti_open(struct tty_struct *tty,
-			struct usb_serial_port *port, struct file *file)
+static int ti_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	struct ti_port *tport = usb_get_serial_port_data(port);
 	struct ti_device *tdev;
@@ -527,10 +514,6 @@ static int ti_open(struct tty_struct *tty,
 	/* only one open on any port on a device at a time */
 	if (mutex_lock_interruptible(&tdev->td_open_close_lock))
 		return -ERESTARTSYS;
-
-	if (tty)
-		tty->low_latency =
-				(tport->tp_flags & ASYNC_LOW_LATENCY) ? 1 : 0;
 
 	port_number = port->number - port->serial->minor;
 
@@ -658,8 +641,7 @@ release_lock:
 }
 
 
-static void ti_close(struct tty_struct *tty, struct usb_serial_port *port,
-							struct file *file)
+static void ti_close(struct usb_serial_port *port)
 {
 	struct ti_device *tdev;
 	struct ti_port *tport;
@@ -743,7 +725,7 @@ static int ti_write_room(struct tty_struct *tty)
 	dbg("%s - port %d", __func__, port->number);
 
 	if (tport == NULL)
-		return -ENODEV;
+		return 0;
 
 	spin_lock_irqsave(&tport->tp_lock, flags);
 	room = ti_buf_space_avail(tport->tp_write_buf);
@@ -764,7 +746,7 @@ static int ti_chars_in_buffer(struct tty_struct *tty)
 	dbg("%s - port %d", __func__, port->number);
 
 	if (tport == NULL)
-		return -ENODEV;
+		return 0;
 
 	spin_lock_irqsave(&tport->tp_lock, flags);
 	chars = ti_buf_data_avail(tport->tp_write_buf);
@@ -1215,20 +1197,22 @@ static void ti_bulk_in_callback(struct urb *urb)
 	}
 
 	tty = tty_port_tty_get(&port->port);
-	if (tty && urb->actual_length) {
-		usb_serial_debug_data(debug, dev, __func__,
-			urb->actual_length, urb->transfer_buffer);
+	if (tty) {
+		if (urb->actual_length) {
+			usb_serial_debug_data(debug, dev, __func__,
+				urb->actual_length, urb->transfer_buffer);
 
-		if (!tport->tp_is_open)
-			dbg("%s - port closed, dropping data", __func__);
-		else
-			ti_recv(&urb->dev->dev, tty,
+			if (!tport->tp_is_open)
+				dbg("%s - port closed, dropping data",
+					__func__);
+			else
+				ti_recv(&urb->dev->dev, tty,
 						urb->transfer_buffer,
 						urb->actual_length);
-
-		spin_lock(&tport->tp_lock);
-		tport->tp_icount.rx += urb->actual_length;
-		spin_unlock(&tport->tp_lock);
+			spin_lock(&tport->tp_lock);
+			tport->tp_icount.rx += urb->actual_length;
+			spin_unlock(&tport->tp_lock);
+		}
 		tty_kref_put(tty);
 	}
 
@@ -1452,7 +1436,6 @@ static int ti_set_serial_info(struct tty_struct *tty, struct ti_port *tport,
 		return -EFAULT;
 
 	tport->tp_flags = new_serial.flags & TI_SET_SERIAL_FLAGS;
-	tty->low_latency = (tport->tp_flags & ASYNC_LOW_LATENCY) ? 1 : 0;
 	tport->tp_closing_wait = new_serial.closing_wait;
 
 	return 0;
@@ -1672,7 +1655,7 @@ static int ti_do_download(struct usb_device *dev, int pipe,
 	u8 cs = 0;
 	int done;
 	struct ti_firmware_header *header;
-	int status;
+	int status = 0;
 	int len;
 
 	for (pos = sizeof(struct ti_firmware_header); pos < size; pos++)

@@ -578,18 +578,18 @@ static int rose_clear_routes(void)
 
 /*
  *	Check that the device given is a valid AX.25 interface that is "up".
+ * 	called whith RTNL
  */
-static struct net_device *rose_ax25_dev_get(char *devname)
+static struct net_device *rose_ax25_dev_find(char *devname)
 {
 	struct net_device *dev;
 
-	if ((dev = dev_get_by_name(&init_net, devname)) == NULL)
+	if ((dev = __dev_get_by_name(&init_net, devname)) == NULL)
 		return NULL;
 
 	if ((dev->flags & IFF_UP) && dev->type == ARPHRD_AX25)
 		return dev;
 
-	dev_put(dev);
 	return NULL;
 }
 
@@ -720,27 +720,23 @@ int rose_rt_ioctl(unsigned int cmd, void __user *arg)
 	case SIOCADDRT:
 		if (copy_from_user(&rose_route, arg, sizeof(struct rose_route_struct)))
 			return -EFAULT;
-		if ((dev = rose_ax25_dev_get(rose_route.device)) == NULL)
+		if ((dev = rose_ax25_dev_find(rose_route.device)) == NULL)
 			return -EINVAL;
-		if (rose_dev_exists(&rose_route.address)) { /* Can't add routes to ourself */
-			dev_put(dev);
+		if (rose_dev_exists(&rose_route.address)) /* Can't add routes to ourself */
 			return -EINVAL;
-		}
 		if (rose_route.mask > 10) /* Mask can't be more than 10 digits */
 			return -EINVAL;
 		if (rose_route.ndigis > AX25_MAX_DIGIS)
 			return -EINVAL;
 		err = rose_add_node(&rose_route, dev);
-		dev_put(dev);
 		return err;
 
 	case SIOCDELRT:
 		if (copy_from_user(&rose_route, arg, sizeof(struct rose_route_struct)))
 			return -EFAULT;
-		if ((dev = rose_ax25_dev_get(rose_route.device)) == NULL)
+		if ((dev = rose_ax25_dev_find(rose_route.device)) == NULL)
 			return -EINVAL;
 		err = rose_del_node(&rose_route, dev);
-		dev_put(dev);
 		return err;
 
 	case SIOCRSCLRRT:
@@ -1104,6 +1100,7 @@ static void rose_node_stop(struct seq_file *seq, void *v)
 
 static int rose_node_show(struct seq_file *seq, void *v)
 {
+	char rsbuf[11];
 	int i;
 
 	if (v == SEQ_START_TOKEN)
@@ -1112,13 +1109,13 @@ static int rose_node_show(struct seq_file *seq, void *v)
 		const struct rose_node *rose_node = v;
 		/* if (rose_node->loopback) {
 			seq_printf(seq, "%-10s %04d 1 loopback\n",
-				rose2asc(&rose_node->address),
-				rose_node->mask);
+				   rose2asc(rsbuf, &rose_node->address),
+				   rose_node->mask);
 		} else { */
 			seq_printf(seq, "%-10s %04d %d",
-				rose2asc(&rose_node->address),
-				rose_node->mask,
-				rose_node->count);
+				   rose2asc(rsbuf, &rose_node->address),
+				   rose_node->mask,
+				   rose_node->count);
 
 			for (i = 0; i < rose_node->count; i++)
 				seq_printf(seq, " %05d",
@@ -1267,7 +1264,7 @@ static void rose_route_stop(struct seq_file *seq, void *v)
 
 static int rose_route_show(struct seq_file *seq, void *v)
 {
-	char buf[11];
+	char buf[11], rsbuf[11];
 
 	if (v == SEQ_START_TOKEN)
 		seq_puts(seq,
@@ -1279,7 +1276,7 @@ static int rose_route_show(struct seq_file *seq, void *v)
 			seq_printf(seq,
 				   "%3.3X  %-10s  %-9s  %05d      ",
 				   rose_route->lci1,
-				   rose2asc(&rose_route->src_addr),
+				   rose2asc(rsbuf, &rose_route->src_addr),
 				   ax2asc(buf, &rose_route->src_call),
 				   rose_route->neigh1->number);
 		else
@@ -1289,10 +1286,10 @@ static int rose_route_show(struct seq_file *seq, void *v)
 		if (rose_route->neigh2)
 			seq_printf(seq,
 				   "%3.3X  %-10s  %-9s  %05d\n",
-				rose_route->lci2,
-				rose2asc(&rose_route->dest_addr),
-				ax2asc(buf, &rose_route->dest_call),
-				rose_route->neigh2->number);
+				   rose_route->lci2,
+				   rose2asc(rsbuf, &rose_route->dest_addr),
+				   ax2asc(buf, &rose_route->dest_call),
+				   rose_route->neigh2->number);
 		 else
 			 seq_puts(seq,
 				  "000  *           *          00000\n");

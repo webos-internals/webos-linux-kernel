@@ -1,32 +1,11 @@
 /*
- * File:         arch/blackfin/mach-common/entry.S
- * Based on:
- * Author:       Linus Torvalds
+ * Contains the system-call and fault low-level handling routines.
+ * This also contains the timer-interrupt handler, as well as all
+ * interrupts and faults that can result in a task-switch.
  *
- * Created:      ?
- * Description:  contains the system-call and fault low-level handling routines.
- *               This also contains the timer-interrupt handler, as well as all
- *               interrupts and faults that can result in a task-switch.
+ * Copyright 2005-2009 Analog Devices Inc.
  *
- * Modified:
- *               Copyright 2004-2006 Analog Devices Inc.
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see the file COPYING, or write
- * to the Free Software Foundation, Inc.,
- * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Licensed under the GPL-2 or later.
  */
 
 /* NOTE: This code handles signal-recognition, which happens every time
@@ -36,13 +15,13 @@
 #include <linux/init.h>
 #include <linux/linkage.h>
 #include <linux/unistd.h>
-#include <linux/threads.h>
 #include <asm/blackfin.h>
 #include <asm/errno.h>
 #include <asm/fixed_code.h>
 #include <asm/thread_info.h>  /* TIF_NEED_RESCHED */
 #include <asm/asm-offsets.h>
 #include <asm/trace.h>
+#include <asm/traps.h>
 
 #include <asm/context.S>
 
@@ -85,13 +64,15 @@ ENTRY(_ex_workaround_261)
 	if !cc jump _bfin_return_from_exception;
 	/* fall through */
 	R7 = P4;
-	R6 = 0x26;	/* Data CPLB Miss */
+	R6 = VEC_CPLB_M;	/* Data CPLB Miss */
 	cc = R6 == R7;
 	if cc jump _ex_dcplb_miss (BP);
-	R6 = 0x23;	/* Data CPLB Miss */
+#ifdef CONFIG_MPU
+	R6 = VEC_CPLB_VL;	/* Data CPLB Violation */
 	cc = R6 == R7;
 	if cc jump _ex_dcplb_viol (BP);
-	/* Handle 0x23 Data CPLB Protection Violation
+#endif
+	/* Handle Data CPLB Protection Violation
 	 * and Data CPLB Multiple Hits - Linux Trap Zero
 	 */
 	jump _ex_trap_c;
@@ -201,11 +182,22 @@ ENTRY(_ex_single_step)
 	cc = r7 == 0;
 	if !cc jump 1f;
 #endif
-
+#ifdef CONFIG_EXACT_HWERR
+	/* Read the ILAT, and to check to see if the process we are
+	 * single stepping caused a previous hardware error
+	 * If so, do not single step, (which lowers to IRQ5, and makes
+	 * us miss the error).
+	 */
+	p5.l = lo(ILAT);
+	p5.h = hi(ILAT);
+	r7 = [p5];
+	cc = bittst(r7, EVT_IVHW_P);
+	if cc jump 1f;
+#endif
 	/* Single stepping only a single instruction, so clear the trace
 	 * bit here.  */
 	r7 = syscfg;
-	bitclr (r7, 0);
+	bitclr (r7, SYSCFG_SSSTEP_P);
 	syscfg = R7;
 	jump _ex_trap_c;
 
@@ -238,7 +230,7 @@ ENTRY(_ex_single_step)
 	if !cc jump _bfin_return_from_exception;
 
 	r7 = syscfg;
-	bitclr (r7, 0);
+	bitclr (r7, SYSCFG_SSSTEP_P);	/* Turn off single step */
 	syscfg = R7;
 
 	/* Fall through to _bfin_return_from_exception.  */
@@ -260,16 +252,7 @@ ENTRY(_bfin_return_from_exception)
 	r6.l = lo(SEQSTAT_EXCAUSE);
 	r6.h = hi(SEQSTAT_EXCAUSE);
 	r7 = r7 & r6;
-	r6 = 0x25;
-	CC = R7 == R6;
-	if CC JUMP _double_fault;
-
-	/* Did we cause a HW error? */
-	p5.l = lo(ILAT);
-	p5.h = hi(ILAT);
-	r6 = [p5];
-	r7 = 0x20;		/* Did I just cause anther HW error? */
-	r6 = r7 & r6;
+	r6 = VEC_UNCOV;
 	CC = R7 == R6;
 	if CC JUMP _double_fault;
 #endif
@@ -297,26 +280,30 @@ ENTRY(_ex_replaceable)
 	nop;
 
 ENTRY(_ex_trap_c)
+	/* The only thing that has been saved in this context is
+	 * (R7:6,P5:4), ASTAT & SP - don't use anything else
+	 */
+
+	GET_PDA(p5, r6);
+
 	/* Make sure we are not in a double fault */
 	p4.l = lo(IPEND);
 	p4.h = hi(IPEND);
 	r7 = [p4];
 	CC = BITTST (r7, 5);
 	if CC jump _double_fault;
+	[p5 + PDA_EXIPEND] = r7;
 
 	/* Call C code (trap_c) to handle the exception, which most
 	 * likely involves sending a signal to the current process.
 	 * To avoid double faults, lower our priority to IRQ5 first.
 	 */
-	P5.h = _exception_to_level5;
-	P5.l = _exception_to_level5;
+	r7.h = _exception_to_level5;
+	r7.l = _exception_to_level5;
 	p4.l = lo(EVT5);
 	p4.h = hi(EVT5);
-	[p4] = p5;
+	[p4] = r7;
 	csync;
-
-	GET_PDA(p5, r6);
-#ifndef CONFIG_DEBUG_DOUBLEFAULT
 
 	/*
 	 * Save these registers, as they are only valid in exception context
@@ -337,14 +324,18 @@ ENTRY(_ex_trap_c)
 
 	r6 = retx;
 	[p5 + PDA_RETX] = r6;
-#endif
+
+	r6 = SEQSTAT;
+	[p5 + PDA_SEQSTAT] = r6;
+
+	/* Save the state of single stepping */
 	r6 = SYSCFG;
 	[p5 + PDA_SYSCFG] = r6;
-	BITCLR(r6, 0);
+	/* Clear it while we handle the exception in IRQ5 mode */
+	BITCLR(r6, SYSCFG_SSSTEP_P);
 	SYSCFG = r6;
 
-	/* Disable all interrupts, but make sure level 5 is enabled so
-	 * we can switch to that level.  Save the old mask.  */
+	/* Save the current IMASK, since we change in order to jump to level 5 */
 	cli r6;
 	[p5 + PDA_EXIMASK] = r6;
 
@@ -352,8 +343,20 @@ ENTRY(_ex_trap_c)
 	p4.h = hi(SAFE_USER_INSTRUCTION);
 	retx = p4;
 
+	/* Disable all interrupts, but make sure level 5 is enabled so
+	 * we can switch to that level.
+	 */
 	r6 = 0x3f;
 	sti r6;
+
+	/* In case interrupts are disabled IPEND[4] (global interrupt disable bit)
+	 * clear it (re-enabling interrupts again) by the special sequence of pushing
+	 * RETI onto the stack.  This way we can lower ourselves to IVG5 even if the
+	 * exception was taken after the interrupt handler was called but before it
+	 * got a chance to enable global interrupts itself.
+	 */
+	[--sp] = reti;
+	sp += 4;
 
 	raise 5;
 	jump.s _bfin_return_from_exception;
@@ -363,7 +366,7 @@ ENDPROC(_ex_trap_c)
  * exception. This is a unrecoverable event, so crash.
  * Note: this cannot be ENTRY() as we jump here with "if cc jump" ...
  */
-_double_fault:
+ENTRY(_double_fault)
 	/* Turn caches & protection off, to ensure we don't get any more
 	 * double exceptions
 	 */
@@ -373,8 +376,7 @@ _double_fault:
 
 	R5 = [P4];              /* Control Register*/
 	BITCLR(R5,ENICPLB_P);
-	SSYNC;          /* SSYNC required before writing to IMEM_CONTROL. */
-	.align 8;
+	CSYNC;          /* Disabling of CPLBs should be proceeded by a CSYNC */
 	[P4] = R5;
 	SSYNC;
 
@@ -382,8 +384,7 @@ _double_fault:
 	P4.H = HI(DMEM_CONTROL);
 	R5 = [P4];
 	BITCLR(R5,ENDCPLB_P);
-	SSYNC;          /* SSYNC required before writing to DMEM_CONTROL. */
-	.align 8;
+	CSYNC;          /* Disabling of CPLBs should be proceeded by a CSYNC */
 	[P4] = R5;
 	SSYNC;
 
@@ -414,47 +415,55 @@ ENDPROC(_double_fault)
 ENTRY(_exception_to_level5)
 	SAVE_ALL_SYS
 
-	GET_PDA(p4, r7);        /* Fetch current PDA */
-	r6 = [p4 + PDA_RETX];
+	GET_PDA(p5, r7);        /* Fetch current PDA */
+	r6 = [p5 + PDA_RETX];
 	[sp + PT_PC] = r6;
 
-	r6 = [p4 + PDA_SYSCFG];
+	r6 = [p5 + PDA_SYSCFG];
 	[sp + PT_SYSCFG] = r6;
 
-	/* Restore interrupt mask.  We haven't pushed RETI, so this
-	 * doesn't enable interrupts until we return from this handler.  */
-	r6 = [p4 + PDA_EXIMASK];
-	sti r6;
+	r6 = [p5 + PDA_SEQSTAT]; /* Read back seqstat */
+	[sp + PT_SEQSTAT] = r6;
 
 	/* Restore the hardware error vector.  */
-	P5.h = _evt_ivhw;
-	P5.l = _evt_ivhw;
+	r7.h = _evt_ivhw;
+	r7.l = _evt_ivhw;
 	p4.l = lo(EVT5);
 	p4.h = hi(EVT5);
-	[p4] = p5;
+	[p4] = r7;
 	csync;
 
-	p2.l = lo(IPEND);
-	p2.h = hi(IPEND);
-	csync;
-	r0 = [p2];              /* Read current IPEND */
-	[sp + PT_IPEND] = r0;   /* Store IPEND */
+#ifdef CONFIG_DEBUG_DOUBLEFAULT
+	/* Now that we have the hardware error vector programmed properly
+	 * we can re-enable interrupts (IPEND[4]), so if the _trap_c causes
+	 * another hardware error, we can catch it (self-nesting).
+	 */
+	[--sp] = reti;
+	sp += 4;
+#endif
+
+	r7 = [p5 + PDA_EXIPEND]	/* Read the IPEND from the Exception state */
+	[sp + PT_IPEND] = r7;   /* Store IPEND onto the stack */
 
 	r0 = sp; 	/* stack frame pt_regs pointer argument ==> r0 */
 	SP += -12;
 	call _trap_c;
 	SP += 12;
 
-#ifdef CONFIG_DEBUG_DOUBLEFAULT
-	/* Grab ILAT */
-	p2.l = lo(ILAT);
-	p2.h = hi(ILAT);
-	r0 = [p2];
-	r1 = 0x20;  /* Did I just cause anther HW error? */
-	r0 = r0 & r1;
-	CC = R0 == R1;
-	if CC JUMP _double_fault;
-#endif
+	/* If interrupts were off during the exception (IPEND[4] = 1), turn them off
+	 * before we return.
+	 */
+	CC = BITTST(r7, EVT_IRPTEN_P)
+	if !CC jump 1f;
+	/* this will load a random value into the reti register - but that is OK,
+	 * since we do restore it to the correct value in the 'RESTORE_ALL_SYS' macro
+	 */
+	sp += -4;
+	reti = [sp++];
+1:
+	/* restore the interrupt mask (IMASK) */
+	r6 = [p5 + PDA_EXIMASK];
+	sti r6;
 
 	call _ret_from_exception;
 	RESTORE_ALL_SYS
@@ -468,19 +477,22 @@ ENTRY(_trap) /* Exception: 4th entry into system event table(supervisor mode)*/
 	 */
 	EX_SCRATCH_REG = sp;
 	GET_PDA_SAFE(sp);
-	sp = [sp + PDA_EXSTACK]
+	sp = [sp + PDA_EXSTACK];
 	/* Try to deal with syscalls quickly.  */
 	[--sp] = ASTAT;
 	[--sp] = (R7:6,P5:4);
 
-#if ANOMALY_05000283 || ANOMALY_05000315
-	cc = r7 == r7;
-	p5.h = HI(CHIPID);
-	p5.l = LO(CHIPID);
-	if cc jump 1f;
-	r7.l = W[p5];
-1:
+#ifdef CONFIG_EXACT_HWERR
+	/* Make sure all pending read/writes complete. This will ensure any
+	 * accesses which could cause hardware errors completes, and signal
+	 * the the hardware before we do something silly, like crash the
+	 * kernel. We don't need to work around anomaly 05000312, since
+	 * we are already atomic
+	 */
+	ssync;
 #endif
+
+	ANOMALY_283_315_WORKAROUND(p5, r7)
 
 #ifdef CONFIG_DEBUG_DOUBLEFAULT
 	/*
@@ -494,18 +506,18 @@ ENTRY(_trap) /* Exception: 4th entry into system event table(supervisor mode)*/
 	p4.l = lo(DCPLB_FAULT_ADDR);
 	p4.h = hi(DCPLB_FAULT_ADDR);
 	r7 = [p4];
-	[p5 + PDA_DCPLB] = r7;
+	[p5 + PDA_DF_DCPLB] = r7;
 
 	p4.l = lo(ICPLB_FAULT_ADDR);
 	p4.h = hi(ICPLB_FAULT_ADDR);
 	r7 = [p4];
-	[p5 + PDA_ICPLB] = r7;
+	[p5 + PDA_DF_ICPLB] = r7;
 
-	r6 = retx;
-	[p5 + PDA_RETX] = r6;
+	r7 = retx;
+	[p5 + PDA_DF_RETX] = r7;
 
 	r7 = SEQSTAT;		/* reason code is in bit 5:0 */
-	[p5 + PDA_SEQSTAT] = r7;
+	[p5 + PDA_DF_SEQSTAT] = r7;
 #else
 	r7 = SEQSTAT;           /* reason code is in bit 5:0 */
 #endif
@@ -670,8 +682,14 @@ ENTRY(_system_call)
 #ifdef CONFIG_IPIPE
 	cc = BITTST(r7, TIF_IRQ_SYNC);
 	if !cc jump .Lsyscall_no_irqsync;
+	/*
+	 * Clear IPEND[4] manually to undo what resume_userspace_1 just did;
+	 * we need this so that high priority domain interrupts may still
+	 * preempt the current domain while the pipeline log is being played
+	 * back.
+	 */
 	[--sp] = reti;
-	r0 = [sp++];
+	SP += 4; /* don't merge with next insn to keep the pattern obvious */
 	SP += -12;
 	call ___ipipe_sync_root;
 	SP += 12;
@@ -683,7 +701,7 @@ ENTRY(_system_call)
 
 	/* Reenable interrupts.  */
 	[--sp] = reti;
-	r0 = [sp++];
+	sp += 4;
 
 	SP += -12;
 	call _schedule;
@@ -699,7 +717,7 @@ ENTRY(_system_call)
 .Lsyscall_do_signals:
 	/* Reenable interrupts.  */
 	[--sp] = reti;
-	r0 = [sp++];
+	sp += 4;
 
 	r0 = sp;
 	SP += -12;
@@ -709,10 +727,6 @@ ENTRY(_system_call)
 .Lsyscall_really_exit:
 	r5 = [sp + PT_RESERVED];
 	rets = r5;
-#ifdef CONFIG_IPIPE
-	[--sp] = reti;
-	r5 = [sp++];
-#endif /* CONFIG_IPIPE */
 	rts;
 ENDPROC(_system_call)
 
@@ -800,13 +814,13 @@ ENDPROC(_resume)
 
 ENTRY(_ret_from_exception)
 #ifdef CONFIG_IPIPE
-	[--sp] = rets;
-	SP += -12;
-	call ___ipipe_check_root
-	SP += 12
-	rets = [sp++];
-	cc = r0 == 0;
-	if cc jump 4f;                /* not on behalf of Linux, get out */
+	p2.l = _per_cpu__ipipe_percpu_domain;
+	p2.h = _per_cpu__ipipe_percpu_domain;
+	r0.l = _ipipe_root;
+	r0.h = _ipipe_root;
+	r2 = [p2];
+	cc = r0 == r2;
+	if !cc jump 4f;  /* not on behalf of the root domain, get out */
 #endif /* CONFIG_IPIPE */
 	p2.l = lo(IPEND);
 	p2.h = hi(IPEND);
@@ -855,10 +869,10 @@ ENTRY(_ret_from_exception)
 	p1.h = _schedule_and_signal;
 	[p0] = p1;
 	csync;
-	raise 15;		/* raise evt14 to do signal or reschedule */
+	raise 15;		/* raise evt15 to do signal or reschedule */
 4:
 	r0 = syscfg;
-	bitclr(r0, 0);
+	bitclr(r0, SYSCFG_SSSTEP_P);		/* Turn off single step */
 	syscfg = r0;
 5:
 	rts;
@@ -866,14 +880,9 @@ ENDPROC(_ret_from_exception)
 
 #ifdef CONFIG_IPIPE
 
-_sync_root_irqs:
-	[--sp] = reti;		/* Reenable interrupts */
-	r0 = [sp++];
-	jump.l ___ipipe_sync_root
-
 _resume_kernel_from_int:
-	r0.l = _sync_root_irqs
-	r0.h = _sync_root_irqs
+	r0.l = ___ipipe_sync_root;
+	r0.h = ___ipipe_sync_root;
 	[--sp] = rets;
 	[--sp] = ( r7:4, p5:3 );
 	SP += -12;
@@ -916,7 +925,7 @@ ENTRY(_return_from_int)
 	p1.h = _schedule_and_signal_from_int;
 	[p0] = p1;
 	csync;
-#if ANOMALY_05000281
+#if ANOMALY_05000281 || ANOMALY_05000461
 	r0.l = lo(SAFE_USER_INSTRUCTION);
 	r0.h = hi(SAFE_USER_INSTRUCTION);
 	reti = r0;
@@ -930,18 +939,27 @@ ENTRY(_return_from_int)
 ENDPROC(_return_from_int)
 
 ENTRY(_lower_to_irq14)
-#if ANOMALY_05000281
+#if ANOMALY_05000281 || ANOMALY_05000461
 	r0.l = lo(SAFE_USER_INSTRUCTION);
 	r0.h = hi(SAFE_USER_INSTRUCTION);
 	reti = r0;
 #endif
-	r0 = 0x401f;
+
+#ifdef CONFIG_DEBUG_HWERR
+	/* enable irq14 & hwerr interrupt, until we transition to _evt_evt14 */
+	r0 = (EVT_IVG14 | EVT_IVHW | EVT_IRPTEN | EVT_EVX | EVT_NMI | EVT_RST | EVT_EMU);
+#else
+	/* Only enable irq14 interrupt, until we transition to _evt_evt14 */
+	r0 = (EVT_IVG14 | EVT_IRPTEN | EVT_EVX | EVT_NMI | EVT_RST | EVT_EMU);
+#endif
 	sti r0;
 	raise 14;
 	rti;
-ENTRY(_evt14_softirq)
+ENDPROC(_lower_to_irq14)
+
+ENTRY(_evt_evt14)
 #ifdef CONFIG_DEBUG_HWERR
-	r0 = 0x3f;
+	r0 = (EVT_IVHW | EVT_IRPTEN | EVT_EVX | EVT_NMI | EVT_RST | EVT_EMU);
 	sti r0;
 #else
 	cli r0;
@@ -949,8 +967,9 @@ ENTRY(_evt14_softirq)
 	[--sp] = RETI;
 	SP += 4;
 	rts;
+ENDPROC(_evt_evt14)
 
-_schedule_and_signal_from_int:
+ENTRY(_schedule_and_signal_from_int)
 	/* To end up here, vector 15 was changed - so we have to change it
 	 * back.
 	 */
@@ -978,13 +997,20 @@ _schedule_and_signal_from_int:
 #endif
 	sti r0;
 
+	/* finish the userspace "atomic" functions for it */
+	r1 = FIXED_CODE_END;
+	r2 = [sp + PT_PC];
+	cc = r1 <= r2;
+	if cc jump .Lresume_userspace (bp);
+
 	r0 = sp;
 	sp += -12;
 	call _finish_atomic_sections;
 	sp += 12;
 	jump.s .Lresume_userspace;
+ENDPROC(_schedule_and_signal_from_int)
 
-_schedule_and_signal:
+ENTRY(_schedule_and_signal)
 	SAVE_CONTEXT_SYSCALL
 	/* To end up here, vector 15 was changed - so we have to change it
 	 * back.
@@ -1002,7 +1028,7 @@ _schedule_and_signal:
 1:
 	RESTORE_CONTEXT
 	rti;
-ENDPROC(_lower_to_irq14)
+ENDPROC(_schedule_and_signal)
 
 /* We handle this 100% in exception space - to reduce overhead
  * Only potiential problem is if the software buffer gets swapped out of the
@@ -1080,14 +1106,7 @@ ENTRY(_early_trap)
 	SAVE_ALL_SYS
 	trace_buffer_stop(p0,r0);
 
-#if ANOMALY_05000283 || ANOMALY_05000315
-	cc = r5 == r5;
-	p4.h = HI(CHIPID);
-	p4.l = LO(CHIPID);
-	if cc jump 1f;
-	r5.l = W[p4];
-1:
-#endif
+	ANOMALY_283_315_WORKAROUND(p4, r5)
 
 	/* Turn caches off, to ensure we don't get double exceptions */
 
@@ -1096,9 +1115,7 @@ ENTRY(_early_trap)
 
 	R5 = [P4];              /* Control Register*/
 	BITCLR(R5,ENICPLB_P);
-	CLI R1;
-	SSYNC;          /* SSYNC required before writing to IMEM_CONTROL. */
-	.align 8;
+	CSYNC;          /* Disabling of CPLBs should be proceeded by a CSYNC */
 	[P4] = R5;
 	SSYNC;
 
@@ -1106,11 +1123,9 @@ ENTRY(_early_trap)
 	P4.H = HI(DMEM_CONTROL);
 	R5 = [P4];
 	BITCLR(R5,ENDCPLB_P);
-	SSYNC;          /* SSYNC required before writing to DMEM_CONTROL. */
-	.align 8;
+	CSYNC;          /* Disabling of CPLBs should be proceeded by a CSYNC */
 	[P4] = R5;
 	SSYNC;
-	STI R1;
 
 	r0 = sp;        /* stack frame pt_regs pointer argument ==> r0 */
 	r1 = RETX;
@@ -1581,24 +1596,12 @@ ENTRY(_sys_call_table)
 	.long _sys_dup3
 	.long _sys_pipe2
 	.long _sys_inotify_init1	/* 365 */
+	.long _sys_preadv
+	.long _sys_pwritev
+	.long _sys_rt_tgsigqueueinfo
+	.long _sys_perf_event_open
 
 	.rept NR_syscalls-(.-_sys_call_table)/4
 	.long _sys_ni_syscall
 	.endr
 END(_sys_call_table)
-
-#ifdef CONFIG_EXCEPTION_L1_SCRATCH
-/* .section .l1.bss.scratch */
-.set _exception_stack_top, L1_SCRATCH_START + L1_SCRATCH_LENGTH
-#else
-#ifdef CONFIG_SYSCALL_TAB_L1
-.section .l1.bss
-#else
-.bss
-#endif
-ENTRY(_exception_stack)
-	.rept 1024 * NR_CPUS
-	.long 0
-	.endr
-_exception_stack_top:
-#endif

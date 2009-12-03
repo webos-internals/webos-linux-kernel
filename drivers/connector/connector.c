@@ -1,9 +1,9 @@
 /*
  * 	connector.c
- * 
- * 2004-2005 Copyright (c) Evgeniy Polyakov <johnpol@2ka.mipt.ru>
+ *
+ * 2004+ Copyright (c) Evgeniy Polyakov <zbr@ioremap.net>
  * All rights reserved.
- * 
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -33,7 +33,7 @@
 #include <net/sock.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Evgeniy Polyakov <johnpol@2ka.mipt.ru>");
+MODULE_AUTHOR("Evgeniy Polyakov <zbr@ioremap.net>");
 MODULE_DESCRIPTION("Generic userspace <-> kernelspace connector.");
 
 static u32 cn_idx = CN_IDX_CONNECTOR;
@@ -129,44 +129,41 @@ EXPORT_SYMBOL_GPL(cn_netlink_send);
 /*
  * Callback helper - queues work and setup destructor for given data.
  */
-static int cn_call_callback(struct cn_msg *msg, void (*destruct_data)(void *), void *data)
+static int cn_call_callback(struct sk_buff *skb)
 {
 	struct cn_callback_entry *__cbq, *__new_cbq;
 	struct cn_dev *dev = &cdev;
+	struct cn_msg *msg = NLMSG_DATA(nlmsg_hdr(skb));
 	int err = -ENODEV;
 
 	spin_lock_bh(&dev->cbdev->queue_lock);
 	list_for_each_entry(__cbq, &dev->cbdev->queue_list, callback_entry) {
 		if (cn_cb_equal(&__cbq->id.id, &msg->id)) {
 			if (likely(!work_pending(&__cbq->work) &&
-					__cbq->data.ddata == NULL)) {
-				__cbq->data.callback_priv = msg;
+					__cbq->data.skb == NULL)) {
+				__cbq->data.skb = skb;
 
-				__cbq->data.ddata = data;
-				__cbq->data.destruct_data = destruct_data;
-
-				if (queue_work(dev->cbdev->cn_queue,
-							&__cbq->work))
+				if (queue_cn_work(__cbq, &__cbq->work))
 					err = 0;
 				else
 					err = -EINVAL;
 			} else {
 				struct cn_callback_data *d;
-				
+
 				err = -ENOMEM;
 				__new_cbq = kzalloc(sizeof(struct cn_callback_entry), GFP_ATOMIC);
 				if (__new_cbq) {
 					d = &__new_cbq->data;
-					d->callback_priv = msg;
+					d->skb = skb;
 					d->callback = __cbq->data.callback;
-					d->ddata = data;
-					d->destruct_data = destruct_data;
 					d->free = __new_cbq;
+
+					__new_cbq->pdev = __cbq->pdev;
 
 					INIT_WORK(&__new_cbq->work,
 							&cn_queue_wrapper);
 
-					if (queue_work(dev->cbdev->cn_queue,
+					if (queue_cn_work(__new_cbq,
 						    &__new_cbq->work))
 						err = 0;
 					else {
@@ -190,7 +187,6 @@ static int cn_call_callback(struct cn_msg *msg, void (*destruct_data)(void *), v
  */
 static void cn_rx_skb(struct sk_buff *__skb)
 {
-	struct cn_msg *msg;
 	struct nlmsghdr *nlh;
 	int err;
 	struct sk_buff *skb;
@@ -207,8 +203,7 @@ static void cn_rx_skb(struct sk_buff *__skb)
 			return;
 		}
 
-		msg = NLMSG_DATA(nlh);
-		err = cn_call_callback(msg, (void (*)(void *))kfree_skb, skb);
+		err = cn_call_callback(skb);
 		if (err < 0)
 			kfree_skb(skb);
 	}
@@ -237,7 +232,7 @@ static void cn_notify(struct cb_id *id, u32 notify_event)
 
 		req = (struct cn_notify_req *)ctl->data;
 		for (i = 0; i < ctl->idx_notify_num; ++i, ++req) {
-			if (id->idx >= req->first && 
+			if (id->idx >= req->first &&
 					id->idx < req->first + req->range) {
 				idx_found = 1;
 				break;
@@ -245,7 +240,7 @@ static void cn_notify(struct cb_id *id, u32 notify_event)
 		}
 
 		for (i = 0; i < ctl->val_notify_num; ++i, ++req) {
-			if (id->val >= req->first && 
+			if (id->val >= req->first &&
 					id->val < req->first + req->range) {
 				val_found = 1;
 				break;
@@ -268,7 +263,8 @@ static void cn_notify(struct cb_id *id, u32 notify_event)
  *
  * May sleep.
  */
-int cn_add_callback(struct cb_id *id, char *name, void (*callback)(void *))
+int cn_add_callback(struct cb_id *id, char *name,
+		    void (*callback)(struct cn_msg *, struct netlink_skb_parms *))
 {
 	int err;
 	struct cn_dev *dev = &cdev;
@@ -350,9 +346,8 @@ static int cn_ctl_msg_equals(struct cn_ctl_msg *m1, struct cn_ctl_msg *m2)
  *
  * Used for notification of a request's processing.
  */
-static void cn_callback(void *data)
+static void cn_callback(struct cn_msg *msg, struct netlink_skb_parms *nsp)
 {
-	struct cn_msg *msg = data;
 	struct cn_ctl_msg *ctl;
 	struct cn_ctl_entry *ent;
 	u32 size;
@@ -459,7 +454,7 @@ static int __devinit cn_init(void)
 		netlink_kernel_release(dev->nls);
 		return -EINVAL;
 	}
-	
+
 	cn_already_initialized = 1;
 
 	err = cn_add_callback(&dev->id, "connector", &cn_callback);

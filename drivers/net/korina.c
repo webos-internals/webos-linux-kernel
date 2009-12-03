@@ -133,6 +133,7 @@ struct korina_private {
 	int dma_halt_cnt;
 	int dma_run_cnt;
 	struct napi_struct napi;
+	struct timer_list media_check_timer;
 	struct mii_if_info mii_if;
 	struct net_device *dev;
 	int phy_addr;
@@ -334,10 +335,10 @@ static irqreturn_t korina_rx_dma_interrupt(int irq, void *dev_id)
 				DMA_STAT_HALT | DMA_STAT_ERR),
 				&lp->rx_dma_regs->dmasm);
 
-		netif_rx_schedule(&lp->napi);
+		napi_schedule(&lp->napi);
 
 		if (dmas & DMA_STAT_ERR)
-			printk(KERN_ERR DRV_NAME "%s: DMA error\n", dev->name);
+			printk(KERN_ERR "%s: DMA error\n", dev->name);
 
 		retval = IRQ_HANDLED;
 	} else
@@ -468,7 +469,7 @@ static int korina_poll(struct napi_struct *napi, int budget)
 
 	work_done = korina_rx(dev, budget);
 	if (work_done < budget) {
-		netif_rx_complete(napi);
+		napi_complete(napi);
 
 		writel(readl(&lp->rx_dma_regs->dmasm) &
 			~(DMA_STAT_DONE | DMA_STAT_HALT | DMA_STAT_ERR),
@@ -554,7 +555,7 @@ static void korina_tx(struct net_device *dev)
 			dev->stats.tx_dropped++;
 
 			/* Should never happen */
-			printk(KERN_ERR DRV_NAME "%s: split tx ignored\n",
+			printk(KERN_ERR "%s: split tx ignored\n",
 							dev->name);
 		} else if (devcs & ETH_TX_TOK) {
 			dev->stats.tx_packets++;
@@ -640,7 +641,7 @@ korina_tx_dma_interrupt(int irq, void *dev_id)
 			dev->trans_start = jiffies;
 		}
 		if (dmas & DMA_STAT_ERR)
-			printk(KERN_ERR DRV_NAME "%s: DMA error\n", dev->name);
+			printk(KERN_ERR "%s: DMA error\n", dev->name);
 
 		retval = IRQ_HANDLED;
 	} else
@@ -662,6 +663,15 @@ static void korina_check_media(struct net_device *dev, unsigned int init_media)
 	else
 		writel(readl(&lp->eth_regs->ethmac2) & ~ETH_MAC2_FD,
 						&lp->eth_regs->ethmac2);
+}
+
+static void korina_poll_media(unsigned long data)
+{
+	struct net_device *dev = (struct net_device *) data;
+	struct korina_private *lp = netdev_priv(dev);
+
+	korina_check_media(dev, 0);
+	mod_timer(&lp->media_check_timer, jiffies + HZ);
 }
 
 static void korina_set_carrier(struct mii_if_info *mii)
@@ -733,14 +743,14 @@ static u32 netdev_get_link(struct net_device *dev)
 	return mii_link_ok(&lp->mii_if);
 }
 
-static struct ethtool_ops netdev_ethtool_ops = {
+static const struct ethtool_ops netdev_ethtool_ops = {
 	.get_drvinfo            = netdev_get_drvinfo,
 	.get_settings           = netdev_get_settings,
 	.set_settings           = netdev_set_settings,
 	.get_link               = netdev_get_link,
 };
 
-static void korina_alloc_ring(struct net_device *dev)
+static int korina_alloc_ring(struct net_device *dev)
 {
 	struct korina_private *lp = netdev_priv(dev);
 	struct sk_buff *skb;
@@ -761,7 +771,7 @@ static void korina_alloc_ring(struct net_device *dev)
 	for (i = 0; i < KORINA_NUM_RDS; i++) {
 		skb = dev_alloc_skb(KORINA_RBSIZE + 2);
 		if (!skb)
-			break;
+			return -ENOMEM;
 		skb_reserve(skb, 2);
 		lp->rx_skb[i] = skb;
 		lp->rd_ring[i].control = DMA_DESC_IOD |
@@ -780,6 +790,8 @@ static void korina_alloc_ring(struct net_device *dev)
 	lp->rx_chain_head = 0;
 	lp->rx_chain_tail = 0;
 	lp->rx_chain_status = desc_empty;
+
+	return 0;
 }
 
 static void korina_free_ring(struct net_device *dev)
@@ -822,7 +834,11 @@ static int korina_init(struct net_device *dev)
 	writel(ETH_INT_FC_EN, &lp->eth_regs->ethintfc);
 
 	/* Allocate rings */
-	korina_alloc_ring(dev);
+	if (korina_alloc_ring(dev)) {
+		printk(KERN_ERR "%s: descriptor allocation failed\n", dev->name);
+		korina_free_ring(dev);
+		return -ENOMEM;
+	}
 
 	writel(0, &lp->rx_dma_regs->dmas);
 	/* Start Rx DMA */
@@ -907,8 +923,7 @@ static int korina_restart(struct net_device *dev)
 
 	ret = korina_init(dev);
 	if (ret < 0) {
-		printk(KERN_ERR DRV_NAME "%s: cannot restart device\n",
-								dev->name);
+		printk(KERN_ERR "%s: cannot restart device\n", dev->name);
 		return ret;
 	}
 	korina_multicast_list(dev);
@@ -995,7 +1010,7 @@ static int korina_open(struct net_device *dev)
 	/* Initialize */
 	ret = korina_init(dev);
 	if (ret < 0) {
-		printk(KERN_ERR DRV_NAME "%s: cannot open device\n", dev->name);
+		printk(KERN_ERR "%s: cannot open device\n", dev->name);
 		goto out;
 	}
 
@@ -1005,14 +1020,14 @@ static int korina_open(struct net_device *dev)
 	ret = request_irq(lp->rx_irq, &korina_rx_dma_interrupt,
 			IRQF_DISABLED, "Korina ethernet Rx", dev);
 	if (ret < 0) {
-		printk(KERN_ERR DRV_NAME "%s: unable to get Rx DMA IRQ %d\n",
+		printk(KERN_ERR "%s: unable to get Rx DMA IRQ %d\n",
 		    dev->name, lp->rx_irq);
 		goto err_release;
 	}
 	ret = request_irq(lp->tx_irq, &korina_tx_dma_interrupt,
 			IRQF_DISABLED, "Korina ethernet Tx", dev);
 	if (ret < 0) {
-		printk(KERN_ERR DRV_NAME "%s: unable to get Tx DMA IRQ %d\n",
+		printk(KERN_ERR "%s: unable to get Tx DMA IRQ %d\n",
 		    dev->name, lp->tx_irq);
 		goto err_free_rx_irq;
 	}
@@ -1021,7 +1036,7 @@ static int korina_open(struct net_device *dev)
 	ret = request_irq(lp->ovr_irq, &korina_ovr_interrupt,
 			IRQF_DISABLED, "Ethernet Overflow", dev);
 	if (ret < 0) {
-		printk(KERN_ERR DRV_NAME"%s: unable to get OVR IRQ %d\n",
+		printk(KERN_ERR "%s: unable to get OVR IRQ %d\n",
 		    dev->name, lp->ovr_irq);
 		goto err_free_tx_irq;
 	}
@@ -1030,10 +1045,11 @@ static int korina_open(struct net_device *dev)
 	ret = request_irq(lp->und_irq, &korina_und_interrupt,
 			IRQF_DISABLED, "Ethernet Underflow", dev);
 	if (ret < 0) {
-		printk(KERN_ERR DRV_NAME "%s: unable to get UND IRQ %d\n",
+		printk(KERN_ERR "%s: unable to get UND IRQ %d\n",
 		    dev->name, lp->und_irq);
 		goto err_free_ovr_irq;
 	}
+	mod_timer(&lp->media_check_timer, jiffies + 1);
 out:
 	return ret;
 
@@ -1052,6 +1068,8 @@ static int korina_close(struct net_device *dev)
 {
 	struct korina_private *lp = netdev_priv(dev);
 	u32 tmp;
+
+	del_timer(&lp->media_check_timer);
 
 	/* Disable interrupts */
 	disable_irq(lp->rx_irq);
@@ -1081,6 +1099,21 @@ static int korina_close(struct net_device *dev)
 	return 0;
 }
 
+static const struct net_device_ops korina_netdev_ops = {
+	.ndo_open		= korina_open,
+	.ndo_stop		= korina_close,
+	.ndo_start_xmit		= korina_send_packet,
+	.ndo_set_multicast_list	= korina_multicast_list,
+	.ndo_tx_timeout		= korina_tx_timeout,
+	.ndo_do_ioctl		= korina_ioctl,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_set_mac_address	= eth_mac_addr,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	= korina_poll_controller,
+#endif
+};
+
 static int korina_probe(struct platform_device *pdev)
 {
 	struct korina_device *bif = platform_get_drvdata(pdev);
@@ -1109,7 +1142,7 @@ static int korina_probe(struct platform_device *pdev)
 	dev->base_addr = r->start;
 	lp->eth_regs = ioremap_nocache(r->start, r->end - r->start);
 	if (!lp->eth_regs) {
-		printk(KERN_ERR DRV_NAME "cannot remap registers\n");
+		printk(KERN_ERR DRV_NAME ": cannot remap registers\n");
 		rc = -ENXIO;
 		goto probe_err_out;
 	}
@@ -1117,7 +1150,7 @@ static int korina_probe(struct platform_device *pdev)
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "korina_dma_rx");
 	lp->rx_dma_regs = ioremap_nocache(r->start, r->end - r->start);
 	if (!lp->rx_dma_regs) {
-		printk(KERN_ERR DRV_NAME "cannot remap Rx DMA registers\n");
+		printk(KERN_ERR DRV_NAME ": cannot remap Rx DMA registers\n");
 		rc = -ENXIO;
 		goto probe_err_dma_rx;
 	}
@@ -1125,14 +1158,14 @@ static int korina_probe(struct platform_device *pdev)
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "korina_dma_tx");
 	lp->tx_dma_regs = ioremap_nocache(r->start, r->end - r->start);
 	if (!lp->tx_dma_regs) {
-		printk(KERN_ERR DRV_NAME "cannot remap Tx DMA registers\n");
+		printk(KERN_ERR DRV_NAME ": cannot remap Tx DMA registers\n");
 		rc = -ENXIO;
 		goto probe_err_dma_tx;
 	}
 
 	lp->td_ring = kmalloc(TD_RING_SIZE + RD_RING_SIZE, GFP_KERNEL);
 	if (!lp->td_ring) {
-		printk(KERN_ERR DRV_NAME "cannot allocate descriptors\n");
+		printk(KERN_ERR DRV_NAME ": cannot allocate descriptors\n");
 		rc = -ENXIO;
 		goto probe_err_td_ring;
 	}
@@ -1149,17 +1182,9 @@ static int korina_probe(struct platform_device *pdev)
 	dev->irq = lp->rx_irq;
 	lp->dev = dev;
 
-	dev->open = korina_open;
-	dev->stop = korina_close;
-	dev->hard_start_xmit = korina_send_packet;
-	dev->set_multicast_list = &korina_multicast_list;
+	dev->netdev_ops = &korina_netdev_ops;
 	dev->ethtool_ops = &netdev_ethtool_ops;
-	dev->tx_timeout = korina_tx_timeout;
 	dev->watchdog_timeo = TX_TIMEOUT;
-	dev->do_ioctl = &korina_ioctl;
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	dev->poll_controller = korina_poll_controller;
-#endif
 	netif_napi_add(dev, &lp->napi, korina_poll, 64);
 
 	lp->phy_addr = (((lp->rx_irq == 0x2c? 1:0) << 8) | 0x05);
@@ -1173,9 +1198,13 @@ static int korina_probe(struct platform_device *pdev)
 	rc = register_netdev(dev);
 	if (rc < 0) {
 		printk(KERN_ERR DRV_NAME
-			": cannot register net device %d\n", rc);
+			": cannot register net device: %d\n", rc);
 		goto probe_err_register;
 	}
+	setup_timer(&lp->media_check_timer, korina_poll_media, (unsigned long) dev);
+
+	printk(KERN_INFO "%s: " DRV_NAME "-" DRV_VERSION " " DRV_RELDATE "\n",
+			dev->name);
 out:
 	return rc;
 

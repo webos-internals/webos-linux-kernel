@@ -73,6 +73,14 @@
 #define ACPI_NS_WALK_UNLOCK         0x01
 #define ACPI_NS_WALK_TEMP_NODES     0x02
 
+/* Object is not a package element */
+
+#define ACPI_NOT_PACKAGE_ELEMENT    ACPI_UINT32_MAX
+
+/* Always emit warning message, not dependent on node flags */
+
+#define ACPI_WARN_ALWAYS            0
+
 /*
  * nsinit - Namespace initialization
  */
@@ -99,9 +107,18 @@ acpi_ns_walk_namespace(acpi_object_type type,
 		       acpi_walk_callback user_function,
 		       void *context, void **return_value);
 
-struct acpi_namespace_node *acpi_ns_get_next_node(acpi_object_type type, struct acpi_namespace_node
-						  *parent, struct acpi_namespace_node
+struct acpi_namespace_node *acpi_ns_get_next_node(struct acpi_namespace_node
+						  *parent,
+						  struct acpi_namespace_node
 						  *child);
+
+struct acpi_namespace_node *acpi_ns_get_next_node_typed(acpi_object_type type,
+							struct
+							acpi_namespace_node
+							*parent,
+							struct
+							acpi_namespace_node
+							*child);
 
 /*
  * nsparse - table parsing
@@ -134,6 +151,8 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 struct acpi_namespace_node *acpi_ns_create_node(u32 name);
 
 void acpi_ns_delete_node(struct acpi_namespace_node *node);
+
+void acpi_ns_remove_node(struct acpi_namespace_node *node);
 
 void
 acpi_ns_delete_namespace_subtree(struct acpi_namespace_node *parent_handle);
@@ -176,6 +195,8 @@ acpi_ns_dump_objects(acpi_object_type type,
  * nseval - Namespace evaluation functions
  */
 acpi_status acpi_ns_evaluate(struct acpi_evaluate_info *info);
+
+void acpi_ns_exec_module_code_list(void);
 
 /*
  * nspredef - Support for predefined/reserved names
@@ -249,6 +270,19 @@ acpi_ns_detach_data(struct acpi_namespace_node *node,
 acpi_status
 acpi_ns_get_attached_data(struct acpi_namespace_node *node,
 			  acpi_object_handler handler, void **data);
+
+/*
+ * nsrepair - return object repair for predefined methods/objects
+ */
+acpi_status
+acpi_ns_repair_object(struct acpi_predefined_data *data,
+		      u32 expected_btypes,
+		      u32 package_index,
+		      union acpi_operand_object **return_object_ptr);
+
+acpi_status
+acpi_ns_repair_package_list(struct acpi_predefined_data *data,
+			    union acpi_operand_object **obj_desc_ptr);
 
 /*
  * nssearch - Namespace searching and entry

@@ -83,10 +83,6 @@ static int ip6mr_cache_report(struct net *net, struct sk_buff *pkt,
 static int ip6mr_fill_mroute(struct sk_buff *skb, struct mfc6_cache *c, struct rtmsg *rtm);
 static void mroute_clean_tables(struct net *net);
 
-#ifdef CONFIG_IPV6_PIMSM_V2
-static struct inet6_protocol pim6_protocol;
-#endif
-
 static struct timer_list ipmr_expire_timer;
 
 
@@ -204,7 +200,7 @@ static int ip6mr_vif_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static struct seq_operations ip6mr_vif_seq_ops = {
+static const struct seq_operations ip6mr_vif_seq_ops = {
 	.start = ip6mr_vif_seq_start,
 	.next  = ip6mr_vif_seq_next,
 	.stop  = ip6mr_vif_seq_stop,
@@ -217,7 +213,7 @@ static int ip6mr_vif_open(struct inode *inode, struct file *file)
 			    sizeof(struct ipmr_vif_iter));
 }
 
-static struct file_operations ip6mr_vif_fops = {
+static const struct file_operations ip6mr_vif_fops = {
 	.owner	 = THIS_MODULE,
 	.open    = ip6mr_vif_open,
 	.read    = seq_read,
@@ -328,7 +324,7 @@ static int ipmr_mfc_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static struct seq_operations ipmr_mfc_seq_ops = {
+static const struct seq_operations ipmr_mfc_seq_ops = {
 	.start = ipmr_mfc_seq_start,
 	.next  = ipmr_mfc_seq_next,
 	.stop  = ipmr_mfc_seq_stop,
@@ -341,7 +337,7 @@ static int ipmr_mfc_open(struct inode *inode, struct file *file)
 			    sizeof(struct ipmr_mfc_iter));
 }
 
-static struct file_operations ip6mr_mfc_fops = {
+static const struct file_operations ip6mr_mfc_fops = {
 	.owner	 = THIS_MODULE,
 	.open    = ipmr_mfc_open,
 	.read    = seq_read,
@@ -398,10 +394,9 @@ static int pim6_rcv(struct sk_buff *skb)
 	skb->protocol = htons(ETH_P_IPV6);
 	skb->ip_summed = 0;
 	skb->pkt_type = PACKET_HOST;
-	dst_release(skb->dst);
+	skb_dst_drop(skb);
 	reg_dev->stats.rx_bytes += skb->len;
 	reg_dev->stats.rx_packets++;
-	skb->dst = NULL;
 	nf_reset(skb);
 	netif_rx(skb);
 	dev_put(reg_dev);
@@ -411,13 +406,14 @@ static int pim6_rcv(struct sk_buff *skb)
 	return 0;
 }
 
-static struct inet6_protocol pim6_protocol = {
+static const struct inet6_protocol pim6_protocol = {
 	.handler	=	pim6_rcv,
 };
 
 /* Service routines creating virtual interfaces: PIMREG */
 
-static int reg_vif_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t reg_vif_xmit(struct sk_buff *skb,
+				      struct net_device *dev)
 {
 	struct net *net = dev_net(dev);
 
@@ -428,7 +424,7 @@ static int reg_vif_xmit(struct sk_buff *skb, struct net_device *dev)
 			   MRT6MSG_WHOLEPKT);
 	read_unlock(&mrt_lock);
 	kfree_skb(skb);
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 static const struct net_device_ops reg_vif_netdev_ops = {
@@ -442,6 +438,7 @@ static void reg_vif_setup(struct net_device *dev)
 	dev->flags		= IFF_NOARP;
 	dev->netdev_ops		= &reg_vif_netdev_ops;
 	dev->destructor		= free_netdev;
+	dev->features		|= NETIF_F_NETNS_LOCAL;
 }
 
 static struct net_device *ip6mr_reg_vif(struct net *net)
@@ -849,7 +846,7 @@ static int ip6mr_cache_report(struct net *net, struct sk_buff *pkt, mifi_t mifi,
 	ipv6_addr_copy(&msg->im6_src, &ipv6_hdr(pkt)->saddr);
 	ipv6_addr_copy(&msg->im6_dst, &ipv6_hdr(pkt)->daddr);
 
-	skb->dst = dst_clone(pkt->dst);
+	skb_dst_set(skb, dst_clone(skb_dst(pkt)));
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 	}
 
@@ -1078,7 +1075,18 @@ int __init ip6_mr_init(void)
 	err = register_netdevice_notifier(&ip6_mr_notifier);
 	if (err)
 		goto reg_notif_fail;
+#ifdef CONFIG_IPV6_PIMSM_V2
+	if (inet6_add_protocol(&pim6_protocol, IPPROTO_PIM) < 0) {
+		printk(KERN_ERR "ip6_mr_init: can't add PIM protocol\n");
+		err = -EAGAIN;
+		goto add_proto_fail;
+	}
+#endif
 	return 0;
+#ifdef CONFIG_IPV6_PIMSM_V2
+add_proto_fail:
+	unregister_netdevice_notifier(&ip6_mr_notifier);
+#endif
 reg_notif_fail:
 	del_timer(&ipmr_expire_timer);
 	unregister_pernet_subsys(&ip6mr_net_ops);
@@ -1273,7 +1281,7 @@ int ip6mr_sk_done(struct sock *sk)
  *	MOSPF/PIM router set up we can clean this up.
  */
 
-int ip6_mroute_setsockopt(struct sock *sk, int optname, char __user *optval, int optlen)
+int ip6_mroute_setsockopt(struct sock *sk, int optname, char __user *optval, unsigned int optlen)
 {
 	int ret;
 	struct mif6ctl vif;
@@ -1364,14 +1372,6 @@ int ip6_mroute_setsockopt(struct sock *sk, int optname, char __user *optval, int
 		if (v != net->ipv6.mroute_do_pim) {
 			net->ipv6.mroute_do_pim = v;
 			net->ipv6.mroute_do_assert = v;
-			if (net->ipv6.mroute_do_pim)
-				ret = inet6_add_protocol(&pim6_protocol,
-							 IPPROTO_PIM);
-			else
-				ret = inet6_del_protocol(&pim6_protocol,
-							 IPPROTO_PIM);
-			if (ret < 0)
-				ret = -EAGAIN;
 		}
 		rtnl_unlock();
 		return ret;
@@ -1487,7 +1487,7 @@ int ip6mr_ioctl(struct sock *sk, int cmd, void __user *arg)
 
 static inline int ip6mr_forward2_finish(struct sk_buff *skb)
 {
-	IP6_INC_STATS_BH(dev_net(skb->dst->dev), ip6_dst_idev(skb->dst),
+	IP6_INC_STATS_BH(dev_net(skb_dst(skb)->dev), ip6_dst_idev(skb_dst(skb)),
 			 IPSTATS_MIB_OUTFORWDATAGRAMS);
 	return dst_output(skb);
 }
@@ -1532,8 +1532,8 @@ static int ip6mr_forward2(struct sk_buff *skb, struct mfc6_cache *c, int vifi)
 	if (!dst)
 		goto out_free;
 
-	dst_release(skb->dst);
-	skb->dst = dst;
+	skb_dst_drop(skb);
+	skb_dst_set(skb, dst);
 
 	/*
 	 * RFC1584 teaches, that DVMRP/PIM router must deliver packets locally
@@ -1722,7 +1722,7 @@ int ip6mr_get_route(struct net *net,
 {
 	int err;
 	struct mfc6_cache *cache;
-	struct rt6_info *rt = (struct rt6_info *)skb->dst;
+	struct rt6_info *rt = (struct rt6_info *)skb_dst(skb);
 
 	read_lock(&mrt_lock);
 	cache = ip6mr_cache_find(net, &rt->rt6i_src.addr, &rt->rt6i_dst.addr);

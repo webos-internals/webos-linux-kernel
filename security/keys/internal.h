@@ -53,6 +53,7 @@ struct key_user {
 	atomic_t		nkeys;		/* number of keys */
 	atomic_t		nikeys;		/* number of instantiated keys */
 	uid_t			uid;
+	struct user_namespace	*user_ns;
 	int			qnkeys;		/* number of keys allocated to this user */
 	int			qnbytes;	/* number of bytes allocated to this user */
 };
@@ -61,7 +62,8 @@ extern struct rb_root	key_user_tree;
 extern spinlock_t	key_user_lock;
 extern struct key_user	root_key_user;
 
-extern struct key_user *key_user_lookup(uid_t uid);
+extern struct key_user *key_user_lookup(uid_t uid,
+					struct user_namespace *user_ns);
 extern void key_user_put(struct key_user *user);
 
 /*
@@ -122,10 +124,17 @@ extern struct key *request_key_and_link(struct key_type *type,
 					struct key *dest_keyring,
 					unsigned long flags);
 
-extern key_ref_t lookup_user_key(key_serial_t id, int create, int partial,
+extern key_ref_t lookup_user_key(key_serial_t id, unsigned long flags,
 				 key_perm_t perm);
+#define KEY_LOOKUP_CREATE	0x01
+#define KEY_LOOKUP_PARTIAL	0x02
+#define KEY_LOOKUP_FOR_UNLINK	0x04
 
 extern long join_session_keyring(const char *name);
+
+extern unsigned key_gc_delay;
+extern void keyring_gc(struct key *keyring, time_t limit);
+extern void key_schedule_gc(time_t expiry_at);
 
 /*
  * check to see whether permission is granted to use a key in the desired way
@@ -192,6 +201,7 @@ extern long keyctl_set_timeout(key_serial_t, unsigned);
 extern long keyctl_assume_authority(key_serial_t);
 extern long keyctl_get_security(key_serial_t keyid, char __user *buffer,
 				size_t buflen);
+extern long keyctl_session_to_parent(void);
 
 /*
  * debugging key validation

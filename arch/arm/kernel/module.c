@@ -22,6 +22,7 @@
 
 #include <asm/pgtable.h>
 #include <asm/sections.h>
+#include <asm/unwind.h>
 
 #ifdef CONFIG_XIP_KERNEL
 /*
@@ -66,6 +67,24 @@ int module_frob_arch_sections(Elf_Ehdr *hdr,
 			      char *secstrings,
 			      struct module *mod)
 {
+#ifdef CONFIG_ARM_UNWIND
+	Elf_Shdr *s, *sechdrs_end = sechdrs + hdr->e_shnum;
+
+	for (s = sechdrs; s < sechdrs_end; s++) {
+		if (strcmp(".ARM.exidx.init.text", secstrings + s->sh_name) == 0)
+			mod->arch.unw_sec_init = s;
+		else if (strcmp(".ARM.exidx.devinit.text", secstrings + s->sh_name) == 0)
+			mod->arch.unw_sec_devinit = s;
+		else if (strcmp(".ARM.exidx", secstrings + s->sh_name) == 0)
+			mod->arch.unw_sec_core = s;
+		else if (strcmp(".init.text", secstrings + s->sh_name) == 0)
+			mod->arch.sec_init_text = s;
+		else if (strcmp(".devinit.text", secstrings + s->sh_name) == 0)
+			mod->arch.sec_devinit_text = s;
+		else if (strcmp(".text", secstrings + s->sh_name) == 0)
+			mod->arch.sec_core_text = s;
+	}
+#endif
 	return 0;
 }
 
@@ -83,6 +102,7 @@ apply_relocate(Elf32_Shdr *sechdrs, const char *strtab, unsigned int symindex,
 		unsigned long loc;
 		Elf32_Sym *sym;
 		s32 offset;
+		u32 upper, lower, sign, j1, j2;
 
 		offset = ELF32_R_SYM(rel->r_info);
 		if (offset < 0 || offset > (symsec->sh_size / sizeof(Elf32_Sym))) {
@@ -104,6 +124,10 @@ apply_relocate(Elf32_Shdr *sechdrs, const char *strtab, unsigned int symindex,
 		loc = dstsec->sh_addr + rel->r_offset;
 
 		switch (ELF32_R_TYPE(rel->r_info)) {
+		case R_ARM_NONE:
+			/* ignore */
+			break;
+
 		case R_ARM_ABS32:
 			*(u32 *)loc += sym->st_value;
 			break;
@@ -132,6 +156,87 @@ apply_relocate(Elf32_Shdr *sechdrs, const char *strtab, unsigned int symindex,
 			*(u32 *)loc |= offset & 0x00ffffff;
 			break;
 
+	       case R_ARM_V4BX:
+		       /* Preserve Rm and the condition code. Alter
+			* other bits to re-code instruction as
+			* MOV PC,Rm.
+			*/
+		       *(u32 *)loc &= 0xf000000f;
+		       *(u32 *)loc |= 0x01a0f000;
+		       break;
+
+		case R_ARM_PREL31:
+			offset = *(u32 *)loc + sym->st_value - loc;
+			*(u32 *)loc = offset & 0x7fffffff;
+			break;
+
+		case R_ARM_MOVW_ABS_NC:
+		case R_ARM_MOVT_ABS:
+			offset = *(u32 *)loc;
+			offset = ((offset & 0xf0000) >> 4) | (offset & 0xfff);
+			offset = (offset ^ 0x8000) - 0x8000;
+
+			offset += sym->st_value;
+			if (ELF32_R_TYPE(rel->r_info) == R_ARM_MOVT_ABS)
+				offset >>= 16;
+
+			*(u32 *)loc &= 0xfff0f000;
+			*(u32 *)loc |= ((offset & 0xf000) << 4) |
+					(offset & 0x0fff);
+			break;
+
+		case R_ARM_THM_CALL:
+		case R_ARM_THM_JUMP24:
+			upper = *(u16 *)loc;
+			lower = *(u16 *)(loc + 2);
+
+			/*
+			 * 25 bit signed address range (Thumb-2 BL and B.W
+			 * instructions):
+			 *   S:I1:I2:imm10:imm11:0
+			 * where:
+			 *   S     = upper[10]   = offset[24]
+			 *   I1    = ~(J1 ^ S)   = offset[23]
+			 *   I2    = ~(J2 ^ S)   = offset[22]
+			 *   imm10 = upper[9:0]  = offset[21:12]
+			 *   imm11 = lower[10:0] = offset[11:1]
+			 *   J1    = lower[13]
+			 *   J2    = lower[11]
+			 */
+			sign = (upper >> 10) & 1;
+			j1 = (lower >> 13) & 1;
+			j2 = (lower >> 11) & 1;
+			offset = (sign << 24) | ((~(j1 ^ sign) & 1) << 23) |
+				((~(j2 ^ sign) & 1) << 22) |
+				((upper & 0x03ff) << 12) |
+				((lower & 0x07ff) << 1);
+			if (offset & 0x01000000)
+				offset -= 0x02000000;
+			offset += sym->st_value - loc;
+
+			/* only Thumb addresses allowed (no interworking) */
+			if (!(offset & 1) ||
+			    offset <= (s32)0xff000000 ||
+			    offset >= (s32)0x01000000) {
+				printk(KERN_ERR
+				       "%s: relocation out of range, section "
+				       "%d reloc %d sym '%s'\n", module->name,
+				       relindex, i, strtab + sym->st_name);
+				return -ENOEXEC;
+			}
+
+			sign = (offset >> 24) & 1;
+			j1 = sign ^ (~(offset >> 23) & 1);
+			j2 = sign ^ (~(offset >> 22) & 1);
+			*(u16 *)loc = (u16)((upper & 0xf800) | (sign << 10) |
+					    ((offset >> 12) & 0x03ff));
+			*(u16 *)(loc + 2) = (u16)((lower & 0xd000) |
+						  (j1 << 13) | (j2 << 11) |
+						  ((offset >> 1) & 0x07ff));
+			upper = *(u16 *)loc;
+			lower = *(u16 *)(loc + 2);
+			break;
+
 		default:
 			printk(KERN_ERR "%s: unknown relocation: %u\n",
 			       module->name, ELF32_R_TYPE(rel->r_info));
@@ -150,14 +255,50 @@ apply_relocate_add(Elf32_Shdr *sechdrs, const char *strtab,
 	return -ENOEXEC;
 }
 
+#ifdef CONFIG_ARM_UNWIND
+static void register_unwind_tables(struct module *mod)
+{
+	if (mod->arch.unw_sec_init && mod->arch.sec_init_text)
+		mod->arch.unwind_init =
+			unwind_table_add(mod->arch.unw_sec_init->sh_addr,
+					 mod->arch.unw_sec_init->sh_size,
+					 mod->arch.sec_init_text->sh_addr,
+					 mod->arch.sec_init_text->sh_size);
+	if (mod->arch.unw_sec_devinit && mod->arch.sec_devinit_text)
+		mod->arch.unwind_devinit =
+			unwind_table_add(mod->arch.unw_sec_devinit->sh_addr,
+					 mod->arch.unw_sec_devinit->sh_size,
+					 mod->arch.sec_devinit_text->sh_addr,
+					 mod->arch.sec_devinit_text->sh_size);
+	if (mod->arch.unw_sec_core && mod->arch.sec_core_text)
+		mod->arch.unwind_core =
+			unwind_table_add(mod->arch.unw_sec_core->sh_addr,
+					 mod->arch.unw_sec_core->sh_size,
+					 mod->arch.sec_core_text->sh_addr,
+					 mod->arch.sec_core_text->sh_size);
+}
+
+static void unregister_unwind_tables(struct module *mod)
+{
+	unwind_table_del(mod->arch.unwind_init);
+	unwind_table_del(mod->arch.unwind_devinit);
+	unwind_table_del(mod->arch.unwind_core);
+}
+#else
+static inline void register_unwind_tables(struct module *mod) { }
+static inline void unregister_unwind_tables(struct module *mod) { }
+#endif
+
 int
 module_finalize(const Elf32_Ehdr *hdr, const Elf_Shdr *sechdrs,
 		struct module *module)
 {
+	register_unwind_tables(module);
 	return 0;
 }
 
 void
 module_arch_cleanup(struct module *mod)
 {
+	unregister_unwind_tables(mod);
 }

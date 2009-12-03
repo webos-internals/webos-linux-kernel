@@ -157,6 +157,7 @@
 
 #define S3C_EINT(x)		((x) + S3C_IRQ_EINT_BASE)
 #define IRQ_EINT(x)		S3C_EINT(x)
+#define IRQ_EINT_BIT(x)		((x) - S3C_EINT(0))
 
 /* Next the external interrupt groups. These are similar to the IRQ_EINT(x)
  * that they are sourced from the GPIO pins but with a different scheme for
@@ -193,9 +194,17 @@
 
 #define IRQ_EINT_GROUP(group, no)	(IRQ_EINT_GROUP##group##_BASE + (no))
 
+/* Define a group of interrupts for board-specific use (eg, for MFD
+ * interrupt controllers). */
+#define IRQ_BOARD_START (IRQ_EINT_GROUP9_BASE + IRQ_EINT_GROUP9_NR + 1)
+
+#define IRQ_BOARD_NR 16
+
+#define IRQ_BOARD_END (IRQ_BOARD_START + IRQ_BOARD_NR)
+
 /* Set the default NR_IRQS */
 
-#define NR_IRQS	(IRQ_EINT_GROUP9_BASE + IRQ_EINT_GROUP9_NR + 1)
+#define NR_IRQS	(IRQ_BOARD_END + 1)
 
 #endif /* __ASM_PLAT_S3C64XX_IRQS_H */
 

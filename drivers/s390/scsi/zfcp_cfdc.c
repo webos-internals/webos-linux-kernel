@@ -4,7 +4,7 @@
  * Userspace interface for accessing the
  * Access Control Lists / Control File Data Channel
  *
- * Copyright IBM Corporation 2008
+ * Copyright IBM Corporation 2008, 2009
  */
 
 #define KMSG_COMPONENT "zfcp"
@@ -86,8 +86,23 @@ static int zfcp_cfdc_copy_to_user(void __user  *user_buffer,
 static struct zfcp_adapter *zfcp_cfdc_get_adapter(u32 devno)
 {
 	char busid[9];
+	struct ccw_device *ccwdev;
+	struct zfcp_adapter *adapter = NULL;
+
 	snprintf(busid, sizeof(busid), "0.0.%04x", devno);
-	return zfcp_get_adapter_by_busid(busid);
+	ccwdev = get_ccwdev_by_busid(&zfcp_ccw_driver, busid);
+	if (!ccwdev)
+		goto out;
+
+	adapter = dev_get_drvdata(&ccwdev->dev);
+	if (!adapter)
+		goto out_put;
+
+	zfcp_adapter_get(adapter);
+out_put:
+	put_device(&ccwdev->dev);
+out:
+	return adapter;
 }
 
 static int zfcp_cfdc_set_fsf(struct zfcp_fsf_cfdc *fsf_cfdc, int command)
@@ -197,6 +212,7 @@ static long zfcp_cfdc_dev_ioctl(struct file *file, unsigned int command,
 		retval = -ENXIO;
 		goto free_buffer;
 	}
+	zfcp_adapter_get(adapter);
 
 	retval = zfcp_cfdc_sg_setup(data->command, fsf_cfdc->sg,
 				    data_user->control_file);

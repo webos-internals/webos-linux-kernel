@@ -6,8 +6,8 @@
  * It should also be usable on various Prism II based cards such as the
  * Linksys, D-Link and Farallon Skyline. It should also work on Symbol
  * cards such as the 3Com AirConnect and Ericsson WLAN.
- * 
- * Copyright notice & release notes in file orinoco.c
+ *
+ * Copyright notice & release notes in file main.c
  */
 
 #define DRIVER_NAME "orinoco_cs"
@@ -30,7 +30,8 @@
 /********************************************************************/
 
 MODULE_AUTHOR("David Gibson <hermes@gibson.dropbear.id.au>");
-MODULE_DESCRIPTION("Driver for PCMCIA Lucent Orinoco, Prism II based and similar wireless cards");
+MODULE_DESCRIPTION("Driver for PCMCIA Lucent Orinoco,"
+		   " Prism II based and similar wireless cards");
 MODULE_LICENSE("Dual MPL/GPL");
 
 /* Module parameters */
@@ -53,8 +54,8 @@ struct orinoco_pccard {
 
 	/* Used to handle hard reset */
 	/* yuck, we need this hack to work around the insanity of the
-         * PCMCIA layer */
-	unsigned long hard_reset_in_progress; 
+	 * PCMCIA layer */
+	unsigned long hard_reset_in_progress;
 };
 
 
@@ -98,33 +99,31 @@ orinoco_cs_hard_reset(struct orinoco_private *priv)
  * This creates an "instance" of the driver, allocating local data
  * structures for one device.  The device is registered with Card
  * Services.
- * 
+ *
  * The dev_link structure is initialized, but we don't actually
  * configure the card at this point -- we wait until we receive a card
  * insertion event.  */
 static int
 orinoco_cs_probe(struct pcmcia_device *link)
 {
-	struct net_device *dev;
 	struct orinoco_private *priv;
 	struct orinoco_pccard *card;
 
-	dev = alloc_orinocodev(sizeof(*card), &handle_to_dev(link),
-			       orinoco_cs_hard_reset, NULL);
-	if (! dev)
+	priv = alloc_orinocodev(sizeof(*card), &handle_to_dev(link),
+				orinoco_cs_hard_reset, NULL);
+	if (!priv)
 		return -ENOMEM;
-	priv = netdev_priv(dev);
 	card = priv->card;
 
 	/* Link both structures together */
 	card->p_dev = link;
-	link->priv = dev;
+	link->priv = priv;
 
 	/* Interrupt setup */
 	link->irq.Attributes = IRQ_TYPE_DYNAMIC_SHARING | IRQ_HANDLE_PRESENT;
 	link->irq.IRQInfo1 = IRQ_LEVEL_ID;
 	link->irq.Handler = orinoco_interrupt;
-	link->irq.Instance = dev; 
+	link->irq.Instance = priv;
 
 	/* General socket configuration defaults can go here.  In this
 	 * client, we assume very little, and rely on the CIS for
@@ -145,14 +144,14 @@ orinoco_cs_probe(struct pcmcia_device *link)
  */
 static void orinoco_cs_detach(struct pcmcia_device *link)
 {
-	struct net_device *dev = link->priv;
+	struct orinoco_private *priv = link->priv;
 
 	if (link->dev_node)
-		unregister_netdev(dev);
+		orinoco_if_del(priv);
 
 	orinoco_cs_release(link);
 
-	free_orinocodev(dev);
+	free_orinocodev(priv);
 }				/* orinoco_cs_detach */
 
 /*
@@ -162,8 +161,10 @@ static void orinoco_cs_detach(struct pcmcia_device *link)
  */
 
 #define CS_CHECK(fn, ret) do { \
-		last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; \
-	} while (0)
+	last_fn = (fn); \
+	if ((last_ret = (ret)) != 0) \
+		goto cs_failed; \
+} while (0)
 
 static int orinoco_cs_config_check(struct pcmcia_device *p_dev,
 				   cistpl_cftable_entry_t *cfg,
@@ -236,8 +237,7 @@ next_entry:
 static int
 orinoco_cs_config(struct pcmcia_device *link)
 {
-	struct net_device *dev = link->priv;
-	struct orinoco_private *priv = netdev_priv(dev);
+	struct orinoco_private *priv = link->priv;
 	struct orinoco_pccard *card = priv->card;
 	hermes_t *hw = &priv->hw;
 	int last_fn, last_ret;
@@ -292,29 +292,27 @@ orinoco_cs_config(struct pcmcia_device *link)
 		 pcmcia_request_configuration(link, &link->conf));
 
 	/* Ok, we have the configuration, prepare to register the netdev */
-	dev->base_addr = link->io.BasePort1;
-	dev->irq = link->irq.AssignedIRQ;
 	card->node.major = card->node.minor = 0;
 
-	SET_NETDEV_DEV(dev, &handle_to_dev(link));
-	/* Tell the stack we exist */
-	if (register_netdev(dev) != 0) {
-		printk(KERN_ERR PFX "register_netdev() failed\n");
+	/* Initialise the main driver */
+	if (orinoco_init(priv) != 0) {
+		printk(KERN_ERR PFX "orinoco_init() failed\n");
+		goto failed;
+	}
+
+	/* Register an interface with the stack */
+	if (orinoco_if_add(priv, link->io.BasePort1,
+			   link->irq.AssignedIRQ) != 0) {
+		printk(KERN_ERR PFX "orinoco_if_add() failed\n");
 		goto failed;
 	}
 
 	/* At this point, the dev_node_t structure(s) needs to be
 	 * initialized and arranged in a linked list at link->dev_node. */
-	strcpy(card->node.dev_name, dev->name);
+	strcpy(card->node.dev_name, priv->ndev->name);
 	link->dev_node = &card->node; /* link->dev_node being non-NULL is also
-                                    used to indicate that the
-                                    net_device has been registered */
-
-	/* Finally, report what we've done */
-	printk(KERN_DEBUG "%s: " DRIVER_NAME " at %s, irq %d, io "
-	       "0x%04x-0x%04x\n", dev->name, dev_name(dev->dev.parent),
-	       link->irq.AssignedIRQ, link->io.BasePort1,
-	       link->io.BasePort1 + link->io.NumPorts1 - 1);
+				       * used to indicate that the
+				       * net_device has been registered */
 	return 0;
 
  cs_failed:
@@ -333,8 +331,7 @@ orinoco_cs_config(struct pcmcia_device *link)
 static void
 orinoco_cs_release(struct pcmcia_device *link)
 {
-	struct net_device *dev = link->priv;
-	struct orinoco_private *priv = netdev_priv(dev);
+	struct orinoco_private *priv = link->priv;
 	unsigned long flags;
 
 	/* We're committed to taking the device away now, so mark the
@@ -350,62 +347,26 @@ orinoco_cs_release(struct pcmcia_device *link)
 
 static int orinoco_cs_suspend(struct pcmcia_device *link)
 {
-	struct net_device *dev = link->priv;
-	struct orinoco_private *priv = netdev_priv(dev);
+	struct orinoco_private *priv = link->priv;
 	struct orinoco_pccard *card = priv->card;
-	int err = 0;
-	unsigned long flags;
 
 	/* This is probably racy, but I can't think of
 	   a better way, short of rewriting the PCMCIA
 	   layer to not suck :-( */
-	if (! test_bit(0, &card->hard_reset_in_progress)) {
-		spin_lock_irqsave(&priv->lock, flags);
-
-		err = __orinoco_down(dev);
-		if (err)
-			printk(KERN_WARNING "%s: Error %d downing interface\n",
-			       dev->name, err);
-
-		netif_device_detach(dev);
-		priv->hw_unavailable++;
-
-		spin_unlock_irqrestore(&priv->lock, flags);
-	}
+	if (!test_bit(0, &card->hard_reset_in_progress))
+		orinoco_down(priv);
 
 	return 0;
 }
 
 static int orinoco_cs_resume(struct pcmcia_device *link)
 {
-	struct net_device *dev = link->priv;
-	struct orinoco_private *priv = netdev_priv(dev);
+	struct orinoco_private *priv = link->priv;
 	struct orinoco_pccard *card = priv->card;
 	int err = 0;
-	unsigned long flags;
 
-	if (! test_bit(0, &card->hard_reset_in_progress)) {
-		err = orinoco_reinit_firmware(dev);
-		if (err) {
-			printk(KERN_ERR "%s: Error %d re-initializing firmware\n",
-			       dev->name, err);
-			return -EIO;
-		}
-
-		spin_lock_irqsave(&priv->lock, flags);
-
-		netif_device_attach(dev);
-		priv->hw_unavailable--;
-
-		if (priv->open && ! priv->hw_unavailable) {
-			err = __orinoco_up(dev);
-			if (err)
-				printk(KERN_ERR "%s: Error %d restarting card\n",
-				       dev->name, err);
-		}
-
-		spin_unlock_irqrestore(&priv->lock, flags);
-	}
+	if (!test_bit(0, &card->hard_reset_in_progress))
+		err = orinoco_up(priv);
 
 	return err;
 }

@@ -19,7 +19,7 @@
   file called LICENSE.
 
   Contact Information:
-  James P. Ketrenos <ipw2100-admin@linux.intel.com>
+  Intel Linux Wireless <ilw@linux.intel.com>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
 ******************************************************************************/
@@ -39,14 +39,14 @@
 #include <linux/wireless.h>
 #include <net/iw_handler.h>	// new driver API
 
-#include <net/ieee80211.h>
-
 #ifdef CONFIG_IPW2100_MONITOR
 #include <net/ieee80211_radiotap.h>
 #endif
 
 #include <linux/workqueue.h>
 #include <linux/mutex.h>
+
+#include "libipw.h"
 
 struct ipw2100_priv;
 struct ipw2100_tx_packet;
@@ -343,7 +343,7 @@ struct ipw2100_tx_packet {
 		struct {	/* DATA */
 			struct ipw2100_data_header *data;
 			dma_addr_t data_phys;
-			struct ieee80211_txb *txb;
+			struct libipw_txb *txb;
 		} d_struct;
 	} info;
 	int jiffy_start;
@@ -492,7 +492,7 @@ struct ipw2100_priv {
 	int stop_hang_check;	/* Set 1 when shutting down to kill hang_check */
 	int stop_rf_kill;	/* Set 1 when shutting down to kill rf_kill */
 
-	struct ieee80211_device *ieee;
+	struct libipw_device *ieee;
 	unsigned long status;
 	unsigned long config;
 	unsigned long capability;
@@ -590,6 +590,10 @@ struct ipw2100_priv {
 	struct delayed_work scan_event_later;
 
 	int user_requested_scan;
+
+	/* Track time in suspend */
+	unsigned long suspend_at;
+	unsigned long suspend_time;
 
 	u32 interrupts;
 	int tx_interrupts;
@@ -784,7 +788,7 @@ struct ipw2100_priv {
 #define IPW_CARD_DISABLE_PHY_OFF_COMPLETE_WAIT	    100	// 100 milli
 #define IPW_PREPARE_POWER_DOWN_COMPLETE_WAIT	    100	// 100 milli
 
-#define IPW_HEADER_802_11_SIZE		 sizeof(struct ieee80211_hdr_3addr)
+#define IPW_HEADER_802_11_SIZE		 sizeof(struct libipw_hdr_3addr)
 #define IPW_MAX_80211_PAYLOAD_SIZE              2304U
 #define IPW_MAX_802_11_PAYLOAD_LENGTH		2312
 #define IPW_MAX_ACCEPTABLE_TX_FRAME_LENGTH	1536
@@ -799,13 +803,13 @@ struct ipw2100_priv {
 		IPW_802_11_FCS_LENGTH)
 
 #define IPW_802_11_PAYLOAD_OFFSET \
-        (sizeof(struct ieee80211_hdr_3addr) + \
-         sizeof(struct ieee80211_snap_hdr))
+        (sizeof(struct libipw_hdr_3addr) + \
+         sizeof(struct libipw_snap_hdr))
 
 struct ipw2100_rx {
 	union {
 		unsigned char payload[IPW_RX_NIC_BUFFER_LENGTH];
-		struct ieee80211_hdr_4addr header;
+		struct libipw_hdr_4addr header;
 		u32 status;
 		struct ipw2100_notification notification;
 		struct ipw2100_cmd_header command;

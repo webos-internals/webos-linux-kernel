@@ -46,12 +46,12 @@ extern int			datagram_send_ctl(struct net *net,
 						  struct ipv6_txoptions *opt,
 						  int *hlimit, int *tclass);
 
-#define		LOOPBACK4_IPV6		__constant_htonl(0x7f000006)
+#define		LOOPBACK4_IPV6		cpu_to_be32(0x7f000006)
 
 /*
  *	address family specific functions
  */
-extern struct inet_connection_sock_af_ops ipv4_specific;
+extern const struct inet_connection_sock_af_ops ipv4_specific;
 
 extern void inet6_destroy_sock(struct sock *sk);
 

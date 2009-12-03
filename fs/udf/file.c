@@ -193,9 +193,11 @@ int udf_ioctl(struct inode *inode, struct file *filp, unsigned int cmd,
 static int udf_release_file(struct inode *inode, struct file *filp)
 {
 	if (filp->f_mode & FMODE_WRITE) {
+		mutex_lock(&inode->i_mutex);
 		lock_kernel();
 		udf_discard_prealloc(inode);
 		unlock_kernel();
+		mutex_unlock(&inode->i_mutex);
 	}
 	return 0;
 }
@@ -209,7 +211,7 @@ const struct file_operations udf_file_operations = {
 	.write			= do_sync_write,
 	.aio_write		= udf_file_aio_write,
 	.release		= udf_release_file,
-	.fsync			= udf_fsync_file,
+	.fsync			= simple_fsync,
 	.splice_read		= generic_file_splice_read,
 	.llseek			= generic_file_llseek,
 };

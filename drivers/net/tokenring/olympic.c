@@ -132,7 +132,7 @@ static char *open_min_error[] = {"No error", "Function Failure", "Signal Lost", 
 				   "Reserved", "Reserved", "No Monitor Detected for RPL", 
 				   "Monitor Contention failer for RPL", "FDX Protocol Error"};
 
-/* Module paramters */
+/* Module parameters */
 
 MODULE_AUTHOR("Mike Phillips <mikep@linuxtr.net>") ; 
 MODULE_DESCRIPTION("Olympic PCI/Cardbus Chipset Driver") ; 
@@ -182,18 +182,27 @@ MODULE_DEVICE_TABLE(pci,olympic_pci_tbl) ;
 static int olympic_probe(struct pci_dev *pdev, const struct pci_device_id *ent); 
 static int olympic_init(struct net_device *dev);
 static int olympic_open(struct net_device *dev);
-static int olympic_xmit(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t olympic_xmit(struct sk_buff *skb,
+				      struct net_device *dev);
 static int olympic_close(struct net_device *dev);
 static void olympic_set_rx_mode(struct net_device *dev);
 static void olympic_freemem(struct net_device *dev) ;  
 static irqreturn_t olympic_interrupt(int irq, void *dev_id);
-static struct net_device_stats * olympic_get_stats(struct net_device *dev);
 static int olympic_set_mac_address(struct net_device *dev, void *addr) ; 
 static void olympic_arb_cmd(struct net_device *dev);
 static int olympic_change_mtu(struct net_device *dev, int mtu);
 static void olympic_srb_bh(struct net_device *dev) ; 
 static void olympic_asb_bh(struct net_device *dev) ; 
 static int olympic_proc_info(char *buffer, char **start, off_t offset, int length, int *eof, void *data) ; 
+
+static const struct net_device_ops olympic_netdev_ops = {
+	.ndo_open		= olympic_open,
+	.ndo_stop		= olympic_close,
+	.ndo_start_xmit		= olympic_xmit,
+	.ndo_change_mtu		= olympic_change_mtu,
+	.ndo_set_multicast_list	= olympic_set_rx_mode,
+	.ndo_set_mac_address	= olympic_set_mac_address,
+};
 
 static int __devinit olympic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
@@ -253,14 +262,7 @@ static int __devinit olympic_probe(struct pci_dev *pdev, const struct pci_device
 		goto op_free_iomap;
 	}				
 
-	dev->open=&olympic_open;
-	dev->hard_start_xmit=&olympic_xmit;
-	dev->change_mtu=&olympic_change_mtu;
-	dev->stop=&olympic_close;
-	dev->do_ioctl=NULL;
-	dev->set_multicast_list=&olympic_set_rx_mode;
-	dev->get_stats=&olympic_get_stats ;
-	dev->set_mac_address=&olympic_set_mac_address ;  
+	dev->netdev_ops = &olympic_netdev_ops;
 	SET_NETDEV_DEV(dev, &pdev->dev);
 
 	pci_set_drvdata(pdev,dev) ; 
@@ -698,7 +700,6 @@ static int olympic_open(struct net_device *dev)
 	if (olympic_priv->olympic_network_monitor) { 
 		u8 __iomem *oat;
 		u8 __iomem *opt;
-		int i;
 		u8 addr[6];
 		oat = (olympic_priv->olympic_lap + olympic_priv->olympic_addr_table_addr);
 		opt = (olympic_priv->olympic_lap + olympic_priv->olympic_parms_addr);
@@ -785,7 +786,7 @@ static void olympic_rx(struct net_device *dev)
 				} 
 				olympic_priv->rx_ring_last_received += i ; 
 				olympic_priv->rx_ring_last_received &= (OLYMPIC_RX_RING_SIZE -1) ; 
-				olympic_priv->olympic_stats.rx_errors++;	 
+				dev->stats.rx_errors++;
 			} else {	
 			
 				if (buffer_cnt == 1) {
@@ -796,7 +797,7 @@ static void olympic_rx(struct net_device *dev)
 
 				if (skb == NULL) {
 					printk(KERN_WARNING "%s: Not enough memory to copy packet to upper layers. \n",dev->name) ;
-					olympic_priv->olympic_stats.rx_dropped++ ; 
+					dev->stats.rx_dropped++;
 					/* Update counters even though we don't transfer the frame */
 					olympic_priv->rx_ring_last_received += i ; 
 					olympic_priv->rx_ring_last_received &= (OLYMPIC_RX_RING_SIZE -1) ;  
@@ -862,8 +863,8 @@ static void olympic_rx(struct net_device *dev)
 						skb->protocol = tr_type_trans(skb,dev);
 						netif_rx(skb) ; 
 					} 
-					olympic_priv->olympic_stats.rx_packets++ ; 
-					olympic_priv->olympic_stats.rx_bytes += length ; 
+					dev->stats.rx_packets++ ;
+					dev->stats.rx_bytes += length ;
 				} /* if skb == null */
 			} /* If status & 0x3b */
 
@@ -971,8 +972,8 @@ static irqreturn_t olympic_interrupt(int irq, void *dev_id)
 				olympic_priv->tx_ring_last_status++;
 				olympic_priv->tx_ring_last_status &= (OLYMPIC_TX_RING_SIZE-1);
 				olympic_priv->free_tx_ring_entries++;
-				olympic_priv->olympic_stats.tx_bytes += olympic_priv->tx_ring_skb[olympic_priv->tx_ring_last_status]->len;
-				olympic_priv->olympic_stats.tx_packets++ ; 
+				dev->stats.tx_bytes += olympic_priv->tx_ring_skb[olympic_priv->tx_ring_last_status]->len;
+				dev->stats.tx_packets++ ;
 				pci_unmap_single(olympic_priv->pdev, 
 					le32_to_cpu(olympic_priv->olympic_tx_ring[olympic_priv->tx_ring_last_status].buffer), 
 					olympic_priv->tx_ring_skb[olympic_priv->tx_ring_last_status]->len,PCI_DMA_TODEVICE);
@@ -1030,7 +1031,8 @@ static irqreturn_t olympic_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }	
 
-static int olympic_xmit(struct sk_buff *skb, struct net_device *dev) 
+static netdev_tx_t olympic_xmit(struct sk_buff *skb,
+				      struct net_device *dev)
 {
 	struct olympic_private *olympic_priv=netdev_priv(dev);
 	u8 __iomem *olympic_mmio=olympic_priv->olympic_mmio;
@@ -1052,10 +1054,10 @@ static int olympic_xmit(struct sk_buff *skb, struct net_device *dev)
 		writew((((readw(olympic_mmio+TXENQ_1)) & 0x8000) ^ 0x8000) | 1,olympic_mmio+TXENQ_1);
 		netif_wake_queue(dev);
 		spin_unlock_irqrestore(&olympic_priv->olympic_lock,flags);
-		return 0;
+		return NETDEV_TX_OK;
 	} else {
 		spin_unlock_irqrestore(&olympic_priv->olympic_lock,flags);
-		return 1;
+		return NETDEV_TX_BUSY;
 	} 
 
 }
@@ -1343,13 +1345,6 @@ static void olympic_srb_bh(struct net_device *dev)
 	} /* switch srb[0] */
 
 } 
-
-static struct net_device_stats * olympic_get_stats(struct net_device *dev)
-{
-	struct olympic_private *olympic_priv ;
-	olympic_priv=netdev_priv(dev);
-	return (struct net_device_stats *) &olympic_priv->olympic_stats; 
-}
 
 static int olympic_set_mac_address (struct net_device *dev, void *addr) 
 {

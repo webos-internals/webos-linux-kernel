@@ -17,6 +17,7 @@
 #include <asm/memory.h>
 #include <asm/domain.h>
 #include <asm/system.h>
+#include <asm/unified.h>
 
 #define VERIFY_READ 0
 #define VERIFY_WRITE 1
@@ -365,8 +366,10 @@ do {									\
 
 #define __put_user_asm_dword(x,__pu_addr,err)			\
 	__asm__ __volatile__(					\
-	"1:	strt	" __reg_oper1 ", [%1], #4\n"		\
-	"2:	strt	" __reg_oper0 ", [%1]\n"		\
+ ARM(	"1:	strt	" __reg_oper1 ", [%1], #4\n"	)	\
+ ARM(	"2:	strt	" __reg_oper0 ", [%1]\n"	)	\
+ THUMB(	"1:	strt	" __reg_oper1 ", [%1]\n"	)	\
+ THUMB(	"2:	strt	" __reg_oper0 ", [%1, #4]\n"	)	\
 	"3:\n"							\
 	"	.section .fixup,\"ax\"\n"			\
 	"	.align	2\n"					\
@@ -386,7 +389,9 @@ do {									\
 #ifdef CONFIG_MMU
 extern unsigned long __must_check __copy_from_user(void *to, const void __user *from, unsigned long n);
 extern unsigned long __must_check __copy_to_user(void __user *to, const void *from, unsigned long n);
+extern unsigned long __must_check __copy_to_user_std(void __user *to, const void *from, unsigned long n);
 extern unsigned long __must_check __clear_user(void __user *addr, unsigned long n);
+extern unsigned long __must_check __clear_user_std(void __user *addr, unsigned long n);
 #else
 #define __copy_from_user(to,from,n)	(memcpy(to, (void __force *)from, n), 0)
 #define __copy_to_user(to,from,n)	(memcpy((void __force *)to, from, n), 0)

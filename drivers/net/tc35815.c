@@ -23,9 +23,9 @@
  */
 
 #ifdef TC35815_NAPI
-#define DRV_VERSION	"1.37-NAPI"
+#define DRV_VERSION	"1.38-NAPI"
 #else
-#define DRV_VERSION	"1.37"
+#define DRV_VERSION	"1.38"
 #endif
 static const char *version = "tc35815.c:v" DRV_VERSION "\n";
 #define MODNAME			"tc35815"
@@ -341,8 +341,9 @@ struct BDesc {
 	Tx_EnExColl | Tx_EnLCarr | Tx_EnExDefer | Tx_EnUnder | \
 	Tx_En)	/* maybe  0x7b01 */
 #endif
+/* Do not use Rx_StripCRC -- it causes trouble on BLEx/FDAEx condition */
 #define RX_CTL_CMD	(Rx_EnGood | Rx_EnRxPar | Rx_EnLongErr | Rx_EnOver \
-	| Rx_EnCRCErr | Rx_EnAlign | Rx_StripCRC | Rx_RxEn) /* maybe 0x6f11 */
+	| Rx_EnCRCErr | Rx_EnAlign | Rx_RxEn) /* maybe 0x6f01 */
 #define INT_EN_CMD  (Int_NRAbtEn | \
 	Int_DmParErrEn | Int_DParDEn | Int_DParErrEn | \
 	Int_SSysErrEn  | Int_RMasAbtEn | Int_RTargAbtEn | \
@@ -593,9 +594,10 @@ static int tc_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 	struct net_device *dev = bus->priv;
 	struct tc35815_regs __iomem *tr =
 		(struct tc35815_regs __iomem *)dev->base_addr;
-	unsigned long timeout = jiffies + 10;
+	unsigned long timeout = jiffies + HZ;
 
 	tc_writel(MD_CA_Busy | (mii_id << 5) | (regnum & 0x1f), &tr->MD_CA);
+	udelay(12); /* it takes 32 x 400ns at least */
 	while (tc_readl(&tr->MD_CA) & MD_CA_Busy) {
 		if (time_after(jiffies, timeout))
 			return -EIO;
@@ -609,11 +611,12 @@ static int tc_mdio_write(struct mii_bus *bus, int mii_id, int regnum, u16 val)
 	struct net_device *dev = bus->priv;
 	struct tc35815_regs __iomem *tr =
 		(struct tc35815_regs __iomem *)dev->base_addr;
-	unsigned long timeout = jiffies + 10;
+	unsigned long timeout = jiffies + HZ;
 
 	tc_writel(val, &tr->MD_Data);
 	tc_writel(MD_CA_Busy | MD_CA_Wr | (mii_id << 5) | (regnum & 0x1f),
 		  &tr->MD_CA);
+	udelay(12); /* it takes 32 x 400ns at least */
 	while (tc_readl(&tr->MD_CA) & MD_CA_Busy) {
 		if (time_after(jiffies, timeout))
 			return -EIO;
@@ -688,14 +691,11 @@ static void tc_handle_link_change(struct net_device *dev)
 
 	if (status_change && netif_msg_link(lp)) {
 		phy_print_status(phydev);
-#ifdef DEBUG
-		printk(KERN_DEBUG
-		       "%s: MII BMCR %04x BMSR %04x LPA %04x\n",
-		       dev->name,
-		       phy_read(phydev, MII_BMCR),
-		       phy_read(phydev, MII_BMSR),
-		       phy_read(phydev, MII_LPA));
-#endif
+		pr_debug("%s: MII BMCR %04x BMSR %04x LPA %04x\n",
+			 dev->name,
+			 phy_read(phydev, MII_BMCR),
+			 phy_read(phydev, MII_BMSR),
+			 phy_read(phydev, MII_LPA));
 	}
 }
 
@@ -725,7 +725,7 @@ static int tc_mii_probe(struct net_device *dev)
 	}
 
 	/* attach the mac to the phy */
-	phydev = phy_connect(dev, phydev->dev.bus_id,
+	phydev = phy_connect(dev, dev_name(&phydev->dev),
 			     &tc_handle_link_change, 0,
 			     lp->chiptype == TC35815_TX4939 ?
 			     PHY_INTERFACE_MODE_RMII : PHY_INTERFACE_MODE_MII);
@@ -735,7 +735,7 @@ static int tc_mii_probe(struct net_device *dev)
 	}
 	printk(KERN_INFO "%s: attached PHY driver [%s] "
 		"(mii_bus:phy_addr=%s, id=%x)\n",
-		dev->name, phydev->drv->name, phydev->dev.bus_id,
+		dev->name, phydev->drv->name, dev_name(&phydev->dev),
 		phydev->phy_id);
 
 	/* mask with MAC supported features */
@@ -862,6 +862,22 @@ static int __devinit tc35815_init_dev_addr(struct net_device *dev)
 	return 0;
 }
 
+static const struct net_device_ops tc35815_netdev_ops = {
+	.ndo_open		= tc35815_open,
+	.ndo_stop		= tc35815_close,
+	.ndo_start_xmit		= tc35815_send_packet,
+	.ndo_get_stats		= tc35815_get_stats,
+	.ndo_set_multicast_list	= tc35815_set_multicast_list,
+	.ndo_tx_timeout		= tc35815_tx_timeout,
+	.ndo_do_ioctl		= tc35815_ioctl,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address	= eth_mac_addr,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	= tc35815_poll_controller,
+#endif
+};
+
 static int __devinit tc35815_init_one(struct pci_dev *pdev,
 				      const struct pci_device_id *ent)
 {
@@ -904,20 +920,11 @@ static int __devinit tc35815_init_one(struct pci_dev *pdev,
 	ioaddr = pcim_iomap_table(pdev)[1];
 
 	/* Initialize the device structure. */
-	dev->open = tc35815_open;
-	dev->hard_start_xmit = tc35815_send_packet;
-	dev->stop = tc35815_close;
-	dev->get_stats = tc35815_get_stats;
-	dev->set_multicast_list = tc35815_set_multicast_list;
-	dev->do_ioctl = tc35815_ioctl;
+	dev->netdev_ops = &tc35815_netdev_ops;
 	dev->ethtool_ops = &tc35815_ethtool_ops;
-	dev->tx_timeout = tc35815_tx_timeout;
 	dev->watchdog_timeo = TC35815_TX_TIMEOUT;
 #ifdef TC35815_NAPI
 	netif_napi_add(dev, &lp->napi, tc35815_poll, NAPI_WEIGHT);
-#endif
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	dev->poll_controller = tc35815_poll_controller;
 #endif
 
 	dev->irq = pdev->irq;
@@ -1505,7 +1512,7 @@ static int tc35815_send_packet(struct sk_buff *skb, struct net_device *dev)
 	 */
 
 	spin_unlock_irqrestore(&lp->lock, flags);
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 #define FATAL_ERROR_INT \
@@ -1536,8 +1543,6 @@ static int tc35815_do_interrupt(struct net_device *dev, u32 status)
 #endif
 {
 	struct tc35815_local *lp = netdev_priv(dev);
-	struct tc35815_regs __iomem *tr =
-		(struct tc35815_regs __iomem *)dev->base_addr;
 	int ret = -1;
 
 	/* Fatal errors... */
@@ -1547,27 +1552,26 @@ static int tc35815_do_interrupt(struct net_device *dev, u32 status)
 	}
 	/* recoverable errors */
 	if (status & Int_IntFDAEx) {
-		/* disable FDAEx int. (until we make rooms...) */
-		tc_writel(tc_readl(&tr->Int_En) & ~Int_FDAExEn, &tr->Int_En);
-		printk(KERN_WARNING
-		       "%s: Free Descriptor Area Exhausted (%#x).\n",
-		       dev->name, status);
+		if (netif_msg_rx_err(lp))
+			dev_warn(&dev->dev,
+				 "Free Descriptor Area Exhausted (%#x).\n",
+				 status);
 		dev->stats.rx_dropped++;
 		ret = 0;
 	}
 	if (status & Int_IntBLEx) {
-		/* disable BLEx int. (until we make rooms...) */
-		tc_writel(tc_readl(&tr->Int_En) & ~Int_BLExEn, &tr->Int_En);
-		printk(KERN_WARNING
-		       "%s: Buffer List Exhausted (%#x).\n",
-		       dev->name, status);
+		if (netif_msg_rx_err(lp))
+			dev_warn(&dev->dev,
+				 "Buffer List Exhausted (%#x).\n",
+				 status);
 		dev->stats.rx_dropped++;
 		ret = 0;
 	}
 	if (status & Int_IntExBD) {
-		printk(KERN_WARNING
-		       "%s: Excessive Buffer Descriptiors (%#x).\n",
-		       dev->name, status);
+		if (netif_msg_rx_err(lp))
+			dev_warn(&dev->dev,
+				 "Excessive Buffer Descriptiors (%#x).\n",
+				 status);
 		dev->stats.rx_length_errors++;
 		ret = 0;
 	}
@@ -1609,8 +1613,8 @@ static irqreturn_t tc35815_interrupt(int irq, void *dev_id)
 	if (!(dmactl & DMA_IntMask)) {
 		/* disable interrupts */
 		tc_writel(dmactl | DMA_IntMask, &tr->DMA_Ctl);
-		if (netif_rx_schedule_prep(&lp->napi))
-			__netif_rx_schedule(&lp->napi);
+		if (napi_schedule_prep(&lp->napi))
+			__napi_schedule(&lp->napi);
 		else {
 			printk(KERN_ERR "%s: interrupt taken in poll\n",
 			       dev->name);
@@ -1626,8 +1630,12 @@ static irqreturn_t tc35815_interrupt(int irq, void *dev_id)
 
 	spin_lock(&lp->lock);
 	status = tc_readl(&tr->Int_Src);
-	tc_writel(status, &tr->Int_Src);	/* write to clear */
+	/* BLEx, FDAEx will be cleared later */
+	tc_writel(status & ~(Int_BLEx | Int_FDAEx),
+		  &tr->Int_Src);	/* write to clear */
 	handled = tc35815_do_interrupt(dev, status);
+	if (status & (Int_BLEx | Int_FDAEx))
+		tc_writel(status & (Int_BLEx | Int_FDAEx), &tr->Int_Src);
 	(void)tc_readl(&tr->Int_Src);	/* flush */
 	spin_unlock(&lp->lock);
 	return IRQ_RETVAL(handled >= 0);
@@ -1655,8 +1663,6 @@ tc35815_rx(struct net_device *dev)
 	struct tc35815_local *lp = netdev_priv(dev);
 	unsigned int fdctl;
 	int i;
-	int buf_free_count = 0;
-	int fd_free_count = 0;
 #ifdef TC35815_NAPI
 	int received = 0;
 #endif
@@ -1765,8 +1771,9 @@ tc35815_rx(struct net_device *dev)
 			dev->stats.rx_bytes += pkt_len;
 		} else {
 			dev->stats.rx_errors++;
-			printk(KERN_DEBUG "%s: Rx error (status %x)\n",
-			       dev->name, status & Rx_Stat_Mask);
+			if (netif_msg_rx_err(lp))
+				dev_info(&dev->dev, "Rx error (status %x)\n",
+					 status & Rx_Stat_Mask);
 			/* WORKAROUND: LongErr and CRCErr means Overflow. */
 			if ((status & Rx_LongErr) && (status & Rx_CRCErr)) {
 				status &= ~(Rx_LongErr|Rx_CRCErr);
@@ -1844,7 +1851,6 @@ tc35815_rx(struct net_device *dev)
 #else
 				lp->fbl_count++;
 #endif
-				buf_free_count++;
 			}
 		}
 
@@ -1866,7 +1872,6 @@ tc35815_rx(struct net_device *dev)
 #endif
 			lp->rfd_cur->fd.FDCtl = cpu_to_le32(FD_CownsFD);
 			lp->rfd_cur++;
-			fd_free_count++;
 		}
 		if (lp->rfd_cur > lp->rfd_limit)
 			lp->rfd_cur = lp->rfd_base;
@@ -1877,17 +1882,6 @@ tc35815_rx(struct net_device *dev)
 #endif
 	}
 
-	/* re-enable BL/FDA Exhaust interrupts. */
-	if (fd_free_count) {
-		struct tc35815_regs __iomem *tr =
-			(struct tc35815_regs __iomem *)dev->base_addr;
-		u32 en, en_old = tc_readl(&tr->Int_En);
-		en = en_old | Int_FDAExEn;
-		if (buf_free_count)
-			en |= Int_BLExEn;
-		if (en != en_old)
-			tc_writel(en, &tr->Int_En);
-	}
 #ifdef TC35815_NAPI
 	return received;
 #endif
@@ -1906,9 +1900,14 @@ static int tc35815_poll(struct napi_struct *napi, int budget)
 	spin_lock(&lp->lock);
 	status = tc_readl(&tr->Int_Src);
 	do {
-		tc_writel(status, &tr->Int_Src);	/* write to clear */
+		/* BLEx, FDAEx will be cleared later */
+		tc_writel(status & ~(Int_BLEx | Int_FDAEx),
+			  &tr->Int_Src);	/* write to clear */
 
-		handled = tc35815_do_interrupt(dev, status, limit);
+		handled = tc35815_do_interrupt(dev, status, budget - received);
+		if (status & (Int_BLEx | Int_FDAEx))
+			tc_writel(status & (Int_BLEx | Int_FDAEx),
+				  &tr->Int_Src);
 		if (handled >= 0) {
 			received += handled;
 			if (received >= budget)
@@ -1919,7 +1918,7 @@ static int tc35815_poll(struct napi_struct *napi, int budget)
 	spin_unlock(&lp->lock);
 
 	if (received < budget) {
-		netif_rx_complete(napi);
+		napi_complete(napi);
 		/* enable interrupts */
 		tc_writel(tc_readl(&tr->DMA_Ctl) & ~DMA_IntMask, &tr->DMA_Ctl);
 	}
@@ -2140,7 +2139,7 @@ static struct net_device_stats *tc35815_get_stats(struct net_device *dev)
 		(struct tc35815_regs __iomem *)dev->base_addr;
 	if (netif_running(dev))
 		/* Update the statistics from the device registers. */
-		dev->stats.rx_missed_errors = tc_readl(&tr->Miss_Cnt);
+		dev->stats.rx_missed_errors += tc_readl(&tr->Miss_Cnt);
 
 	return &dev->stats;
 }
@@ -2395,8 +2394,6 @@ static void tc35815_chip_init(struct net_device *dev)
 		tc_writel(DMA_BURST_SIZE, &tr->DMA_Ctl);
 #ifdef TC35815_USE_PACKEDBUFFER
 	tc_writel(RxFrag_EnPack | ETH_ZLEN, &tr->RxFragSize);	/* Packing */
-#else
-	tc_writel(ETH_ZLEN, &tr->RxFragSize);
 #endif
 	tc_writel(0, &tr->TxPollCtr);	/* Batch mode */
 	tc_writel(TX_THRESHOLD, &tr->TxThrsh);

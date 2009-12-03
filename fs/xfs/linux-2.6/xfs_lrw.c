@@ -42,7 +42,6 @@
 #include "xfs_error.h"
 #include "xfs_itable.h"
 #include "xfs_rw.h"
-#include "xfs_acl.h"
 #include "xfs_attr.h"
 #include "xfs_inode_item.h"
 #include "xfs_buf_item.h"
@@ -668,7 +667,7 @@ start:
 		xip->i_new_size = new_size;
 
 	if (likely(!(ioflags & IO_INVIS)))
-		xfs_ichgtime(xip, XFS_ICHGTIME_MOD | XFS_ICHGTIME_CHG);
+		file_update_time(file);
 
 	/*
 	 * If the offset is beyond the size of the file, we have a couple
@@ -751,10 +750,26 @@ start:
 			goto relock;
 		}
 	} else {
+		int enospc = 0;
+		ssize_t ret2 = 0;
+
+write_retry:
 		xfs_rw_enter_trace(XFS_WRITE_ENTER, xip, (void *)iovp, segs,
 				*offset, ioflags);
-		ret = generic_file_buffered_write(iocb, iovp, segs,
+		ret2 = generic_file_buffered_write(iocb, iovp, segs,
 				pos, offset, count, ret);
+		/*
+		 * if we just got an ENOSPC, flush the inode now we
+		 * aren't holding any page locks and retry *once*
+		 */
+		if (ret2 == -ENOSPC && !enospc) {
+			error = xfs_flush_pages(xip, 0, -1, 0, FI_NONE);
+			if (error)
+				goto out_unlock_internal;
+			enospc = 1;
+			goto write_retry;
+		}
+		ret = ret2;
 	}
 
 	current->backing_dev_info = NULL;
@@ -797,18 +812,21 @@ start:
 
 	/* Handle various SYNC-type writes */
 	if ((file->f_flags & O_SYNC) || IS_SYNC(inode)) {
+		loff_t end = pos + ret - 1;
 		int error2;
 
 		xfs_iunlock(xip, iolock);
 		if (need_i_mutex)
 			mutex_unlock(&inode->i_mutex);
-		error2 = sync_page_range(inode, mapping, pos, ret);
+
+		error2 = filemap_write_and_wait_range(mapping, pos, end);
 		if (!error)
 			error = error2;
 		if (need_i_mutex)
 			mutex_lock(&inode->i_mutex);
 		xfs_ilock(xip, iolock);
-		error2 = xfs_write_sync_logforce(mp, xip);
+
+		error2 = xfs_fsync(xip);
 		if (!error)
 			error = error2;
 	}

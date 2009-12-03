@@ -119,7 +119,7 @@ static struct resource iop3xx_aau_resources[] = {
 	}
 };
 
-static u64 iop3xx_adma_dmamask = DMA_32BIT_MASK;
+static u64 iop3xx_adma_dmamask = DMA_BIT_MASK(32);
 
 static struct iop_adma_platform_data iop3xx_dma_0_data = {
 	.hw_id = DMA0_ID,
@@ -143,7 +143,7 @@ struct platform_device iop3xx_dma_0_channel = {
 	.resource = iop3xx_dma_0_resources,
 	.dev = {
 		.dma_mask = &iop3xx_adma_dmamask,
-		.coherent_dma_mask = DMA_64BIT_MASK,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
 		.platform_data = (void *) &iop3xx_dma_0_data,
 	},
 };
@@ -155,7 +155,7 @@ struct platform_device iop3xx_dma_1_channel = {
 	.resource = iop3xx_dma_1_resources,
 	.dev = {
 		.dma_mask = &iop3xx_adma_dmamask,
-		.coherent_dma_mask = DMA_64BIT_MASK,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
 		.platform_data = (void *) &iop3xx_dma_1_data,
 	},
 };
@@ -167,7 +167,7 @@ struct platform_device iop3xx_aau_channel = {
 	.resource = iop3xx_aau_resources,
 	.dev = {
 		.dma_mask = &iop3xx_adma_dmamask,
-		.coherent_dma_mask = DMA_64BIT_MASK,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
 		.platform_data = (void *) &iop3xx_aau_data,
 	},
 };
@@ -179,7 +179,6 @@ static int __init iop3xx_adma_cap_init(void)
 	dma_cap_set(DMA_INTERRUPT, iop3xx_dma_0_data.cap_mask);
 	#else
 	dma_cap_set(DMA_MEMCPY, iop3xx_dma_0_data.cap_mask);
-	dma_cap_set(DMA_MEMCPY_CRC32C, iop3xx_dma_0_data.cap_mask);
 	dma_cap_set(DMA_INTERRUPT, iop3xx_dma_0_data.cap_mask);
 	#endif
 
@@ -188,7 +187,6 @@ static int __init iop3xx_adma_cap_init(void)
 	dma_cap_set(DMA_INTERRUPT, iop3xx_dma_1_data.cap_mask);
 	#else
 	dma_cap_set(DMA_MEMCPY, iop3xx_dma_1_data.cap_mask);
-	dma_cap_set(DMA_MEMCPY_CRC32C, iop3xx_dma_1_data.cap_mask);
 	dma_cap_set(DMA_INTERRUPT, iop3xx_dma_1_data.cap_mask);
 	#endif
 
@@ -198,7 +196,7 @@ static int __init iop3xx_adma_cap_init(void)
 	dma_cap_set(DMA_INTERRUPT, iop3xx_aau_data.cap_mask);
 	#else
 	dma_cap_set(DMA_XOR, iop3xx_aau_data.cap_mask);
-	dma_cap_set(DMA_ZERO_SUM, iop3xx_aau_data.cap_mask);
+	dma_cap_set(DMA_XOR_VAL, iop3xx_aau_data.cap_mask);
 	dma_cap_set(DMA_MEMSET, iop3xx_aau_data.cap_mask);
 	dma_cap_set(DMA_INTERRUPT, iop3xx_aau_data.cap_mask);
 	#endif

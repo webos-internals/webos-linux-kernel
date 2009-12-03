@@ -453,6 +453,16 @@ static noinline int __init addr_accessible(volatile void *regp, int wordflag,
 	return( ret );
 }
 
+static const struct net_device_ops lance_netdev_ops = {
+	.ndo_open		= lance_open,
+	.ndo_stop		= lance_close,
+	.ndo_start_xmit		= lance_start_xmit,
+	.ndo_set_multicast_list	= set_multicast_list,
+	.ndo_set_mac_address	= lance_set_mac_address,
+	.ndo_tx_timeout		= lance_tx_timeout,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu		= eth_change_mtu,
+};
 
 static unsigned long __init lance_probe1( struct net_device *dev,
 					   struct lance_addr *init_rec )
@@ -623,15 +633,9 @@ static unsigned long __init lance_probe1( struct net_device *dev,
 	if (did_version++ == 0)
 		DPRINTK( 1, ( version ));
 
-	/* The LANCE-specific entries in the device structure. */
-	dev->open = &lance_open;
-	dev->hard_start_xmit = &lance_start_xmit;
-	dev->stop = &lance_close;
-	dev->set_multicast_list = &set_multicast_list;
-	dev->set_mac_address = &lance_set_mac_address;
+	dev->netdev_ops = &lance_netdev_ops;
 
 	/* XXX MSch */
-	dev->tx_timeout = lance_tx_timeout;
 	dev->watchdog_timeo = TX_TIMEOUT;
 
 	return( 1 );
@@ -792,7 +796,7 @@ static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev )
 
 	if (len > skb->len) {
 		if (skb_padto(skb, len))
-			return 0;
+			return NETDEV_TX_OK;
 	}
 
 	netif_stop_queue (dev);
@@ -842,7 +846,7 @@ static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev )
 		lp->tx_full = 1;
 	spin_unlock_irqrestore (&lp->devlock, flags);
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 /* The LANCE interrupt handler. */

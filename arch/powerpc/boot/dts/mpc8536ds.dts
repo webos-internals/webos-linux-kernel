@@ -14,8 +14,8 @@
 / {
 	model = "fsl,mpc8536ds";
 	compatible = "fsl,mpc8536ds";
-	#address-cells = <1>;
-	#size-cells = <1>;
+	#address-cells = <2>;
+	#size-cells = <2>;
 
 	aliases {
 		ethernet0 = &enet0;
@@ -42,7 +42,7 @@
 
 	memory {
 		device_type = "memory";
-		reg = <00000000 00000000>;	// Filled by U-Boot
+		reg = <0 0 0 0>;	// Filled by U-Boot
 	};
 
 	soc@ffe00000 {
@@ -50,9 +50,21 @@
 		#size-cells = <1>;
 		device_type = "soc";
 		compatible = "simple-bus";
-		ranges = <0x0 0xffe00000 0x100000>;
-		reg = <0xffe00000 0x1000>;
+		ranges = <0x0 0 0xffe00000 0x100000>;
 		bus-frequency = <0>;		// Filled out by uboot.
+
+		ecm-law@0 {
+			compatible = "fsl,ecm-law";
+			reg = <0x0 0x1000>;
+			fsl,num-laws = <12>;
+		};
+
+		ecm@1000 {
+			compatible = "fsl,mpc8536-ecm", "fsl,ecm";
+			reg = <0x1000 0x1000>;
+			interrupts = <17 2>;
+			interrupt-parent = <&mpic>;
+		};
 
 		memory-controller@2000 {
 			compatible = "fsl,mpc8536-memory-controller";
@@ -137,42 +149,6 @@
 			};
 		};
 
-		mdio@24520 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			compatible = "fsl,gianfar-mdio";
-			reg = <0x24520 0x20>;
-
-			phy0: ethernet-phy@0 {
-				interrupt-parent = <&mpic>;
-				interrupts = <10 0x1>;
-				reg = <0>;
-				device_type = "ethernet-phy";
-			};
-			phy1: ethernet-phy@1 {
-				interrupt-parent = <&mpic>;
-				interrupts = <10 0x1>;
-				reg = <1>;
-				device_type = "ethernet-phy";
-			};
-			tbi0: tbi-phy@11 {
-				reg = <0x11>;
-				device_type = "tbi-phy";
-			};
-		};
-
-		mdio@26520 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			compatible = "fsl,gianfar-tbi";
-			reg = <0x26520 0x20>;
-
-			tbi1: tbi-phy@11 {
-				reg = <0x11>;
-				device_type = "tbi-phy";
-			};
-		};
-
 		usb@22000 {
 			compatible = "fsl,mpc8536-usb2-mph", "fsl-usb2-mph";
 			reg = <0x22000 0x1000>;
@@ -194,31 +170,73 @@
 		};
 
 		enet0: ethernet@24000 {
+			#address-cells = <1>;
+			#size-cells = <1>;
 			cell-index = <0>;
 			device_type = "network";
 			model = "eTSEC";
 			compatible = "gianfar";
 			reg = <0x24000 0x1000>;
+			ranges = <0x0 0x24000 0x1000>;
 			local-mac-address = [ 00 00 00 00 00 00 ];
 			interrupts = <29 2 30 2 34 2>;
 			interrupt-parent = <&mpic>;
 			tbi-handle = <&tbi0>;
 			phy-handle = <&phy1>;
 			phy-connection-type = "rgmii-id";
+
+			mdio@520 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				compatible = "fsl,gianfar-mdio";
+				reg = <0x520 0x20>;
+
+				phy0: ethernet-phy@0 {
+					interrupt-parent = <&mpic>;
+					interrupts = <10 0x1>;
+					reg = <0>;
+					device_type = "ethernet-phy";
+				};
+				phy1: ethernet-phy@1 {
+					interrupt-parent = <&mpic>;
+					interrupts = <10 0x1>;
+					reg = <1>;
+					device_type = "ethernet-phy";
+				};
+				tbi0: tbi-phy@11 {
+					reg = <0x11>;
+					device_type = "tbi-phy";
+				};
+			};
 		};
 
 		enet1: ethernet@26000 {
+			#address-cells = <1>;
+			#size-cells = <1>;
 			cell-index = <1>;
 			device_type = "network";
 			model = "eTSEC";
 			compatible = "gianfar";
 			reg = <0x26000 0x1000>;
+			ranges = <0x0 0x26000 0x1000>;
 			local-mac-address = [ 00 00 00 00 00 00 ];
 			interrupts = <31 2 32 2 33 2>;
 			interrupt-parent = <&mpic>;
 			tbi-handle = <&tbi1>;
 			phy-handle = <&phy0>;
 			phy-connection-type = "rgmii-id";
+
+			mdio@520 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				compatible = "fsl,gianfar-tbi";
+				reg = <0x520 0x20>;
+
+				tbi1: tbi-phy@11 {
+					reg = <0x11>;
+					device_type = "tbi-phy";
+				};
+			};
 		};
 
 		usb@2b000 {
@@ -230,6 +248,14 @@
 			interrupts = <60 0x2>;
 			dr_mode = "peripheral";
 			phy_type = "ulpi";
+		};
+
+		sdhci@2e000 {
+			compatible = "fsl,mpc8536-esdhc", "fsl,esdhc";
+			reg = <0x2e000 0x1000>;
+			interrupts = <72 0x2>;
+			interrupt-parent = <&mpic>;
+			clock-frequency = <250000000>;
 		};
 
 		serial0: serial@4500 {
@@ -315,7 +341,6 @@
 	};
 
 	pci0: pci@ffe08000 {
-		cell-index = <0>;
 		compatible = "fsl,mpc8540-pci";
 		device_type = "pci";
 		interrupt-map-mask = <0xf800 0x0 0x0 0x7>;
@@ -330,26 +355,25 @@
 		interrupt-parent = <&mpic>;
 		interrupts = <24 0x2>;
 		bus-range = <0 0xff>;
-		ranges = <0x02000000 0 0x80000000 0x80000000 0 0x10000000
-			  0x01000000 0 0x00000000 0xffc00000 0 0x00010000>;
+		ranges = <0x02000000 0 0x80000000 0 0x80000000 0 0x10000000
+			  0x01000000 0 0x00000000 0 0xffc00000 0 0x00010000>;
 		clock-frequency = <66666666>;
 		#interrupt-cells = <1>;
 		#size-cells = <2>;
 		#address-cells = <3>;
-		reg = <0xffe08000 0x1000>;
+		reg = <0 0xffe08000 0 0x1000>;
 	};
 
 	pci1: pcie@ffe09000 {
-		cell-index = <1>;
 		compatible = "fsl,mpc8548-pcie";
 		device_type = "pci";
 		#interrupt-cells = <1>;
 		#size-cells = <2>;
 		#address-cells = <3>;
-		reg = <0xffe09000 0x1000>;
+		reg = <0 0xffe09000 0 0x1000>;
 		bus-range = <0 0xff>;
-		ranges = <0x02000000 0 0x98000000 0x98000000 0 0x08000000
-			  0x01000000 0 0x00000000 0xffc20000 0 0x00010000>;
+		ranges = <0x02000000 0 0x98000000 0 0x98000000 0 0x08000000
+			  0x01000000 0 0x00000000 0 0xffc20000 0 0x00010000>;
 		clock-frequency = <33333333>;
 		interrupt-parent = <&mpic>;
 		interrupts = <25 0x2>;
@@ -377,16 +401,15 @@
 	};
 
 	pci2: pcie@ffe0a000 {
-		cell-index = <2>;
 		compatible = "fsl,mpc8548-pcie";
 		device_type = "pci";
 		#interrupt-cells = <1>;
 		#size-cells = <2>;
 		#address-cells = <3>;
-		reg = <0xffe0a000 0x1000>;
+		reg = <0 0xffe0a000 0 0x1000>;
 		bus-range = <0 0xff>;
-		ranges = <0x02000000 0 0x90000000 0x90000000 0 0x08000000
-			  0x01000000 0 0x00000000 0xffc10000 0 0x00010000>;
+		ranges = <0x02000000 0 0x90000000 0 0x90000000 0 0x08000000
+			  0x01000000 0 0x00000000 0 0xffc10000 0 0x00010000>;
 		clock-frequency = <33333333>;
 		interrupt-parent = <&mpic>;
 		interrupts = <26 0x2>;
@@ -414,16 +437,15 @@
 	};
 
 	pci3: pcie@ffe0b000 {
-		cell-index = <3>;
 		compatible = "fsl,mpc8548-pcie";
 		device_type = "pci";
 		#interrupt-cells = <1>;
 		#size-cells = <2>;
 		#address-cells = <3>;
-		reg = <0xffe0b000 0x1000>;
+		reg = <0 0xffe0b000 0 0x1000>;
 		bus-range = <0 0xff>;
-		ranges = <0x02000000 0 0xa0000000 0xa0000000 0 0x20000000
-			  0x01000000 0 0x00000000 0xffc30000 0 0x00010000>;
+		ranges = <0x02000000 0 0xa0000000 0 0xa0000000 0 0x20000000
+			  0x01000000 0 0x00000000 0 0xffc30000 0 0x00010000>;
 		clock-frequency = <33333333>;
 		interrupt-parent = <&mpic>;
 		interrupts = <27 0x2>;

@@ -50,6 +50,7 @@ struct bf5xx_i2s_port {
 	u16 tcr2;
 	u16 rcr2;
 	int counter;
+	int configured;
 };
 
 static struct bf5xx_i2s_port bf5xx_i2s;
@@ -76,12 +77,12 @@ static struct sport_param sport_params[2] = {
  * TFS. When Port G is selected and EMAC then there is a conflict between
  * the PHY interrupt line and TFS.  Current settings prevent the conflict
  * by ignoring the TFS pin when Port G is selected. This allows both
- * ssm2602 using Port G and EMAC concurrently.
+ * codecs and EMAC using Port G concurrently.
  */
-#ifdef CONFIG_BF527_SPORT0_PORTF
-#define LOCAL_SPORT0_TFS (P_SPORT0_TFS)
-#else
+#ifdef CONFIG_BF527_SPORT0_PORTG
 #define LOCAL_SPORT0_TFS (0)
+#else
+#define LOCAL_SPORT0_TFS (P_SPORT0_TFS)
 #endif
 
 static u16 sport_req[][7] = { {P_SPORT0_DTPRI, P_SPORT0_TSCLK, P_SPORT0_RFS,
@@ -168,7 +169,7 @@ static int bf5xx_i2s_hw_params(struct snd_pcm_substream *substream,
 		break;
 	}
 
-	if (bf5xx_i2s.counter == 1) {
+	if (!bf5xx_i2s.configured) {
 		/*
 		 * TX and RX are not independent,they are enabled at the
 		 * same time, even if only one side is running. So, we
@@ -177,6 +178,7 @@ static int bf5xx_i2s_hw_params(struct snd_pcm_substream *substream,
 		 *
 		 * CPU DAI:slave mode.
 		 */
+		bf5xx_i2s.configured = 1;
 		ret = sport_config_rx(sport_handle, bf5xx_i2s.rcr1,
 				      bf5xx_i2s.rcr2, 0, 0);
 		if (ret) {
@@ -200,6 +202,9 @@ static void bf5xx_i2s_shutdown(struct snd_pcm_substream *substream,
 {
 	pr_debug("%s enter\n", __func__);
 	bf5xx_i2s.counter--;
+	/* No active stream, SPORT is allowed to be configured again. */
+	if (!bf5xx_i2s.counter)
+		bf5xx_i2s.configured = 0;
 }
 
 static int bf5xx_i2s_probe(struct platform_device *pdev,
@@ -222,7 +227,8 @@ static int bf5xx_i2s_probe(struct platform_device *pdev,
 	return 0;
 }
 
-static void bf5xx_i2s_remove(struct snd_soc_dai *dai)
+static void bf5xx_i2s_remove(struct platform_device *pdev,
+			struct snd_soc_dai *dai)
 {
 	pr_debug("%s enter\n", __func__);
 	peripheral_free_list(&sport_req[sport_num][0]);
@@ -231,46 +237,36 @@ static void bf5xx_i2s_remove(struct snd_soc_dai *dai)
 #ifdef CONFIG_PM
 static int bf5xx_i2s_suspend(struct snd_soc_dai *dai)
 {
-	struct sport_device *sport =
-		(struct sport_device *)dai->private_data;
 
 	pr_debug("%s : sport %d\n", __func__, dai->id);
-	if (!dai->active)
-		return 0;
+
 	if (dai->capture.active)
-		sport_rx_stop(sport);
+		sport_rx_stop(sport_handle);
 	if (dai->playback.active)
-		sport_tx_stop(sport);
+		sport_tx_stop(sport_handle);
 	return 0;
 }
 
-static int bf5xx_i2s_resume(struct platform_device *pdev,
-			    struct snd_soc_dai *dai)
+static int bf5xx_i2s_resume(struct snd_soc_dai *dai)
 {
 	int ret;
-	struct sport_device *sport =
-		(struct sport_device *)dai->private_data;
 
 	pr_debug("%s : sport %d\n", __func__, dai->id);
-	if (!dai->active)
-		return 0;
 
-	ret = sport_config_rx(sport_handle, RFSR | RCKFE, RSFSE|0x1f, 0, 0);
+	ret = sport_config_rx(sport_handle, bf5xx_i2s.rcr1,
+				      bf5xx_i2s.rcr2, 0, 0);
 	if (ret) {
 		pr_err("SPORT is busy!\n");
 		return -EBUSY;
 	}
 
-	ret = sport_config_tx(sport_handle, TFSR | TCKFE, TSFSE|0x1f, 0, 0);
+	ret = sport_config_tx(sport_handle, bf5xx_i2s.tcr1,
+				      bf5xx_i2s.tcr2, 0, 0);
 	if (ret) {
 		pr_err("SPORT is busy!\n");
 		return -EBUSY;
 	}
 
-	if (dai->capture.active)
-		sport_rx_start(sport);
-	if (dai->playback.active)
-		sport_tx_start(sport);
 	return 0;
 }
 
@@ -286,6 +282,13 @@ static int bf5xx_i2s_resume(struct platform_device *pdev,
 
 #define BF5XX_I2S_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE |\
 	SNDRV_PCM_FMTBIT_S32_LE)
+
+static struct snd_soc_dai_ops bf5xx_i2s_dai_ops = {
+	.startup	= bf5xx_i2s_startup,
+	.shutdown	= bf5xx_i2s_shutdown,
+	.hw_params	= bf5xx_i2s_hw_params,
+	.set_fmt	= bf5xx_i2s_set_dai_fmt,
+};
 
 struct snd_soc_dai bf5xx_i2s_dai = {
 	.name = "bf5xx-i2s",
@@ -304,12 +307,7 @@ struct snd_soc_dai bf5xx_i2s_dai = {
 		.channels_max = 2,
 		.rates = BF5XX_I2S_RATES,
 		.formats = BF5XX_I2S_FORMATS,},
-	.ops = {
-		.startup   = bf5xx_i2s_startup,
-		.shutdown  = bf5xx_i2s_shutdown,
-		.hw_params = bf5xx_i2s_hw_params,
-		.set_fmt = bf5xx_i2s_set_dai_fmt,
-	},
+	.ops = &bf5xx_i2s_dai_ops,
 };
 EXPORT_SYMBOL_GPL(bf5xx_i2s_dai);
 

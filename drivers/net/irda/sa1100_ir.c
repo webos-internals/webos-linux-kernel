@@ -232,8 +232,11 @@ static int sa1100_irda_startup(struct sa1100_irda *si)
 	/*
 	 * Ensure that the ports for this device are setup correctly.
 	 */
-	if (si->pdata->startup)
-		si->pdata->startup(si->dev);
+	if (si->pdata->startup)	{
+		ret = si->pdata->startup(si->dev);
+		if (ret)
+			return ret;
+	}
 
 	/*
 	 * Configure PPC for IRDA - we want to drive TXD2 low.
@@ -666,7 +669,7 @@ static int sa1100_irda_hard_xmit(struct sk_buff *skb, struct net_device *dev)
 			sa1100_irda_set_speed(si, speed);
 		}
 		dev_kfree_skb(skb);
-		return 0;
+		return NETDEV_TX_OK;
 	}
 
 	if (!IS_FIR(si)) {
@@ -714,7 +717,7 @@ static int sa1100_irda_hard_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	dev->trans_start = jiffies;
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 static int
@@ -875,6 +878,13 @@ static int sa1100_irda_init_iobuf(iobuff_t *io, int size)
 	return io->head ? 0 : -ENOMEM;
 }
 
+static const struct net_device_ops sa1100_irda_netdev_ops = {
+	.ndo_open		= sa1100_irda_start,
+	.ndo_stop		= sa1100_irda_stop,
+	.ndo_start_xmit		= sa1100_irda_hard_xmit,
+	.ndo_do_ioctl		= sa1100_irda_ioctl,
+};
+
 static int sa1100_irda_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
@@ -913,11 +923,8 @@ static int sa1100_irda_probe(struct platform_device *pdev)
 	if (err)
 		goto err_mem_5;
 
-	dev->hard_start_xmit	= sa1100_irda_hard_xmit;
-	dev->open		= sa1100_irda_start;
-	dev->stop		= sa1100_irda_stop;
-	dev->do_ioctl		= sa1100_irda_ioctl;
-	dev->irq		= IRQ_Ser2ICP;
+	dev->netdev_ops	= &sa1100_irda_netdev_ops;
+	dev->irq	= IRQ_Ser2ICP;
 
 	irda_init_max_qos_capabilies(&si->qos);
 

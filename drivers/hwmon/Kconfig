@@ -28,6 +28,17 @@ config HWMON_VID
 	tristate
 	default n
 
+config HWMON_DEBUG_CHIP
+	bool "Hardware Monitoring Chip debugging messages"
+	default n
+	help
+	  Say Y here if you want the I2C chip drivers to produce a bunch of
+	  debug messages to the system log.  Select this if you are having
+	  a problem with I2C support and want to see more of what is going
+	  on.
+
+comment "Native drivers"
+
 config SENSORS_ABITUGURU
 	tristate "Abit uGuru (rev 1 & 2)"
 	depends on X86 && EXPERIMENTAL
@@ -294,11 +305,11 @@ config SENSORS_F71805F
 	  will be called f71805f.
 
 config SENSORS_F71882FG
-	tristate "Fintek F71862FG, F71882FG and F8000"
+	tristate "Fintek F71858FG, F71862FG, F71882FG and F8000"
 	depends on EXPERIMENTAL
 	help
 	  If you say yes here you get support for hardware monitoring
-	  features of the Fintek F71882FG/F71883FG, F71862FG/71863FG
+	  features of the Fintek F71858FG, F71862FG/71863FG, F71882FG/F71883FG
 	  and F8000 Super-I/O chips.
 
 	  This driver can also be built as a module.  If so, the module
@@ -314,41 +325,14 @@ config SENSORS_F75375S
 	  This driver can also be built as a module.  If so, the module
 	  will be called f75375s.
 
-config SENSORS_FSCHER
-	tristate "FSC Hermes (DEPRECATED)"
-	depends on X86 && I2C
-	help
-	  This driver is DEPRECATED please use the new merged fschmd
-	  ("FSC Poseidon, Scylla, Hermes, Heimdall and Heracles") driver
-	  instead.
-
-	  If you say yes here you get support for Fujitsu Siemens
-	  Computers Hermes sensor chips.
-
-	  This driver can also be built as a module.  If so, the module
-	  will be called fscher.
-
-config SENSORS_FSCPOS
-	tristate "FSC Poseidon (DEPRECATED)"
-	depends on X86 && I2C
-	help
-	  This driver is DEPRECATED please use the new merged fschmd
-	  ("FSC Poseidon, Scylla, Hermes, Heimdall and Heracles") driver
-	  instead.
-
-	  If you say yes here you get support for Fujitsu Siemens
-	  Computers Poseidon sensor chips.
-
-	  This driver can also be built as a module.  If so, the module
-	  will be called fscpos.
-
 config SENSORS_FSCHMD
-	tristate "FSC Poseidon, Scylla, Hermes, Heimdall and Heracles"
+	tristate "Fujitsu Siemens Computers sensor chips"
 	depends on X86 && I2C
 	help
-	  If you say yes here you get support for various Fujitsu Siemens
-	  Computers sensor chips, including support for the integrated
-	  watchdog.
+	  If you say yes here you get support for the following Fujitsu
+	  Siemens Computers (FSC) sensor chips: Poseidon, Scylla, Hermes,
+	  Heimdall, Heracles, Hades and Syleus including support for the
+	  integrated watchdog.
 
 	  This is a merged driver for FSC sensor chips replacing the fscpos,
 	  fscscy and fscher drivers and adding support for several other FSC
@@ -356,6 +340,16 @@ config SENSORS_FSCHMD
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called fschmd.
+
+config SENSORS_G760A
+	tristate "GMT G760A"
+	depends on I2C
+	help
+	  If you say yes here you get support for Global Mixed-mode
+	  Technology Inc G760A fan speed PWM controller chips.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called g760a.
 
 config SENSORS_GL518SM
 	tristate "Genesys Logic GL518SM"
@@ -379,12 +373,12 @@ config SENSORS_GL520SM
 	  will be called gl520sm.
 
 config SENSORS_CORETEMP
-	tristate "Intel Core (2) Duo/Solo temperature sensor"
+	tristate "Intel Core/Core2/Atom temperature sensor"
 	depends on X86 && EXPERIMENTAL
 	help
 	  If you say yes here you get support for the temperature
-	  sensor inside your CPU. Supported all are all known variants
-	  of Intel Core family.
+	  sensor inside your CPU. Most of the family 6 CPUs
+	  are supported. Check documentation/driver for details.
 
 config SENSORS_IBMAEM
 	tristate "IBM Active Energy Manager temperature/power sensors and control"
@@ -395,7 +389,7 @@ config SENSORS_IBMAEM
 	  power sensors and capping hardware in various IBM System X
 	  servers that support Active Energy Manager.  This includes
 	  the x3350, x3550, x3650, x3655, x3755, x3850 M2, x3950 M2,
-	  and certain HS2x/LS2x/QS2x blades.
+	  and certain HC10/HS2x/LS2x/QS2x blades.
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called ibmaem.
@@ -570,6 +564,17 @@ config SENSORS_LM93
 	  This driver can also be built as a module.  If so, the module
 	  will be called lm93.
 
+config SENSORS_LTC4215
+	tristate "Linear Technology LTC4215"
+	depends on I2C && EXPERIMENTAL
+	default n
+	help
+	  If you say yes here you get support for Linear Technology LTC4215
+	  Hot Swap Controller I2C interface.
+
+	  This driver can also be built as a module. If so, the module will
+	  be called ltc4215.
+
 config SENSORS_LTC4245
 	tristate "Linear Technology LTC4245"
 	depends on I2C && EXPERIMENTAL
@@ -580,6 +585,15 @@ config SENSORS_LTC4245
 
 	  This driver can also be built as a module. If so, the module will
 	  be called ltc4245.
+
+config SENSORS_LM95241
+	tristate "National Semiconductor LM95241 sensor chip"
+	depends on I2C
+	help
+	  If you say yes here you get support for LM95241 sensor chip.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called lm95241.
 
 config SENSORS_MAX1111
 	tristate "Maxim MAX1111 Multichannel, Serial 8-bit ADC chip"
@@ -634,6 +648,47 @@ config SENSORS_PC87427
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called pc87427.
+
+config SENSORS_PCF8591
+	tristate "Philips PCF8591 ADC/DAC"
+	depends on I2C
+	default n
+	help
+	  If you say yes here you get support for Philips PCF8591 4-channel
+	  ADC, 1-channel DAC chips.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called pcf8591.
+
+	  These devices are hard to detect and rarely found on mainstream
+	  hardware.  If unsure, say N.
+
+config SENSORS_SHT15
+	tristate "Sensiron humidity and temperature sensors. SHT15 and compat."
+	depends on GENERIC_GPIO
+	help
+	  If you say yes here you get support for the Sensiron SHT10, SHT11,
+	  SHT15, SHT71, SHT75 humidity and temperature sensors.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called sht15.
+
+config SENSORS_S3C
+	tristate "S3C24XX/S3C64XX Inbuilt ADC"
+	depends on ARCH_S3C2410
+	help
+	  If you say yes here you get support for the on-board ADCs of
+	  the Samsung S3C24XX or S3C64XX series of SoC
+
+	  This driver can also be built as a module. If so, the module
+	  will be called s3c-hwmo.
+
+config SENSORS_S3C_RAW
+	bool "Include raw channel attributes in sysfs"
+	depends on SENSORS_S3C
+	help
+	  Say Y here if you want to include raw copies of all the ADC
+	  channels in sysfs.
 
 config SENSORS_SIS5595
 	tristate "Silicon Integrated Systems Corp. SiS5595"
@@ -719,6 +774,26 @@ config SENSORS_THMC50
 
 	  This driver can also be built as a module.  If so, the module
 	  will be called thmc50.
+
+config SENSORS_TMP401
+	tristate "Texas Instruments TMP401 and compatibles"
+	depends on I2C && EXPERIMENTAL
+	help
+	  If you say yes here you get support for Texas Instruments TMP401 and
+	  TMP411 temperature sensor chips.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called tmp401.
+
+config SENSORS_TMP421
+	tristate "Texas Instruments TMP421 and compatible"
+	depends on I2C && EXPERIMENTAL
+	help
+	  If you say yes here you get support for Texas Instruments TMP421,
+	  TMP422 and TMP423 temperature sensor chips.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called tmp421.
 
 config SENSORS_VIA686A
 	tristate "VIA686A"
@@ -827,7 +902,7 @@ config SENSORS_W83627HF
 	  will be called w83627hf.
 
 config SENSORS_W83627EHF
-	tristate "Winbond W83627EHF/DHG"
+	tristate "Winbond W83627EHF/EHG/DHG, W83667HG"
 	select HWMON_VID
 	help
 	  If you say yes here you get support for the hardware
@@ -838,8 +913,31 @@ config SENSORS_W83627EHF
 	  chip suited for specific Intel processors that use PECI such as
 	  the Core 2 Duo.
 
+	  This driver also supports the W83667HG chip.
+
 	  This driver can also be built as a module.  If so, the module
 	  will be called w83627ehf.
+
+config SENSORS_WM831X
+	tristate "WM831x PMICs"
+	depends on MFD_WM831X
+	help
+	  If you say yes here you get support for the hardware
+	  monitoring functionality of the Wolfson Microelectronics
+	  WM831x series of PMICs.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called wm831x-hwmon.
+
+config SENSORS_WM8350
+	tristate "Wolfson Microelectronics WM835x"
+	depends on MFD_WM8350
+	help
+	  If you say yes here you get support for the hardware
+	  monitoring features of the WM835x series of PMICs.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called wm8350-hwmon.
 
 config SENSORS_ULTRA45
 	tristate "Sun Ultra45 PIC16F747"
@@ -868,32 +966,22 @@ config SENSORS_HDAPS
 	  Say Y here if you have an applicable laptop and want to experience
 	  the awesome power of hdaps.
 
-config SENSORS_LIS3LV02D
-	tristate "STMicroeletronics LIS3LV02Dx three-axis digital accelerometer"
-	depends on ACPI && INPUT
-	select NEW_LEDS
-	select LEDS_CLASS
+config SENSORS_LIS3_SPI
+	tristate "STMicroeletronics LIS3LV02Dx three-axis digital accelerometer (SPI)"
+	depends on !ACPI && SPI_MASTER && INPUT
+	select INPUT_POLLDEV
 	default n
 	help
-	  This driver provides support for the LIS3LV02Dx accelerometer. In
-	  particular, it can be found in a number of HP laptops, which have the
-	  "Mobile Data Protection System 3D" or "3D DriveGuard" feature. On such
-	  systems the driver should load automatically (via ACPI). The
-	  accelerometer might also be found in other systems, connected via SPI
-	  or I2C.  The accelerometer data is readable via
+	  This driver provides support for the LIS3LV02Dx accelerometer connected
+	  via SPI. The accelerometer data is readable via
 	  /sys/devices/platform/lis3lv02d.
 
 	  This driver also provides an absolute input class device, allowing
-	  the laptop to act as a pinball machine-esque joystick. On HP laptops,
-	  if the led infrastructure is activated, support for a led indicating
-	  disk protection will be provided as hp:red:hddprotection.
+	  the laptop to act as a pinball machine-esque joystick.
 
 	  This driver can also be built as modules.  If so, the core module
-	  will be called lis3lv02d and a specific module for HP laptops will be
-	  called hp_accel.
-
-	  Say Y here if you have an applicable laptop and want to experience
-	  the awesome power of lis3lv02d.
+	  will be called lis3lv02d and a specific module for the SPI transport
+	  is called lis3lv02d_spi.
 
 config SENSORS_APPLESMC
 	tristate "Apple SMC (Motion sensor, light sensor, keyboard backlight)"
@@ -920,13 +1008,50 @@ config SENSORS_APPLESMC
 	  Say Y here if you have an applicable laptop and want to experience
 	  the awesome power of applesmc.
 
-config HWMON_DEBUG_CHIP
-	bool "Hardware Monitoring Chip debugging messages"
+if ACPI
+
+comment "ACPI drivers"
+
+config SENSORS_ATK0110
+	tristate "ASUS ATK0110"
+	depends on X86 && EXPERIMENTAL
+	help
+	  If you say yes here you get support for the ACPI hardware
+	  monitoring interface found in many ASUS motherboards. This
+	  driver will provide readings of fans, voltages and temperatures
+	  through the system firmware.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called asus_atk0110.
+
+config SENSORS_LIS3LV02D
+	tristate "STMicroeletronics LIS3LV02Dx three-axis digital accelerometer"
+	depends on INPUT
+	select INPUT_POLLDEV
+	select NEW_LEDS
+	select LEDS_CLASS
 	default n
 	help
-	  Say Y here if you want the I2C chip drivers to produce a bunch of
-	  debug messages to the system log.  Select this if you are having
-	  a problem with I2C support and want to see more of what is going
-	  on.
+	  This driver provides support for the LIS3LV02Dx accelerometer. In
+	  particular, it can be found in a number of HP laptops, which have the
+	  "Mobile Data Protection System 3D" or "3D DriveGuard" feature. On such
+	  systems the driver should load automatically (via ACPI). The
+	  accelerometer might also be found in other systems, connected via SPI
+	  or I2C.  The accelerometer data is readable via
+	  /sys/devices/platform/lis3lv02d.
+
+	  This driver also provides an absolute input class device, allowing
+	  the laptop to act as a pinball machine-esque joystick. On HP laptops,
+	  if the led infrastructure is activated, support for a led indicating
+	  disk protection will be provided as hp:red:hddprotection.
+
+	  This driver can also be built as modules.  If so, the core module
+	  will be called lis3lv02d and a specific module for HP laptops will be
+	  called hp_accel.
+
+	  Say Y here if you have an applicable laptop and want to experience
+	  the awesome power of lis3lv02d.
+
+endif # ACPI
 
 endif # HWMON

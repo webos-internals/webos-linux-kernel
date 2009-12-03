@@ -138,8 +138,8 @@ static void efx_tsoh_free(struct efx_tx_queue *tx_queue,
  * Returns NETDEV_TX_OK or NETDEV_TX_BUSY
  * You must hold netif_tx_lock() to call this function.
  */
-static int efx_enqueue_skb(struct efx_tx_queue *tx_queue,
-			   struct sk_buff *skb)
+static netdev_tx_t efx_enqueue_skb(struct efx_tx_queue *tx_queue,
+					 struct sk_buff *skb)
 {
 	struct efx_nic *efx = tx_queue->efx;
 	struct pci_dev *pci_dev = efx->pci_dev;
@@ -152,7 +152,7 @@ static int efx_enqueue_skb(struct efx_tx_queue *tx_queue,
 	unsigned int dma_len;
 	bool unmap_single;
 	int q_space, i = 0;
-	int rc = NETDEV_TX_OK;
+	netdev_tx_t rc = NETDEV_TX_OK;
 
 	EFX_BUG_ON_PARANOID(tx_queue->write_count != tx_queue->insert_count);
 
@@ -161,6 +161,14 @@ static int efx_enqueue_skb(struct efx_tx_queue *tx_queue,
 
 	/* Get size of the initial fragment */
 	len = skb_headlen(skb);
+
+	/* Pad if necessary */
+	if (EFX_WORKAROUND_15592(efx) && skb->len <= 32) {
+		EFX_BUG_ON_PARANOID(skb->data_len);
+		len = 32 + 1;
+		if (skb_pad(skb, len - skb->len))
+			return NETDEV_TX_OK;
+	}
 
 	fill_level = tx_queue->insert_count - tx_queue->old_read_count;
 	q_space = efx->type->txd_ring_mask - 1 - fill_level;
@@ -345,21 +353,11 @@ static void efx_dequeue_buffers(struct efx_tx_queue *tx_queue,
  *
  * Context: netif_tx_lock held
  */
-inline int efx_xmit(struct efx_nic *efx,
-		    struct efx_tx_queue *tx_queue, struct sk_buff *skb)
+inline netdev_tx_t efx_xmit(struct efx_nic *efx,
+			   struct efx_tx_queue *tx_queue, struct sk_buff *skb)
 {
-	int rc;
-
 	/* Map fragments for DMA and add to TX queue */
-	rc = efx_enqueue_skb(tx_queue, skb);
-	if (unlikely(rc != NETDEV_TX_OK))
-		goto out;
-
-	/* Update last TX timer */
-	efx->net_dev->trans_start = jiffies;
-
- out:
-	return rc;
+	return efx_enqueue_skb(tx_queue, skb);
 }
 
 /* Initiate a packet transmission.  We use one channel per CPU
@@ -371,10 +369,14 @@ inline int efx_xmit(struct efx_nic *efx,
  * Note that returning anything other than NETDEV_TX_OK will cause the
  * OS to free the skb.
  */
-int efx_hard_start_xmit(struct sk_buff *skb, struct net_device *net_dev)
+netdev_tx_t efx_hard_start_xmit(struct sk_buff *skb,
+				      struct net_device *net_dev)
 {
 	struct efx_nic *efx = netdev_priv(net_dev);
 	struct efx_tx_queue *tx_queue;
+
+	if (unlikely(efx->port_inhibited))
+		return NETDEV_TX_BUSY;
 
 	if (likely(skb->ip_summed == CHECKSUM_PARTIAL))
 		tx_queue = &efx->tx_queue[EFX_TX_QUEUE_OFFLOAD_CSUM];
@@ -397,7 +399,7 @@ void efx_xmit_done(struct efx_tx_queue *tx_queue, unsigned int index)
 	 * separates the update of read_count from the test of
 	 * stopped. */
 	smp_mb();
-	if (unlikely(tx_queue->stopped)) {
+	if (unlikely(tx_queue->stopped) && likely(efx->port_enabled)) {
 		fill_level = tx_queue->insert_count - tx_queue->read_count;
 		if (fill_level < EFX_NETDEV_TX_THRESHOLD(tx_queue)) {
 			EFX_BUG_ON_PARANOID(!efx_dev_registered(efx));

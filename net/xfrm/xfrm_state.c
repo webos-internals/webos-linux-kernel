@@ -668,21 +668,9 @@ static struct xfrm_state *__xfrm_state_lookup(struct net *net, xfrm_address_t *d
 	hlist_for_each_entry(x, entry, net->xfrm.state_byspi+h, byspi) {
 		if (x->props.family != family ||
 		    x->id.spi       != spi ||
-		    x->id.proto     != proto)
+		    x->id.proto     != proto ||
+		    xfrm_addr_cmp(&x->id.daddr, daddr, family))
 			continue;
-
-		switch (family) {
-		case AF_INET:
-			if (x->id.daddr.a4 != daddr->a4)
-				continue;
-			break;
-		case AF_INET6:
-			if (!ipv6_addr_equal((struct in6_addr *)daddr,
-					     (struct in6_addr *)
-					     x->id.daddr.a6))
-				continue;
-			break;
-		}
 
 		xfrm_state_hold(x);
 		return x;
@@ -699,25 +687,10 @@ static struct xfrm_state *__xfrm_state_lookup_byaddr(struct net *net, xfrm_addre
 
 	hlist_for_each_entry(x, entry, net->xfrm.state_bysrc+h, bysrc) {
 		if (x->props.family != family ||
-		    x->id.proto     != proto)
+		    x->id.proto     != proto ||
+		    xfrm_addr_cmp(&x->id.daddr, daddr, family) ||
+		    xfrm_addr_cmp(&x->props.saddr, saddr, family))
 			continue;
-
-		switch (family) {
-		case AF_INET:
-			if (x->id.daddr.a4 != daddr->a4 ||
-			    x->props.saddr.a4 != saddr->a4)
-				continue;
-			break;
-		case AF_INET6:
-			if (!ipv6_addr_equal((struct in6_addr *)daddr,
-					     (struct in6_addr *)
-					     x->id.daddr.a6) ||
-			    !ipv6_addr_equal((struct in6_addr *)saddr,
-					     (struct in6_addr *)
-					     x->props.saddr.a6))
-				continue;
-			break;
-		}
 
 		xfrm_state_hold(x);
 		return x;
@@ -794,7 +767,7 @@ xfrm_state_find(xfrm_address_t *daddr, xfrm_address_t *saddr,
 {
 	static xfrm_address_t saddr_wildcard = { };
 	struct net *net = xp_net(pol);
-	unsigned int h;
+	unsigned int h, h_wildcard;
 	struct hlist_node *entry;
 	struct xfrm_state *x, *x0, *to_put;
 	int acquire_in_progress = 0;
@@ -819,8 +792,8 @@ xfrm_state_find(xfrm_address_t *daddr, xfrm_address_t *saddr,
 	if (best)
 		goto found;
 
-	h = xfrm_dst_hash(net, daddr, &saddr_wildcard, tmpl->reqid, family);
-	hlist_for_each_entry(x, entry, net->xfrm.state_bydst+h, bydst) {
+	h_wildcard = xfrm_dst_hash(net, daddr, &saddr_wildcard, tmpl->reqid, family);
+	hlist_for_each_entry(x, entry, net->xfrm.state_bydst+h_wildcard, bydst) {
 		if (x->props.family == family &&
 		    x->props.reqid == tmpl->reqid &&
 		    !(x->props.flags & XFRM_STATE_WILDRECV) &&
@@ -1001,24 +974,10 @@ static struct xfrm_state *__find_acq_core(struct net *net, unsigned short family
 		    x->props.family != family ||
 		    x->km.state     != XFRM_STATE_ACQ ||
 		    x->id.spi       != 0 ||
-		    x->id.proto	    != proto)
+		    x->id.proto	    != proto ||
+		    xfrm_addr_cmp(&x->id.daddr, daddr, family) ||
+		    xfrm_addr_cmp(&x->props.saddr, saddr, family))
 			continue;
-
-		switch (family) {
-		case AF_INET:
-			if (x->id.daddr.a4    != daddr->a4 ||
-			    x->props.saddr.a4 != saddr->a4)
-				continue;
-			break;
-		case AF_INET6:
-			if (!ipv6_addr_equal((struct in6_addr *)x->id.daddr.a6,
-					     (struct in6_addr *)daddr) ||
-			    !ipv6_addr_equal((struct in6_addr *)
-					     x->props.saddr.a6,
-					     (struct in6_addr *)saddr))
-				continue;
-			break;
-		}
 
 		xfrm_state_hold(x);
 		return x;
@@ -1615,7 +1574,7 @@ void xfrm_state_walk_done(struct xfrm_state_walk *walk)
 
 	spin_lock_bh(&xfrm_state_lock);
 	list_del(&walk->all);
-	spin_lock_bh(&xfrm_state_lock);
+	spin_unlock_bh(&xfrm_state_lock);
 }
 EXPORT_SYMBOL(xfrm_state_walk_done);
 

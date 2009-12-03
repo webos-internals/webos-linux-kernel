@@ -1,32 +1,7 @@
-
 /*
- * File:         include/asm-blackfin/mach-bf561/defBF561.h
- * Based on:
- * Author:
+ * Copyright 2005-2009 Analog Devices Inc.
  *
- * Created:
- * Description:
- * SYSTEM MMR REGISTER AND MEMORY MAP FOR ADSP-BF561
- * Rev:
- *
- * Modified:
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; see the file COPYING.
- * If not, write to the Free Software Foundation,
- * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Licensed under the ADI BSD license or the GPL-2 (or later)
  */
 
 #ifndef _DEF_BF561_H
@@ -795,6 +770,62 @@
 #define MDMA2_S1_CURR_Y_COUNT 0xFFC00FF8	/*MemDMA2 Stream 1 Source Current Outer-Loop Count */
 #define MDMA2_S1_IRQ_STATUS 0xFFC00FE8	/*MemDMA2 Stream 1 Source Interrupt/Status Register */
 #define MDMA2_S1_PERIPHERAL_MAP 0xFFC00FEC	/*MemDMA2 Stream 1 Source Peripheral Map register */
+
+#define MDMA_D0_NEXT_DESC_PTR MDMA1_D0_NEXT_DESC_PTR
+#define MDMA_D0_START_ADDR MDMA1_D0_START_ADDR
+#define MDMA_D0_CONFIG MDMA1_D0_CONFIG
+#define MDMA_D0_X_COUNT MDMA1_D0_X_COUNT
+#define MDMA_D0_X_MODIFY MDMA1_D0_X_MODIFY
+#define MDMA_D0_Y_COUNT MDMA1_D0_Y_COUNT
+#define MDMA_D0_Y_MODIFY MDMA1_D0_Y_MODIFY
+#define MDMA_D0_CURR_DESC_PTR MDMA1_D0_CURR_DESC_PTR
+#define MDMA_D0_CURR_ADDR MDMA1_D0_CURR_ADDR
+#define MDMA_D0_IRQ_STATUS MDMA1_D0_IRQ_STATUS
+#define MDMA_D0_PERIPHERAL_MAP MDMA1_D0_PERIPHERAL_MAP
+#define MDMA_D0_CURR_X_COUNT MDMA1_D0_CURR_X_COUNT
+#define MDMA_D0_CURR_Y_COUNT MDMA1_D0_CURR_Y_COUNT
+
+#define MDMA_S0_NEXT_DESC_PTR MDMA1_S0_NEXT_DESC_PTR
+#define MDMA_S0_START_ADDR MDMA1_S0_START_ADDR
+#define MDMA_S0_CONFIG MDMA1_S0_CONFIG
+#define MDMA_S0_X_COUNT MDMA1_S0_X_COUNT
+#define MDMA_S0_X_MODIFY MDMA1_S0_X_MODIFY
+#define MDMA_S0_Y_COUNT MDMA1_S0_Y_COUNT
+#define MDMA_S0_Y_MODIFY MDMA1_S0_Y_MODIFY
+#define MDMA_S0_CURR_DESC_PTR MDMA1_S0_CURR_DESC_PTR
+#define MDMA_S0_CURR_ADDR MDMA1_S0_CURR_ADDR
+#define MDMA_S0_IRQ_STATUS MDMA1_S0_IRQ_STATUS
+#define MDMA_S0_PERIPHERAL_MAP MDMA1_S0_PERIPHERAL_MAP
+#define MDMA_S0_CURR_X_COUNT MDMA1_S0_CURR_X_COUNT
+#define MDMA_S0_CURR_Y_COUNT MDMA1_S0_CURR_Y_COUNT
+
+#define MDMA_D1_NEXT_DESC_PTR MDMA1_D1_NEXT_DESC_PTR
+#define MDMA_D1_START_ADDR MDMA1_D1_START_ADDR
+#define MDMA_D1_CONFIG MDMA1_D1_CONFIG
+#define MDMA_D1_X_COUNT MDMA1_D1_X_COUNT
+#define MDMA_D1_X_MODIFY MDMA1_D1_X_MODIFY
+#define MDMA_D1_Y_COUNT MDMA1_D1_Y_COUNT
+#define MDMA_D1_Y_MODIFY MDMA1_D1_Y_MODIFY
+#define MDMA_D1_CURR_DESC_PTR MDMA1_D1_CURR_DESC_PTR
+#define MDMA_D1_CURR_ADDR MDMA1_D1_CURR_ADDR
+#define MDMA_D1_IRQ_STATUS MDMA1_D1_IRQ_STATUS
+#define MDMA_D1_PERIPHERAL_MAP MDMA1_D1_PERIPHERAL_MAP
+#define MDMA_D1_CURR_X_COUNT MDMA1_D1_CURR_X_COUNT
+#define MDMA_D1_CURR_Y_COUNT MDMA1_D1_CURR_Y_COUNT
+
+#define MDMA_S1_NEXT_DESC_PTR MDMA1_S1_NEXT_DESC_PTR
+#define MDMA_S1_START_ADDR MDMA1_S1_START_ADDR
+#define MDMA_S1_CONFIG MDMA1_S1_CONFIG
+#define MDMA_S1_X_COUNT MDMA1_S1_X_COUNT
+#define MDMA_S1_X_MODIFY MDMA1_S1_X_MODIFY
+#define MDMA_S1_Y_COUNT MDMA1_S1_Y_COUNT
+#define MDMA_S1_Y_MODIFY MDMA1_S1_Y_MODIFY
+#define MDMA_S1_CURR_DESC_PTR MDMA1_S1_CURR_DESC_PTR
+#define MDMA_S1_CURR_ADDR MDMA1_S1_CURR_ADDR
+#define MDMA_S1_IRQ_STATUS MDMA1_S1_IRQ_STATUS
+#define MDMA_S1_PERIPHERAL_MAP MDMA1_S1_PERIPHERAL_MAP
+#define MDMA_S1_CURR_X_COUNT MDMA1_S1_CURR_X_COUNT
+#define MDMA_S1_CURR_Y_COUNT MDMA1_S1_CURR_Y_COUNT
 
 /* Internal Memory DMA Registers (0xFFC0_1800 - 0xFFC0_19FF) */
 #define IMDMA_D0_CONFIG 0xFFC01808	/*IMDMA Stream 0 Destination Configuration */

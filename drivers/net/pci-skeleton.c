@@ -105,7 +105,7 @@ IVc. Errata
 
 static char version[] __devinitdata =
 KERN_INFO NETDRV_DRIVER_LOAD_MSG "\n"
-KERN_INFO "  Support available from http://foo.com/bar/baz.html\n";
+"  Support available from http://foo.com/bar/baz.html\n";
 
 /* define to 1 to enable PIO instead of MMIO */
 #undef USE_IO_OPS
@@ -728,6 +728,17 @@ err_out:
 	return rc;
 }
 
+static const struct net_device_ops netdrv_netdev_ops = {
+	.ndo_open		= netdrv_open,
+	.ndo_stop		= netdrv_close,
+	.ndo_start_xmit		= netdrv_start_xmit,
+	.ndo_set_multicast_list	= netdrv_set_rx_mode,
+	.ndo_do_ioctl		= netdrv_ioctl,
+	.ndo_tx_timeout		= netdrv_tx_timeout,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_set_mac_address	= eth_mac_addr,
+};
 
 static int __devinit netdrv_init_one (struct pci_dev *pdev,
 				       const struct pci_device_id *ent)
@@ -769,13 +780,7 @@ static int __devinit netdrv_init_one (struct pci_dev *pdev,
 		((u16 *) (dev->dev_addr))[i] =
 		    le16_to_cpu (read_eeprom (ioaddr, i + 7, addr_len));
 
-	/* The Rtl8139-specific entries in the device structure. */
-	dev->open = netdrv_open;
-	dev->hard_start_xmit = netdrv_start_xmit;
-	dev->stop = netdrv_close;
-	dev->set_multicast_list = netdrv_set_rx_mode;
-	dev->do_ioctl = netdrv_ioctl;
-	dev->tx_timeout = netdrv_tx_timeout;
+	dev->netdev_ops = &netdrv_netdev_ops;
 	dev->watchdog_timeo = TX_TIMEOUT;
 
 	dev->irq = pdev->irq;
@@ -1351,7 +1356,7 @@ static int netdrv_start_xmit (struct sk_buff *skb, struct net_device *dev)
 	DPRINTK ("%s: Queued Tx packet at %p size %u to slot %d.\n",
 		 dev->name, skb->data, skb->len, entry);
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 
@@ -1779,11 +1784,6 @@ static int netdrv_ioctl (struct net_device *dev, struct ifreq *rq, int cmd)
 		break;
 
 	case SIOCSMIIREG:		/* Write MII PHY register. */
-		if (!capable (CAP_NET_ADMIN)) {
-			rc = -EPERM;
-			break;
-		}
-
 		spin_lock_irqsave (&tp->lock, flags);
 		mdio_write (dev, data->phy_id & 0x1f, data->reg_num & 0x1f, data->val_in);
 		spin_unlock_irqrestore (&tp->lock, flags);

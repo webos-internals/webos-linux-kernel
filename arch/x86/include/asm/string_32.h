@@ -65,7 +65,6 @@ static __always_inline void *__constant_memcpy(void *to, const void *from,
 	case 4:
 		*(int *)to = *(int *)from;
 		return to;
-
 	case 3:
 		*(short *)to = *(short *)from;
 		*((char *)to + 2) = *((char *)from + 2);
@@ -177,10 +176,18 @@ static inline void *__memcpy3d(void *to, const void *from, size_t len)
  *	No 3D Now!
  */
 
+#ifndef CONFIG_KMEMCHECK
 #define memcpy(t, f, n)				\
 	(__builtin_constant_p((n))		\
 	 ? __constant_memcpy((t), (f), (n))	\
 	 : __memcpy((t), (f), (n)))
+#else
+/*
+ * kmemcheck becomes very happy if we use the REP instructions unconditionally,
+ * because it means that we know both memory operands in advance.
+ */
+#define memcpy(t, f, n) __memcpy((t), (f), (n))
+#endif
 
 #endif
 

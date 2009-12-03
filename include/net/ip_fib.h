@@ -124,14 +124,12 @@ struct fib_result_nl {
 #ifdef CONFIG_IP_ROUTE_MULTIPATH
 
 #define FIB_RES_NH(res)		((res).fi->fib_nh[(res).nh_sel])
-#define FIB_RES_RESET(res)	((res).nh_sel = 0)
 
 #define FIB_TABLE_HASHSZ 2
 
 #else /* CONFIG_IP_ROUTE_MULTIPATH */
 
 #define FIB_RES_NH(res)		((res).fi->fib_nh[0])
-#define FIB_RES_RESET(res)
 
 #define FIB_TABLE_HASHSZ 256
 
@@ -145,7 +143,6 @@ struct fib_result_nl {
 struct fib_table {
 	struct hlist_node tb_hlist;
 	u32		tb_id;
-	unsigned	tb_stamp;
 	int		tb_default;
 	int		(*tb_lookup)(struct fib_table *tb, const struct flowi *flp, struct fib_result *res);
 	int		(*tb_insert)(struct fib_table *, struct fib_config *);
@@ -213,7 +210,8 @@ extern struct fib_table *fib_get_table(struct net *net, u32 id);
 extern const struct nla_policy rtm_ipv4_policy[];
 extern void		ip_fib_init(void);
 extern int fib_validate_source(__be32 src, __be32 dst, u8 tos, int oif,
-			       struct net_device *dev, __be32 *spec_dst, u32 *itag);
+			       struct net_device *dev, __be32 *spec_dst,
+			       u32 *itag, u32 mark);
 extern void fib_select_default(struct net *net, const struct flowi *flp,
 			       struct fib_result *res);
 

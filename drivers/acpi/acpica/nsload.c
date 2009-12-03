@@ -128,12 +128,12 @@ acpi_ns_load_table(u32 table_index, struct acpi_namespace_node *node)
 	 * parse trees.
 	 */
 	ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-			  "**** Begin Table Method Parsing and Object Initialization ****\n"));
+			  "**** Begin Table Method Parsing and Object Initialization\n"));
 
 	status = acpi_ds_initialize_objects(table_index, node);
 
 	ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-			  "**** Completed Table Method Parsing and Object Initialization ****\n"));
+			  "**** Completed Table Method Parsing and Object Initialization\n"));
 
 	return_ACPI_STATUS(status);
 }
@@ -270,8 +270,7 @@ static acpi_status acpi_ns_delete_subtree(acpi_handle start_handle)
 
 	/* Now delete the starting object, and we are done */
 
-	acpi_ns_delete_node(child_handle);
-
+	acpi_ns_remove_node(child_handle);
 	return_ACPI_STATUS(AE_OK);
 }
 

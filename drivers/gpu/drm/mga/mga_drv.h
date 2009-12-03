@@ -113,8 +113,8 @@ typedef struct drm_mga_private {
 	 * \sa drm_mga_private_t::mmio
 	 */
 	/*@{ */
-	u32 mmio_base;		   /**< Bus address of base of MMIO. */
-	u32 mmio_size;		   /**< Size of the MMIO region. */
+	resource_size_t mmio_base;	   /**< Bus address of base of MMIO. */
+	resource_size_t mmio_size;	   /**< Size of the MMIO region. */
 	/*@} */
 
 	u32 clear_cmd;
@@ -177,7 +177,6 @@ extern void mga_do_dma_wrap_end(drm_mga_private_t * dev_priv);
 extern int mga_freelist_put(struct drm_device * dev, struct drm_buf * buf);
 
 				/* mga_warp.c */
-extern unsigned int mga_warp_microcode_size(const drm_mga_private_t * dev_priv);
 extern int mga_warp_install_microcode(drm_mga_private_t * dev_priv);
 extern int mga_warp_init(drm_mga_private_t * dev_priv);
 
@@ -317,8 +316,8 @@ do {									\
 		DRM_INFO( "\n" );					\
 		DRM_INFO( "   tail=0x%06x head=0x%06lx\n",		\
 			  dev_priv->prim.tail,				\
-			  MGA_READ( MGA_PRIMADDRESS ) -			\
-			  dev_priv->primary->offset );			\
+			  (unsigned long)(MGA_READ(MGA_PRIMADDRESS) -	\
+					  dev_priv->primary->offset));	\
 	}								\
 	if ( !test_bit( 0, &dev_priv->prim.wrapped ) ) {		\
 		if ( dev_priv->prim.space <				\

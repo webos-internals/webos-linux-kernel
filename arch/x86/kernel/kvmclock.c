@@ -19,10 +19,11 @@
 #include <linux/clocksource.h>
 #include <linux/kvm_para.h>
 #include <asm/pvclock.h>
-#include <asm/arch_hooks.h>
 #include <asm/msr.h>
 #include <asm/apic.h>
 #include <linux/percpu.h>
+
+#include <asm/x86_init.h>
 #include <asm/reboot.h>
 
 #define KVM_SCALE 22
@@ -51,8 +52,8 @@ static unsigned long kvm_get_wallclock(void)
 	struct timespec ts;
 	int low, high;
 
-	low = (int)__pa(&wall_clock);
-	high = ((u64)__pa(&wall_clock) >> 32);
+	low = (int)__pa_symbol(&wall_clock);
+	high = ((u64)__pa_symbol(&wall_clock) >> 32);
 	native_write_msr(MSR_KVM_WALL_CLOCK, low, high);
 
 	vcpu_time = &get_cpu_var(hv_clock);
@@ -76,6 +77,11 @@ static cycle_t kvm_clock_read(void)
 	ret = pvclock_clocksource_read(src);
 	put_cpu_var(hv_clock);
 	return ret;
+}
+
+static cycle_t kvm_clock_get_cycles(struct clocksource *cs)
+{
+	return kvm_clock_read();
 }
 
 /*
@@ -108,7 +114,7 @@ static void kvm_get_preset_lpj(void)
 
 static struct clocksource kvm_clock = {
 	.name = "kvm-clock",
-	.read = kvm_clock_read,
+	.read = kvm_clock_get_cycles,
 	.rating = 400,
 	.mask = CLOCKSOURCE_MASK(64),
 	.mult = 1 << KVM_SCALE,
@@ -178,12 +184,13 @@ void __init kvmclock_init(void)
 	if (kvmclock && kvm_para_has_feature(KVM_FEATURE_CLOCKSOURCE)) {
 		if (kvm_register_clock("boot clock"))
 			return;
-		pv_time_ops.get_wallclock = kvm_get_wallclock;
-		pv_time_ops.set_wallclock = kvm_set_wallclock;
 		pv_time_ops.sched_clock = kvm_clock_read;
-		pv_time_ops.get_tsc_khz = kvm_get_tsc_khz;
+		x86_platform.calibrate_tsc = kvm_get_tsc_khz;
+		x86_platform.get_wallclock = kvm_get_wallclock;
+		x86_platform.set_wallclock = kvm_set_wallclock;
 #ifdef CONFIG_X86_LOCAL_APIC
-		pv_apic_ops.setup_secondary_clock = kvm_setup_secondary_clock;
+		x86_cpuinit.setup_percpu_clockev =
+			kvm_setup_secondary_clock;
 #endif
 #ifdef CONFIG_SMP
 		smp_ops.smp_prepare_boot_cpu = kvm_smp_prepare_boot_cpu;

@@ -271,7 +271,7 @@ static inline void cvmx_write_csr(uint64_t csr_addr, uint64_t val)
 	 * what RSL read we do, so we choose CVMX_MIO_BOOT_BIST_STAT
 	 * because it is fast and harmless.
 	 */
-	if ((csr_addr >> 40) == (0x800118))
+	if (((csr_addr >> 40) & 0x7ffff) == (0x118))
 		cvmx_read64(CVMX_MIO_BOOT_BIST_STAT);
 }
 
@@ -373,6 +373,18 @@ static inline uint64_t cvmx_get_cycle(void)
 	uint64_t cycle;
 	CVMX_RDHWR(cycle, 31);
 	return cycle;
+}
+
+/**
+ * Wait for the specified number of cycle
+ *
+ */
+static inline void cvmx_wait(uint64_t cycles)
+{
+	uint64_t done = cvmx_get_cycle() + cycles;
+
+	while (cvmx_get_cycle() < done)
+		; /* Spin */
 }
 
 /**

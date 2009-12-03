@@ -8,7 +8,7 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-#include <linux/version.h>
+#include <linux/io.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
@@ -21,7 +21,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
 #include <linux/phy.h>
-#include <linux/platform_device.h>
 
 #include "dnet.h"
 
@@ -542,7 +541,7 @@ static inline void dnet_print_skb(struct sk_buff *skb)
 #define dnet_print_skb(skb)	do {} while (0)
 #endif
 
-static int dnet_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t dnet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 
 	struct dnet *bp = netdev_priv(dev);
@@ -597,7 +596,7 @@ static int dnet_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	dev->trans_start = jiffies;
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 static void dnet_reset_hw(struct dnet *bp)

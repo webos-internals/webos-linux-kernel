@@ -1,30 +1,7 @@
 /*
- * File:         arch/blackfin/mm/init.c
- * Based on:
- * Author:
+ * Copyright 2004-2009 Analog Devices Inc.
  *
- * Created:
- * Description:
- *
- * Modified:
- *               Copyright 2004-2007 Analog Devices Inc.
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see the file COPYING, or write
- * to the Free Software Foundation, Inc.,
- * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/swap.h>
@@ -33,6 +10,7 @@
 #include <asm/bfin-global.h>
 #include <asm/pda.h>
 #include <asm/cplbinit.h>
+#include <asm/early_printk.h>
 #include "blackfin_sram.h"
 
 /*
@@ -52,9 +30,14 @@ static unsigned long empty_bad_page_table;
 
 static unsigned long empty_bad_page;
 
-unsigned long empty_zero_page;
+static unsigned long empty_zero_page;
 
-extern unsigned long exception_stack[NR_CPUS][1024];
+#ifndef CONFIG_EXCEPTION_L1_SCRATCH
+#if defined CONFIG_SYSCALL_TAB_L1
+__attribute__((l1_data))
+#endif
+static unsigned long exception_stack[NR_CPUS][1024];
+#endif
 
 struct blackfin_pda cpu_pda[NR_CPUS];
 EXPORT_SYMBOL(cpu_pda);
@@ -108,6 +91,8 @@ asmlinkage void __init init_pda(void)
 {
 	unsigned int cpu = raw_smp_processor_id();
 
+	early_shadow_stamp();
+
 	/* Initialize the PDA fields holding references to other parts
 	   of the memory. The content of such memory is still
 	   undefined at the time of the call, we are only setting up
@@ -117,17 +102,16 @@ asmlinkage void __init init_pda(void)
 	cpu_pda[0].next = &cpu_pda[1];
 	cpu_pda[1].next = &cpu_pda[0];
 
+#ifdef CONFIG_EXCEPTION_L1_SCRATCH
+	cpu_pda[cpu].ex_stack = (unsigned long *)(L1_SCRATCH_START + \
+					L1_SCRATCH_LENGTH);
+#else
 	cpu_pda[cpu].ex_stack = exception_stack[cpu + 1];
+#endif
 
 #ifdef CONFIG_SMP
 	cpu_pda[cpu].imask = 0x1f;
 #endif
-}
-
-void __cpuinit reserve_pda(void)
-{
-	printk(KERN_INFO "PDA for CPU%u reserved at %p\n", smp_processor_id(),
-					&cpu_pda[smp_processor_id()]);
 }
 
 void __init mem_init(void)
@@ -156,7 +140,7 @@ void __init mem_init(void)
 
 	/* do not count in kernel image between _rambase and _ramstart */
 	reservedpages -= (_ramstart - _rambase) >> PAGE_SHIFT;
-#if (defined(CONFIG_BFIN_ICACHE) && ANOMALY_05000263)
+#if (defined(CONFIG_BFIN_EXTMEM_ICACHEABLE) && ANOMALY_05000263)
 	reservedpages += (_ramend - memory_end - DMA_UNCACHED_REGION) >> PAGE_SHIFT;
 #endif
 
@@ -170,19 +154,6 @@ void __init mem_init(void)
 		(unsigned long) freepages << (PAGE_SHIFT-10), _ramend >> 10,
 		initk, codek, datak, DMA_UNCACHED_REGION >> 10, (reservedpages << (PAGE_SHIFT-10)));
 }
-
-static int __init sram_init(void)
-{
-	/* Initialize the blackfin L1 Memory. */
-	bfin_sram_init();
-
-	/* Reserve the PDA space for the boot CPU right after we
-	 * initialized the scratch memory allocator.
-	 */
-	reserve_pda();
-	return 0;
-}
-pure_initcall(sram_init);
 
 static void __init free_init_pages(const char *what, unsigned long begin, unsigned long end)
 {

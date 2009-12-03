@@ -185,6 +185,7 @@ struct whc_qhead {
 #define QH_STATUS_FLOW_CTRL      (1 << 15)
 #define QH_STATUS_ICUR(i)        ((i) << 5)
 #define QH_STATUS_TO_ICUR(s)     (((s) >> 5) & 0x7)
+#define QH_STATUS_SEQ_MASK       0x1f
 
 /**
  * usb_pipe_to_qh_type - USB core pipe type to QH transfer type
@@ -263,6 +264,7 @@ struct whc_qset {
 	unsigned in_sw_list:1;
 	unsigned in_hw_list:1;
 	unsigned remove:1;
+	unsigned reset:1;
 	struct urb *pause_after_urb;
 	struct completion remove_complete;
 	int max_burst;

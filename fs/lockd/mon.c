@@ -16,6 +16,8 @@
 #include <linux/sunrpc/svc.h>
 #include <linux/lockd/lockd.h>
 
+#include <asm/unaligned.h>
+
 #define NLMDBG_FACILITY		NLMDBG_MONITOR
 #define NSM_PROGRAM		100024
 #define NSM_VERSION		1
@@ -51,49 +53,12 @@ static				DEFINE_SPINLOCK(nsm_lock);
 /*
  * Local NSM state
  */
-int	__read_mostly		nsm_local_state;
+u32	__read_mostly		nsm_local_state;
 int	__read_mostly		nsm_use_hostnames;
 
 static inline struct sockaddr *nsm_addr(const struct nsm_handle *nsm)
 {
 	return (struct sockaddr *)&nsm->sm_addr;
-}
-
-static void nsm_display_ipv4_address(const struct sockaddr *sap, char *buf,
-				     const size_t len)
-{
-	const struct sockaddr_in *sin = (struct sockaddr_in *)sap;
-	snprintf(buf, len, "%pI4", &sin->sin_addr.s_addr);
-}
-
-static void nsm_display_ipv6_address(const struct sockaddr *sap, char *buf,
-				     const size_t len)
-{
-	const struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)sap;
-
-	if (ipv6_addr_v4mapped(&sin6->sin6_addr))
-		snprintf(buf, len, "%pI4", &sin6->sin6_addr.s6_addr32[3]);
-	else if (sin6->sin6_scope_id != 0)
-		snprintf(buf, len, "%pI6%%%u", &sin6->sin6_addr,
-				sin6->sin6_scope_id);
-	else
-		snprintf(buf, len, "%pI6", &sin6->sin6_addr);
-}
-
-static void nsm_display_address(const struct sockaddr *sap,
-				char *buf, const size_t len)
-{
-	switch (sap->sa_family) {
-	case AF_INET:
-		nsm_display_ipv4_address(sap, buf, len);
-		break;
-	case AF_INET6:
-		nsm_display_ipv6_address(sap, buf, len);
-		break;
-	default:
-		snprintf(buf, len, "unsupported address family");
-		break;
-	}
 }
 
 static struct rpc_clnt *nsm_create(void)
@@ -110,6 +75,7 @@ static struct rpc_clnt *nsm_create(void)
 		.program		= &nsm_program,
 		.version		= NSM_VERSION,
 		.authflavor		= RPC_AUTH_NULL,
+		.flags			= RPC_CLNT_CREATE_NOPING,
 	};
 
 	return rpc_create(&args);
@@ -182,13 +148,19 @@ int nsm_monitor(const struct nlm_host *host)
 	nsm->sm_mon_name = nsm_use_hostnames ? nsm->sm_name : nsm->sm_addrbuf;
 
 	status = nsm_mon_unmon(nsm, NSMPROC_MON, &res);
-	if (res.status != 0)
+	if (unlikely(res.status != 0))
 		status = -EIO;
-	if (status < 0)
+	if (unlikely(status < 0)) {
 		printk(KERN_NOTICE "lockd: cannot monitor %s\n", nsm->sm_name);
-	else
-		nsm->sm_monitored = 1;
-	return status;
+		return status;
+	}
+
+	nsm->sm_monitored = 1;
+	if (unlikely(nsm_local_state != res.state)) {
+		nsm_local_state = res.state;
+		dprintk("lockd: NSM state changed to %d\n", nsm_local_state);
+	}
+	return 0;
 }
 
 /**
@@ -237,7 +209,7 @@ static struct nsm_handle *nsm_lookup_addr(const struct sockaddr *sap)
 	struct nsm_handle *nsm;
 
 	list_for_each_entry(nsm, &nsm_handles, sm_link)
-		if (nlm_cmp_addr(nsm_addr(nsm), sap))
+		if (rpc_cmp_addr(nsm_addr(nsm), sap))
 			return nsm;
 	return NULL;
 }
@@ -274,10 +246,12 @@ static void nsm_init_private(struct nsm_handle *nsm)
 {
 	u64 *p = (u64 *)&nsm->sm_priv.data;
 	struct timespec ts;
+	s64 ns;
 
 	ktime_get_ts(&ts);
-	*p++ = timespec_to_ns(&ts);
-	*p = (unsigned long)nsm;
+	ns = timespec_to_ns(&ts);
+	put_unaligned(ns, p);
+	put_unaligned((unsigned long)nsm, p + 1);
 }
 
 static struct nsm_handle *nsm_create_handle(const struct sockaddr *sap,
@@ -296,8 +270,11 @@ static struct nsm_handle *nsm_create_handle(const struct sockaddr *sap,
 	memcpy(nsm_addr(new), sap, salen);
 	new->sm_addrlen = salen;
 	nsm_init_private(new);
-	nsm_display_address((const struct sockaddr *)&new->sm_addr,
-				new->sm_addrbuf, sizeof(new->sm_addrbuf));
+
+	if (rpc_ntop(nsm_addr(new), new->sm_addrbuf,
+					sizeof(new->sm_addrbuf)) == 0)
+		(void)snprintf(new->sm_addrbuf, sizeof(new->sm_addrbuf),
+				"unsupported address family");
 	memcpy(new->sm_name, hostname, hostname_len);
 	new->sm_name[hostname_len] = '\0';
 

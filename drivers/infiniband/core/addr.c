@@ -393,7 +393,7 @@ static int addr_resolve_local(struct sockaddr *src_in,
 
 		for_each_netdev(&init_net, dev)
 			if (ipv6_chk_addr(&init_net,
-					  &((struct sockaddr_in6 *) addr)->sin6_addr,
+					  &((struct sockaddr_in6 *) dst_in)->sin6_addr,
 					  dev, 1))
 				break;
 
@@ -514,7 +514,7 @@ static struct notifier_block nb = {
 	.notifier_call = netevent_callback
 };
 
-static int addr_init(void)
+static int __init addr_init(void)
 {
 	addr_wq = create_singlethread_workqueue("ib_addr");
 	if (!addr_wq)
@@ -524,7 +524,7 @@ static int addr_init(void)
 	return 0;
 }
 
-static void addr_cleanup(void)
+static void __exit addr_cleanup(void)
 {
 	unregister_netevent_notifier(&nb);
 	destroy_workqueue(addr_wq);

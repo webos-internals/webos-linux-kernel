@@ -26,6 +26,8 @@
 #include <asm/mach/irq.h>
 #include <mach/fb.h>
 #include <mach/hardware.h>
+#include <mach/dma.h>
+#include <mach/irqs.h>
 #include <asm/irq.h>
 
 #include <plat/regs-serial.h>
@@ -136,36 +138,6 @@ struct platform_device *s3c24xx_uart_src[4] = {
 struct platform_device *s3c24xx_uart_devs[4] = {
 };
 
-/* USB Host Controller */
-
-static struct resource s3c_usb_resource[] = {
-	[0] = {
-		.start = S3C24XX_PA_USBHOST,
-		.end   = S3C24XX_PA_USBHOST + S3C24XX_SZ_USBHOST - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	[1] = {
-		.start = IRQ_USBH,
-		.end   = IRQ_USBH,
-		.flags = IORESOURCE_IRQ,
-	}
-};
-
-static u64 s3c_device_usb_dmamask = 0xffffffffUL;
-
-struct platform_device s3c_device_usb = {
-	.name		  = "s3c2410-ohci",
-	.id		  = -1,
-	.num_resources	  = ARRAY_SIZE(s3c_usb_resource),
-	.resource	  = s3c_usb_resource,
-	.dev              = {
-		.dma_mask = &s3c_device_usb_dmamask,
-		.coherent_dma_mask = 0xffffffffUL
-	}
-};
-
-EXPORT_SYMBOL(s3c_device_usb);
-
 /* LCD Controller */
 
 static struct resource s3c_lcd_resource[] = {
@@ -209,25 +181,6 @@ void __init s3c24xx_fb_set_platdata(struct s3c2410fb_mach_info *pd)
 		printk(KERN_ERR "no memory for LCD platform data\n");
 	}
 }
-
-/* NAND Controller */
-
-static struct resource s3c_nand_resource[] = {
-	[0] = {
-		.start = S3C24XX_PA_NAND,
-		.end   = S3C24XX_PA_NAND + S3C24XX_SZ_NAND - 1,
-		.flags = IORESOURCE_MEM,
-	}
-};
-
-struct platform_device s3c_device_nand = {
-	.name		  = "s3c2410-nand",
-	.id		  = -1,
-	.num_resources	  = ARRAY_SIZE(s3c_nand_resource),
-	.resource	  = s3c_nand_resource,
-};
-
-EXPORT_SYMBOL(s3c_device_nand);
 
 /* USB Device (Gadget)*/
 
@@ -378,7 +331,7 @@ struct platform_device s3c_device_adc = {
 /* HWMON */
 
 struct platform_device s3c_device_hwmon = {
-	.name		= "s3c24xx-hwmon",
+	.name		= "s3c-hwmon",
 	.id		= -1,
 	.dev.parent	= &s3c_device_adc.dev,
 };
@@ -502,5 +455,53 @@ struct platform_device s3c_device_camif = {
 };
 
 EXPORT_SYMBOL(s3c_device_camif);
+
+/* AC97 */
+
+static struct resource s3c_ac97_resource[] = {
+	[0] = {
+		.start = S3C2440_PA_AC97,
+		.end   = S3C2440_PA_AC97 + S3C2440_SZ_AC97 -1,
+		.flags = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start = IRQ_S3C244x_AC97,
+		.end   = IRQ_S3C244x_AC97,
+		.flags = IORESOURCE_IRQ,
+	},
+	[2] = {
+		.name  = "PCM out",
+		.start = DMACH_PCM_OUT,
+		.end   = DMACH_PCM_OUT,
+		.flags = IORESOURCE_DMA,
+	},
+	[3] = {
+		.name  = "PCM in",
+		.start = DMACH_PCM_IN,
+		.end   = DMACH_PCM_IN,
+		.flags = IORESOURCE_DMA,
+	},
+	[4] = {
+		.name  = "Mic in",
+		.start = DMACH_MIC_IN,
+		.end   = DMACH_MIC_IN,
+		.flags = IORESOURCE_DMA,
+	},
+};
+
+static u64 s3c_device_ac97_dmamask = 0xffffffffUL;
+
+struct platform_device s3c_device_ac97 = {
+	.name		  = "s3c-ac97",
+	.id		  = -1,
+	.num_resources	  = ARRAY_SIZE(s3c_ac97_resource),
+	.resource	  = s3c_ac97_resource,
+	.dev              = {
+		.dma_mask = &s3c_device_ac97_dmamask,
+		.coherent_dma_mask = 0xffffffffUL
+	}
+};
+
+EXPORT_SYMBOL(s3c_device_ac97);
 
 #endif // CONFIG_CPU_S32440

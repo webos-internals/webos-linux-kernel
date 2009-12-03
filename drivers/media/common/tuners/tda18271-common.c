@@ -210,7 +210,8 @@ int tda18271_write_regs(struct dvb_frontend *fe, int idx, int len)
 	tda18271_i2c_gate_ctrl(fe, 0);
 
 	if (ret != 1)
-		tda_err("ERROR: i2c_transfer returned: %d\n", ret);
+		tda_err("ERROR: idx = 0x%x, len = %d, "
+			"i2c_transfer returned: %d\n", idx, len, ret);
 
 	return (ret == 1 ? 0 : ret);
 }
@@ -490,9 +491,9 @@ int tda18271_set_standby_mode(struct dvb_frontend *fe,
 		tda_dbg("sm = %d, sm_lt = %d, sm_xt = %d\n", sm, sm_lt, sm_xt);
 
 	regs[R_EP3]  &= ~0xe0; /* clear sm, sm_lt, sm_xt */
-	regs[R_EP3]  |= sm    ? (1 << 7) : 0 |
-			sm_lt ? (1 << 6) : 0 |
-			sm_xt ? (1 << 5) : 0;
+	regs[R_EP3]  |= (sm    ? (1 << 7) : 0) |
+			(sm_lt ? (1 << 6) : 0) |
+			(sm_xt ? (1 << 5) : 0);
 
 	return tda18271_write_regs(fe, R_EP3, 1);
 }

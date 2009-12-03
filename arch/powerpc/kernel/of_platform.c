@@ -76,7 +76,7 @@ struct of_device* of_platform_device_create(struct device_node *np,
 		return NULL;
 
 	dev->dma_mask = 0xffffffffUL;
-	dev->dev.coherent_dma_mask = DMA_32BIT_MASK;
+	dev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
 
 	dev->dev.bus = &of_platform_bus_type;
 
@@ -276,7 +276,7 @@ static int __devinit of_pci_phb_probe(struct of_device *dev,
 #endif /* CONFIG_EEH */
 
 	/* Scan the bus */
-	scan_phb(phb);
+	pcibios_scan_phb(phb, dev->node);
 	if (phb->bus == NULL)
 		return -ENXIO;
 

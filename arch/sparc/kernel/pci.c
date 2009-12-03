@@ -711,19 +711,6 @@ void __devinit pcibios_fixup_bus(struct pci_bus *pbus)
 	pbus->resource[1] = &pbm->mem_space;
 }
 
-struct resource *pcibios_select_root(struct pci_dev *pdev, struct resource *r)
-{
-	struct pci_pbm_info *pbm = pdev->bus->sysdata;
-	struct resource *root = NULL;
-
-	if (r->flags & IORESOURCE_IO)
-		root = &pbm->io_space;
-	if (r->flags & IORESOURCE_MEM)
-		root = &pbm->mem_space;
-
-	return root;
-}
-
 void pcibios_update_irq(struct pci_dev *pdev, int irq)
 {
 }
@@ -1052,7 +1039,7 @@ static void ali_sound_dma_hack(struct pci_dev *pdev, int set_bit)
 	pci_dev_put(ali_isa_bridge);
 }
 
-int pci_dma_supported(struct pci_dev *pdev, u64 device_mask)
+int pci64_dma_supported(struct pci_dev *pdev, u64 device_mask)
 {
 	u64 dma_addr_mask;
 

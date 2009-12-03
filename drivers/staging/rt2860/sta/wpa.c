@@ -1384,6 +1384,10 @@ VOID	WpaGroupMsg1Action(
 			pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].CipherAlg = CIPHER_TKIP;
 		else if (pAd->StaCfg.GroupCipher == Ndis802_11Encryption3Enabled)
 			pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].CipherAlg = CIPHER_AES;
+		else if (pAd->StaCfg.GroupCipher == Ndis802_11GroupWEP40Enabled)
+			pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].CipherAlg = CIPHER_WEP64;
+		else if (pAd->StaCfg.GroupCipher == Ndis802_11GroupWEP104Enabled)
+			pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].CipherAlg = CIPHER_WEP128;
 
     	//hex_dump("Group Key :", pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].Key, LEN_TKIP_EK);
 	}
@@ -1786,6 +1790,10 @@ BOOLEAN ParseKeyData(
 		pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].CipherAlg = CIPHER_TKIP;
 	else if (pAd->StaCfg.GroupCipher == Ndis802_11Encryption3Enabled)
 		pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].CipherAlg = CIPHER_AES;
+	else if (pAd->StaCfg.GroupCipher == Ndis802_11GroupWEP40Enabled)
+		pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].CipherAlg = CIPHER_WEP64;
+	else if (pAd->StaCfg.GroupCipher == Ndis802_11GroupWEP104Enabled)
+		pAd->SharedKey[BSS0][pAd->StaCfg.DefaultKeyId].CipherAlg = CIPHER_WEP128;
 
 	return TRUE;
 
@@ -1907,8 +1915,6 @@ VOID	RTMPReportMicError(
     }
 }
 
-
-#ifdef WPA_SUPPLICANT_SUPPORT
 #define	LENGTH_EAP_H    4
 // If the received frame is EAP-Packet ,find out its EAP-Code (Request(0x01), Response(0x02), Success(0x03), Failure(0x04)).
 INT	    WpaCheckEapCode(
@@ -1949,7 +1955,6 @@ VOID    WpaSendMicFailureToWpaSupplicant(
 
     return;
 }
-#endif // WPA_SUPPLICANT_SUPPORT //
 
 VOID	WpaMicFailureReportFrame(
 	IN  PRTMP_ADAPTER   pAd,

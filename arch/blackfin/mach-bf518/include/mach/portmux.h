@@ -1,3 +1,9 @@
+/*
+ * Copyright 2008-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later
+ */
+
 #ifndef _MACH_PORTMUX_H_
 #define _MACH_PORTMUX_H_
 
@@ -185,6 +191,10 @@
 #define P_PTP_PPS		(P_DEFINED | P_IDENT(GPIO_PG12) | P_FUNCT(2))
 #define P_PTP_CLKOUT		(P_DEFINED | P_IDENT(GPIO_PG13) | P_FUNCT(2))
 
-#define P_HWAIT		(P_DEFINED | P_IDENT(GPIO_PG000000000) | P_FUNCT(1))
+/* AMS */
+#define P_AMS2			(P_DEFINED | P_IDENT(GPIO_PG11) | P_FUNCT(1))
+#define P_AMS3			(P_DEFINED | P_IDENT(GPIO_PG15) | P_FUNCT(2))
+
+#define P_HWAIT			(P_DEFINED | P_IDENT(GPIO_PG000000000) | P_FUNCT(1))
 
 #endif				/* _MACH_PORTMUX_H_ */

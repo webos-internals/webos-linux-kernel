@@ -977,9 +977,7 @@ static void xdump( u_char*  cp, int  length, char*  prefix )
             else
                 pBuf += sprintf( pBuf, "." );
                 }
-        sprintf( pBuf, "\n" );
-        // SPrint(prntBuf);
-        printk(prntBuf);
+        printk("%s\n", prntBuf);
         count += col;
         pBuf = prntBuf;
     }
@@ -2864,7 +2862,7 @@ static int ia_getsockopt(struct atm_vcc *vcc, int level, int optname,
 }  
   
 static int ia_setsockopt(struct atm_vcc *vcc, int level, int optname,   
-	void __user *optval, int optlen)  
+	void __user *optval, unsigned int optlen)  
 {  
 	IF_EVENT(printk(">ia_setsockopt\n");)  
 	return -EINVAL;  

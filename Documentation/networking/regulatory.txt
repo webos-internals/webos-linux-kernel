@@ -89,14 +89,14 @@ added to this document when its support is enabled.
 Device drivers who provide their own built regulatory domain
 do not need a callback as the channels registered by them are
 the only ones that will be allowed and therefore *additional*
-cannels cannot be enabled.
+channels cannot be enabled.
 
 Example code - drivers hinting an alpha2:
 ------------------------------------------
 
 This example comes from the zd1211rw device driver. You can start
 by having a mapping of your device's EEPROM country/regulatory
-domain value to to a specific alpha2 as follows:
+domain value to a specific alpha2 as follows:
 
 static struct zd_reg_alpha2_map reg_alpha2_map[] = {
 	{ ZD_REGDOMAIN_FCC, "US" },

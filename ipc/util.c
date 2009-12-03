@@ -47,15 +47,6 @@ struct ipc_proc_iface {
 	int (*show)(struct seq_file *, void *);
 };
 
-struct ipc_namespace init_ipc_ns = {
-	.kref = {
-		.refcount	= ATOMIC_INIT(2),
-	},
-};
-
-atomic_t nr_ipc_ns = ATOMIC_INIT(1);
-
-
 #ifdef CONFIG_MEMORY_HOTPLUG
 
 static void ipc_memory_notifier(struct work_struct *work)
@@ -951,7 +942,7 @@ static int sysvipc_proc_show(struct seq_file *s, void *it)
 	return iface->show(s, it);
 }
 
-static struct seq_operations sysvipc_proc_seqops = {
+static const struct seq_operations sysvipc_proc_seqops = {
 	.start = sysvipc_proc_start,
 	.stop  = sysvipc_proc_stop,
 	.next  = sysvipc_proc_next,

@@ -1,12 +1,14 @@
+/*
+ * Copyright 2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
 #ifndef _BLACKFIN_SWAB_H
 #define _BLACKFIN_SWAB_H
 
-#include <asm/types.h>
-#include <linux/compiler.h>
-
-#if defined(__GNUC__) && !defined(__STRICT_ANSI__) || defined(__KERNEL__)
-#  define __SWAB_64_THRU_32__
-#endif
+#include <linux/types.h>
+#include <asm-generic/swab.h>
 
 #ifdef __GNUC__
 

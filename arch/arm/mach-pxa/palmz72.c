@@ -27,22 +27,24 @@
 #include <linux/pda_power.h>
 #include <linux/pwm_backlight.h>
 #include <linux/gpio.h>
+#include <linux/wm97xx_batt.h>
 #include <linux/power_supply.h>
+#include <linux/usb/gpio_vbus.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
+#include <mach/pxa27x.h>
 #include <mach/audio.h>
 #include <mach/palmz72.h>
 #include <mach/mmc.h>
 #include <mach/pxafb.h>
-#include <mach/pxa-regs.h>
-#include <mach/pxa2xx-regs.h>
-#include <mach/mfp-pxa27x.h>
 #include <mach/irda.h>
 #include <mach/pxa27x_keypad.h>
 #include <mach/udc.h>
+#include <mach/palmasoc.h>
+
 #include <mach/pm.h>
 
 #include "generic.h"
@@ -68,6 +70,8 @@ static unsigned long palmz72_pin_config[] __initdata = {
 	GPIO29_AC97_SDATA_IN_0,
 	GPIO30_AC97_SDATA_OUT,
 	GPIO31_AC97_SYNC,
+	GPIO89_AC97_SYSCLK,
+	GPIO113_AC97_nRESET,
 
 	/* IrDA */
 	GPIO49_GPIO,	/* ir disable */
@@ -79,8 +83,7 @@ static unsigned long palmz72_pin_config[] __initdata = {
 
 	/* USB */
 	GPIO15_GPIO,	/* usb detect */
-	GPIO12_GPIO,	/* usb pullup */
-	GPIO95_GPIO,	/* usb power */
+	GPIO95_GPIO,	/* usb pullup */
 
 	/* Matrix keypad */
 	GPIO100_KP_MKIN_0	| WAKEUP_ON_LEVEL_HIGH,
@@ -126,88 +129,14 @@ static unsigned long palmz72_pin_config[] __initdata = {
 /******************************************************************************
  * SD/MMC card controller
  ******************************************************************************/
-static int palmz72_mci_init(struct device *dev,
-				irq_handler_t palmz72_detect_int, void *data)
-{
-	int err = 0;
-
-	/* Setup an interrupt for detecting card insert/remove events */
-	err = gpio_request(GPIO_NR_PALMZ72_SD_DETECT_N, "SD IRQ");
-	if (err)
-		goto err;
-	err = gpio_direction_input(GPIO_NR_PALMZ72_SD_DETECT_N);
-	if (err)
-		goto err2;
-	err = request_irq(gpio_to_irq(GPIO_NR_PALMZ72_SD_DETECT_N),
-			palmz72_detect_int, IRQF_DISABLED | IRQF_SAMPLE_RANDOM |
-			IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
-			"SD/MMC card detect", data);
-	if (err) {
-		printk(KERN_ERR "%s: cannot request SD/MMC card detect IRQ\n",
-				__func__);
-		goto err2;
-	}
-
-	/* SD_POWER is not actually power, but it is more like chip
-	 * select, i.e. it is inverted */
-
-	err = gpio_request(GPIO_NR_PALMZ72_SD_POWER_N, "SD_POWER");
-	if (err)
-		goto err3;
-	err = gpio_direction_output(GPIO_NR_PALMZ72_SD_POWER_N, 0);
-	if (err)
-		goto err4;
-	err = gpio_request(GPIO_NR_PALMZ72_SD_RO, "SD_RO");
-	if (err)
-		goto err4;
-	err = gpio_direction_input(GPIO_NR_PALMZ72_SD_RO);
-	if (err)
-		goto err5;
-
-	printk(KERN_DEBUG "%s: irq registered\n", __func__);
-
-	return 0;
-
-err5:
-	gpio_free(GPIO_NR_PALMZ72_SD_RO);
-err4:
-	gpio_free(GPIO_NR_PALMZ72_SD_POWER_N);
-err3:
-	free_irq(gpio_to_irq(GPIO_NR_PALMZ72_SD_DETECT_N), data);
-err2:
-	gpio_free(GPIO_NR_PALMZ72_SD_DETECT_N);
-err:
-	return err;
-}
-
-static void palmz72_mci_exit(struct device *dev, void *data)
-{
-	gpio_free(GPIO_NR_PALMZ72_SD_POWER_N);
-	free_irq(gpio_to_irq(GPIO_NR_PALMZ72_SD_DETECT_N), data);
-	gpio_free(GPIO_NR_PALMZ72_SD_DETECT_N);
-	gpio_free(GPIO_NR_PALMZ72_SD_RO);
-}
-
-static void palmz72_mci_power(struct device *dev, unsigned int vdd)
-{
-	struct pxamci_platform_data *p_d = dev->platform_data;
-	if (p_d->ocr_mask & (1 << vdd))
-		gpio_set_value(GPIO_NR_PALMZ72_SD_POWER_N, 0);
-	else
-		gpio_set_value(GPIO_NR_PALMZ72_SD_POWER_N, 1);
-}
-
-static int palmz72_mci_ro(struct device *dev)
-{
-	return gpio_get_value(GPIO_NR_PALMZ72_SD_RO);
-}
-
+/* SD_POWER is not actually power, but it is more like chip
+ * select, i.e. it is inverted */
 static struct pxamci_platform_data palmz72_mci_platform_data = {
-	.ocr_mask	= MMC_VDD_32_33 | MMC_VDD_33_34,
-	.setpower	= palmz72_mci_power,
-	.get_ro		= palmz72_mci_ro,
-	.init 		= palmz72_mci_init,
-	.exit		= palmz72_mci_exit,
+	.ocr_mask		= MMC_VDD_32_33 | MMC_VDD_33_34,
+	.gpio_card_detect	= GPIO_NR_PALMZ72_SD_DETECT_N,
+	.gpio_card_ro		= GPIO_NR_PALMZ72_SD_RO,
+	.gpio_power		= GPIO_NR_PALMZ72_SD_POWER_N,
+	.gpio_power_invert	= 1,
 };
 
 /******************************************************************************
@@ -301,35 +230,9 @@ static struct platform_device palmz72_backlight = {
 /******************************************************************************
  * IrDA
  ******************************************************************************/
-static int palmz72_irda_startup(struct device *dev)
-{
-	int err;
-	err = gpio_request(GPIO_NR_PALMZ72_IR_DISABLE, "IR DISABLE");
-	if (err)
-		goto err;
-	err = gpio_direction_output(GPIO_NR_PALMZ72_IR_DISABLE, 1);
-	if (err)
-		gpio_free(GPIO_NR_PALMZ72_IR_DISABLE);
-err:
-	return err;
-}
-
-static void palmz72_irda_shutdown(struct device *dev)
-{
-	gpio_free(GPIO_NR_PALMZ72_IR_DISABLE);
-}
-
-static void palmz72_irda_transceiver_mode(struct device *dev, int mode)
-{
-	gpio_set_value(GPIO_NR_PALMZ72_IR_DISABLE, mode & IR_OFF);
-	pxa2xx_transceiver_mode(dev, mode);
-}
-
 static struct pxaficp_platform_data palmz72_ficp_platform_data = {
-	.startup		= palmz72_irda_startup,
-	.shutdown		= palmz72_irda_shutdown,
+	.gpio_pwdown		= GPIO_NR_PALMZ72_IR_DISABLE,
 	.transceiver_cap	= IR_SIRMODE | IR_OFF,
-	.transceiver_mode	= palmz72_irda_transceiver_mode,
 };
 
 /******************************************************************************
@@ -354,6 +257,22 @@ static struct platform_device palmz72_leds = {
 	.dev	= {
 		.platform_data	= &gpio_led_info,
 	}
+};
+
+/******************************************************************************
+ * UDC
+ ******************************************************************************/
+static struct gpio_vbus_mach_info palmz72_udc_info = {
+	.gpio_vbus		= GPIO_NR_PALMZ72_USB_DETECT_N,
+	.gpio_pullup		= GPIO_NR_PALMZ72_USB_PULLUP,
+};
+
+static struct platform_device palmz72_gpio_vbus = {
+	.name	= "gpio-vbus",
+	.id	= -1,
+	.dev	= {
+		.platform_data	= &palmz72_udc_info,
+	},
 };
 
 /******************************************************************************
@@ -421,6 +340,31 @@ static struct platform_device power_supply = {
 	.dev  = {
 		.platform_data = &power_supply_info,
 	},
+};
+
+/******************************************************************************
+ * WM97xx battery
+ ******************************************************************************/
+static struct wm97xx_batt_info wm97xx_batt_pdata = {
+	.batt_aux	= WM97XX_AUX_ID3,
+	.temp_aux	= WM97XX_AUX_ID2,
+	.charge_gpio	= -1,
+	.max_voltage	= PALMZ72_BAT_MAX_VOLTAGE,
+	.min_voltage	= PALMZ72_BAT_MIN_VOLTAGE,
+	.batt_mult	= 1000,
+	.batt_div	= 414,
+	.temp_mult	= 1,
+	.temp_div	= 1,
+	.batt_tech	= POWER_SUPPLY_TECHNOLOGY_LIPO,
+	.batt_name	= "main-batt",
+};
+
+/******************************************************************************
+ * aSoC audio
+ ******************************************************************************/
+static struct platform_device palmz72_asoc = {
+	.name = "palm27x-asoc",
+	.id   = -1,
 };
 
 /******************************************************************************
@@ -529,17 +473,32 @@ device_initcall(palmz72_pm_init);
 static struct platform_device *devices[] __initdata = {
 	&palmz72_backlight,
 	&palmz72_leds,
+	&palmz72_asoc,
 	&power_supply,
+	&palmz72_gpio_vbus,
 };
+
+/* setup udc GPIOs initial state */
+static void __init palmz72_udc_init(void)
+{
+	if (!gpio_request(GPIO_NR_PALMZ72_USB_PULLUP, "USB Pullup")) {
+		gpio_direction_output(GPIO_NR_PALMZ72_USB_PULLUP, 0);
+		gpio_free(GPIO_NR_PALMZ72_USB_PULLUP);
+	}
+}
 
 static void __init palmz72_init(void)
 {
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(palmz72_pin_config));
+
 	set_pxa_fb_info(&palmz72_lcd_screen);
 	pxa_set_mci_info(&palmz72_mci_platform_data);
+	palmz72_udc_init();
 	pxa_set_ac97_info(NULL);
 	pxa_set_ficp_info(&palmz72_ficp_platform_data);
 	pxa_set_keypad_info(&palmz72_keypad_platform_data);
+	wm97xx_bat_set_pdata(&wm97xx_batt_pdata);
+
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 }
 

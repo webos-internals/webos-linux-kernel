@@ -259,6 +259,8 @@ struct drm_framebuffer {
 	void *fbdev;
 	u32 pseudo_palette[17];
 	struct list_head filp_head;
+	/* if you are using the helper */
+	void *helper_private;
 };
 
 struct drm_property_blob {
@@ -385,6 +387,7 @@ struct drm_crtc {
  * @get_modes: get mode list for this connector
  * @set_property: property for this connector may need update
  * @destroy: make object go away
+ * @force: notify the driver the connector is forced on
  *
  * Each CRTC may have one or more connectors attached to it.  The functions
  * below allow the core DRM code to control connectors, enumerate available modes,
@@ -399,6 +402,7 @@ struct drm_connector_funcs {
 	int (*set_property)(struct drm_connector *connector, struct drm_property *property,
 			     uint64_t val);
 	void (*destroy)(struct drm_connector *connector);
+	void (*force)(struct drm_connector *connector);
 };
 
 struct drm_encoder_funcs {
@@ -425,6 +429,13 @@ struct drm_encoder {
 	struct drm_crtc *crtc;
 	const struct drm_encoder_funcs *funcs;
 	void *helper_private;
+};
+
+enum drm_connector_force {
+	DRM_FORCE_UNSPECIFIED,
+	DRM_FORCE_OFF,
+	DRM_FORCE_ON,         /* force on analog part normally */
+	DRM_FORCE_ON_DIGITAL, /* for DVI-I use digital connector */
 };
 
 /**
@@ -471,11 +482,17 @@ struct drm_connector {
 	u32 property_ids[DRM_CONNECTOR_MAX_PROPERTY];
 	uint64_t property_values[DRM_CONNECTOR_MAX_PROPERTY];
 
+	/* requested DPMS state */
+	int dpms;
+
 	void *helper_private;
 
+	/* forced on connector */
+	enum drm_connector_force force;
 	uint32_t encoder_ids[DRM_CONNECTOR_MAX_ENCODER];
 	uint32_t force_encoder_id;
 	struct drm_encoder *encoder; /* currently active encoder */
+	void *fb_helper_private;
 };
 
 /**
@@ -550,7 +567,7 @@ struct drm_mode_config {
 	int min_width, min_height;
 	int max_width, max_height;
 	struct drm_mode_config_funcs *funcs;
-	unsigned long fb_base;
+	resource_size_t fb_base;
 
 	/* pointers to standard properties */
 	struct list_head property_blob_list;
@@ -569,6 +586,12 @@ struct drm_mode_config {
 	struct drm_property *tv_right_margin_property;
 	struct drm_property *tv_top_margin_property;
 	struct drm_property *tv_bottom_margin_property;
+	struct drm_property *tv_brightness_property;
+	struct drm_property *tv_contrast_property;
+	struct drm_property *tv_flicker_reduction_property;
+	struct drm_property *tv_overscan_property;
+	struct drm_property *tv_saturation_property;
+	struct drm_property *tv_hue_property;
 
 	/* Optional properties */
 	struct drm_property *scaling_mode_property;
@@ -613,7 +636,8 @@ extern void drm_fb_release(struct drm_file *file_priv);
 extern int drm_mode_group_init_legacy_group(struct drm_device *dev, struct drm_mode_group *group);
 extern struct edid *drm_get_edid(struct drm_connector *connector,
 				 struct i2c_adapter *adapter);
-extern unsigned char *drm_do_probe_ddc_edid(struct i2c_adapter *adapter);
+extern int drm_do_probe_ddc_edid(struct i2c_adapter *adapter,
+				 unsigned char *buf, int len);
 extern int drm_add_edid_modes(struct drm_connector *connector, struct edid *edid);
 extern void drm_mode_probed_add(struct drm_connector *connector, struct drm_display_mode *mode);
 extern void drm_mode_remove(struct drm_connector *connector, struct drm_display_mode *mode);
@@ -731,4 +755,13 @@ extern int drm_mode_gamma_get_ioctl(struct drm_device *dev,
 				    void *data, struct drm_file *file_priv);
 extern int drm_mode_gamma_set_ioctl(struct drm_device *dev,
 				    void *data, struct drm_file *file_priv);
+extern bool drm_detect_hdmi_monitor(struct edid *edid);
+extern struct drm_display_mode *drm_cvt_mode(struct drm_device *dev,
+				int hdisplay, int vdisplay, int vrefresh,
+				bool reduced, bool interlaced, bool margins);
+extern struct drm_display_mode *drm_gtf_mode(struct drm_device *dev,
+				int hdisplay, int vdisplay, int vrefresh,
+				bool interlaced, int margins);
+extern int drm_add_modes_noedid(struct drm_connector *connector,
+				int hdisplay, int vdisplay);
 #endif /* __DRM_CRTC_H__ */

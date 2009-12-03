@@ -79,7 +79,7 @@ static int ncp_hash_dentry(struct dentry *, struct qstr *);
 static int ncp_compare_dentry (struct dentry *, struct qstr *, struct qstr *);
 static int ncp_delete_dentry(struct dentry *);
 
-static struct dentry_operations ncp_dentry_operations =
+static const struct dentry_operations ncp_dentry_operations =
 {
 	.d_revalidate	= ncp_lookup_validate,
 	.d_hash		= ncp_hash_dentry,
@@ -87,7 +87,7 @@ static struct dentry_operations ncp_dentry_operations =
 	.d_delete	= ncp_delete_dentry,
 };
 
-struct dentry_operations ncp_root_dentry_operations =
+const struct dentry_operations ncp_root_dentry_operations =
 {
 	.d_hash		= ncp_hash_dentry,
 	.d_compare	= ncp_compare_dentry,
@@ -1241,7 +1241,7 @@ ncp_date_unix2dos(int unix_date, __le16 *time, __le16 *date)
 		month = 2;
 	} else {
 		nl_day = (year & 3) || day <= 59 ? day : day - 1;
-		for (month = 0; month < 12; month++)
+		for (month = 1; month < 12; month++)
 			if (day_n[month] > nl_day)
 				break;
 	}

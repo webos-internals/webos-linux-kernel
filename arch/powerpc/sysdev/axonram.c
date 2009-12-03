@@ -165,7 +165,7 @@ axon_ram_direct_access(struct block_device *device, sector_t sector,
 	return 0;
 }
 
-static struct block_device_operations axon_ram_devops = {
+static const struct block_device_operations axon_ram_devops = {
 	.owner		= THIS_MODULE,
 	.direct_access	= axon_ram_direct_access
 };
@@ -250,7 +250,7 @@ axon_ram_probe(struct of_device *device, const struct of_device_id *device_id)
 
 	set_capacity(bank->disk, bank->size >> AXON_RAM_SECTOR_SHIFT);
 	blk_queue_make_request(bank->disk->queue, axon_ram_make_request);
-	blk_queue_hardsect_size(bank->disk->queue, AXON_RAM_SECTOR_SIZE);
+	blk_queue_logical_block_size(bank->disk->queue, AXON_RAM_SECTOR_SIZE);
 	add_disk(bank->disk);
 
 	bank->irq_id = irq_of_parse_and_map(device->node, 0);

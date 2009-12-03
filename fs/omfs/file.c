@@ -11,21 +11,6 @@
 #include <linux/mpage.h>
 #include "omfs.h"
 
-static int omfs_sync_file(struct file *file, struct dentry *dentry,
-		int datasync)
-{
-	struct inode *inode = dentry->d_inode;
-	int err;
-
-	err = sync_mapping_buffers(inode->i_mapping);
-	if (!(inode->i_state & I_DIRTY))
-		return err;
-	if (datasync && !(inode->i_state & I_DIRTY_DATASYNC))
-		return err;
-	err |= omfs_sync_inode(inode);
-	return err ? -EIO : 0;
-}
-
 static u32 omfs_max_extents(struct omfs_sb_info *sbi, int offset)
 {
 	return (sbi->s_sys_blocksize - offset -
@@ -337,22 +322,22 @@ static sector_t omfs_bmap(struct address_space *mapping, sector_t block)
 	return generic_block_bmap(mapping, block, omfs_get_block);
 }
 
-struct file_operations omfs_file_operations = {
+const struct file_operations omfs_file_operations = {
 	.llseek = generic_file_llseek,
 	.read = do_sync_read,
 	.write = do_sync_write,
 	.aio_read = generic_file_aio_read,
 	.aio_write = generic_file_aio_write,
 	.mmap = generic_file_mmap,
-	.fsync = omfs_sync_file,
+	.fsync = simple_fsync,
 	.splice_read = generic_file_splice_read,
 };
 
-struct inode_operations omfs_file_inops = {
+const struct inode_operations omfs_file_inops = {
 	.truncate = omfs_truncate
 };
 
-struct address_space_operations omfs_aops = {
+const struct address_space_operations omfs_aops = {
 	.readpage = omfs_readpage,
 	.readpages = omfs_readpages,
 	.writepage = omfs_writepage,

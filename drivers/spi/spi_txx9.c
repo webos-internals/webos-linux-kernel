@@ -29,6 +29,8 @@
 
 
 #define SPI_FIFO_SIZE 4
+#define SPI_MAX_DIVIDER 0xff	/* Max. value for SPCR1.SER */
+#define SPI_MIN_DIVIDER 1	/* Min. value for SPCR1.SER */
 
 #define TXx9_SPMCR		0x00
 #define TXx9_SPCR0		0x04
@@ -110,23 +112,17 @@ static void txx9spi_cs_func(struct spi_device *spi, struct txx9spi *c,
 	ndelay(cs_delay);	/* CS Setup Time / CS Recovery Time */
 }
 
-/* the spi->mode bits understood by this driver: */
-#define MODEBITS	(SPI_CS_HIGH|SPI_CPOL|SPI_CPHA)
-
 static int txx9spi_setup(struct spi_device *spi)
 {
 	struct txx9spi *c = spi_master_get_devdata(spi->master);
 	u8 bits_per_word;
-
-	if (spi->mode & ~MODEBITS)
-		return -EINVAL;
 
 	if (!spi->max_speed_hz
 			|| spi->max_speed_hz > c->max_speed_hz
 			|| spi->max_speed_hz < c->min_speed_hz)
 		return -EINVAL;
 
-	bits_per_word = spi->bits_per_word ? : 8;
+	bits_per_word = spi->bits_per_word;
 	if (bits_per_word != 8 && bits_per_word != 16)
 		return -EINVAL;
 
@@ -199,11 +195,8 @@ static void txx9spi_work_one(struct txx9spi *c, struct spi_message *m)
 
 		if (prev_speed_hz != speed_hz
 				|| prev_bits_per_word != bits_per_word) {
-			u32 n = (c->baseclk + speed_hz - 1) / speed_hz;
-			if (n < 1)
-				n = 1;
-			else if (n > 0xff)
-				n = 0xff;
+			int n = DIV_ROUND_UP(c->baseclk, speed_hz) - 1;
+			n = clamp(n, SPI_MIN_DIVIDER, SPI_MAX_DIVIDER);
 			/* enter config mode */
 			txx9spi_wr(c, mcr | TXx9_SPMCR_CONFIG | TXx9_SPMCR_BCLR,
 					TXx9_SPMCR);
@@ -376,8 +369,8 @@ static int __init txx9spi_probe(struct platform_device *dev)
 		goto exit;
 	}
 	c->baseclk = clk_get_rate(c->clk);
-	c->min_speed_hz = (c->baseclk + 0xff - 1) / 0xff;
-	c->max_speed_hz = c->baseclk;
+	c->min_speed_hz = DIV_ROUND_UP(c->baseclk, SPI_MAX_DIVIDER + 1);
+	c->max_speed_hz = c->baseclk / (SPI_MIN_DIVIDER + 1);
 
 	res = platform_get_resource(dev, IORESOURCE_MEM, 0);
 	if (!res)
@@ -404,7 +397,8 @@ static int __init txx9spi_probe(struct platform_device *dev)
 	if (ret)
 		goto exit;
 
-	c->workqueue = create_singlethread_workqueue(master->dev.parent->bus_id);
+	c->workqueue = create_singlethread_workqueue(
+				dev_name(master->dev.parent));
 	if (!c->workqueue)
 		goto exit_busy;
 	c->last_chipselect = -1;
@@ -412,6 +406,9 @@ static int __init txx9spi_probe(struct platform_device *dev)
 	dev_info(&dev->dev, "at %#llx, irq %d, %dMHz\n",
 		 (unsigned long long)res->start, irq,
 		 (c->baseclk + 500000) / 1000000);
+
+	/* the spi->mode bits understood by this driver: */
+	master->mode_bits = SPI_CS_HIGH | SPI_CPOL | SPI_CPHA;
 
 	master->bus_num = dev->id;
 	master->setup = txx9spi_setup;

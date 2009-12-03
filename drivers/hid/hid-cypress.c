@@ -141,12 +141,12 @@ static struct hid_driver cp_driver = {
 	.probe = cp_probe,
 };
 
-static int cp_init(void)
+static int __init cp_init(void)
 {
 	return hid_register_driver(&cp_driver);
 }
 
-static void cp_exit(void)
+static void __exit cp_exit(void)
 {
 	hid_unregister_driver(&cp_driver);
 }
@@ -154,5 +154,3 @@ static void cp_exit(void)
 module_init(cp_init);
 module_exit(cp_exit);
 MODULE_LICENSE("GPL");
-
-HID_COMPAT_LOAD_DRIVER(cypress);

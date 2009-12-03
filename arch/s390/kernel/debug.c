@@ -63,8 +63,6 @@ typedef struct
 } debug_sprintf_entry_t;
 
 
-extern void tod_to_timeval(uint64_t todval, struct timespec *xtime);
-
 /* internal function prototyes */
 
 static int debug_init(void);
@@ -603,7 +601,7 @@ debug_input(struct file *file, const char __user *user_buf, size_t length,
 static int
 debug_open(struct inode *inode, struct file *file)
 {
-	int i = 0, rc = 0;
+	int i, rc = 0;
 	file_private_info_t *p_info;
 	debug_info_t *debug_info, *debug_info_snapshot;
 
@@ -642,8 +640,7 @@ found:
 	p_info = kmalloc(sizeof(file_private_info_t),
 						GFP_KERNEL);
 	if(!p_info){
-		if(debug_info_snapshot)
-			debug_info_free(debug_info_snapshot);
+		debug_info_free(debug_info_snapshot);
 		rc = -ENOMEM;
 		goto out;
 	}
@@ -698,8 +695,7 @@ debug_info_t *debug_register_mode(const char *name, int pages_per_area,
 	if ((uid != 0) || (gid != 0))
 		pr_warning("Root becomes the owner of all s390dbf files "
 			   "in sysfs\n");
-	if (!initialized)
-		BUG();
+	BUG_ON(!initialized);
 	mutex_lock(&debug_mutex);
 
         /* create new debug_info */
@@ -885,11 +881,11 @@ static int debug_active=1;
  * if debug_active is already off
  */
 static int
-s390dbf_procactive(ctl_table *table, int write, struct file *filp,
+s390dbf_procactive(ctl_table *table, int write,
                      void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	if (!write || debug_stoppable || !debug_active)
-		return proc_dointvec(table, write, filp, buffer, lenp, ppos);
+		return proc_dointvec(table, write, buffer, lenp, ppos);
 	else
 		return 0;
 }
@@ -1156,7 +1152,6 @@ debug_unregister_view(debug_info_t * id, struct debug_view *view)
 	else {
 		debugfs_remove(id->debugfs_entries[i]);
 		id->views[i] = NULL;
-		rc = 0;
 	}
 	spin_unlock_irqrestore(&id->lock, flags);
 out:
@@ -1453,17 +1448,13 @@ debug_dflt_header_fn(debug_info_t * id, struct debug_view *view,
 			 int area, debug_entry_t * entry, char *out_buf)
 {
 	struct timespec time_spec;
-	unsigned long long time;
 	char *except_str;
 	unsigned long caller;
 	int rc = 0;
 	unsigned int level;
 
 	level = entry->id.fields.level;
-	time = entry->id.stck;
-	/* adjust todclock to 1970 */
-	time -= 0x8126d60e46000000LL - (0x3c26700LL * 1000000 * 4096);
-	tod_to_timeval(time, &time_spec);
+	stck_to_timespec(entry->id.stck, &time_spec);
 
 	if (entry->id.fields.exception)
 		except_str = "*";

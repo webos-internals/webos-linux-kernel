@@ -70,12 +70,12 @@ static struct hid_driver ch_driver = {
 	.input_mapping = ch_input_mapping,
 };
 
-static int ch_init(void)
+static int __init ch_init(void)
 {
 	return hid_register_driver(&ch_driver);
 }
 
-static void ch_exit(void)
+static void __exit ch_exit(void)
 {
 	hid_unregister_driver(&ch_driver);
 }
@@ -83,5 +83,3 @@ static void ch_exit(void)
 module_init(ch_init);
 module_exit(ch_exit);
 MODULE_LICENSE("GPL");
-
-HID_COMPAT_LOAD_DRIVER(cherry);

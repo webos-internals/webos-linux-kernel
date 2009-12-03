@@ -269,11 +269,16 @@ static int ati_insert_memory(struct agp_memory * mem,
 	int i, j, num_entries;
 	unsigned long __iomem *cur_gatt;
 	unsigned long addr;
+	int mask_type;
 
 	num_entries = A_SIZE_LVL2(agp_bridge->current_size)->num_entries;
 
-	if (type != 0 || mem->type != 0)
+	mask_type = agp_generic_type_to_mask_type(mem->bridge, type);
+	if (mask_type != 0 || type != mem->type)
 		return -EINVAL;
+
+	if (mem->page_count == 0)
+		return 0;
 
 	if ((pg_start + mem->page_count) > num_entries)
 		return -EINVAL;
@@ -296,10 +301,12 @@ static int ati_insert_memory(struct agp_memory * mem,
 	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
 		addr = (j * PAGE_SIZE) + agp_bridge->gart_bus_addr;
 		cur_gatt = GET_GATT(addr);
-		writel(agp_bridge->driver->mask_memory(agp_bridge,
-			mem->memory[i], mem->type), cur_gatt+GET_GATT_OFF(addr));
-		readl(cur_gatt+GET_GATT_OFF(addr));	/* PCI Posting. */
+		writel(agp_bridge->driver->mask_memory(agp_bridge,	
+						       page_to_phys(mem->pages[i]),
+						       mem->type),
+		       cur_gatt+GET_GATT_OFF(addr));
 	}
+	readl(GET_GATT(agp_bridge->gart_bus_addr)); /* PCI posting */
 	agp_bridge->driver->tlb_flush(mem);
 	return 0;
 }
@@ -310,17 +317,22 @@ static int ati_remove_memory(struct agp_memory * mem, off_t pg_start,
 	int i;
 	unsigned long __iomem *cur_gatt;
 	unsigned long addr;
+	int mask_type;
 
-	if (type != 0 || mem->type != 0)
+	mask_type = agp_generic_type_to_mask_type(mem->bridge, type);
+	if (mask_type != 0 || type != mem->type)
 		return -EINVAL;
+
+	if (mem->page_count == 0)
+		return 0;
 
 	for (i = pg_start; i < (mem->page_count + pg_start); i++) {
 		addr = (i * PAGE_SIZE) + agp_bridge->gart_bus_addr;
 		cur_gatt = GET_GATT(addr);
 		writel(agp_bridge->scratch_page, cur_gatt+GET_GATT_OFF(addr));
-		readl(cur_gatt+GET_GATT_OFF(addr)); /* PCI Posting. */
 	}
 
+	readl(GET_GATT(agp_bridge->gart_bus_addr)); /* PCI posting */
 	agp_bridge->driver->tlb_flush(mem);
 	return 0;
 }
@@ -348,7 +360,7 @@ static int ati_create_gatt_table(struct agp_bridge_data *bridge)
 
 	agp_bridge->gatt_table_real = (u32 *)page_dir.real;
 	agp_bridge->gatt_table = (u32 __iomem *) page_dir.remapped;
-	agp_bridge->gatt_bus_addr = virt_to_gart(page_dir.real);
+	agp_bridge->gatt_bus_addr = virt_to_phys(page_dir.real);
 
 	/* Write out the size register */
 	current_size = A_SIZE_LVL2(agp_bridge->current_size);
@@ -378,7 +390,7 @@ static int ati_create_gatt_table(struct agp_bridge_data *bridge)
 
 	/* Calculate the agp offset */
 	for (i = 0; i < value->num_entries / 1024; i++, addr += 0x00400000) {
-		writel(virt_to_gart(ati_generic_private.gatt_pages[i]->real) | 1,
+		writel(virt_to_phys(ati_generic_private.gatt_pages[i]->real) | 1,
 			page_dir.remapped+GET_PAGE_DIR_OFF(addr));
 		readl(page_dir.remapped+GET_PAGE_DIR_OFF(addr));	/* PCI Posting. */
 	}

@@ -8,12 +8,14 @@
  * Ingo Molnar <mingo@redhat.com>, 1999, 2000
  */
 
-#define	APIC_DEFAULT_PHYS_BASE	0xfee00000
+#define IO_APIC_DEFAULT_PHYS_BASE	0xfec00000
+#define	APIC_DEFAULT_PHYS_BASE		0xfee00000
 
 #define	APIC_ID		0x20
 
 #define	APIC_LVR	0x30
 #define		APIC_LVR_MASK		0xFF00FF
+#define		APIC_LVR_DIRECTED_EOI	(1 << 24)
 #define		GET_APIC_VERSION(x)	((x) & 0xFFu)
 #define		GET_APIC_MAXLVT(x)	(((x) >> 16) & 0xFFu)
 #ifdef CONFIG_X86_32
@@ -22,6 +24,7 @@
 #  define	APIC_INTEGRATED(x)	(1)
 #endif
 #define		APIC_XAPIC(x)		((x) >= 0x14)
+#define		APIC_EXT_SPACE(x)	((x) & 0x80000000)
 #define	APIC_TASKPRI	0x80
 #define		APIC_TPRI_MASK		0xFFu
 #define	APIC_ARBPRI	0x90
@@ -39,6 +42,7 @@
 #define		APIC_DFR_CLUSTER		0x0FFFFFFFul
 #define		APIC_DFR_FLAT			0xFFFFFFFFul
 #define	APIC_SPIV	0xF0
+#define		APIC_SPIV_DIRECTED_EOI		(1 << 12)
 #define		APIC_SPIV_FOCUS_DISABLED	(1 << 9)
 #define		APIC_SPIV_APIC_ENABLED		(1 << 8)
 #define	APIC_ISR	0x100
@@ -53,6 +57,7 @@
 #define		APIC_ESR_SENDILL	0x00020
 #define		APIC_ESR_RECVILL	0x00040
 #define		APIC_ESR_ILLREGA	0x00080
+#define 	APIC_LVTCMCI	0x2f0
 #define	APIC_ICR	0x300
 #define		APIC_DEST_SELF		0x40000
 #define		APIC_DEST_ALLINC	0x80000
@@ -115,7 +120,9 @@
 #define		APIC_TDR_DIV_32		0x8
 #define		APIC_TDR_DIV_64		0x9
 #define		APIC_TDR_DIV_128	0xA
-#define	APIC_EILVT0     0x500
+#define	APIC_EFEAT	0x400
+#define	APIC_ECTRL	0x410
+#define APIC_EILVTn(n)	(0x500 + 0x10 * n)
 #define		APIC_EILVT_NR_AMD_K8	1	/* # of extended interrupts */
 #define		APIC_EILVT_NR_AMD_10H	4
 #define		APIC_EILVT_LVTOFF(x)	(((x) >> 4) & 0xF)
@@ -124,9 +131,6 @@
 #define		APIC_EILVT_MSG_NMI	0x4
 #define		APIC_EILVT_MSG_EXT	0x7
 #define		APIC_EILVT_MASKED	(1 << 16)
-#define	APIC_EILVT1     0x510
-#define	APIC_EILVT2     0x520
-#define	APIC_EILVT3     0x530
 
 #define APIC_BASE (fix_to_virt(FIX_APIC_BASE))
 #define APIC_BASE_MSR	0x800

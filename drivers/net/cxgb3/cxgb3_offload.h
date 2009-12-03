@@ -64,9 +64,17 @@ void cxgb3_register_client(struct cxgb3_client *client);
 void cxgb3_unregister_client(struct cxgb3_client *client);
 void cxgb3_add_clients(struct t3cdev *tdev);
 void cxgb3_remove_clients(struct t3cdev *tdev);
+void cxgb3_event_notify(struct t3cdev *tdev, u32 event, u32 port);
 
 typedef int (*cxgb3_cpl_handler_func)(struct t3cdev *dev,
 				      struct sk_buff *skb, void *ctx);
+
+enum {
+	OFFLOAD_STATUS_UP,
+	OFFLOAD_STATUS_DOWN,
+	OFFLOAD_PORT_DOWN,
+	OFFLOAD_PORT_UP
+};
 
 struct cxgb3_client {
 	char *name;
@@ -76,6 +84,7 @@ struct cxgb3_client {
 	int (*redirect)(void *ctx, struct dst_entry *old,
 			struct dst_entry *new, struct l2t_entry *l2t);
 	struct list_head client_list;
+	void (*event_handler)(struct t3cdev *tdev, u32 event, u32 port);
 };
 
 /*
@@ -184,6 +193,9 @@ struct t3c_data {
 	struct t3c_tid_entry *tid_release_list;
 	spinlock_t tid_release_lock;
 	struct work_struct tid_release_task;
+
+	struct sk_buff *nofail_skb;
+	unsigned int release_list_incomplete;
 };
 
 /*

@@ -66,7 +66,9 @@ Example kernel-doc function comment:
  * The longer description can have multiple paragraphs.
  */
 
-The first line, with the short description, must be on a single line.
+The short description following the subject can span multiple lines
+and ends with an @argument description, an empty line or the end of
+the comment block.
 
 The @argument descriptions must begin on the very next line following
 this opening short function description line, with no intervening
@@ -269,7 +271,10 @@ Use the argument mechanism to document members or constants.
 
 Inside a struct description, you can use the "private:" and "public:"
 comment tags.  Structure fields that are inside a "private:" area
-are not listed in the generated output documentation.
+are not listed in the generated output documentation.  The "private:"
+and "public:" tags must begin immediately following a "/*" comment
+marker.  They may optionally include comments between the ":" and the
+ending "*/" marker.
 
 Example:
 
@@ -283,7 +288,7 @@ Example:
 struct my_struct {
     int a;
     int b;
-/* private: */
+/* private: internal use only */
     int c;
 };
 

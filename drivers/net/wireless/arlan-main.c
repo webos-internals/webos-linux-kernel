@@ -77,7 +77,7 @@ struct arlan_conf_stru arlan_conf[MAX_ARLANS];
 static int arlans_found;
 
 static  int 	arlan_open(struct net_device *dev);
-static  int 	arlan_tx(struct sk_buff *skb, struct net_device *dev);
+static  netdev_tx_t arlan_tx(struct sk_buff *skb, struct net_device *dev);
 static  irqreturn_t arlan_interrupt(int irq, void *dev_id);
 static  int 	arlan_close(struct net_device *dev);
 static  struct net_device_stats *
@@ -1022,7 +1022,7 @@ static int arlan_mac_addr(struct net_device *dev, void *p)
 	ARLAN_DEBUG_ENTRY("arlan_mac_addr");
 	return -EINVAL;
 
-	if (!netif_running(dev))
+	if (netif_running(dev))
 		return -EBUSY;
 	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 
@@ -1030,7 +1030,17 @@ static int arlan_mac_addr(struct net_device *dev, void *p)
 	return 0;
 }
 
-
+static const struct net_device_ops arlan_netdev_ops = {
+	.ndo_open		= arlan_open,
+	.ndo_stop		= arlan_close,
+	.ndo_start_xmit		= arlan_tx,
+	.ndo_get_stats		= arlan_statistics,
+	.ndo_set_multicast_list = arlan_set_multicast,
+	.ndo_change_mtu		= arlan_change_mtu,
+	.ndo_set_mac_address	= arlan_mac_addr,
+	.ndo_tx_timeout		= arlan_tx_timeout,
+	.ndo_validate_addr	= eth_validate_addr,
+};
 
 static int __init arlan_setup_device(struct net_device *dev, int num)
 {
@@ -1042,14 +1052,7 @@ static int __init arlan_setup_device(struct net_device *dev, int num)
 	ap->conf = (struct arlan_shmem *)(ap+1);
 
 	dev->tx_queue_len = tx_queue_len;
-	dev->open = arlan_open;
-	dev->stop = arlan_close;
-	dev->hard_start_xmit = arlan_tx;
-	dev->get_stats = arlan_statistics;
-	dev->set_multicast_list = arlan_set_multicast;
-	dev->change_mtu = arlan_change_mtu;
-	dev->set_mac_address = arlan_mac_addr;
-	dev->tx_timeout = arlan_tx_timeout;
+	dev->netdev_ops = &arlan_netdev_ops;
 	dev->watchdog_timeo = 3*HZ;
 	
 	ap->irq_test_done = 0;
@@ -1082,8 +1085,8 @@ static int __init arlan_probe_here(struct net_device *dev,
 	if (arlan_check_fingerprint(memaddr))
 		return -ENODEV;
 
-	printk(KERN_NOTICE "%s: Arlan found at %x, \n ", dev->name, 
-	       (int) virt_to_phys((void*)memaddr));
+	printk(KERN_NOTICE "%s: Arlan found at %llx, \n ", dev->name, 
+	       (u64) virt_to_phys((void*)memaddr));
 
 	ap->card = (void *) memaddr;
 	dev->mem_start = memaddr;
@@ -1166,7 +1169,7 @@ static void arlan_tx_timeout (struct net_device *dev)
 }
 
 
-static int arlan_tx(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t arlan_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	short length;
 	unsigned char *buf;
@@ -1190,13 +1193,13 @@ static int arlan_tx(struct sk_buff *skb, struct net_device *dev)
 
 	arlan_process_interrupt(dev);
 	ARLAN_DEBUG_EXIT("arlan_tx");
-	return 0;
+	return NETDEV_TX_OK;
 
 bad_end:
 	arlan_process_interrupt(dev);
 	netif_stop_queue (dev);
 	ARLAN_DEBUG_EXIT("arlan_tx");
-	return 1;
+	return NETDEV_TX_BUSY;
 }
 
 

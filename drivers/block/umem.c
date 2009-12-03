@@ -140,7 +140,6 @@ struct cardinfo {
 };
 
 static struct cardinfo cards[MM_MAXCARDS];
-static struct block_device_operations mm_fops;
 static struct timer_list battery_timer;
 
 static int num_cards;
@@ -789,7 +788,7 @@ static int mm_check_change(struct gendisk *disk)
 	return 0;
 }
 
-static struct block_device_operations mm_fops = {
+static const struct block_device_operations mm_fops = {
 	.owner		= THIS_MODULE,
 	.getgeo		= mm_getgeo,
 	.revalidate_disk = mm_revalidate,
@@ -829,8 +828,8 @@ static int __devinit mm_pci_probe(struct pci_dev *dev,
 	dev_printk(KERN_INFO, &dev->dev,
 	  "Micro Memory(tm) controller found (PCI Mem Module (Battery Backup))\n");
 
-	if (pci_set_dma_mask(dev, DMA_64BIT_MASK) &&
-	    pci_set_dma_mask(dev, DMA_32BIT_MASK)) {
+	if (pci_set_dma_mask(dev, DMA_BIT_MASK(64)) &&
+	    pci_set_dma_mask(dev, DMA_BIT_MASK(32))) {
 		dev_printk(KERN_WARNING, &dev->dev, "NO suitable DMA found\n");
 		return  -ENOMEM;
 	}
@@ -906,6 +905,7 @@ static int __devinit mm_pci_probe(struct pci_dev *dev,
 		goto failed_alloc;
 
 	blk_queue_make_request(card->queue, mm_make_request);
+	card->queue->queue_lock = &card->lock;
 	card->queue->queuedata = card;
 	card->queue->unplug_fn = mm_unplug_device;
 

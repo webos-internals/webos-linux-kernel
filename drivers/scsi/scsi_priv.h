@@ -38,13 +38,26 @@ static inline void scsi_log_completion(struct scsi_cmnd *cmd, int disposition)
 	{ };
 #endif
 
-/* scsi_scan.c */
-int scsi_complete_async_scans(void);
-
 /* scsi_devinfo.c */
+
+/* list of keys for the lists */
+enum {
+	SCSI_DEVINFO_GLOBAL = 0,
+	SCSI_DEVINFO_SPI,
+};
+
 extern int scsi_get_device_flags(struct scsi_device *sdev,
 				 const unsigned char *vendor,
 				 const unsigned char *model);
+extern int scsi_get_device_flags_keyed(struct scsi_device *sdev,
+				       const unsigned char *vendor,
+				       const unsigned char *model, int key);
+extern int scsi_dev_info_list_add_keyed(int compatible, char *vendor,
+					char *model, char *strflags,
+					int flags, int key);
+extern int scsi_dev_info_add_list(int key, const char *name);
+extern int scsi_dev_info_remove_list(int key);
+
 extern int __init scsi_init_devinfo(void);
 extern void scsi_exit_devinfo(void);
 
@@ -74,7 +87,6 @@ extern int scsi_init_queue(void);
 extern void scsi_exit_queue(void);
 struct request_queue;
 struct request;
-extern int scsi_prep_fn(struct request_queue *, struct request *);
 extern struct kmem_cache *scsi_sdb_cache;
 
 /* scsi_proc.c */
@@ -120,7 +132,7 @@ extern struct scsi_transport_template blank_transport_template;
 extern void __scsi_remove_device(struct scsi_device *);
 
 extern struct bus_type scsi_bus_type;
-extern struct attribute_group *scsi_sysfs_shost_attr_groups[];
+extern const struct attribute_group *scsi_sysfs_shost_attr_groups[];
 
 /* scsi_netlink.c */
 #ifdef CONFIG_SCSI_NETLINK

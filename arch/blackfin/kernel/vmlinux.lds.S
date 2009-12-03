@@ -1,30 +1,7 @@
 /*
- * File:         arch/blackfin/kernel/vmlinux.lds.S
- * Based on:     none - original work
- * Author:
+ * Copyright 2004-2009 Analog Devices Inc.
  *
- * Created:      Tue Sep 21 2004
- * Description:  Master linker script for blackfin architecture
- *
- * Modified:
- *               Copyright 2004-2007 Analog Devices Inc.
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see the file COPYING, or write
- * to the Free Software Foundation, Inc.,
- * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Licensed under the GPL-2 or later
  */
 
 #define VMLINUX_SYMBOL(_sym_) _##_sym_
@@ -50,8 +27,11 @@ SECTIONS
 		_text = .;
 		__stext = .;
 		TEXT_TEXT
+#ifndef CONFIG_SCHEDULE_L1
 		SCHED_TEXT
+#endif
 		LOCK_TEXT
+		IRQENTRY_TEXT
 		KPROBES_TEXT
 		*(.text.*)
 		*(.fixup)
@@ -93,8 +73,7 @@ SECTIONS
 	{
 		__sdata = .;
 		/* This gets done first, so the glob doesn't suck it in */
-		. = ALIGN(32);
-		*(.data.cacheline_aligned)
+		CACHELINE_ALIGNED_DATA(32)
 
 #if !L1_DATA_A_LENGTH
 		. = ALIGN(32);
@@ -113,12 +92,7 @@ SECTIONS
 		DATA_DATA
 		CONSTRUCTORS
 
-		/* make sure the init_task is aligned to the
-		 * kernel thread size so we can locate the kernel
-		 * stack properly and quickly.
-		 */
-		. = ALIGN(THREAD_SIZE);
-		*(.init_task.data)
+		INIT_TASK_DATA(THREAD_SIZE)
 
 		__edata = .;
 	}
@@ -131,58 +105,38 @@ SECTIONS
 	. = ALIGN(PAGE_SIZE);
 	___init_begin = .;
 
-	.init.text :
-	{
-		. = ALIGN(PAGE_SIZE);
-		__sinittext = .;
-		INIT_TEXT
-		__einittext = .;
-	}
-	.init.data :
-	{
-		. = ALIGN(16);
-		INIT_DATA
-	}
-	.init.setup :
-	{
-		. = ALIGN(16);
-		___setup_start = .;
-		*(.init.setup)
-		___setup_end = .;
-	}
-	.initcall.init :
-	{
-		___initcall_start = .;
-		INITCALLS
-		___initcall_end = .;
-	}
-	.con_initcall.init :
-	{
-		___con_initcall_start = .;
-		*(.con_initcall.init)
-		___con_initcall_end = .;
-	}
+	INIT_TEXT_SECTION(PAGE_SIZE)
+	. = ALIGN(16);
+	INIT_DATA_SECTION(16)
 	PERCPU(4)
-	SECURITY_INIT
-	.init.ramfs :
+
+	/* we have to discard exit text and such at runtime, not link time, to
+	 * handle embedded cross-section references (alt instructions, bug
+	 * table, eh_frame, etc...)
+	 */
+	.exit.text :
 	{
-		. = ALIGN(4);
-		___initramfs_start = .;
-		*(.init.ramfs)
-		. = ALIGN(4);
-		___initramfs_end = .;
+		EXIT_TEXT
+	}
+	.exit.data :
+	{
+		EXIT_DATA
 	}
 
 	__l1_lma_start = .;
 
-	.text_l1 L1_CODE_START : AT(LOADADDR(.init.ramfs) + SIZEOF(.init.ramfs))
+	.text_l1 L1_CODE_START : AT(LOADADDR(.exit.data) + SIZEOF(.exit.data))
 	{
 		. = ALIGN(4);
 		__stext_l1 = .;
 		*(.l1.text)
+#ifdef CONFIG_SCHEDULE_L1
+		SCHED_TEXT
+#endif
 		. = ALIGN(4);
 		__etext_l1 = .;
 	}
+	ASSERT (SIZEOF(.text_l1) <= L1_CODE_LENGTH, "L1 text overflow!")
 
 	.data_l1 L1_DATA_A_START : AT(LOADADDR(.text_l1) + SIZEOF(.text_l1))
 	{
@@ -200,6 +154,7 @@ SECTIONS
 		. = ALIGN(4);
 		__ebss_l1 = .;
 	}
+	ASSERT (SIZEOF(.data_l1) <= L1_DATA_A_LENGTH, "L1 data A overflow!")
 
 	.data_b_l1 L1_DATA_B_START : AT(LOADADDR(.data_l1) + SIZEOF(.data_l1))
 	{
@@ -214,6 +169,7 @@ SECTIONS
 		. = ALIGN(4);
 		__ebss_b_l1 = .;
 	}
+	ASSERT (SIZEOF(.data_b_l1) <= L1_DATA_B_LENGTH, "L1 data B overflow!")
 
 	__l2_lma_start = LOADADDR(.data_b_l1) + SIZEOF(.data_b_l1);
 
@@ -239,6 +195,7 @@ SECTIONS
 		. = ALIGN(4);
 		__ebss_l2 = .;
 	}
+	ASSERT (SIZEOF(.text_data_l2) <= L2_LENGTH, "L2 overflow!")
 
 	/* Force trailing alignment of our init section so that when we
 	 * free our init memory, we don't leave behind a partial page.
@@ -253,10 +210,5 @@ SECTIONS
 
 	DWARF_DEBUG
 
-	/DISCARD/ :
-	{
-		EXIT_TEXT
-		EXIT_DATA
-		*(.exitcall.exit)
-	}
+	DISCARDS
 }

@@ -101,14 +101,6 @@
 
 #define	DNS_DELAY	      3 /* Discovery delay after RSCN (in seconds)*/
 
-static int fc_lport_debug;
-
-#define FC_DEBUG_LPORT(fmt...)			\
-	do {					\
-		if (fc_lport_debug)		\
-			FC_DBG(fmt);		\
-	} while (0)
-
 static void fc_lport_error(struct fc_lport *, struct fc_frame *);
 
 static void fc_lport_enter_reset(struct fc_lport *);
@@ -121,7 +113,7 @@ static void fc_lport_enter_ready(struct fc_lport *);
 static void fc_lport_enter_logo(struct fc_lport *);
 
 static const char *fc_lport_state_names[] = {
-	[LPORT_ST_NONE] =     "none",
+	[LPORT_ST_DISABLED] = "disabled",
 	[LPORT_ST_FLOGI] =    "FLOGI",
 	[LPORT_ST_DNS] =      "dNS",
 	[LPORT_ST_RPN_ID] =   "RPN_ID",
@@ -141,57 +133,44 @@ static int fc_frame_drop(struct fc_lport *lport, struct fc_frame *fp)
 /**
  * fc_lport_rport_callback() - Event handler for rport events
  * @lport: The lport which is receiving the event
- * @rport: The rport which the event has occured on
+ * @rdata: private remote port data
  * @event: The event that occured
  *
  * Locking Note: The rport lock should not be held when calling
  *		 this function.
  */
 static void fc_lport_rport_callback(struct fc_lport *lport,
-				    struct fc_rport *rport,
+				    struct fc_rport_priv *rdata,
 				    enum fc_rport_event event)
 {
-	FC_DEBUG_LPORT("Received a %d event for port (%6x)\n", event,
-		       rport->port_id);
+	FC_LPORT_DBG(lport, "Received a %d event for port (%6x)\n", event,
+		     rdata->ids.port_id);
 
+	mutex_lock(&lport->lp_mutex);
 	switch (event) {
-	case RPORT_EV_CREATED:
-		if (rport->port_id == FC_FID_DIR_SERV) {
-			mutex_lock(&lport->lp_mutex);
-			if (lport->state == LPORT_ST_DNS) {
-				lport->dns_rp = rport;
-				fc_lport_enter_rpn_id(lport);
-			} else {
-				FC_DEBUG_LPORT("Received an CREATED event on "
-					       "port (%6x) for the directory "
-					       "server, but the lport is not "
-					       "in the DNS state, it's in the "
-					       "%d state", rport->port_id,
-					       lport->state);
-				lport->tt.rport_logoff(rport);
-			}
-			mutex_unlock(&lport->lp_mutex);
-		} else
-			FC_DEBUG_LPORT("Received an event for port (%6x) "
-				       "which is not the directory server\n",
-				       rport->port_id);
+	case RPORT_EV_READY:
+		if (lport->state == LPORT_ST_DNS) {
+			lport->dns_rp = rdata;
+			fc_lport_enter_rpn_id(lport);
+		} else {
+			FC_LPORT_DBG(lport, "Received an READY event "
+				     "on port (%6x) for the directory "
+				     "server, but the lport is not "
+				     "in the DNS state, it's in the "
+				     "%d state", rdata->ids.port_id,
+				     lport->state);
+			lport->tt.rport_logoff(rdata);
+		}
 		break;
 	case RPORT_EV_LOGO:
 	case RPORT_EV_FAILED:
 	case RPORT_EV_STOP:
-		if (rport->port_id == FC_FID_DIR_SERV) {
-			mutex_lock(&lport->lp_mutex);
-			lport->dns_rp = NULL;
-			mutex_unlock(&lport->lp_mutex);
-
-		} else
-			FC_DEBUG_LPORT("Received an event for port (%6x) "
-				       "which is not the directory server\n",
-				       rport->port_id);
+		lport->dns_rp = NULL;
 		break;
 	case RPORT_EV_NONE:
 		break;
 	}
+	mutex_unlock(&lport->lp_mutex);
 }
 
 /**
@@ -219,20 +198,13 @@ static void fc_lport_ptp_setup(struct fc_lport *lport,
 			       u32 remote_fid, u64 remote_wwpn,
 			       u64 remote_wwnn)
 {
-	struct fc_disc_port dp;
-
-	dp.lp = lport;
-	dp.ids.port_id = remote_fid;
-	dp.ids.port_name = remote_wwpn;
-	dp.ids.node_name = remote_wwnn;
-	dp.ids.roles = FC_RPORT_ROLE_UNKNOWN;
-
-	if (lport->ptp_rp) {
+	mutex_lock(&lport->disc.disc_mutex);
+	if (lport->ptp_rp)
 		lport->tt.rport_logoff(lport->ptp_rp);
-		lport->ptp_rp = NULL;
-	}
-
-	lport->ptp_rp = lport->tt.rport_create(&dp);
+	lport->ptp_rp = lport->tt.rport_create(lport, remote_fid);
+	lport->ptp_rp->ids.port_name = remote_wwpn;
+	lport->ptp_rp->ids.node_name = remote_wwnn;
+	mutex_unlock(&lport->disc.disc_mutex);
 
 	lport->tt.rport_login(lport->ptp_rp);
 
@@ -267,10 +239,10 @@ EXPORT_SYMBOL(fc_get_host_speed);
 
 struct fc_host_statistics *fc_get_host_stats(struct Scsi_Host *shost)
 {
-	int i;
 	struct fc_host_statistics *fcoe_stats;
 	struct fc_lport *lp = shost_priv(shost);
 	struct timespec v0, v1;
+	unsigned int cpu;
 
 	fcoe_stats = &lp->host_stats;
 	memset(fcoe_stats, 0, sizeof(struct fc_host_statistics));
@@ -279,10 +251,11 @@ struct fc_host_statistics *fc_get_host_stats(struct Scsi_Host *shost)
 	jiffies_to_timespec(lp->boot_time, &v1);
 	fcoe_stats->seconds_since_last_reset = (v0.tv_sec - v1.tv_sec);
 
-	for_each_online_cpu(i) {
-		struct fcoe_dev_stats *stats = lp->dev_stats[i];
-		if (stats == NULL)
-			continue;
+	for_each_possible_cpu(cpu) {
+		struct fcoe_dev_stats *stats;
+
+		stats = per_cpu_ptr(lp->dev_stats, cpu);
+
 		fcoe_stats->tx_frames += stats->TxFrames;
 		fcoe_stats->tx_words += stats->TxWords;
 		fcoe_stats->rx_frames += stats->RxFrames;
@@ -362,8 +335,8 @@ static void fc_lport_add_fc4_type(struct fc_lport *lport, enum fc_fh_type type)
 static void fc_lport_recv_rlir_req(struct fc_seq *sp, struct fc_frame *fp,
 				   struct fc_lport *lport)
 {
-	FC_DEBUG_LPORT("Received RLIR request while in state %s\n",
-		       fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Received RLIR request while in state %s\n",
+		     fc_lport_state(lport));
 
 	lport->tt.seq_els_rsp_send(sp, ELS_LS_ACC, NULL);
 	fc_frame_free(fp);
@@ -388,8 +361,8 @@ static void fc_lport_recv_echo_req(struct fc_seq *sp, struct fc_frame *in_fp,
 	void *dp;
 	u32 f_ctl;
 
-	FC_DEBUG_LPORT("Received RLIR request while in state %s\n",
-		       fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Received RLIR request while in state %s\n",
+		     fc_lport_state(lport));
 
 	len = fr_len(in_fp) - sizeof(struct fc_frame_header);
 	pp = fc_frame_payload_get(in_fp, len);
@@ -436,8 +409,8 @@ static void fc_lport_recv_rnid_req(struct fc_seq *sp, struct fc_frame *in_fp,
 	size_t len;
 	u32 f_ctl;
 
-	FC_DEBUG_LPORT("Received RNID request while in state %s\n",
-		       fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Received RNID request while in state %s\n",
+		     fc_lport_state(lport));
 
 	req = fc_frame_payload_get(in_fp, sizeof(*req));
 	if (!req) {
@@ -479,56 +452,6 @@ static void fc_lport_recv_rnid_req(struct fc_seq *sp, struct fc_frame *in_fp,
 }
 
 /**
- * fc_lport_recv_adisc_req() - Handle received Address Discovery Request
- * @lport: Fibre Channel local port recieving the ADISC
- * @sp: current sequence in the ADISC exchange
- * @fp: ADISC request frame
- *
- * Locking Note: The lport lock is expected to be held before calling
- * this function.
- */
-static void fc_lport_recv_adisc_req(struct fc_seq *sp, struct fc_frame *in_fp,
-				    struct fc_lport *lport)
-{
-	struct fc_frame *fp;
-	struct fc_exch *ep = fc_seq_exch(sp);
-	struct fc_els_adisc *req, *rp;
-	struct fc_seq_els_data rjt_data;
-	size_t len;
-	u32 f_ctl;
-
-	FC_DEBUG_LPORT("Received ADISC request while in state %s\n",
-		       fc_lport_state(lport));
-
-	req = fc_frame_payload_get(in_fp, sizeof(*req));
-	if (!req) {
-		rjt_data.fp = NULL;
-		rjt_data.reason = ELS_RJT_LOGIC;
-		rjt_data.explan = ELS_EXPL_NONE;
-		lport->tt.seq_els_rsp_send(sp, ELS_LS_RJT, &rjt_data);
-	} else {
-		len = sizeof(*rp);
-		fp = fc_frame_alloc(lport, len);
-		if (fp) {
-			rp = fc_frame_payload_get(fp, len);
-			memset(rp, 0, len);
-			rp->adisc_cmd = ELS_LS_ACC;
-			rp->adisc_wwpn = htonll(lport->wwpn);
-			rp->adisc_wwnn = htonll(lport->wwnn);
-			hton24(rp->adisc_port_id,
-			       fc_host_port_id(lport->host));
-			sp = lport->tt.seq_start_next(sp);
-			f_ctl = FC_FC_EX_CTX | FC_FC_LAST_SEQ;
-			f_ctl |= FC_FC_END_SEQ | FC_FC_SEQ_INIT;
-			fc_fill_fc_hdr(fp, FC_RCTL_ELS_REP, ep->did, ep->sid,
-				       FC_TYPE_ELS, f_ctl, 0);
-			lport->tt.seq_send(lport, sp, fp);
-		}
-	}
-	fc_frame_free(in_fp);
-}
-
-/**
  * fc_lport_recv_logo_req() - Handle received fabric LOGO request
  * @lport: Fibre Channel local port recieving the LOGO
  * @sp: current sequence in the LOGO exchange
@@ -557,7 +480,7 @@ int fc_fabric_login(struct fc_lport *lport)
 	int rc = -1;
 
 	mutex_lock(&lport->lp_mutex);
-	if (lport->state == LPORT_ST_NONE) {
+	if (lport->state == LPORT_ST_DISABLED) {
 		fc_lport_enter_reset(lport);
 		rc = 0;
 	}
@@ -573,8 +496,8 @@ EXPORT_SYMBOL(fc_fabric_login);
  */
 void fc_linkup(struct fc_lport *lport)
 {
-	FC_DEBUG_LPORT("Link is up for port (%6x)\n",
-		       fc_host_port_id(lport->host));
+	printk(KERN_INFO "libfc: Link up on port (%6x)\n",
+	       fc_host_port_id(lport->host));
 
 	mutex_lock(&lport->lp_mutex);
 	if (!lport->link_up) {
@@ -594,8 +517,8 @@ EXPORT_SYMBOL(fc_linkup);
 void fc_linkdown(struct fc_lport *lport)
 {
 	mutex_lock(&lport->lp_mutex);
-	FC_DEBUG_LPORT("Link is down for port (%6x)\n",
-		       fc_host_port_id(lport->host));
+	printk(KERN_INFO "libfc: Link down on port (%6x)\n",
+	       fc_host_port_id(lport->host));
 
 	if (lport->link_up) {
 		lport->link_up = 0;
@@ -616,6 +539,11 @@ EXPORT_SYMBOL(fc_linkdown);
 int fc_fabric_logoff(struct fc_lport *lport)
 {
 	lport->tt.disc_stop_final(lport);
+	mutex_lock(&lport->lp_mutex);
+	if (lport->dns_rp)
+		lport->tt.rport_logoff(lport->dns_rp);
+	mutex_unlock(&lport->lp_mutex);
+	lport->tt.rport_flush_queue();
 	mutex_lock(&lport->lp_mutex);
 	fc_lport_enter_logo(lport);
 	mutex_unlock(&lport->lp_mutex);
@@ -638,8 +566,14 @@ EXPORT_SYMBOL(fc_fabric_logoff);
  */
 int fc_lport_destroy(struct fc_lport *lport)
 {
+	mutex_lock(&lport->lp_mutex);
+	lport->state = LPORT_ST_DISABLED;
+	lport->link_up = 0;
 	lport->tt.frame_send = fc_frame_drop;
+	mutex_unlock(&lport->lp_mutex);
+
 	lport->tt.fcp_abort_io(lport);
+	lport->tt.disc_stop_final(lport);
 	lport->tt.exch_mgr_reset(lport, 0, 0);
 	return 0;
 }
@@ -690,12 +624,11 @@ void fc_lport_disc_callback(struct fc_lport *lport, enum fc_disc_event event)
 {
 	switch (event) {
 	case DISC_EV_SUCCESS:
-		FC_DEBUG_LPORT("Got a SUCCESS event for port (%6x)\n",
-			       fc_host_port_id(lport->host));
+		FC_LPORT_DBG(lport, "Discovery succeeded\n");
 		break;
 	case DISC_EV_FAILED:
-		FC_DEBUG_LPORT("Got a FAILED event for port (%6x)\n",
-			       fc_host_port_id(lport->host));
+		printk(KERN_ERR "libfc: Discovery failed for port (%6x)\n",
+		       fc_host_port_id(lport->host));
 		mutex_lock(&lport->lp_mutex);
 		fc_lport_enter_reset(lport);
 		mutex_unlock(&lport->lp_mutex);
@@ -715,12 +648,13 @@ void fc_lport_disc_callback(struct fc_lport *lport, enum fc_disc_event event)
  */
 static void fc_lport_enter_ready(struct fc_lport *lport)
 {
-	FC_DEBUG_LPORT("Port (%6x) entered Ready from state %s\n",
-		       fc_host_port_id(lport->host), fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Entered READY from state %s\n",
+		     fc_lport_state(lport));
 
 	fc_lport_state_enter(lport, LPORT_ST_READY);
 
-	lport->tt.disc_start(fc_lport_disc_callback, lport);
+	if (!lport->ptp_rp)
+		lport->tt.disc_start(fc_lport_disc_callback, lport);
 }
 
 /**
@@ -751,8 +685,8 @@ static void fc_lport_recv_flogi_req(struct fc_seq *sp_in,
 	u32 local_fid;
 	u32 f_ctl;
 
-	FC_DEBUG_LPORT("Received FLOGI request while in state %s\n",
-		       fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Received FLOGI request while in state %s\n",
+		     fc_lport_state(lport));
 
 	fh = fc_frame_header_get(rx_fp);
 	remote_fid = ntoh24(fh->fh_s_id);
@@ -761,11 +695,11 @@ static void fc_lport_recv_flogi_req(struct fc_seq *sp_in,
 		goto out;
 	remote_wwpn = get_unaligned_be64(&flp->fl_wwpn);
 	if (remote_wwpn == lport->wwpn) {
-		FC_DBG("FLOGI from port with same WWPN %llx "
-		       "possible configuration error\n", remote_wwpn);
+		printk(KERN_WARNING "libfc: Received FLOGI from port "
+		       "with same WWPN %llx\n", remote_wwpn);
 		goto out;
 	}
-	FC_DBG("FLOGI from port WWPN %llx\n", remote_wwpn);
+	FC_LPORT_DBG(lport, "FLOGI from port WWPN %llx\n", remote_wwpn);
 
 	/*
 	 * XXX what is the right thing to do for FIDs?
@@ -806,8 +740,6 @@ static void fc_lport_recv_flogi_req(struct fc_seq *sp_in,
 	fc_lport_ptp_setup(lport, remote_fid, remote_wwpn,
 			   get_unaligned_be64(&flp->fl_wwnn));
 
-	lport->tt.disc_start(fc_lport_disc_callback, lport);
-
 out:
 	sp = fr_seq(rx_fp);
 	fc_frame_free(rx_fp);
@@ -830,10 +762,6 @@ static void fc_lport_recv_req(struct fc_lport *lport, struct fc_seq *sp,
 {
 	struct fc_frame_header *fh = fc_frame_header_get(fp);
 	void (*recv) (struct fc_seq *, struct fc_frame *, struct fc_lport *);
-	struct fc_rport *rport;
-	u32 s_id;
-	u32 d_id;
-	struct fc_seq_els_data rjt_data;
 
 	mutex_lock(&lport->lp_mutex);
 
@@ -842,11 +770,14 @@ static void fc_lport_recv_req(struct fc_lport *lport, struct fc_seq *sp,
 	 * RSCN here.  These don't require a session.
 	 * Even if we had a session, it might not be ready.
 	 */
-	if (fh->fh_type == FC_TYPE_ELS && fh->fh_r_ctl == FC_RCTL_ELS_REQ) {
+	if (!lport->link_up)
+		fc_frame_free(fp);
+	else if (fh->fh_type == FC_TYPE_ELS &&
+		 fh->fh_r_ctl == FC_RCTL_ELS_REQ) {
 		/*
 		 * Check opcode.
 		 */
-		recv = NULL;
+		recv = lport->tt.rport_recv_req;
 		switch (fc_frame_payload_op(fp)) {
 		case ELS_FLOGI:
 			recv = fc_lport_recv_flogi_req;
@@ -868,36 +799,12 @@ static void fc_lport_recv_req(struct fc_lport *lport, struct fc_seq *sp,
 		case ELS_RNID:
 			recv = fc_lport_recv_rnid_req;
 			break;
-		case ELS_ADISC:
-			recv = fc_lport_recv_adisc_req;
-			break;
 		}
 
-		if (recv)
-			recv(sp, fp, lport);
-		else {
-			/*
-			 * Find session.
-			 * If this is a new incoming PLOGI, we won't find it.
-			 */
-			s_id = ntoh24(fh->fh_s_id);
-			d_id = ntoh24(fh->fh_d_id);
-
-			rport = lport->tt.rport_lookup(lport, s_id);
-			if (rport)
-				lport->tt.rport_recv_req(sp, fp, rport);
-			else {
-				rjt_data.fp = NULL;
-				rjt_data.reason = ELS_RJT_UNAB;
-				rjt_data.explan = ELS_EXPL_NONE;
-				lport->tt.seq_els_rsp_send(sp,
-							   ELS_LS_RJT,
-							   &rjt_data);
-				fc_frame_free(fp);
-			}
-		}
+		recv(sp, fp, lport);
 	} else {
-		FC_DBG("dropping invalid frame (eof %x)\n", fr_eof(fp));
+		FC_LPORT_DBG(lport, "dropping invalid frame (eof %x)\n",
+			     fr_eof(fp));
 		fc_frame_free(fp);
 	}
 	mutex_unlock(&lport->lp_mutex);
@@ -927,7 +834,28 @@ int fc_lport_reset(struct fc_lport *lport)
 EXPORT_SYMBOL(fc_lport_reset);
 
 /**
- * fc_rport_enter_reset() - Reset the local port
+ * fc_lport_reset_locked() - Reset the local port
+ * @lport: Fibre Channel local port to be reset
+ *
+ * Locking Note: The lport lock is expected to be held before calling
+ * this routine.
+ */
+static void fc_lport_reset_locked(struct fc_lport *lport)
+{
+	if (lport->dns_rp)
+		lport->tt.rport_logoff(lport->dns_rp);
+
+	lport->ptp_rp = NULL;
+
+	lport->tt.disc_stop(lport);
+
+	lport->tt.exch_mgr_reset(lport, 0, 0);
+	fc_host_fabric_name(lport->host) = 0;
+	fc_host_port_id(lport->host) = 0;
+}
+
+/**
+ * fc_lport_enter_reset() - Reset the local port
  * @lport: Fibre Channel local port to be reset
  *
  * Locking Note: The lport lock is expected to be held before calling
@@ -935,27 +863,29 @@ EXPORT_SYMBOL(fc_lport_reset);
  */
 static void fc_lport_enter_reset(struct fc_lport *lport)
 {
-	FC_DEBUG_LPORT("Port (%6x) entered RESET state from %s state\n",
-		       fc_host_port_id(lport->host), fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Entered RESET state from %s state\n",
+		     fc_lport_state(lport));
 
 	fc_lport_state_enter(lport, LPORT_ST_RESET);
-
-	if (lport->dns_rp)
-		lport->tt.rport_logoff(lport->dns_rp);
-
-	if (lport->ptp_rp) {
-		lport->tt.rport_logoff(lport->ptp_rp);
-		lport->ptp_rp = NULL;
-	}
-
-	lport->tt.disc_stop(lport);
-
-	lport->tt.exch_mgr_reset(lport, 0, 0);
-	fc_host_fabric_name(lport->host) = 0;
-	fc_host_port_id(lport->host) = 0;
-
+	fc_lport_reset_locked(lport);
 	if (lport->link_up)
 		fc_lport_enter_flogi(lport);
+}
+
+/**
+ * fc_lport_enter_disabled() - disable the local port
+ * @lport: Fibre Channel local port to be reset
+ *
+ * Locking Note: The lport lock is expected to be held before calling
+ * this routine.
+ */
+static void fc_lport_enter_disabled(struct fc_lport *lport)
+{
+	FC_LPORT_DBG(lport, "Entered disabled state from %s state\n",
+		     fc_lport_state(lport));
+
+	fc_lport_state_enter(lport, LPORT_ST_DISABLED);
+	fc_lport_reset_locked(lport);
 }
 
 /**
@@ -970,9 +900,9 @@ static void fc_lport_enter_reset(struct fc_lport *lport)
 static void fc_lport_error(struct fc_lport *lport, struct fc_frame *fp)
 {
 	unsigned long delay = 0;
-	FC_DEBUG_LPORT("Error %ld in state %s, retries %d\n",
-		       PTR_ERR(fp), fc_lport_state(lport),
-		       lport->retry_count);
+	FC_LPORT_DBG(lport, "Error %ld in state %s, retries %d\n",
+		     PTR_ERR(fp), fc_lport_state(lport),
+		     lport->retry_count);
 
 	if (!fp || PTR_ERR(fp) == -FC_EX_TIMEOUT) {
 		/*
@@ -989,7 +919,7 @@ static void fc_lport_error(struct fc_lport *lport, struct fc_frame *fp)
 			schedule_delayed_work(&lport->retry_work, delay);
 		} else {
 			switch (lport->state) {
-			case LPORT_ST_NONE:
+			case LPORT_ST_DISABLED:
 			case LPORT_ST_READY:
 			case LPORT_ST_RESET:
 			case LPORT_ST_RPN_ID:
@@ -1023,22 +953,24 @@ static void fc_lport_rft_id_resp(struct fc_seq *sp, struct fc_frame *fp,
 	struct fc_frame_header *fh;
 	struct fc_ct_hdr *ct;
 
+	FC_LPORT_DBG(lport, "Received a RFT_ID %s\n", fc_els_resp_type(fp));
+
 	if (fp == ERR_PTR(-FC_EX_CLOSED))
 		return;
 
 	mutex_lock(&lport->lp_mutex);
 
-	FC_DEBUG_LPORT("Received a RFT_ID response\n");
+	if (lport->state != LPORT_ST_RFT_ID) {
+		FC_LPORT_DBG(lport, "Received a RFT_ID response, but in state "
+			     "%s\n", fc_lport_state(lport));
+		if (IS_ERR(fp))
+			goto err;
+		goto out;
+	}
 
 	if (IS_ERR(fp)) {
 		fc_lport_error(lport, fp);
 		goto err;
-	}
-
-	if (lport->state != LPORT_ST_RFT_ID) {
-		FC_DBG("Received a RFT_ID response, but in state %s\n",
-		       fc_lport_state(lport));
-		goto out;
 	}
 
 	fh = fc_frame_header_get(fp);
@@ -1075,22 +1007,24 @@ static void fc_lport_rpn_id_resp(struct fc_seq *sp, struct fc_frame *fp,
 	struct fc_frame_header *fh;
 	struct fc_ct_hdr *ct;
 
+	FC_LPORT_DBG(lport, "Received a RPN_ID %s\n", fc_els_resp_type(fp));
+
 	if (fp == ERR_PTR(-FC_EX_CLOSED))
 		return;
 
 	mutex_lock(&lport->lp_mutex);
 
-	FC_DEBUG_LPORT("Received a RPN_ID response\n");
+	if (lport->state != LPORT_ST_RPN_ID) {
+		FC_LPORT_DBG(lport, "Received a RPN_ID response, but in state "
+			     "%s\n", fc_lport_state(lport));
+		if (IS_ERR(fp))
+			goto err;
+		goto out;
+	}
 
 	if (IS_ERR(fp)) {
 		fc_lport_error(lport, fp);
 		goto err;
-	}
-
-	if (lport->state != LPORT_ST_RPN_ID) {
-		FC_DBG("Received a RPN_ID response, but in state %s\n",
-		       fc_lport_state(lport));
-		goto out;
 	}
 
 	fh = fc_frame_header_get(fp);
@@ -1125,22 +1059,24 @@ static void fc_lport_scr_resp(struct fc_seq *sp, struct fc_frame *fp,
 	struct fc_lport *lport = lp_arg;
 	u8 op;
 
+	FC_LPORT_DBG(lport, "Received a SCR %s\n", fc_els_resp_type(fp));
+
 	if (fp == ERR_PTR(-FC_EX_CLOSED))
 		return;
 
 	mutex_lock(&lport->lp_mutex);
 
-	FC_DEBUG_LPORT("Received a SCR response\n");
+	if (lport->state != LPORT_ST_SCR) {
+		FC_LPORT_DBG(lport, "Received a SCR response, but in state "
+			     "%s\n", fc_lport_state(lport));
+		if (IS_ERR(fp))
+			goto err;
+		goto out;
+	}
 
 	if (IS_ERR(fp)) {
 		fc_lport_error(lport, fp);
 		goto err;
-	}
-
-	if (lport->state != LPORT_ST_SCR) {
-		FC_DBG("Received a SCR response, but in state %s\n",
-		       fc_lport_state(lport));
-		goto out;
 	}
 
 	op = fc_frame_payload_op(fp);
@@ -1166,8 +1102,8 @@ static void fc_lport_enter_scr(struct fc_lport *lport)
 {
 	struct fc_frame *fp;
 
-	FC_DEBUG_LPORT("Port (%6x) entered SCR state from %s state\n",
-		       fc_host_port_id(lport->host), fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Entered SCR state from %s state\n",
+		     fc_lport_state(lport));
 
 	fc_lport_state_enter(lport, LPORT_ST_SCR);
 
@@ -1177,7 +1113,7 @@ static void fc_lport_enter_scr(struct fc_lport *lport)
 		return;
 	}
 
-	if (!lport->tt.elsct_send(lport, NULL, fp, ELS_SCR,
+	if (!lport->tt.elsct_send(lport, FC_FID_FCTRL, fp, ELS_SCR,
 				  fc_lport_scr_resp, lport, lport->e_d_tov))
 		fc_lport_error(lport, fp);
 }
@@ -1195,8 +1131,8 @@ static void fc_lport_enter_rft_id(struct fc_lport *lport)
 	struct fc_ns_fts *lps;
 	int i;
 
-	FC_DEBUG_LPORT("Port (%6x) entered RFT_ID state from %s state\n",
-		       fc_host_port_id(lport->host), fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Entered RFT_ID state from %s state\n",
+		     fc_lport_state(lport));
 
 	fc_lport_state_enter(lport, LPORT_ST_RFT_ID);
 
@@ -1218,7 +1154,7 @@ static void fc_lport_enter_rft_id(struct fc_lport *lport)
 		return;
 	}
 
-	if (!lport->tt.elsct_send(lport, NULL, fp, FC_NS_RFT_ID,
+	if (!lport->tt.elsct_send(lport, FC_FID_DIR_SERV, fp, FC_NS_RFT_ID,
 				  fc_lport_rft_id_resp,
 				  lport, lport->e_d_tov))
 		fc_lport_error(lport, fp);
@@ -1235,8 +1171,8 @@ static void fc_lport_enter_rpn_id(struct fc_lport *lport)
 {
 	struct fc_frame *fp;
 
-	FC_DEBUG_LPORT("Port (%6x) entered RPN_ID state from %s state\n",
-		       fc_host_port_id(lport->host), fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Entered RPN_ID state from %s state\n",
+		     fc_lport_state(lport));
 
 	fc_lport_state_enter(lport, LPORT_ST_RPN_ID);
 
@@ -1247,7 +1183,7 @@ static void fc_lport_enter_rpn_id(struct fc_lport *lport)
 		return;
 	}
 
-	if (!lport->tt.elsct_send(lport, NULL, fp, FC_NS_RPN_ID,
+	if (!lport->tt.elsct_send(lport, FC_FID_DIR_SERV, fp, FC_NS_RPN_ID,
 				  fc_lport_rpn_id_resp,
 				  lport, lport->e_d_tov))
 		fc_lport_error(lport, fp);
@@ -1266,28 +1202,21 @@ static struct fc_rport_operations fc_lport_rport_ops = {
  */
 static void fc_lport_enter_dns(struct fc_lport *lport)
 {
-	struct fc_rport *rport;
-	struct fc_rport_libfc_priv *rdata;
-	struct fc_disc_port dp;
+	struct fc_rport_priv *rdata;
 
-	dp.ids.port_id = FC_FID_DIR_SERV;
-	dp.ids.port_name = -1;
-	dp.ids.node_name = -1;
-	dp.ids.roles = FC_RPORT_ROLE_UNKNOWN;
-	dp.lp = lport;
-
-	FC_DEBUG_LPORT("Port (%6x) entered DNS state from %s state\n",
-		       fc_host_port_id(lport->host), fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Entered DNS state from %s state\n",
+		     fc_lport_state(lport));
 
 	fc_lport_state_enter(lport, LPORT_ST_DNS);
 
-	rport = lport->tt.rport_create(&dp);
-	if (!rport)
+	mutex_lock(&lport->disc.disc_mutex);
+	rdata = lport->tt.rport_create(lport, FC_FID_DIR_SERV);
+	mutex_unlock(&lport->disc.disc_mutex);
+	if (!rdata)
 		goto err;
 
-	rdata = rport->dd_data;
 	rdata->ops = &fc_lport_rport_ops;
-	lport->tt.rport_login(rport);
+	lport->tt.rport_login(rdata);
 	return;
 
 err:
@@ -1307,7 +1236,7 @@ static void fc_lport_timeout(struct work_struct *work)
 	mutex_lock(&lport->lp_mutex);
 
 	switch (lport->state) {
-	case LPORT_ST_NONE:
+	case LPORT_ST_DISABLED:
 	case LPORT_ST_READY:
 	case LPORT_ST_RESET:
 		WARN_ON(1);
@@ -1351,27 +1280,29 @@ static void fc_lport_logo_resp(struct fc_seq *sp, struct fc_frame *fp,
 	struct fc_lport *lport = lp_arg;
 	u8 op;
 
+	FC_LPORT_DBG(lport, "Received a LOGO %s\n", fc_els_resp_type(fp));
+
 	if (fp == ERR_PTR(-FC_EX_CLOSED))
 		return;
 
 	mutex_lock(&lport->lp_mutex);
 
-	FC_DEBUG_LPORT("Received a LOGO response\n");
+	if (lport->state != LPORT_ST_LOGO) {
+		FC_LPORT_DBG(lport, "Received a LOGO response, but in state "
+			     "%s\n", fc_lport_state(lport));
+		if (IS_ERR(fp))
+			goto err;
+		goto out;
+	}
 
 	if (IS_ERR(fp)) {
 		fc_lport_error(lport, fp);
 		goto err;
 	}
 
-	if (lport->state != LPORT_ST_LOGO) {
-		FC_DBG("Received a LOGO response, but in state %s\n",
-		       fc_lport_state(lport));
-		goto out;
-	}
-
 	op = fc_frame_payload_op(fp);
 	if (op == ELS_LS_ACC)
-		fc_lport_enter_reset(lport);
+		fc_lport_enter_disabled(lport);
 	else
 		fc_lport_error(lport, fp);
 
@@ -1393,14 +1324,10 @@ static void fc_lport_enter_logo(struct fc_lport *lport)
 	struct fc_frame *fp;
 	struct fc_els_logo *logo;
 
-	FC_DEBUG_LPORT("Port (%6x) entered LOGO state from %s state\n",
-		       fc_host_port_id(lport->host), fc_lport_state(lport));
+	FC_LPORT_DBG(lport, "Entered LOGO state from %s state\n",
+		     fc_lport_state(lport));
 
 	fc_lport_state_enter(lport, LPORT_ST_LOGO);
-
-	/* DNS session should be closed so we can release it here */
-	if (lport->dns_rp)
-		lport->tt.rport_logoff(lport->dns_rp);
 
 	fp = fc_frame_alloc(lport, sizeof(*logo));
 	if (!fp) {
@@ -1408,8 +1335,8 @@ static void fc_lport_enter_logo(struct fc_lport *lport)
 		return;
 	}
 
-	if (!lport->tt.elsct_send(lport, NULL, fp, ELS_LOGO, fc_lport_logo_resp,
-				  lport, lport->e_d_tov))
+	if (!lport->tt.elsct_send(lport, FC_FID_FLOGI, fp, ELS_LOGO,
+				  fc_lport_logo_resp, lport, lport->e_d_tov))
 		fc_lport_error(lport, fp);
 }
 
@@ -1435,29 +1362,32 @@ static void fc_lport_flogi_resp(struct fc_seq *sp, struct fc_frame *fp,
 	unsigned int e_d_tov;
 	u16 mfs;
 
+	FC_LPORT_DBG(lport, "Received a FLOGI %s\n", fc_els_resp_type(fp));
+
 	if (fp == ERR_PTR(-FC_EX_CLOSED))
 		return;
 
 	mutex_lock(&lport->lp_mutex);
 
-	FC_DEBUG_LPORT("Received a FLOGI response\n");
+	if (lport->state != LPORT_ST_FLOGI) {
+		FC_LPORT_DBG(lport, "Received a FLOGI response, but in state "
+			     "%s\n", fc_lport_state(lport));
+		if (IS_ERR(fp))
+			goto err;
+		goto out;
+	}
 
 	if (IS_ERR(fp)) {
 		fc_lport_error(lport, fp);
 		goto err;
 	}
 
-	if (lport->state != LPORT_ST_FLOGI) {
-		FC_DBG("Received a FLOGI response, but in state %s\n",
-		       fc_lport_state(lport));
-		goto out;
-	}
-
 	fh = fc_frame_header_get(fp);
 	did = ntoh24(fh->fh_d_id);
 	if (fc_frame_payload_op(fp) == ELS_LS_ACC && did != 0) {
 
-		FC_DEBUG_LPORT("Assigned fid %x\n", did);
+		printk(KERN_INFO "libfc: Assigned FID (%6x) in FLOGI response\n",
+		       did);
 		fc_host_port_id(lport->host) = did;
 
 		flp = fc_frame_payload_get(fp, sizeof(*flp));
@@ -1476,7 +1406,8 @@ static void fc_lport_flogi_resp(struct fc_seq *sp, struct fc_frame *fp,
 				if (e_d_tov > lport->e_d_tov)
 					lport->e_d_tov = e_d_tov;
 				lport->r_a_tov = 2 * e_d_tov;
-				FC_DBG("Point-to-Point mode\n");
+				printk(KERN_INFO "libfc: Port (%6x) entered "
+				       "point to point mode\n", did);
 				fc_lport_ptp_setup(lport, ntoh24(fh->fh_s_id),
 						   get_unaligned_be64(
 							   &flp->fl_wwpn),
@@ -1490,16 +1421,8 @@ static void fc_lport_flogi_resp(struct fc_seq *sp, struct fc_frame *fp,
 				fc_lport_enter_dns(lport);
 			}
 		}
-
-		if (flp) {
-			csp_flags = ntohs(flp->fl_csp.sp_features);
-			if ((csp_flags & FC_SP_FT_FPORT) == 0) {
-				lport->tt.disc_start(fc_lport_disc_callback,
-						     lport);
-			}
-		}
 	} else {
-		FC_DBG("bad FLOGI response\n");
+		FC_LPORT_DBG(lport, "Bad FLOGI response\n");
 	}
 
 out:
@@ -1519,7 +1442,8 @@ void fc_lport_enter_flogi(struct fc_lport *lport)
 {
 	struct fc_frame *fp;
 
-	FC_DEBUG_LPORT("Processing FLOGI state\n");
+	FC_LPORT_DBG(lport, "Entered FLOGI state from %s state\n",
+		     fc_lport_state(lport));
 
 	fc_lport_state_enter(lport, LPORT_ST_FLOGI);
 
@@ -1527,7 +1451,7 @@ void fc_lport_enter_flogi(struct fc_lport *lport)
 	if (!fp)
 		return fc_lport_error(lport, fp);
 
-	if (!lport->tt.elsct_send(lport, NULL, fp, ELS_FLOGI,
+	if (!lport->tt.elsct_send(lport, FC_FID_FLOGI, fp, ELS_FLOGI,
 				  fc_lport_flogi_resp, lport, lport->e_d_tov))
 		fc_lport_error(lport, fp);
 }
@@ -1538,7 +1462,7 @@ int fc_lport_config(struct fc_lport *lport)
 	INIT_DELAYED_WORK(&lport->retry_work, fc_lport_timeout);
 	mutex_init(&lport->lp_mutex);
 
-	fc_lport_state_enter(lport, LPORT_ST_NONE);
+	fc_lport_state_enter(lport, LPORT_ST_DISABLED);
 
 	fc_lport_add_fc4_type(lport, FC_TYPE_FCP);
 	fc_lport_add_fc4_type(lport, FC_TYPE_CT);
@@ -1576,6 +1500,7 @@ int fc_lport_init(struct fc_lport *lport)
 	if (lport->link_supported_speeds & FC_PORTSPEED_10GBIT)
 		fc_host_supported_speeds(lport->host) |= FC_PORTSPEED_10GBIT;
 
+	INIT_LIST_HEAD(&lport->ema_list);
 	return 0;
 }
 EXPORT_SYMBOL(fc_lport_init);

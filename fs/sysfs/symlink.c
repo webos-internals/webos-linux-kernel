@@ -16,6 +16,7 @@
 #include <linux/kobject.h>
 #include <linux/namei.h>
 #include <linux/mutex.h>
+#include <linux/security.h>
 
 #include "sysfs.h"
 
@@ -192,8 +193,11 @@ static void *sysfs_follow_link(struct dentry *dentry, struct nameidata *nd)
 {
 	int error = -ENOMEM;
 	unsigned long page = get_zeroed_page(GFP_KERNEL);
-	if (page)
+	if (page) {
 		error = sysfs_getlink(dentry, (char *) page); 
+		if (error < 0)
+			free_page((unsigned long)page);
+	}
 	nd_set_link(nd, error ? ERR_PTR(error) : (char *)page);
 	return NULL;
 }
@@ -206,6 +210,7 @@ static void sysfs_put_link(struct dentry *dentry, struct nameidata *nd, void *co
 }
 
 const struct inode_operations sysfs_symlink_inode_operations = {
+	.setxattr = sysfs_setxattr,
 	.readlink = generic_readlink,
 	.follow_link = sysfs_follow_link,
 	.put_link = sysfs_put_link,

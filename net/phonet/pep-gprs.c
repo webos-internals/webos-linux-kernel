@@ -115,10 +115,10 @@ static int gprs_recv(struct gprs_dev *gp, struct sk_buff *skb)
 		rskb->truesize += rskb->len;
 
 		/* Avoid nested fragments */
-		for (fs = skb_shinfo(skb)->frag_list; fs; fs = fs->next)
+		skb_walk_frags(skb, fs)
 			flen += fs->len;
 		skb->next = skb_shinfo(skb)->frag_list;
-		skb_shinfo(skb)->frag_list = NULL;
+		skb_frag_list_init(skb);
 		skb->len -= flen;
 		skb->data_len -= flen;
 		skb->truesize -= flen;
@@ -183,7 +183,7 @@ static int gprs_close(struct net_device *dev)
 	return 0;
 }
 
-static int gprs_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t gprs_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct gprs_dev *gp = netdev_priv(dev);
 	struct sock *sk = gp->sk;
@@ -195,7 +195,7 @@ static int gprs_xmit(struct sk_buff *skb, struct net_device *dev)
 		break;
 	default:
 		dev_kfree_skb(skb);
-		return 0;
+		return NETDEV_TX_OK;
 	}
 
 	skb_orphan(skb);
@@ -212,9 +212,10 @@ static int gprs_xmit(struct sk_buff *skb, struct net_device *dev)
 		dev->stats.tx_bytes += len;
 	}
 
-	if (!pep_writeable(sk))
-		netif_stop_queue(dev);
-	return 0;
+	netif_stop_queue(dev);
+	if (pep_writeable(sk))
+		netif_wake_queue(dev);
+	return NETDEV_TX_OK;
 }
 
 static int gprs_set_mtu(struct net_device *dev, int new_mtu)

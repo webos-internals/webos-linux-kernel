@@ -20,12 +20,12 @@ static int udplitev6_rcv(struct sk_buff *skb)
 
 static void udplitev6_err(struct sk_buff *skb,
 			  struct inet6_skb_parm *opt,
-			  int type, int code, int offset, __be32 info)
+			  u8 type, u8 code, int offset, __be32 info)
 {
 	__udp6_lib_err(skb, opt, type, code, offset, info, &udplite_table);
 }
 
-static struct inet6_protocol udplitev6_protocol = {
+static const struct inet6_protocol udplitev6_protocol = {
 	.handler	=	udplitev6_rcv,
 	.err_handler	=	udplitev6_err,
 	.flags		=	INET6_PROTO_NOPOLICY|INET6_PROTO_FINAL,

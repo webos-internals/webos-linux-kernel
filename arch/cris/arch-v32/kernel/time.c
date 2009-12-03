@@ -46,7 +46,6 @@ unsigned long timer_regs[NR_CPUS] =
 
 extern void update_xtime_from_cmos(void);
 extern int set_rtc_mmss(unsigned long nowtime);
-extern int setup_irq(int, struct irqaction *);
 extern int have_rtc;
 
 #ifdef CONFIG_CPU_FREQ
@@ -267,7 +266,6 @@ timer_interrupt(int irq, void *dev_id)
 static struct irqaction irq_timer = {
 	.handler = timer_interrupt,
 	.flags = IRQF_SHARED | IRQF_DISABLED,
-	.mask = CPU_MASK_NONE,
 	.name = "timer"
 };
 

@@ -464,9 +464,9 @@ struct handle_s
  */
 struct transaction_chp_stats_s {
 	unsigned long		cs_chp_time;
-	unsigned long		cs_forced_to_close;
-	unsigned long		cs_written;
-	unsigned long		cs_dropped;
+	__u32			cs_forced_to_close;
+	__u32			cs_written;
+	__u32			cs_dropped;
 };
 
 /* The transaction_t type is the guts of the journaling mechanism.  It
@@ -649,6 +649,12 @@ struct transaction_s
 	int t_handle_count;
 
 	/*
+	 * This transaction is being forced and some process is
+	 * waiting for it to finish.
+	 */
+	unsigned int t_synchronous_commit:1;
+
+	/*
 	 * For use by the filesystem to store fs-specific data
 	 * structures associated with the transaction
 	 */
@@ -662,22 +668,15 @@ struct transaction_run_stats_s {
 	unsigned long		rs_flushing;
 	unsigned long		rs_logging;
 
-	unsigned long		rs_handle_count;
-	unsigned long		rs_blocks;
-	unsigned long		rs_blocks_logged;
+	__u32			rs_handle_count;
+	__u32			rs_blocks;
+	__u32			rs_blocks_logged;
 };
 
 struct transaction_stats_s {
-	int 			ts_type;
 	unsigned long		ts_tid;
-	union {
-		struct transaction_run_stats_s run;
-		struct transaction_chp_stats_s chp;
-	} u;
+	struct transaction_run_stats_s run;
 };
-
-#define JBD2_STATS_RUN		1
-#define JBD2_STATS_CHECKPOINT	2
 
 static inline unsigned long
 jbd2_time_diff(unsigned long start, unsigned long end)
@@ -982,12 +981,6 @@ struct journal_s
 	/*
 	 * Journal statistics
 	 */
-	struct transaction_stats_s *j_history;
-	int			j_history_max;
-	int			j_history_cur;
-	/*
-	 * Protect the transactions statistics history
-	 */
 	spinlock_t		j_history_lock;
 	struct proc_dir_entry	*j_proc_entry;
 	struct transaction_stats_s j_stats;
@@ -1187,7 +1180,8 @@ extern int	   jbd2_journal_init_revoke_caches(void);
 extern void	   jbd2_journal_destroy_revoke(journal_t *);
 extern int	   jbd2_journal_revoke (handle_t *, unsigned long long, struct buffer_head *);
 extern int	   jbd2_journal_cancel_revoke(handle_t *, struct journal_head *);
-extern void	   jbd2_journal_write_revoke_records(journal_t *, transaction_t *);
+extern void	   jbd2_journal_write_revoke_records(journal_t *,
+						     transaction_t *, int);
 
 /* Recovery revoke support */
 extern int	jbd2_journal_set_revoke(journal_t *, unsigned long long, tid_t);
@@ -1307,6 +1301,12 @@ extern int jbd_blocks_per_page(struct inode *inode);
 #define BUFFER_TRACE(bh, info)	do {} while (0)
 #define BUFFER_TRACE2(bh, bh2, info)	do {} while (0)
 #define JBUFFER_TRACE(jh, info)	do {} while (0)
+
+/* 
+ * jbd2_dev_to_name is a utility function used by the jbd2 and ext4 
+ * tracing infrastructure to map a dev_t to a device name.
+ */
+extern const char *jbd2_dev_to_name(dev_t device);
 
 #endif	/* __KERNEL__ */
 

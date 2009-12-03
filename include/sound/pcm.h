@@ -98,6 +98,7 @@ struct snd_pcm_ops {
 #define SNDRV_PCM_IOCTL1_INFO		1
 #define SNDRV_PCM_IOCTL1_CHANNEL_INFO	2
 #define SNDRV_PCM_IOCTL1_GSTATE		3
+#define SNDRV_PCM_IOCTL1_FIFO_SIZE	4
 
 #define SNDRV_PCM_TRIGGER_STOP		0
 #define SNDRV_PCM_TRIGGER_START		1
@@ -268,7 +269,9 @@ struct snd_pcm_runtime {
 	int overrange;
 	snd_pcm_uframes_t avail_max;
 	snd_pcm_uframes_t hw_ptr_base;	/* Position at buffer restart */
-	snd_pcm_uframes_t hw_ptr_interrupt; /* Position at interrupt time*/
+	snd_pcm_uframes_t hw_ptr_interrupt; /* Position at interrupt time */
+	unsigned long hw_ptr_jiffies;	/* Time when hw_ptr is updated */
+	snd_pcm_sframes_t delay;	/* extra delay; typically FIFO size */
 
 	/* -- HW params -- */
 	snd_pcm_access_t access;	/* access mode */
@@ -364,7 +367,6 @@ struct snd_pcm_substream {
         /* -- timer section -- */
 	struct snd_timer *timer;		/* timer */
 	unsigned timer_running: 1;	/* time is running */
-	spinlock_t timer_lock;
 	/* -- next substream -- */
 	struct snd_pcm_substream *next;
 	/* -- linked substreams -- */
@@ -451,7 +453,7 @@ struct snd_pcm_notify {
 
 extern const struct file_operations snd_pcm_f_ops[2];
 
-int snd_pcm_new(struct snd_card *card, char *id, int device,
+int snd_pcm_new(struct snd_card *card, const char *id, int device,
 		int playback_count, int capture_count,
 		struct snd_pcm **rpcm);
 int snd_pcm_new_stream(struct snd_pcm *pcm, int stream, int substream_count);
@@ -485,80 +487,6 @@ int snd_pcm_attach_substream(struct snd_pcm *pcm, int stream, struct file *file,
 void snd_pcm_detach_substream(struct snd_pcm_substream *substream);
 void snd_pcm_vma_notify_data(void *client, void *data);
 int snd_pcm_mmap_data(struct snd_pcm_substream *substream, struct file *file, struct vm_area_struct *area);
-
-#if BITS_PER_LONG >= 64
-
-static inline void div64_32(u_int64_t *n, u_int32_t div, u_int32_t *rem)
-{
-	*rem = *n % div;
-	*n /= div;
-}
-
-#elif defined(i386)
-
-static inline void div64_32(u_int64_t *n, u_int32_t div, u_int32_t *rem)
-{
-	u_int32_t low, high;
-	low = *n & 0xffffffff;
-	high = *n >> 32;
-	if (high) {
-		u_int32_t high1 = high % div;
-		high /= div;
-		asm("divl %2":"=a" (low), "=d" (*rem):"rm" (div), "a" (low), "d" (high1));
-		*n = (u_int64_t)high << 32 | low;
-	} else {
-		*n = low / div;
-		*rem = low % div;
-	}
-}
-#else
-
-static inline void divl(u_int32_t high, u_int32_t low,
-			u_int32_t div,
-			u_int32_t *q, u_int32_t *r)
-{
-	u_int64_t n = (u_int64_t)high << 32 | low;
-	u_int64_t d = (u_int64_t)div << 31;
-	u_int32_t q1 = 0;
-	int c = 32;
-	while (n > 0xffffffffU) {
-		q1 <<= 1;
-		if (n >= d) {
-			n -= d;
-			q1 |= 1;
-		}
-		d >>= 1;
-		c--;
-	}
-	q1 <<= c;
-	if (n) {
-		low = n;
-		*q = q1 | (low / div);
-		*r = low % div;
-	} else {
-		*r = 0;
-		*q = q1;
-	}
-	return;
-}
-
-static inline void div64_32(u_int64_t *n, u_int32_t div, u_int32_t *rem)
-{
-	u_int32_t low, high;
-	low = *n & 0xffffffff;
-	high = *n >> 32;
-	if (high) {
-		u_int32_t high1 = high % div;
-		u_int32_t low1 = low;
-		high /= div;
-		divl(high1, low1, div, &low, rem);
-		*n = (u_int64_t)high << 32 | low;
-	} else {
-		*n = low / div;
-		*rem = low % div;
-	}
-}
-#endif
 
 /*
  *  PCM library
@@ -974,6 +902,7 @@ int snd_pcm_lib_preallocate_pages_for_all(struct snd_pcm *pcm,
 int snd_pcm_lib_malloc_pages(struct snd_pcm_substream *substream, size_t size);
 int snd_pcm_lib_free_pages(struct snd_pcm_substream *substream);
 
+#ifdef CONFIG_SND_DMA_SGBUF
 /*
  * SG-buffer handling
  */
@@ -998,6 +927,28 @@ struct page *snd_pcm_sgbuf_ops_page(struct snd_pcm_substream *substream,
 				    unsigned long offset);
 unsigned int snd_pcm_sgbuf_get_chunk_size(struct snd_pcm_substream *substream,
 					  unsigned int ofs, unsigned int size);
+
+#else /* !SND_DMA_SGBUF */
+/*
+ * fake using a continuous buffer
+ */
+static inline dma_addr_t
+snd_pcm_sgbuf_get_addr(struct snd_pcm_substream *substream, unsigned int ofs)
+{
+	return substream->runtime->dma_addr + ofs;
+}
+
+static inline void *
+snd_pcm_sgbuf_get_ptr(struct snd_pcm_substream *substream, unsigned int ofs)
+{
+	return substream->runtime->dma_area + ofs;
+}
+
+#define snd_pcm_sgbuf_ops_page	NULL
+
+#define snd_pcm_sgbuf_get_chunk_size(subs, ofs, size)	(size)
+
+#endif /* SND_DMA_SGBUF */
 
 /* handle mmap counter - PCM mmap callback should handle this counter properly */
 static inline void snd_pcm_mmap_data_open(struct vm_area_struct *area)
@@ -1036,5 +987,7 @@ static inline void snd_pcm_limit_isa_dma_size(int dma, size_t *max)
 					 (IEC958_AES3_CON_FS_48000<<24))
 
 #define PCM_RUNTIME_CHECK(sub) snd_BUG_ON(!(sub) || !(sub)->runtime)
+
+const char *snd_pcm_format_name(snd_pcm_format_t format);
 
 #endif /* __SOUND_PCM_H */

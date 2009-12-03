@@ -33,7 +33,6 @@
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 
-#include <linux/version.h>
 
 #include "qlge.h"
 
@@ -46,21 +45,21 @@ static int ql_update_ring_coalescing(struct ql_adapter *qdev)
 	if (!netif_running(qdev->ndev))
 		return status;
 
-	spin_lock(&qdev->hw_lock);
 	/* Skip the default queue, and update the outbound handler
 	 * queues if they changed.
 	 */
-	cqicb = (struct cqicb *)&qdev->rx_ring[1];
+	cqicb = (struct cqicb *)&qdev->rx_ring[qdev->rss_ring_count];
 	if (le16_to_cpu(cqicb->irq_delay) != qdev->tx_coalesce_usecs ||
-	    le16_to_cpu(cqicb->pkt_delay) != qdev->tx_max_coalesced_frames) {
-		for (i = 1; i < qdev->rss_ring_first_cq_id; i++, rx_ring++) {
+		le16_to_cpu(cqicb->pkt_delay) !=
+				qdev->tx_max_coalesced_frames) {
+		for (i = qdev->rss_ring_count; i < qdev->rx_ring_count; i++) {
 			rx_ring = &qdev->rx_ring[i];
 			cqicb = (struct cqicb *)rx_ring;
 			cqicb->irq_delay = cpu_to_le16(qdev->tx_coalesce_usecs);
 			cqicb->pkt_delay =
 			    cpu_to_le16(qdev->tx_max_coalesced_frames);
 			cqicb->flags = FLAGS_LI;
-			status = ql_write_cfg(qdev, cqicb, sizeof(cqicb),
+			status = ql_write_cfg(qdev, cqicb, sizeof(*cqicb),
 						CFG_LCQ, rx_ring->cq_id);
 			if (status) {
 				QPRINTK(qdev, IFUP, ERR,
@@ -71,19 +70,18 @@ static int ql_update_ring_coalescing(struct ql_adapter *qdev)
 	}
 
 	/* Update the inbound (RSS) handler queues if they changed. */
-	cqicb = (struct cqicb *)&qdev->rx_ring[qdev->rss_ring_first_cq_id];
+	cqicb = (struct cqicb *)&qdev->rx_ring[0];
 	if (le16_to_cpu(cqicb->irq_delay) != qdev->rx_coalesce_usecs ||
-	    le16_to_cpu(cqicb->pkt_delay) != qdev->rx_max_coalesced_frames) {
-		for (i = qdev->rss_ring_first_cq_id;
-		     i <= qdev->rss_ring_first_cq_id + qdev->rss_ring_count;
-		     i++) {
+		le16_to_cpu(cqicb->pkt_delay) !=
+					qdev->rx_max_coalesced_frames) {
+		for (i = 0; i < qdev->rss_ring_count; i++, rx_ring++) {
 			rx_ring = &qdev->rx_ring[i];
 			cqicb = (struct cqicb *)rx_ring;
 			cqicb->irq_delay = cpu_to_le16(qdev->rx_coalesce_usecs);
 			cqicb->pkt_delay =
 			    cpu_to_le16(qdev->rx_max_coalesced_frames);
 			cqicb->flags = FLAGS_LI;
-			status = ql_write_cfg(qdev, cqicb, sizeof(cqicb),
+			status = ql_write_cfg(qdev, cqicb, sizeof(*cqicb),
 						CFG_LCQ, rx_ring->cq_id);
 			if (status) {
 				QPRINTK(qdev, IFUP, ERR,
@@ -93,7 +91,6 @@ static int ql_update_ring_coalescing(struct ql_adapter *qdev)
 		}
 	}
 exit:
-	spin_unlock(&qdev->hw_lock);
 	return status;
 }
 
@@ -271,7 +268,8 @@ static int ql_get_settings(struct net_device *ndev,
 	ecmd->advertising = ADVERTISED_10000baseT_Full;
 	ecmd->autoneg = AUTONEG_ENABLE;
 	ecmd->transceiver = XCVR_EXTERNAL;
-	if ((qdev->link_status & LINK_TYPE_MASK) == LINK_TYPE_10GBASET) {
+	if ((qdev->link_status & STS_LINK_TYPE_MASK) ==
+				STS_LINK_TYPE_10GBASET) {
 		ecmd->supported |= (SUPPORTED_TP | SUPPORTED_Autoneg);
 		ecmd->advertising |= (ADVERTISED_TP | ADVERTISED_Autoneg);
 		ecmd->port = PORT_TP;
@@ -293,7 +291,10 @@ static void ql_get_drvinfo(struct net_device *ndev,
 	struct ql_adapter *qdev = netdev_priv(ndev);
 	strncpy(drvinfo->driver, qlge_driver_name, 32);
 	strncpy(drvinfo->version, qlge_driver_version, 32);
-	strncpy(drvinfo->fw_version, "N/A", 32);
+	snprintf(drvinfo->fw_version, 32, "v%d.%d.%d",
+		 (qdev->fw_rev_id & 0x00ff0000) >> 16,
+		 (qdev->fw_rev_id & 0x0000ff00) >> 8,
+		 (qdev->fw_rev_id & 0x000000ff));
 	strncpy(drvinfo->bus_info, pci_name(qdev->pdev), 32);
 	drvinfo->n_stats = 0;
 	drvinfo->testinfo_len = 0;
@@ -401,6 +402,7 @@ const struct ethtool_ops qlge_ethtool_ops = {
 	.get_rx_csum = ql_get_rx_csum,
 	.set_rx_csum = ql_set_rx_csum,
 	.get_tx_csum = ethtool_op_get_tx_csum,
+	.set_tx_csum = ethtool_op_set_tx_csum,
 	.get_sg = ethtool_op_get_sg,
 	.set_sg = ethtool_op_set_sg,
 	.get_tso = ethtool_op_get_tso,

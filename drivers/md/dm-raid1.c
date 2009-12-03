@@ -5,7 +5,6 @@
  * This file is released under the GPL.
  */
 
-#include "dm-bio-list.h"
 #include "dm-bio-record.h"
 
 #include <linux/init.h>
@@ -144,6 +143,8 @@ struct dm_raid1_read_record {
 	struct mirror *m;
 	struct dm_bio_details details;
 };
+
+static struct kmem_cache *_dm_raid1_read_record_cache;
 
 /*
  * Every mirror should look like this one.
@@ -586,6 +587,9 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	int state;
 	struct bio *bio;
 	struct bio_list sync, nosync, recover, *this_list = NULL;
+	struct bio_list requeue;
+	struct dm_dirty_log *log = dm_rh_dirty_log(ms->rh);
+	region_t region;
 
 	if (!writes->head)
 		return;
@@ -596,10 +600,18 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	bio_list_init(&sync);
 	bio_list_init(&nosync);
 	bio_list_init(&recover);
+	bio_list_init(&requeue);
 
 	while ((bio = bio_list_pop(writes))) {
-		state = dm_rh_get_state(ms->rh,
-					dm_rh_bio_to_region(ms->rh, bio), 1);
+		region = dm_rh_bio_to_region(ms->rh, bio);
+
+		if (log->type->is_remote_recovering &&
+		    log->type->is_remote_recovering(log, region)) {
+			bio_list_add(&requeue, bio);
+			continue;
+		}
+
+		state = dm_rh_get_state(ms->rh, region, 1);
 		switch (state) {
 		case DM_RH_CLEAN:
 		case DM_RH_DIRTY:
@@ -619,13 +631,30 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	}
 
 	/*
+	 * Add bios that are delayed due to remote recovery
+	 * back on to the write queue
+	 */
+	if (unlikely(requeue.head)) {
+		spin_lock_irq(&ms->lock);
+		bio_list_merge(&ms->writes, &requeue);
+		spin_unlock_irq(&ms->lock);
+		delayed_wake(ms);
+	}
+
+	/*
 	 * Increment the pending counts for any regions that will
 	 * be written to (writes to recover regions are going to
 	 * be delayed).
 	 */
 	dm_rh_inc_pending(ms->rh, &sync);
 	dm_rh_inc_pending(ms->rh, &nosync);
-	ms->log_failure = dm_rh_flush(ms->rh) ? 1 : 0;
+
+	/*
+	 * If the flush fails on a previous call and succeeds here,
+	 * we must not reset the log_failure variable.  We need
+	 * userspace interaction to do that.
+	 */
+	ms->log_failure = dm_rh_flush(ms->rh) ? 1 : ms->log_failure;
 
 	/*
 	 * Dispatch io.
@@ -764,9 +793,9 @@ static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 	atomic_set(&ms->suspend, 0);
 	atomic_set(&ms->default_mirror, DEFAULT_MIRROR);
 
-	len = sizeof(struct dm_raid1_read_record);
-	ms->read_record_pool = mempool_create_kmalloc_pool(MIN_READ_RECORDS,
-							   len);
+	ms->read_record_pool = mempool_create_slab_pool(MIN_READ_RECORDS,
+						_dm_raid1_read_record_cache);
+
 	if (!ms->read_record_pool) {
 		ti->error = "Error creating mirror read_record_pool";
 		kfree(ms);
@@ -1100,7 +1129,7 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 	if (error == -EOPNOTSUPP)
 		goto out;
 
-	if ((error == -EWOULDBLOCK) && bio_rw_ahead(bio))
+	if ((error == -EWOULDBLOCK) && bio_rw_flagged(bio, BIO_RW_AHEAD))
 		goto out;
 
 	if (unlikely(error)) {
@@ -1261,9 +1290,23 @@ static int mirror_status(struct dm_target *ti, status_type_t type,
 	return 0;
 }
 
+static int mirror_iterate_devices(struct dm_target *ti,
+				  iterate_devices_callout_fn fn, void *data)
+{
+	struct mirror_set *ms = ti->private;
+	int ret = 0;
+	unsigned i;
+
+	for (i = 0; !ret && i < ms->nr_mirrors; i++)
+		ret = fn(ti, ms->mirror[i].dev,
+			 ms->mirror[i].offset, ti->len, data);
+
+	return ret;
+}
+
 static struct target_type mirror_target = {
 	.name	 = "mirror",
-	.version = {1, 0, 20},
+	.version = {1, 12, 0},
 	.module	 = THIS_MODULE,
 	.ctr	 = mirror_ctr,
 	.dtr	 = mirror_dtr,
@@ -1273,22 +1316,38 @@ static struct target_type mirror_target = {
 	.postsuspend = mirror_postsuspend,
 	.resume	 = mirror_resume,
 	.status	 = mirror_status,
+	.iterate_devices = mirror_iterate_devices,
 };
 
 static int __init dm_mirror_init(void)
 {
 	int r;
 
-	r = dm_register_target(&mirror_target);
-	if (r < 0)
-		DMERR("Failed to register mirror target");
+	_dm_raid1_read_record_cache = KMEM_CACHE(dm_raid1_read_record, 0);
+	if (!_dm_raid1_read_record_cache) {
+		DMERR("Can't allocate dm_raid1_read_record cache");
+		r = -ENOMEM;
+		goto bad_cache;
+	}
 
+	r = dm_register_target(&mirror_target);
+	if (r < 0) {
+		DMERR("Failed to register mirror target");
+		goto bad_target;
+	}
+
+	return 0;
+
+bad_target:
+	kmem_cache_destroy(_dm_raid1_read_record_cache);
+bad_cache:
 	return r;
 }
 
 static void __exit dm_mirror_exit(void)
 {
 	dm_unregister_target(&mirror_target);
+	kmem_cache_destroy(_dm_raid1_read_record_cache);
 }
 
 /* Module hooks */

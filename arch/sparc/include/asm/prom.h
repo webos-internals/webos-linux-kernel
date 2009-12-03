@@ -86,6 +86,8 @@ extern int of_node_to_nid(struct device_node *dp);
 #endif
 
 extern void prom_build_devicetree(void);
+extern void of_populate_present_mask(void);
+extern void of_fill_in_cpu_data(void);
 
 /* Dummy ref counting routines - to be implemented later */
 static inline struct device_node *of_node_get(struct device_node *node)
@@ -115,6 +117,9 @@ static inline void irq_dispose_mapping(unsigned int virq)
 extern struct device_node *of_console_device;
 extern char *of_console_path;
 extern char *of_console_options;
+
+extern void (*prom_build_more)(struct device_node *dp, struct device_node ***nextp);
+extern char *build_full_name(struct device_node *dp);
 
 #endif /* __KERNEL__ */
 #endif /* _SPARC_PROM_H */

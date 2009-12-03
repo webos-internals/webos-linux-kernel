@@ -1,50 +1,25 @@
 /*
- * File:         arch/blackfin/mach-common/irqpanic.c
- * Based on:
- * Author:
+ * panic kernel with dump information
  *
- * Created:      ?
- * Description:  panic kernel with dump information
+ * Copyright 2005-2009 Analog Devices Inc.
  *
- * Modified:     rgetz - added cache checking code 14Feb06
- *               Copyright 2004-2006 Analog Devices Inc.
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see the file COPYING, or write
- * to the Free Software Foundation, Inc.,
- * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/module.h>
 #include <linux/kernel_stat.h>
 #include <linux/sched.h>
-#include <asm/traps.h>
 #include <asm/blackfin.h>
 
-#ifdef CONFIG_DEBUG_ICACHE_CHECK
 #define L1_ICACHE_START 0xffa10000
 #define L1_ICACHE_END   0xffa13fff
-void irq_panic(int reason, struct pt_regs *regs) __attribute__ ((l1_text));
-#endif
 
 /*
  * irq_panic - calls panic with string setup
  */
+__attribute__ ((l1_text))
 asmlinkage void irq_panic(int reason, struct pt_regs *regs)
 {
-#ifdef CONFIG_DEBUG_ICACHE_CHECK
 	unsigned int cmd, tag, ca, cache_hi, cache_lo, *pa;
 	unsigned short i, j, die;
 	unsigned int bad[10][6];
@@ -126,9 +101,6 @@ asmlinkage void irq_panic(int reason, struct pt_regs *regs)
 			     bad[j][3], bad[j][4], bad[j][5]);
 		}
 		panic("icache coherency error");
-	} else {
+	} else
 		printk(KERN_EMERG "icache checked, and OK\n");
-	}
-#endif
-
 }

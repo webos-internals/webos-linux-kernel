@@ -458,7 +458,7 @@ static int cx24123_set_symbolrate(struct cx24123_state *state, u32 srate)
 	/*  check if symbol rate is within limits */
 	if ((srate > state->frontend.ops.info.symbol_rate_max) ||
 	    (srate < state->frontend.ops.info.symbol_rate_min))
-		return -EOPNOTSUPP;;
+		return -EOPNOTSUPP;
 
 	/* choose the sampling rate high enough for the required operation,
 	   while optimizing the power consumed by the demodulator */
@@ -1069,13 +1069,13 @@ static struct dvb_frontend_ops cx24123_ops;
 struct dvb_frontend *cx24123_attach(const struct cx24123_config *config,
 				    struct i2c_adapter *i2c)
 {
+	/* allocate memory for the internal state */
 	struct cx24123_state *state =
 		kzalloc(sizeof(struct cx24123_state), GFP_KERNEL);
 
 	dprintk("\n");
-	/* allocate memory for the internal state */
 	if (state == NULL) {
-		err("Unable to kmalloc\n");
+		err("Unable to kzalloc\n");
 		goto error;
 	}
 

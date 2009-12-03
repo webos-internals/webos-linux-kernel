@@ -6,7 +6,7 @@
  * Copyright (c) 2008 Nuvoton technology corporation
  * All rights reserved.
  *
- * Header file for W90X900 CPU support
+ * Header file for NUC900 CPU support
  *
  * Wan ZongShun <mcuos.com@gmail.com>
  *
@@ -24,54 +24,36 @@
        .type    = MT_DEVICE,                           \
 }
 
+#define NUC900_8250PORT(name)					\
+{								\
+	.membase	= name##_BA,				\
+	.mapbase	= name##_PA,				\
+	.irq		= IRQ_##name,				\
+	.uartclk	= 11313600,				\
+	.regshift	= 2,					\
+	.iotype		= UPIO_MEM,				\
+	.flags		= UPF_BOOT_AUTOCONF | UPF_SKIP_TEST,	\
+}
+
 /*Cpu identifier register*/
 
-#define W90X900PDID	W90X900_VA_GCR
-#define W90P910_CPUID	0x02900910
-#define W90P920_CPUID	0x02900920
-#define W90P950_CPUID	0x02900950
-#define W90N960_CPUID	0x02900960
+#define NUC900PDID	W90X900_VA_GCR
+#define NUC910_CPUID	0x02900910
+#define NUC920_CPUID	0x02900920
+#define NUC950_CPUID	0x02900950
+#define NUC960_CPUID	0x02900960
 
-struct w90x900_uartcfg;
-struct map_desc;
-struct sys_timer;
+/* extern file from cpu.c */
 
-/* core initialisation functions */
+extern void nuc900_clock_source(struct device *dev, unsigned char *src);
+extern void nuc900_init_clocks(void);
+extern void nuc900_map_io(struct map_desc *mach_desc, int mach_size);
+extern void nuc900_board_init(struct platform_device **device, int size);
 
-extern void w90x900_init_irq(void);
-extern void w90p910_init_io(struct map_desc *mach_desc, int size);
-extern void w90p910_init_uarts(struct w90x900_uartcfg *cfg, int no);
-extern void w90p910_init_clocks(int xtal);
-extern void w90p910_map_io(struct map_desc *mach_desc, int size);
-extern struct sys_timer w90x900_timer;
+/* for either public between 910 and 920, or between 920 and 950 */
 
-#define W90X900_RES(name)				\
-struct resource w90x900_##name##_resource[] = {		\
-	[0] = {						\
-		.start = name##_PA,			\
-		.end   = name##_PA + 0x0ff,		\
-		.flags = IORESOURCE_MEM,		\
-	},						\
-	[1] = {						\
-		.start = IRQ_##name,			\
-		.end   = IRQ_##name,			\
-		.flags = IORESOURCE_IRQ,		\
-	}						\
-}
-
-#define W90X900_DEVICE(devname, regname, devid, platdevname)		\
-struct platform_device w90x900_##devname = {				\
-	.name		= platdevname,					\
-	.id		= devid,					\
-	.num_resources 	= ARRAY_SIZE(w90x900_##regname##_resource),	\
-	.resource 	= w90x900_##regname##_resource,			\
-}
-
-#define W90X900_UARTCFG(port, flag, uc, ulc, ufc)	\
-{							\
-		.hwport	= port,				\
-		.flags	= flag,				\
-		.ucon	= uc,				\
-		.ulcon	= ulc,				\
-		.ufcon	= ufc,				\
-}
+extern struct platform_device nuc900_serial_device;
+extern struct platform_device nuc900_device_fmi;
+extern struct platform_device nuc900_device_kpi;
+extern struct platform_device nuc900_device_rtc;
+extern struct platform_device nuc900_device_ts;

@@ -55,6 +55,25 @@
  *			need do nothing.
  * RevokeValid set, Revoked set:
  *			buffer has been revoked.
+ *
+ * Locking rules:
+ * We keep two hash tables of revoke records. One hashtable belongs to the
+ * running transaction (is pointed to by journal->j_revoke), the other one
+ * belongs to the committing transaction. Accesses to the second hash table
+ * happen only from the kjournald and no other thread touches this table.  Also
+ * journal_switch_revoke_table() which switches which hashtable belongs to the
+ * running and which to the committing transaction is called only from
+ * kjournald. Therefore we need no locks when accessing the hashtable belonging
+ * to the committing transaction.
+ *
+ * All users operating on the hash table belonging to the running transaction
+ * have a handle to the transaction. Therefore they are safe from kjournald
+ * switching hash tables under them. For operations on the lists of entries in
+ * the hash table j_revoke_lock is used.
+ *
+ * Finally, also replay code uses the hash tables but at this moment noone else
+ * can touch them (filesystem isn't mounted yet) and hence no locking is
+ * needed.
  */
 
 #ifndef __KERNEL__
@@ -67,6 +86,7 @@
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/init.h>
+#include <linux/bio.h>
 #endif
 #include <linux/log2.h>
 
@@ -81,7 +101,7 @@ struct jbd_revoke_record_s
 {
 	struct list_head  hash;
 	tid_t		  sequence;	/* Used for recovery only */
-	unsigned long	  blocknr;
+	unsigned int	  blocknr;
 };
 
 
@@ -99,14 +119,14 @@ struct jbd_revoke_table_s
 #ifdef __KERNEL__
 static void write_one_revoke_record(journal_t *, transaction_t *,
 				    struct journal_head **, int *,
-				    struct jbd_revoke_record_s *);
-static void flush_descriptor(journal_t *, struct journal_head *, int);
+				    struct jbd_revoke_record_s *, int);
+static void flush_descriptor(journal_t *, struct journal_head *, int, int);
 #endif
 
 /* Utility functions to maintain the revoke table */
 
 /* Borrowed from buffer.c: this is a tried and tested block hash function */
-static inline int hash(journal_t *journal, unsigned long block)
+static inline int hash(journal_t *journal, unsigned int block)
 {
 	struct jbd_revoke_table_s *table = journal->j_revoke;
 	int hash_shift = table->hash_shift;
@@ -116,7 +136,7 @@ static inline int hash(journal_t *journal, unsigned long block)
 		(block << (hash_shift - 12))) & (table->hash_size - 1);
 }
 
-static int insert_revoke_hash(journal_t *journal, unsigned long blocknr,
+static int insert_revoke_hash(journal_t *journal, unsigned int blocknr,
 			      tid_t seq)
 {
 	struct list_head *hash_list;
@@ -146,7 +166,7 @@ oom:
 /* Find a revoke record in the journal's hash table. */
 
 static struct jbd_revoke_record_s *find_revoke_record(journal_t *journal,
-						      unsigned long blocknr)
+						      unsigned int blocknr)
 {
 	struct list_head *hash_list;
 	struct jbd_revoke_record_s *record;
@@ -312,7 +332,7 @@ void journal_destroy_revoke(journal_t *journal)
  * by one.
  */
 
-int journal_revoke(handle_t *handle, unsigned long blocknr,
+int journal_revoke(handle_t *handle, unsigned int blocknr,
 		   struct buffer_head *bh_in)
 {
 	struct buffer_head *bh = NULL;
@@ -381,7 +401,7 @@ int journal_revoke(handle_t *handle, unsigned long blocknr,
 		}
 	}
 
-	jbd_debug(2, "insert revoke for block %lu, bh_in=%p\n", blocknr, bh_in);
+	jbd_debug(2, "insert revoke for block %u, bh_in=%p\n", blocknr, bh_in);
 	err = insert_revoke_hash(journal, blocknr,
 				handle->h_transaction->t_tid);
 	BUFFER_TRACE(bh_in, "exit");
@@ -402,8 +422,6 @@ int journal_revoke(handle_t *handle, unsigned long blocknr,
  * the second time we would still have a pending revoke to cancel.  So,
  * do not trust the Revoked bit on buffers unless RevokeValid is also
  * set.
- *
- * The caller must have the journal locked.
  */
 int journal_cancel_revoke(handle_t *handle, struct journal_head *jh)
 {
@@ -481,12 +499,9 @@ void journal_switch_revoke_table(journal_t *journal)
 /*
  * Write revoke records to the journal for all entries in the current
  * revoke hash, deleting the entries as we go.
- *
- * Called with the journal lock held.
  */
-
 void journal_write_revoke_records(journal_t *journal,
-				  transaction_t *transaction)
+				  transaction_t *transaction, int write_op)
 {
 	struct journal_head *descriptor;
 	struct jbd_revoke_record_s *record;
@@ -510,14 +525,14 @@ void journal_write_revoke_records(journal_t *journal,
 				hash_list->next;
 			write_one_revoke_record(journal, transaction,
 						&descriptor, &offset,
-						record);
+						record, write_op);
 			count++;
 			list_del(&record->hash);
 			kmem_cache_free(revoke_record_cache, record);
 		}
 	}
 	if (descriptor)
-		flush_descriptor(journal, descriptor, offset);
+		flush_descriptor(journal, descriptor, offset, write_op);
 	jbd_debug(1, "Wrote %d revoke records\n", count);
 }
 
@@ -530,7 +545,8 @@ static void write_one_revoke_record(journal_t *journal,
 				    transaction_t *transaction,
 				    struct journal_head **descriptorp,
 				    int *offsetp,
-				    struct jbd_revoke_record_s *record)
+				    struct jbd_revoke_record_s *record,
+				    int write_op)
 {
 	struct journal_head *descriptor;
 	int offset;
@@ -549,7 +565,7 @@ static void write_one_revoke_record(journal_t *journal,
 	/* Make sure we have a descriptor with space left for the record */
 	if (descriptor) {
 		if (offset == journal->j_blocksize) {
-			flush_descriptor(journal, descriptor, offset);
+			flush_descriptor(journal, descriptor, offset, write_op);
 			descriptor = NULL;
 		}
 	}
@@ -586,7 +602,7 @@ static void write_one_revoke_record(journal_t *journal,
 
 static void flush_descriptor(journal_t *journal,
 			     struct journal_head *descriptor,
-			     int offset)
+			     int offset, int write_op)
 {
 	journal_revoke_header_t *header;
 	struct buffer_head *bh = jh2bh(descriptor);
@@ -601,7 +617,7 @@ static void flush_descriptor(journal_t *journal,
 	set_buffer_jwrite(bh);
 	BUFFER_TRACE(bh, "write");
 	set_buffer_dirty(bh);
-	ll_rw_block(SWRITE, 1, &bh);
+	ll_rw_block((write_op == WRITE) ? SWRITE : SWRITE_SYNC_PLUG, 1, &bh);
 }
 #endif
 
@@ -628,7 +644,7 @@ static void flush_descriptor(journal_t *journal,
  */
 
 int journal_set_revoke(journal_t *journal,
-		       unsigned long blocknr,
+		       unsigned int blocknr,
 		       tid_t sequence)
 {
 	struct jbd_revoke_record_s *record;
@@ -652,7 +668,7 @@ int journal_set_revoke(journal_t *journal,
  */
 
 int journal_test_revoke(journal_t *journal,
-			unsigned long blocknr,
+			unsigned int blocknr,
 			tid_t sequence)
 {
 	struct jbd_revoke_record_s *record;

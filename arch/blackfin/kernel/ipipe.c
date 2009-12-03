@@ -30,10 +30,10 @@
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/kthread.h>
-#include <asm/unistd.h>
+#include <linux/unistd.h>
+#include <linux/io.h>
 #include <asm/system.h>
 #include <asm/atomic.h>
-#include <asm/io.h>
 
 DEFINE_PER_CPU(struct pt_regs, __ipipe_tick_regs);
 
@@ -52,7 +52,7 @@ EXPORT_SYMBOL(__ipipe_freq_scale);
 
 atomic_t __ipipe_irq_lvdepth[IVG15 + 1];
 
-unsigned long __ipipe_irq_lvmask = __all_masked_irq_flags;
+unsigned long __ipipe_irq_lvmask = bfin_no_irqs;
 EXPORT_SYMBOL(__ipipe_irq_lvmask);
 
 static void __ipipe_ack_irq(unsigned irq, struct irq_desc *desc)
@@ -90,6 +90,7 @@ void __ipipe_handle_irq(unsigned irq, struct pt_regs *regs)
 	struct ipipe_percpu_domain_data *p = ipipe_root_cpudom_ptr();
 	struct ipipe_domain *this_domain, *next_domain;
 	struct list_head *head, *pos;
+	struct ipipe_irqdesc *idesc;
 	int m_ack, s = -1;
 
 	/*
@@ -99,18 +100,21 @@ void __ipipe_handle_irq(unsigned irq, struct pt_regs *regs)
 	 * interrupt.
 	 */
 	m_ack = (regs == NULL || irq == IRQ_SYSTMR || irq == IRQ_CORETMR);
-	this_domain = ipipe_current_domain;
+	this_domain = __ipipe_current_domain;
+	idesc = &this_domain->irqs[irq];
 
-	if (unlikely(test_bit(IPIPE_STICKY_FLAG, &this_domain->irqs[irq].control)))
+	if (unlikely(test_bit(IPIPE_STICKY_FLAG, &idesc->control)))
 		head = &this_domain->p_link;
 	else {
 		head = __ipipe_pipeline.next;
 		next_domain = list_entry(head, struct ipipe_domain, p_link);
-		if (likely(test_bit(IPIPE_WIRED_FLAG, &next_domain->irqs[irq].control))) {
-			if (!m_ack && next_domain->irqs[irq].acknowledge != NULL)
-				next_domain->irqs[irq].acknowledge(irq, irq_to_desc(irq));
+		idesc = &next_domain->irqs[irq];
+		if (likely(test_bit(IPIPE_WIRED_FLAG, &idesc->control))) {
+			if (!m_ack && idesc->acknowledge != NULL)
+				idesc->acknowledge(irq, irq_to_desc(irq));
 			if (test_bit(IPIPE_SYNCDEFER_FLAG, &p->status))
-				s = __test_and_set_bit(IPIPE_STALL_FLAG, &p->status);
+				s = __test_and_set_bit(IPIPE_STALL_FLAG,
+						       &p->status);
 			__ipipe_dispatch_wired(next_domain, irq);
 			goto out;
 		}
@@ -121,14 +125,15 @@ void __ipipe_handle_irq(unsigned irq, struct pt_regs *regs)
 	pos = head;
 	while (pos != &__ipipe_pipeline) {
 		next_domain = list_entry(pos, struct ipipe_domain, p_link);
-		if (test_bit(IPIPE_HANDLE_FLAG, &next_domain->irqs[irq].control)) {
+		idesc = &next_domain->irqs[irq];
+		if (test_bit(IPIPE_HANDLE_FLAG, &idesc->control)) {
 			__ipipe_set_irq_pending(next_domain, irq);
-			if (!m_ack && next_domain->irqs[irq].acknowledge != NULL) {
-				next_domain->irqs[irq].acknowledge(irq, irq_to_desc(irq));
+			if (!m_ack && idesc->acknowledge != NULL) {
+				idesc->acknowledge(irq, irq_to_desc(irq));
 				m_ack = 1;
 			}
 		}
-		if (!test_bit(IPIPE_PASS_FLAG, &next_domain->irqs[irq].control))
+		if (!test_bit(IPIPE_PASS_FLAG, &idesc->control))
 			break;
 		pos = next_domain->p_link.next;
 	}
@@ -159,15 +164,10 @@ out:
 		__clear_bit(IPIPE_STALL_FLAG, &p->status);
 }
 
-int __ipipe_check_root(void)
-{
-	return ipipe_root_domain_p;
-}
-
 void __ipipe_enable_irqdesc(struct ipipe_domain *ipd, unsigned irq)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
-	int prio = desc->ic_prio;
+	int prio = __ipipe_get_irq_priority(irq);
 
 	desc->depth = 0;
 	if (ipd != &ipipe_root &&
@@ -178,8 +178,7 @@ EXPORT_SYMBOL(__ipipe_enable_irqdesc);
 
 void __ipipe_disable_irqdesc(struct ipipe_domain *ipd, unsigned irq)
 {
-	struct irq_desc *desc = irq_to_desc(irq);
-	int prio = desc->ic_prio;
+	int prio = __ipipe_get_irq_priority(irq);
 
 	if (ipd != &ipipe_root &&
 	    atomic_dec_and_test(&__ipipe_irq_lvdepth[prio]))
@@ -187,33 +186,11 @@ void __ipipe_disable_irqdesc(struct ipipe_domain *ipd, unsigned irq)
 }
 EXPORT_SYMBOL(__ipipe_disable_irqdesc);
 
-void __ipipe_stall_root_raw(void)
-{
-	/*
-	 * This code is called by the ins{bwl} routines (see
-	 * arch/blackfin/lib/ins.S), which are heavily used by the
-	 * network stack. It masks all interrupts but those handled by
-	 * non-root domains, so that we keep decent network transfer
-	 * rates for Linux without inducing pathological jitter for
-	 * the real-time domain.
-	 */
-	__asm__ __volatile__ ("sti %0;" : : "d"(__ipipe_irq_lvmask));
-
-	__set_bit(IPIPE_STALL_FLAG,
-		  &ipipe_root_cpudom_var(status));
-}
-
-void __ipipe_unstall_root_raw(void)
-{
-	__clear_bit(IPIPE_STALL_FLAG,
-		    &ipipe_root_cpudom_var(status));
-
-	__asm__ __volatile__ ("sti %0;" : : "d"(bfin_irq_flags));
-}
-
 int __ipipe_syscall_root(struct pt_regs *regs)
 {
+	struct ipipe_percpu_domain_data *p;
 	unsigned long flags;
+	int ret;
 
 	/*
 	 * We need to run the IRQ tail hook whenever we don't
@@ -232,29 +209,31 @@ int __ipipe_syscall_root(struct pt_regs *regs)
 	/*
 	 * This routine either returns:
 	 * 0 -- if the syscall is to be passed to Linux;
-	 * 1 -- if the syscall should not be passed to Linux, and no
+	 * >0 -- if the syscall should not be passed to Linux, and no
 	 * tail work should be performed;
-	 * -1 -- if the syscall should not be passed to Linux but the
+	 * <0 -- if the syscall should not be passed to Linux but the
 	 * tail work has to be performed (for handling signals etc).
 	 */
 
-	if (__ipipe_event_monitored_p(IPIPE_EVENT_SYSCALL) &&
-	    __ipipe_dispatch_event(IPIPE_EVENT_SYSCALL, regs) > 0) {
-		if (ipipe_root_domain_p && !in_atomic()) {
-			/*
-			 * Sync pending VIRQs before _TIF_NEED_RESCHED
-			 * is tested.
-			 */
-			local_irq_save_hw(flags);
-			if ((ipipe_root_cpudom_var(irqpend_himask) & IPIPE_IRQMASK_VIRT) != 0)
-				__ipipe_sync_pipeline(IPIPE_IRQMASK_VIRT);
-			local_irq_restore_hw(flags);
-			return -1;
-		}
+	if (!__ipipe_event_monitored_p(IPIPE_EVENT_SYSCALL))
+		return 0;
+
+	ret = __ipipe_dispatch_event(IPIPE_EVENT_SYSCALL, regs);
+
+	local_irq_save_hw(flags);
+
+	if (!__ipipe_root_domain_p) {
+		local_irq_restore_hw(flags);
 		return 1;
 	}
 
-	return 0;
+	p = ipipe_root_cpudom_ptr();
+	if ((p->irqpend_himask & IPIPE_IRQMASK_VIRT) != 0)
+		__ipipe_sync_pipeline(IPIPE_IRQMASK_VIRT);
+
+	local_irq_restore_hw(flags);
+
+	return -ret;
 }
 
 unsigned long ipipe_critical_enter(void (*syncfn) (void))
@@ -310,11 +289,15 @@ int ipipe_trigger_irq(unsigned irq)
 
 asmlinkage void __ipipe_sync_root(void)
 {
+	void (*irq_tail_hook)(void) = (void (*)(void))__ipipe_irq_tail_hook;
 	unsigned long flags;
 
 	BUG_ON(irqs_disabled());
 
 	local_irq_save_hw(flags);
+
+	if (irq_tail_hook)
+		irq_tail_hook();
 
 	clear_thread_flag(TIF_IRQ_SYNC);
 
@@ -326,19 +309,29 @@ asmlinkage void __ipipe_sync_root(void)
 
 void ___ipipe_sync_pipeline(unsigned long syncmask)
 {
-	struct ipipe_domain *ipd = ipipe_current_domain;
-
-	if (ipd == ipipe_root_domain) {
-		if (test_bit(IPIPE_SYNCDEFER_FLAG, &ipipe_root_cpudom_var(status)))
-			return;
-	}
+	if (__ipipe_root_domain_p &&
+	    test_bit(IPIPE_SYNCDEFER_FLAG, &ipipe_root_cpudom_var(status)))
+		return;
 
 	__ipipe_sync_stage(syncmask);
 }
 
-EXPORT_SYMBOL(show_stack);
+void __ipipe_disable_root_irqs_hw(void)
+{
+	/*
+	 * This code is called by the ins{bwl} routines (see
+	 * arch/blackfin/lib/ins.S), which are heavily used by the
+	 * network stack. It masks all interrupts but those handled by
+	 * non-root domains, so that we keep decent network transfer
+	 * rates for Linux without inducing pathological jitter for
+	 * the real-time domain.
+	 */
+	bfin_sti(__ipipe_irq_lvmask);
+	__set_bit(IPIPE_STALL_FLAG, &ipipe_root_cpudom_var(status));
+}
 
-#ifdef CONFIG_IPIPE_TRACE_MCOUNT
-void notrace _mcount(void);
-EXPORT_SYMBOL(_mcount);
-#endif /* CONFIG_IPIPE_TRACE_MCOUNT */
+void __ipipe_enable_root_irqs_hw(void)
+{
+	__clear_bit(IPIPE_STALL_FLAG, &ipipe_root_cpudom_var(status));
+	bfin_sti(bfin_irq_flags);
+}

@@ -41,8 +41,8 @@
 #define LOW_OBP_ADDRESS		_AC(0x00000000f0000000,UL)
 #define HI_OBP_ADDRESS		_AC(0x0000000100000000,UL)
 #define VMALLOC_START		_AC(0x0000000100000000,UL)
-#define VMALLOC_END		_AC(0x0000000200000000,UL)
-#define VMEMMAP_BASE		_AC(0x0000000200000000,UL)
+#define VMALLOC_END		_AC(0x0000010000000000,UL)
+#define VMEMMAP_BASE		_AC(0x0000010000000000,UL)
 
 #define vmemmap			((struct page *)VMEMMAP_BASE)
 
@@ -726,11 +726,17 @@ extern unsigned long pte_file(pte_t);
 extern pte_t pgoff_to_pte(unsigned long);
 #define PTE_FILE_MAX_BITS	(64UL - PAGE_SHIFT - 1UL)
 
-extern unsigned long *sparc64_valid_addr_bitmap;
+extern unsigned long sparc64_valid_addr_bitmap[];
 
 /* Needs to be defined here and not in linux/mm.h, as it is arch dependent */
-#define kern_addr_valid(addr)	\
-	(test_bit(__pa((unsigned long)(addr))>>22, sparc64_valid_addr_bitmap))
+static inline bool kern_addr_valid(unsigned long addr)
+{
+	unsigned long paddr = __pa(addr);
+
+	if ((paddr >> 41UL) != 0UL)
+		return false;
+	return test_bit(paddr >> 22, sparc64_valid_addr_bitmap);
+}
 
 extern int page_in_phys_avail(unsigned long paddr);
 

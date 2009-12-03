@@ -163,11 +163,9 @@ static void sas_smp_request(struct request_queue *q, struct Scsi_Host *shost,
 	int (*handler)(struct Scsi_Host *, struct sas_rphy *, struct request *);
 
 	while (!blk_queue_plugged(q)) {
-		req = elv_next_request(q);
+		req = blk_fetch_request(q);
 		if (!req)
 			break;
-
-		blkdev_dequeue_request(req);
 
 		spin_unlock_irq(q->queue_lock);
 
@@ -175,9 +173,9 @@ static void sas_smp_request(struct request_queue *q, struct Scsi_Host *shost,
 		ret = handler(shost, rphy, req);
 		req->errors = ret;
 
-		spin_lock_irq(q->queue_lock);
+		blk_end_request_all(req, ret);
 
-		req->end_io(req, ret);
+		spin_lock_irq(q->queue_lock);
 	}
 }
 
@@ -1692,10 +1690,6 @@ sas_attach_transport(struct sas_function_template *ft)
 	transport_container_register(&i->expander_attr_cont);
 
 	i->f = ft;
-
-	count = 0;
-	SETUP_PORT_ATTRIBUTE(num_phys);
-	i->host_attrs[count] = NULL;
 
 	count = 0;
 	SETUP_PHY_ATTRIBUTE(initiator_port_protocols);

@@ -9,6 +9,7 @@
 
 #include <linux/pci.h>
 #include <linux/netdevice.h>
+#include <linux/rtnetlink.h>
 
 /*
  * General definitions...
@@ -27,9 +28,11 @@
 			   "%s: " fmt, __func__, ##args);  \
        } while (0)
 
-#define QLGE_VENDOR_ID    0x1077
-#define QLGE_DEVICE_ID    0x8012
+#define WQ_ADDR_ALIGN	0x3	/* 4 byte alignment */
 
+#define QLGE_VENDOR_ID    0x1077
+#define QLGE_DEVICE_ID_8012	0x8012
+#define QLGE_DEVICE_ID_8000	0x8000
 #define MAX_CPUS 8
 #define MAX_TX_RINGS MAX_CPUS
 #define MAX_RX_RINGS ((MAX_CPUS * 2) + 1)
@@ -39,7 +42,18 @@
 
 #define NUM_SMALL_BUFFERS   512
 #define NUM_LARGE_BUFFERS   512
+#define DB_PAGE_SIZE 4096
 
+/* Calculate the number of (4k) pages required to
+ * contain a buffer queue of the given length.
+ */
+#define MAX_DB_PAGES_PER_BQ(x) \
+		(((x * sizeof(u64)) / DB_PAGE_SIZE) + \
+		(((x * sizeof(u64)) % DB_PAGE_SIZE) ? 1 : 0))
+
+#define RX_RING_SHADOW_SPACE	(sizeof(u64) + \
+		MAX_DB_PAGES_PER_BQ(NUM_SMALL_BUFFERS) * sizeof(u64) + \
+		MAX_DB_PAGES_PER_BQ(NUM_LARGE_BUFFERS) * sizeof(u64))
 #define SMALL_BUFFER_SIZE 256
 #define LARGE_BUFFER_SIZE	PAGE_SIZE
 #define MAX_SPLIT_SIZE 1023
@@ -50,7 +64,7 @@
 #define MAX_INTER_FRAME_WAIT 10	/* 10 usec max interframe-wait for coalescing */
 #define DFLT_INTER_FRAME_WAIT (MAX_INTER_FRAME_WAIT/2)
 #define UDELAY_COUNT 3
-#define UDELAY_DELAY 10
+#define UDELAY_DELAY 100
 
 
 #define TX_DESC_PER_IOCB 8
@@ -63,7 +77,16 @@
 #define TX_DESC_PER_OAL 0
 #endif
 
-#define DB_PAGE_SIZE 4096
+/* MPI test register definitions. This register
+ * is used for determining alternate NIC function's
+ * PCI->func number.
+ */
+enum {
+	MPI_TEST_FUNC_PORT_CFG = 0x1002,
+	MPI_TEST_NIC1_FUNC_SHIFT = 1,
+	MPI_TEST_NIC2_FUNC_SHIFT = 5,
+	MPI_TEST_NIC_FUNC_MASK = 0x00000007,
+};
 
 /*
  * Processor Address Register (PROC_ADDR) bit definitions.
@@ -72,6 +95,7 @@ enum {
 
 	/* Misc. stuff */
 	MAILBOX_COUNT = 16,
+	MAILBOX_TIMEOUT = 5,
 
 	PROC_ADDR_RDY = (1 << 31),
 	PROC_ADDR_R = (1 << 30),
@@ -113,9 +137,9 @@ enum {
 	RST_FO_TFO = (1 << 0),
 	RST_FO_RR_MASK = 0x00060000,
 	RST_FO_RR_CQ_CAM = 0x00000000,
-	RST_FO_RR_DROP = 0x00000001,
-	RST_FO_RR_DQ = 0x00000002,
-	RST_FO_RR_RCV_FUNC_CQ = 0x00000003,
+	RST_FO_RR_DROP = 0x00000002,
+	RST_FO_RR_DQ = 0x00000004,
+	RST_FO_RR_RCV_FUNC_CQ = 0x00000006,
 	RST_FO_FRB = (1 << 12),
 	RST_FO_MOP = (1 << 13),
 	RST_FO_REG = (1 << 14),
@@ -164,7 +188,7 @@ enum {
 	CSR_RP = (1 << 10),
 	CSR_CMD_PARM_SHIFT = 22,
 	CSR_CMD_NOP = 0x00000000,
-	CSR_CMD_SET_RST = 0x1000000,
+	CSR_CMD_SET_RST = 0x10000000,
 	CSR_CMD_CLR_RST = 0x20000000,
 	CSR_CMD_SET_PAUSE = 0x30000000,
 	CSR_CMD_CLR_PAUSE = 0x40000000,
@@ -424,7 +448,7 @@ enum {
 	RX_SYMBOL_ERR = 0x00000370,
 	RX_MAC_ERR = 0x00000378,
 	RX_CTL_PKTS = 0x00000380,
-	RX_PAUSE_PKTS = 0x00000384,
+	RX_PAUSE_PKTS = 0x00000388,
 	RX_64_PKTS = 0x00000390,
 	RX_65_TO_127_PKTS = 0x00000398,
 	RX_128_255_PKTS = 0x000003a0,
@@ -733,6 +757,11 @@ enum {
 	AEN_LINK_DOWN = 0x00008012,
 	AEN_IDC_CMPLT = 0x00008100,
 	AEN_IDC_REQ = 0x00008101,
+	AEN_IDC_EXT = 0x00008102,
+	AEN_DCBX_CHG = 0x00008110,
+	AEN_AEN_LOST = 0x00008120,
+	AEN_AEN_SFP_IN = 0x00008130,
+	AEN_AEN_SFP_OUT = 0x00008131,
 	AEN_FW_INIT_DONE = 0x00008400,
 	AEN_FW_INIT_FAIL = 0x00008401,
 
@@ -742,40 +771,54 @@ enum {
 	MB_CMD_MB_TEST = 0x00000006,
 	MB_CMD_CSUM_TEST = 0x00000007,	/* Verify Checksum */
 	MB_CMD_ABOUT_FW = 0x00000008,
+	MB_CMD_COPY_RISC_RAM = 0x0000000a,
 	MB_CMD_LOAD_RISC_RAM = 0x0000000b,
 	MB_CMD_DUMP_RISC_RAM = 0x0000000c,
 	MB_CMD_WRITE_RAM = 0x0000000d,
+	MB_CMD_INIT_RISC_RAM = 0x0000000e,
 	MB_CMD_READ_RAM = 0x0000000f,
 	MB_CMD_STOP_FW = 0x00000014,
 	MB_CMD_MAKE_SYS_ERR = 0x0000002a,
+	MB_CMD_WRITE_SFP = 0x00000030,
+	MB_CMD_READ_SFP = 0x00000031,
 	MB_CMD_INIT_FW = 0x00000060,
-	MB_CMD_GET_INIT_CB = 0x00000061,
+	MB_CMD_GET_IFCB = 0x00000061,
 	MB_CMD_GET_FW_STATE = 0x00000069,
 	MB_CMD_IDC_REQ = 0x00000100,	/* Inter-Driver Communication */
 	MB_CMD_IDC_ACK = 0x00000101,	/* Inter-Driver Communication */
 	MB_CMD_SET_WOL_MODE = 0x00000110,	/* Wake On Lan */
-	MB_WOL_DISABLE = 0x00000000,
-	MB_WOL_MAGIC_PKT = 0x00000001,
-	MB_WOL_FLTR = 0x00000002,
-	MB_WOL_UCAST = 0x00000004,
-	MB_WOL_MCAST = 0x00000008,
-	MB_WOL_BCAST = 0x00000010,
-	MB_WOL_LINK_UP = 0x00000020,
-	MB_WOL_LINK_DOWN = 0x00000040,
+	MB_WOL_DISABLE = 0,
+	MB_WOL_MAGIC_PKT = (1 << 1),
+	MB_WOL_FLTR = (1 << 2),
+	MB_WOL_UCAST = (1 << 3),
+	MB_WOL_MCAST = (1 << 4),
+	MB_WOL_BCAST = (1 << 5),
+	MB_WOL_LINK_UP = (1 << 6),
+	MB_WOL_LINK_DOWN = (1 << 7),
 	MB_CMD_SET_WOL_FLTR = 0x00000111,	/* Wake On Lan Filter */
-	MB_CMD_CLEAR_WOL_FLTR = 0x00000112,	/* Wake On Lan Filter */
+	MB_CMD_CLEAR_WOL_FLTR = 0x00000112, /* Wake On Lan Filter */
 	MB_CMD_SET_WOL_MAGIC = 0x00000113,	/* Wake On Lan Magic Packet */
-	MB_CMD_CLEAR_WOL_MAGIC = 0x00000114,	/* Wake On Lan Magic Packet */
+	MB_CMD_CLEAR_WOL_MAGIC = 0x00000114,/* Wake On Lan Magic Packet */
+	MB_CMD_SET_WOL_IMMED = 0x00000115,
 	MB_CMD_PORT_RESET = 0x00000120,
 	MB_CMD_SET_PORT_CFG = 0x00000122,
 	MB_CMD_GET_PORT_CFG = 0x00000123,
-	MB_CMD_SET_ASIC_VOLTS = 0x00000130,
-	MB_CMD_GET_SNS_DATA = 0x00000131,	/* Temp and Volt Sense data. */
+	MB_CMD_GET_LINK_STS = 0x00000124,
+	MB_CMD_SET_MGMNT_TFK_CTL = 0x00000160, /* Set Mgmnt Traffic Control */
+	MB_SET_MPI_TFK_STOP = (1 << 0),
+	MB_SET_MPI_TFK_RESUME = (1 << 1),
+	MB_CMD_GET_MGMNT_TFK_CTL = 0x00000161, /* Get Mgmnt Traffic Control */
+	MB_GET_MPI_TFK_STOPPED = (1 << 0),
+	MB_GET_MPI_TFK_FIFO_EMPTY = (1 << 1),
 
 	/* Mailbox Command Status. */
 	MB_CMD_STS_GOOD = 0x00004000,	/* Success. */
 	MB_CMD_STS_INTRMDT = 0x00001000,	/* Intermediate Complete. */
-	MB_CMD_STS_ERR = 0x00004005,	/* Error. */
+	MB_CMD_STS_INVLD_CMD = 0x00004001,	/* Invalid. */
+	MB_CMD_STS_XFC_ERR = 0x00004002,	/* Interface Error. */
+	MB_CMD_STS_CSUM_ERR = 0x00004003,	/* Csum Error. */
+	MB_CMD_STS_ERR = 0x00004005,	/* System Error. */
+	MB_CMD_STS_PARAM_ERR = 0x00004006,	/* Parameter Error. */
 };
 
 struct mbox_params {
@@ -785,7 +828,7 @@ struct mbox_params {
 	int out_count;
 };
 
-struct flash_params {
+struct flash_params_8012 {
 	u8 dev_id_str[4];
 	__le16 size;
 	__le16 csum;
@@ -795,6 +838,43 @@ struct flash_params {
 	__le16 res;
 };
 
+/* 8000 device's flash is a different structure
+ * at a different offset in flash.
+ */
+#define FUNC0_FLASH_OFFSET 0x140200
+#define FUNC1_FLASH_OFFSET 0x140600
+
+/* Flash related data structures. */
+struct flash_params_8000 {
+	u8 dev_id_str[4];	/* "8000" */
+	__le16 ver;
+	__le16 size;
+	__le16 csum;
+	__le16 reserved0;
+	__le16 total_size;
+	__le16 entry_count;
+	u8 data_type0;
+	u8 data_size0;
+	u8 mac_addr[6];
+	u8 data_type1;
+	u8 data_size1;
+	u8 mac_addr1[6];
+	u8 data_type2;
+	u8 data_size2;
+	__le16 vlan_id;
+	u8 data_type3;
+	u8 data_size3;
+	__le16 last;
+	u8 reserved1[464];
+	__le16	subsys_ven_id;
+	__le16	subsys_dev_id;
+	u8 reserved2[4];
+};
+
+union flash_params {
+	struct flash_params_8012 flash_params_8012;
+	struct flash_params_8000 flash_params_8000;
+};
 
 /*
  * doorbell space for the rx ring context
@@ -968,6 +1048,7 @@ struct ib_mac_iocb_rsp {
 	__le16 vlan_id;		/* 12 bits */
 #define IB_MAC_IOCB_RSP_C	0x1000	/* VLAN CFI bit */
 #define IB_MAC_IOCB_RSP_COS_SHIFT	12	/* class of service value */
+#define IB_MAC_IOCB_RSP_VLAN_MASK	0x0ffff
 
 	__le16 reserved1;
 	__le32 reserved2[6];
@@ -1033,6 +1114,7 @@ struct wqicb {
 #define Q_LEN_CPP_16	0x0001
 #define Q_LEN_CPP_32	0x0002
 #define Q_LEN_CPP_64	0x0003
+#define Q_LEN_CPP_512	0x0006
 	__le16 flags;
 #define Q_PRI_SHIFT	1
 #define Q_FLAGS_LC	0x1000
@@ -1093,7 +1175,7 @@ struct ricb {
 #define RSS_RI6 0x40
 #define RSS_RT6 0x80
 	__le16 mask;
-	__le32 hash_cq_id[256];
+	u8 hash_cq_id[1024];
 	__le32 ipv6_hash_key[10];
 	__le32 ipv4_hash_key[4];
 } __attribute((packed));
@@ -1213,12 +1295,11 @@ struct rx_ring {
 	u32 sbq_free_cnt;	/* free buffer desc cnt */
 
 	/* Misc. handler elements. */
-	u32 type;		/* Type of queue, tx, rx, or default. */
+	u32 type;		/* Type of queue, tx, rx. */
 	u32 irq;		/* Which vector this ring is assigned. */
 	u32 cpu;		/* Which CPU this should run on. */
 	char name[IFNAMSIZ + 5];
 	struct napi_struct napi;
-	struct delayed_work rx_work;
 	u8 reserved;
 	struct ql_adapter *qdev;
 };
@@ -1292,6 +1373,7 @@ struct nic_stats {
 struct intr_context {
 	struct ql_adapter *qdev;
 	u32 intr;
+	u32 irq_mask;		/* Mask of which rings the vector services. */
 	u32 hooked;
 	u32 intr_en_mask;	/* value/mask used to enable this intr */
 	u32 intr_dis_mask;	/* value/mask used to disable this intr */
@@ -1307,34 +1389,56 @@ struct intr_context {
 
 /* adapter flags definitions. */
 enum {
-	QL_ADAPTER_UP = (1 << 0),	/* Adapter has been brought up. */
-	QL_LEGACY_ENABLED = (1 << 3),
-	QL_MSI_ENABLED = (1 << 3),
-	QL_MSIX_ENABLED = (1 << 4),
-	QL_DMA64 = (1 << 5),
-	QL_PROMISCUOUS = (1 << 6),
-	QL_ALLMULTI = (1 << 7),
+	QL_ADAPTER_UP = 0,	/* Adapter has been brought up. */
+	QL_LEGACY_ENABLED = 1,
+	QL_MSI_ENABLED = 2,
+	QL_MSIX_ENABLED = 3,
+	QL_DMA64 = 4,
+	QL_PROMISCUOUS = 5,
+	QL_ALLMULTI = 6,
+	QL_PORT_CFG = 7,
+	QL_CAM_RT_SET = 8,
 };
 
 /* link_status bit definitions */
 enum {
-	LOOPBACK_MASK = 0x00000700,
-	LOOPBACK_PCS = 0x00000100,
-	LOOPBACK_HSS = 0x00000200,
-	LOOPBACK_EXT = 0x00000300,
-	PAUSE_MASK = 0x000000c0,
-	PAUSE_STD = 0x00000040,
-	PAUSE_PRI = 0x00000080,
-	SPEED_MASK = 0x00000038,
-	SPEED_100Mb = 0x00000000,
-	SPEED_1Gb = 0x00000008,
-	SPEED_10Gb = 0x00000010,
-	LINK_TYPE_MASK = 0x00000007,
-	LINK_TYPE_XFI = 0x00000001,
-	LINK_TYPE_XAUI = 0x00000002,
-	LINK_TYPE_XFI_BP = 0x00000003,
-	LINK_TYPE_XAUI_BP = 0x00000004,
-	LINK_TYPE_10GBASET = 0x00000005,
+	STS_LOOPBACK_MASK = 0x00000700,
+	STS_LOOPBACK_PCS = 0x00000100,
+	STS_LOOPBACK_HSS = 0x00000200,
+	STS_LOOPBACK_EXT = 0x00000300,
+	STS_PAUSE_MASK = 0x000000c0,
+	STS_PAUSE_STD = 0x00000040,
+	STS_PAUSE_PRI = 0x00000080,
+	STS_SPEED_MASK = 0x00000038,
+	STS_SPEED_100Mb = 0x00000000,
+	STS_SPEED_1Gb = 0x00000008,
+	STS_SPEED_10Gb = 0x00000010,
+	STS_LINK_TYPE_MASK = 0x00000007,
+	STS_LINK_TYPE_XFI = 0x00000001,
+	STS_LINK_TYPE_XAUI = 0x00000002,
+	STS_LINK_TYPE_XFI_BP = 0x00000003,
+	STS_LINK_TYPE_XAUI_BP = 0x00000004,
+	STS_LINK_TYPE_10GBASET = 0x00000005,
+};
+
+/* link_config bit definitions */
+enum {
+	CFG_JUMBO_FRAME_SIZE = 0x00010000,
+	CFG_PAUSE_MASK = 0x00000060,
+	CFG_PAUSE_STD = 0x00000020,
+	CFG_PAUSE_PRI = 0x00000040,
+	CFG_DCBX = 0x00000010,
+	CFG_LOOPBACK_MASK = 0x00000007,
+	CFG_LOOPBACK_PCS = 0x00000002,
+	CFG_LOOPBACK_HSS = 0x00000004,
+	CFG_LOOPBACK_EXT = 0x00000006,
+	CFG_DEFAULT_MAX_FRAME_SIZE = 0x00002580,
+};
+
+struct nic_operations {
+
+	int (*get_flash) (struct ql_adapter *);
+	int (*port_initialize) (struct ql_adapter *);
 };
 
 /*
@@ -1356,7 +1460,10 @@ struct ql_adapter {
 
 	/* Hardware information */
 	u32 chip_rev_id;
+	u32 fw_rev_id;
 	u32 func;		/* PCI function for this adapter */
+	u32 alt_func;		/* PCI function for alternate adapter */
+	u32 port;		/* Port number this adapter */
 
 	spinlock_t adapter_lock;
 	spinlock_t hw_lock;
@@ -1377,6 +1484,7 @@ struct ql_adapter {
 
 	u32 mailbox_in;
 	u32 mailbox_out;
+	struct mbox_params idc_mbc;
 
 	int tx_ring_size;
 	int rx_ring_size;
@@ -1385,13 +1493,11 @@ struct ql_adapter {
 	struct intr_context intr_context[MAX_RX_RINGS];
 
 	int tx_ring_count;	/* One per online CPU. */
-	u32 rss_ring_first_cq_id;/* index of first inbound (rss) rx_ring */
-	u32 rss_ring_count;	/* One per online CPU.  */
+	u32 rss_ring_count;	/* One per irq vector.  */
 	/*
 	 * rx_ring_count =
-	 *  one default queue +
 	 *  (CPU count * outbound completion rx_ring) +
-	 *  (CPU count * inbound (RSS) completion rx_ring)
+	 *  (irq_vector_cnt * inbound (RSS) completion rx_ring)
 	 */
 	int rx_ring_count;
 	int ring_mem_size;
@@ -1412,15 +1518,21 @@ struct ql_adapter {
 	u32 port_link_up;
 	u32 port_init;
 	u32 link_status;
+	u32 link_config;
+	u32 max_frame_size;
 
-	struct flash_params flash;
+	union flash_params flash;
 
 	struct net_device_stats stats;
-	struct workqueue_struct *q_workqueue;
 	struct workqueue_struct *workqueue;
 	struct delayed_work asic_reset_work;
 	struct delayed_work mpi_reset_work;
 	struct delayed_work mpi_work;
+	struct delayed_work mpi_port_cfg_work;
+	struct delayed_work mpi_idc_work;
+	struct completion ide_completion;
+	struct nic_operations *nic_ops;
+	u16 device_id;
 };
 
 /*
@@ -1493,6 +1605,16 @@ void ql_queue_asic_error(struct ql_adapter *qdev);
 u32 ql_enable_completion_interrupt(struct ql_adapter *qdev, u32 intr);
 void ql_set_ethtool_ops(struct net_device *ndev);
 int ql_read_xgmac_reg64(struct ql_adapter *qdev, u32 reg, u64 *data);
+void ql_mpi_idc_work(struct work_struct *work);
+void ql_mpi_port_cfg_work(struct work_struct *work);
+int ql_mb_get_fw_state(struct ql_adapter *qdev);
+int ql_cam_route_initialize(struct ql_adapter *qdev);
+int ql_read_mpi_reg(struct ql_adapter *qdev, u32 reg, u32 *data);
+int ql_mb_about_fw(struct ql_adapter *qdev);
+void ql_link_on(struct ql_adapter *qdev);
+void ql_link_off(struct ql_adapter *qdev);
+int ql_mb_set_mgmnt_traffic_ctl(struct ql_adapter *qdev, u32 control);
+int ql_wait_fifo_empty(struct ql_adapter *qdev);
 
 #if 1
 #define QL_ALL_DUMP

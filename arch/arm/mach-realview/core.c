@@ -28,7 +28,9 @@
 #include <linux/clocksource.h>
 #include <linux/clockchips.h>
 #include <linux/io.h>
-#include <linux/smc911x.h>
+#include <linux/smsc911x.h>
+#include <linux/ata_platform.h>
+#include <linux/amba/mmci.h>
 
 #include <asm/clkdev.h>
 #include <asm/system.h>
@@ -43,9 +45,11 @@
 #include <asm/mach/flash.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/map.h>
-#include <asm/mach/mmc.h>
 
 #include <asm/hardware/gic.h>
+
+#include <mach/platform.h>
+#include <mach/irqs.h>
 
 #include "core.h"
 #include "clock.h"
@@ -54,6 +58,25 @@
 
 /* used by entry-macro.S and platsmp.c */
 void __iomem *gic_cpu_base_addr;
+
+#ifdef CONFIG_ZONE_DMA
+/*
+ * Adjust the zones if there are restrictions for DMA access.
+ */
+void __init realview_adjust_zones(int node, unsigned long *size,
+				  unsigned long *hole)
+{
+	unsigned long dma_size = SZ_256M >> PAGE_SHIFT;
+
+	if (!machine_is_realview_pbx() || node || (size[0] <= dma_size))
+		return;
+
+	size[ZONE_NORMAL] = size[0] - dma_size;
+	size[ZONE_DMA] = dma_size;
+	hole[ZONE_NORMAL] = hole[0];
+	hole[ZONE_DMA] = 0;
+}
+#endif
 
 /*
  * This is the RealView sched_clock implementation.  This has
@@ -127,14 +150,15 @@ int realview_flash_register(struct resource *res, u32 num)
 	return platform_device_register(&realview_flash_device);
 }
 
-static struct smc911x_platdata realview_smc911x_platdata = {
-	.flags		= SMC911X_USE_32BIT,
-	.irq_flags	= IRQF_SHARED,
-	.irq_polarity	= 1,
+static struct smsc911x_platform_config smsc911x_config = {
+	.flags		= SMSC911X_USE_32BIT,
+	.irq_polarity	= SMSC911X_IRQ_POLARITY_ACTIVE_HIGH,
+	.irq_type	= SMSC911X_IRQ_TYPE_PUSH_PULL,
+	.phy_interface	= PHY_INTERFACE_MODE_MII,
 };
 
 static struct platform_device realview_eth_device = {
-	.name		= "smc911x",
+	.name		= "smsc911x",
 	.id		= 0,
 	.num_resources	= 2,
 };
@@ -144,11 +168,49 @@ int realview_eth_register(const char *name, struct resource *res)
 	if (name)
 		realview_eth_device.name = name;
 	realview_eth_device.resource = res;
-	if (strcmp(realview_eth_device.name, "smc911x") == 0)
-		realview_eth_device.dev.platform_data = &realview_smc911x_platdata;
+	if (strcmp(realview_eth_device.name, "smsc911x") == 0)
+		realview_eth_device.dev.platform_data = &smsc911x_config;
 
 	return platform_device_register(&realview_eth_device);
 }
+
+struct platform_device realview_usb_device = {
+	.name			= "isp1760",
+	.num_resources		= 2,
+};
+
+int realview_usb_register(struct resource *res)
+{
+	realview_usb_device.resource = res;
+	return platform_device_register(&realview_usb_device);
+}
+
+static struct pata_platform_info pata_platform_data = {
+	.ioport_shift		= 1,
+};
+
+static struct resource pata_resources[] = {
+	[0] = {
+		.start		= REALVIEW_CF_BASE,
+		.end		= REALVIEW_CF_BASE + 0xff,
+		.flags		= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start		= REALVIEW_CF_BASE + 0x100,
+		.end		= REALVIEW_CF_BASE + SZ_4K - 1,
+		.flags		= IORESOURCE_MEM,
+	},
+};
+
+struct platform_device realview_cf_device = {
+	.name			= "pata_platform",
+	.id			= -1,
+	.num_resources		= ARRAY_SIZE(pata_resources),
+	.resource		= pata_resources,
+	.dev			= {
+		.platform_data	= &pata_platform_data,
+	},
+};
 
 static struct resource realview_i2c_resource = {
 	.start		= REALVIEW_I2C_BASE,
@@ -158,13 +220,29 @@ static struct resource realview_i2c_resource = {
 
 struct platform_device realview_i2c_device = {
 	.name		= "versatile-i2c",
-	.id		= -1,
+	.id		= 0,
 	.num_resources	= 1,
 	.resource	= &realview_i2c_resource,
 };
 
+static struct i2c_board_info realview_i2c_board_info[] = {
+	{
+		I2C_BOARD_INFO("ds1338", 0xd0 >> 1),
+	},
+};
+
+static int __init realview_i2c_init(void)
+{
+	return i2c_register_board_info(0, realview_i2c_board_info,
+				       ARRAY_SIZE(realview_i2c_board_info));
+}
+arch_initcall(realview_i2c_init);
+
 #define REALVIEW_SYSMCI	(__io_address(REALVIEW_SYS_BASE) + REALVIEW_SYS_MCI_OFFSET)
 
+/*
+ * This is only used if GPIOLIB support is disabled
+ */
 static unsigned int realview_mmc_status(struct device *dev)
 {
 	struct amba_device *adev = container_of(dev, struct amba_device, dev);
@@ -178,14 +256,18 @@ static unsigned int realview_mmc_status(struct device *dev)
 	return readl(REALVIEW_SYSMCI) & mask;
 }
 
-struct mmc_platform_data realview_mmc0_plat_data = {
+struct mmci_platform_data realview_mmc0_plat_data = {
 	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
 	.status		= realview_mmc_status,
+	.gpio_wp	= 17,
+	.gpio_cd	= 16,
 };
 
-struct mmc_platform_data realview_mmc1_plat_data = {
+struct mmci_platform_data realview_mmc1_plat_data = {
 	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
 	.status		= realview_mmc_status,
+	.gpio_wp	= 19,
+	.gpio_cd	= 18,
 };
 
 /*
@@ -233,31 +315,31 @@ static struct clk ref24_clk = {
 
 static struct clk_lookup lookups[] = {
 	{	/* UART0 */
-		.dev_id		= "dev:f1",
+		.dev_id		= "dev:uart0",
 		.clk		= &ref24_clk,
 	}, {	/* UART1 */
-		.dev_id		= "dev:f2",
+		.dev_id		= "dev:uart1",
 		.clk		= &ref24_clk,
 	}, {	/* UART2 */
-		.dev_id		= "dev:f3",
+		.dev_id		= "dev:uart2",
 		.clk		= &ref24_clk,
 	}, {	/* UART3 */
-		.dev_id		= "fpga:09",
+		.dev_id		= "fpga:uart3",
 		.clk		= &ref24_clk,
 	}, {	/* KMI0 */
-		.dev_id		= "fpga:06",
+		.dev_id		= "fpga:kmi0",
 		.clk		= &ref24_clk,
 	}, {	/* KMI1 */
-		.dev_id		= "fpga:07",
+		.dev_id		= "fpga:kmi1",
 		.clk		= &ref24_clk,
 	}, {	/* MMC0 */
-		.dev_id		= "fpga:05",
+		.dev_id		= "fpga:mmc0",
 		.clk		= &ref24_clk,
 	}, {	/* EB:CLCD */
-		.dev_id		= "dev:20",
+		.dev_id		= "dev:clcd",
 		.clk		= &oscvco_clk,
 	}, {	/* PB:CLCD */
-		.dev_id		= "issp:20",
+		.dev_id		= "issp:clcd",
 		.clk		= &oscvco_clk,
 	}
 };
@@ -480,7 +562,7 @@ static int realview_clcd_setup(struct clcd_fb *fb)
 	fb->panel		= realview_clcd_panel();
 
 	fb->fb.screen_base = dma_alloc_writecombine(&fb->dev->dev, framesize,
-						    &dma, GFP_KERNEL);
+						    &dma, GFP_KERNEL | GFP_DMA);
 	if (!fb->fb.screen_base) {
 		printk(KERN_ERR "CLCD: unable to map framebuffer\n");
 		return -ENOMEM;
@@ -524,21 +606,22 @@ void realview_leds_event(led_event_t ledevt)
 {
 	unsigned long flags;
 	u32 val;
+	u32 led = 1 << smp_processor_id();
 
 	local_irq_save(flags);
 	val = readl(VA_LEDS_BASE);
 
 	switch (ledevt) {
 	case led_idle_start:
-		val = val & ~REALVIEW_SYS_LED0;
+		val = val & ~led;
 		break;
 
 	case led_idle_end:
-		val = val | REALVIEW_SYS_LED0;
+		val = val | led;
 		break;
 
 	case led_timer:
-		val = val ^ REALVIEW_SYS_LED1;
+		val = val ^ REALVIEW_SYS_LED7;
 		break;
 
 	case led_halted:
@@ -661,7 +744,7 @@ static struct irqaction realview_timer_irq = {
 	.handler	= realview_timer_interrupt,
 };
 
-static cycle_t realview_get_cycles(void)
+static cycle_t realview_get_cycles(struct clocksource *cs)
 {
 	return ~readl(timer3_va_base + TIMER_VALUE);
 }
@@ -696,14 +779,6 @@ void __init realview_timer_init(unsigned int timer_irq)
 {
 	u32 val;
 
-#ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
-	/*
-	 * The dummy clock device has to be registered before the main device
-	 * so that the latter will broadcast the clock events
-	 */
-	local_timer_setup();
-#endif
-
 	/* 
 	 * set clock frequency: 
 	 *	REALVIEW_REFCLK is 32KHz
@@ -731,4 +806,25 @@ void __init realview_timer_init(unsigned int timer_irq)
 
 	realview_clocksource_init();
 	realview_clockevents_init(timer_irq);
+}
+
+/*
+ * Setup the memory banks.
+ */
+void realview_fixup(struct machine_desc *mdesc, struct tag *tags, char **from,
+		    struct meminfo *meminfo)
+{
+	/*
+	 * Most RealView platforms have 512MB contiguous RAM at 0x70000000.
+	 * Half of this is mirrored at 0.
+	 */
+#ifdef CONFIG_REALVIEW_HIGH_PHYS_OFFSET
+	meminfo->bank[0].start = 0x70000000;
+	meminfo->bank[0].size = SZ_512M;
+	meminfo->nr_banks = 1;
+#else
+	meminfo->bank[0].start = 0;
+	meminfo->bank[0].size = SZ_256M;
+	meminfo->nr_banks = 1;
+#endif
 }

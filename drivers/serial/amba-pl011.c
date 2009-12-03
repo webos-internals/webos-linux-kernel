@@ -70,6 +70,23 @@ struct uart_amba_port {
 	struct clk		*clk;
 	unsigned int		im;	/* interrupt mask */
 	unsigned int		old_status;
+	unsigned int		ifls;	/* vendor-specific */
+};
+
+/* There is by now at least one vendor with differing details, so handle it */
+struct vendor_data {
+	unsigned int		ifls;
+	unsigned int		fifosize;
+};
+
+static struct vendor_data vendor_arm = {
+	.ifls			= UART011_IFLS_RX4_8|UART011_IFLS_TX4_8,
+	.fifosize		= 16,
+};
+
+static struct vendor_data vendor_st = {
+	.ifls			= UART011_IFLS_RX_HALF|UART011_IFLS_TX_HALF,
+	.fifosize		= 64,
 };
 
 static void pl011_stop_tx(struct uart_port *port)
@@ -107,7 +124,7 @@ static void pl011_enable_ms(struct uart_port *port)
 
 static void pl011_rx_chars(struct uart_amba_port *uap)
 {
-	struct tty_struct *tty = uap->port.info->port.tty;
+	struct tty_struct *tty = uap->port.state->port.tty;
 	unsigned int status, ch, flag, max_count = 256;
 
 	status = readw(uap->port.membase + UART01x_FR);
@@ -158,7 +175,7 @@ static void pl011_rx_chars(struct uart_amba_port *uap)
 
 static void pl011_tx_chars(struct uart_amba_port *uap)
 {
-	struct circ_buf *xmit = &uap->port.info->xmit;
+	struct circ_buf *xmit = &uap->port.state->xmit;
 	int count;
 
 	if (uap->port.x_char) {
@@ -209,7 +226,7 @@ static void pl011_modem_status(struct uart_amba_port *uap)
 	if (delta & UART01x_FR_CTS)
 		uart_handle_cts_change(&uap->port, status & UART01x_FR_CTS);
 
-	wake_up_interruptible(&uap->port.info->delta_msr_wait);
+	wake_up_interruptible(&uap->port.state->port.delta_msr_wait);
 }
 
 static irqreturn_t pl011_int(int irq, void *dev_id)
@@ -360,8 +377,7 @@ static int pl011_startup(struct uart_port *port)
 	if (retval)
 		goto clk_dis;
 
-	writew(UART011_IFLS_RX4_8|UART011_IFLS_TX4_8,
-	       uap->port.membase + UART011_IFLS);
+	writew(uap->ifls, uap->port.membase + UART011_IFLS);
 
 	/*
 	 * Provoke TX FIFO interrupt into asserting.
@@ -729,9 +745,10 @@ static struct uart_driver amba_reg = {
 	.cons			= AMBA_CONSOLE,
 };
 
-static int pl011_probe(struct amba_device *dev, void *id)
+static int pl011_probe(struct amba_device *dev, struct amba_id *id)
 {
 	struct uart_amba_port *uap;
+	struct vendor_data *vendor = id->data;
 	void __iomem *base;
 	int i, ret;
 
@@ -750,7 +767,7 @@ static int pl011_probe(struct amba_device *dev, void *id)
 		goto out;
 	}
 
-	base = ioremap(dev->res.start, PAGE_SIZE);
+	base = ioremap(dev->res.start, resource_size(&dev->res));
 	if (!base) {
 		ret = -ENOMEM;
 		goto free;
@@ -762,12 +779,13 @@ static int pl011_probe(struct amba_device *dev, void *id)
 		goto unmap;
 	}
 
+	uap->ifls = vendor->ifls;
 	uap->port.dev = &dev->dev;
 	uap->port.mapbase = dev->res.start;
 	uap->port.membase = base;
 	uap->port.iotype = UPIO_MEM;
 	uap->port.irq = dev->irq[0];
-	uap->port.fifosize = 16;
+	uap->port.fifosize = vendor->fifosize;
 	uap->port.ops = &amba_pl011_pops;
 	uap->port.flags = UPF_BOOT_AUTOCONF;
 	uap->port.line = i;
@@ -808,10 +826,38 @@ static int pl011_remove(struct amba_device *dev)
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int pl011_suspend(struct amba_device *dev, pm_message_t state)
+{
+	struct uart_amba_port *uap = amba_get_drvdata(dev);
+
+	if (!uap)
+		return -EINVAL;
+
+	return uart_suspend_port(&amba_reg, &uap->port);
+}
+
+static int pl011_resume(struct amba_device *dev)
+{
+	struct uart_amba_port *uap = amba_get_drvdata(dev);
+
+	if (!uap)
+		return -EINVAL;
+
+	return uart_resume_port(&amba_reg, &uap->port);
+}
+#endif
+
 static struct amba_id pl011_ids[] __initdata = {
 	{
 		.id	= 0x00041011,
 		.mask	= 0x000fffff,
+		.data	= &vendor_arm,
+	},
+	{
+		.id	= 0x00380802,
+		.mask	= 0x00ffffff,
+		.data	= &vendor_st,
 	},
 	{ 0, 0 },
 };
@@ -823,6 +869,10 @@ static struct amba_driver pl011_driver = {
 	.id_table	= pl011_ids,
 	.probe		= pl011_probe,
 	.remove		= pl011_remove,
+#ifdef CONFIG_PM
+	.suspend	= pl011_suspend,
+	.resume		= pl011_resume,
+#endif
 };
 
 static int __init pl011_init(void)
@@ -845,7 +895,11 @@ static void __exit pl011_exit(void)
 	uart_unregister_driver(&amba_reg);
 }
 
-module_init(pl011_init);
+/*
+ * While this can be a module, if builtin it's most likely the console
+ * So let's leave module_exit but move module_init to an earlier place
+ */
+arch_initcall(pl011_init);
 module_exit(pl011_exit);
 
 MODULE_AUTHOR("ARM Ltd/Deep Blue Solutions Ltd");

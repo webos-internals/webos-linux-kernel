@@ -12,6 +12,8 @@
 
 #include <linux/types.h>
 #include <linux/errno.h>
+#include <linux/gfp.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
 #include <asm/ebcdic.h>
@@ -436,7 +438,7 @@ static int diag204_probe(void)
 		}
 		if (diag204((unsigned long)SUBC_STIB6 |
 			    (unsigned long)INFO_EXT, pages, buf) >= 0) {
-			diag204_store_sc = SUBC_STIB7;
+			diag204_store_sc = SUBC_STIB6;
 			diag204_info_type = INFO_EXT;
 			goto out;
 		}

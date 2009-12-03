@@ -37,24 +37,11 @@
 #ifndef parent_node
 #define parent_node(node)	((void)(node),0)
 #endif
-#ifndef node_to_cpumask
-#define node_to_cpumask(node)	((void)node, cpu_online_map)
-#endif
 #ifndef cpumask_of_node
 #define cpumask_of_node(node)	((void)node, cpu_online_mask)
 #endif
-#ifndef node_to_first_cpu
-#define node_to_first_cpu(node)	((void)(node),0)
-#endif
 #ifndef pcibus_to_node
 #define pcibus_to_node(bus)	((void)(bus), -1)
-#endif
-
-#ifndef pcibus_to_cpumask
-#define pcibus_to_cpumask(bus)	(pcibus_to_node(bus) == -1 ? \
-					CPU_MASK_ALL : \
-					node_to_cpumask(pcibus_to_node(bus)) \
-				)
 #endif
 
 #ifndef cpumask_of_pcibus
@@ -64,19 +51,5 @@
 #endif
 
 #endif	/* CONFIG_NUMA */
-
-/*
- * returns pointer to cpumask for specified node
- * Deprecated: use "const struct cpumask *mask = cpumask_of_node(node)"
- */
-#ifndef node_to_cpumask_ptr
-
-#define	node_to_cpumask_ptr(v, node) 					\
-		cpumask_t _##v = node_to_cpumask(node);			\
-		const cpumask_t *v = &_##v
-
-#define node_to_cpumask_ptr_next(v, node)				\
-			  _##v = node_to_cpumask(node)
-#endif
 
 #endif /* _ASM_GENERIC_TOPOLOGY_H */

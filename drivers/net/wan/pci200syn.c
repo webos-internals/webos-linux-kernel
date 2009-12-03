@@ -16,6 +16,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/capability.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/fcntl.h>
@@ -265,7 +266,13 @@ static void pci200_pci_remove_one(struct pci_dev *pdev)
 	kfree(card);
 }
 
-
+static const struct net_device_ops pci200_ops = {
+	.ndo_open       = pci200_open,
+	.ndo_stop       = pci200_close,
+	.ndo_change_mtu = hdlc_change_mtu,
+	.ndo_start_xmit = hdlc_start_xmit,
+	.ndo_do_ioctl   = pci200_ioctl,
+};
 
 static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 					 const struct pci_device_id *ent)
@@ -354,15 +361,6 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 	       " %u RX packets rings\n", ramsize / 1024, ramphys,
 	       pdev->irq, card->tx_ring_buffers, card->rx_ring_buffers);
 
-	if (pdev->subsystem_device == PCI_DEVICE_ID_PLX_9050) {
-		printk(KERN_ERR "Detected PCI200SYN card with old "
-		       "configuration data.\n");
-		printk(KERN_ERR "See <http://www.kernel.org/pub/"
-		       "linux/utils/net/hdlc/pci200syn/> for update.\n");
-		printk(KERN_ERR "The card will stop working with"
-		       " future versions of Linux if not updated.\n");
-	}
-
 	if (card->tx_ring_buffers < 1) {
 		printk(KERN_ERR "pci200syn: RAM test failed\n");
 		pci200_pci_remove_one(pdev);
@@ -395,9 +393,7 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 		dev->mem_start = ramphys;
 		dev->mem_end = ramphys + ramsize - 1;
 		dev->tx_queue_len = 50;
-		dev->do_ioctl = pci200_ioctl;
-		dev->open = pci200_open;
-		dev->stop = pci200_close;
+		dev->netdev_ops = &pci200_ops;
 		hdlc->attach = sca_attach;
 		hdlc->xmit = sca_xmit;
 		port->settings.clock_type = CLOCK_EXT;
@@ -422,8 +418,6 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 
 
 static struct pci_device_id pci200_pci_tbl[] __devinitdata = {
-	{ PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_9050, PCI_VENDOR_ID_PLX,
-	  PCI_DEVICE_ID_PLX_9050, 0, 0, 0 },
 	{ PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_9050, PCI_VENDOR_ID_PLX,
 	  PCI_DEVICE_ID_PLX_PCI200SYN, 0, 0, 0 },
 	{ 0, }

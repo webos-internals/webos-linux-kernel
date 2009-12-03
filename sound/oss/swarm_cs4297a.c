@@ -110,9 +110,6 @@ static void start_adc(struct cs4297a_state *s);
 // rather than 64k as some of the games work more responsively.
 // log base 2( buff sz = 32k).
 
-//static unsigned long defaultorder = 3;
-//MODULE_PARM(defaultorder, "i");
-
 //
 // Turn on/off debugging compilation by commenting out "#define CSDEBUG"
 //
@@ -2200,7 +2197,9 @@ static int cs4297a_ioctl(struct inode *inode, struct file *file,
 				    sizeof(abinfo)) ? -EFAULT : 0;
 
 	case SNDCTL_DSP_NONBLOCK:
+		spin_lock(&file->f_lock);
 		file->f_flags |= O_NONBLOCK;
+		spin_unlock(&file->f_lock);
 		return 0;
 
 	case SNDCTL_DSP_GETODELAY:

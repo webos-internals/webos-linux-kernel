@@ -41,15 +41,15 @@
 
 #include <asm/hardware/sa1111.h>
 
-#include <mach/pxa-regs.h>
-#include <mach/pxa2xx-regs.h>
-#include <mach/mfp-pxa25x.h>
+#include <mach/pxa25x.h>
+#include <mach/gpio.h>
 #include <mach/audio.h>
 #include <mach/lubbock.h>
 #include <mach/udc.h>
 #include <mach/irda.h>
 #include <mach/pxafb.h>
 #include <mach/mmc.h>
+#include <mach/pm.h>
 
 #include "generic.h"
 #include "clock.h"
@@ -113,7 +113,13 @@ static unsigned long lubbock_pin_config[] __initdata = {
 	GPIO1_GPIO | WAKEUP_ON_EDGE_RISE,
 };
 
+#define LUB_HEXLED		__LUB_REG(LUBBOCK_FPGA_PHYS + 0x010)
 #define LUB_MISC_WR		__LUB_REG(LUBBOCK_FPGA_PHYS + 0x080)
+
+void lubbock_set_hexled(uint32_t value)
+{
+	LUB_HEXLED = value;
+}
 
 void lubbock_set_misc_wr(unsigned int mask, unsigned int set)
 {
@@ -476,11 +482,14 @@ static void lubbock_mci_exit(struct device *dev, void *data)
 }
 
 static struct pxamci_platform_data lubbock_mci_platform_data = {
-	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
-	.detect_delay	= 1,
-	.init 		= lubbock_mci_init,
-	.get_ro		= lubbock_mci_get_ro,
-	.exit 		= lubbock_mci_exit,
+	.ocr_mask		= MMC_VDD_32_33|MMC_VDD_33_34,
+	.detect_delay		= 1,
+	.init 			= lubbock_mci_init,
+	.get_ro			= lubbock_mci_get_ro,
+	.exit 			= lubbock_mci_exit,
+	.gpio_card_detect	= -1,
+	.gpio_card_ro		= -1,
+	.gpio_power		= -1,
 };
 
 static void lubbock_irda_transceiver_mode(struct device *dev, int mode)
@@ -498,8 +507,9 @@ static void lubbock_irda_transceiver_mode(struct device *dev, int mode)
 }
 
 static struct pxaficp_platform_data lubbock_ficp_platform_data = {
-	.transceiver_cap  = IR_SIRMODE | IR_FIRMODE,
-	.transceiver_mode = lubbock_irda_transceiver_mode,
+	.gpio_pwdown		= -1,
+	.transceiver_cap	= IR_SIRMODE | IR_FIRMODE,
+	.transceiver_mode	= lubbock_irda_transceiver_mode,
 };
 
 static void __init lubbock_init(void)

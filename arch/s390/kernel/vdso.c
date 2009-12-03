@@ -22,7 +22,7 @@
 #include <linux/elf.h>
 #include <linux/security.h>
 #include <linux/bootmem.h>
-
+#include <linux/compat.h>
 #include <asm/pgtable.h>
 #include <asm/system.h>
 #include <asm/processor.h>
@@ -53,8 +53,19 @@ unsigned int __read_mostly vdso_enabled = 1;
 
 static int __init vdso_setup(char *s)
 {
-	vdso_enabled = simple_strtoul(s, NULL, 0);
-	return 1;
+	unsigned long val;
+	int rc;
+
+	rc = 0;
+	if (strncmp(s, "on", 3) == 0)
+		vdso_enabled = 1;
+	else if (strncmp(s, "off", 4) == 0)
+		vdso_enabled = 0;
+	else {
+		rc = strict_strtoul(s, 0, &val);
+		vdso_enabled = rc ? 0 : !!val;
+	}
+	return !rc;
 }
 __setup("vdso=", vdso_setup);
 
@@ -64,7 +75,7 @@ __setup("vdso=", vdso_setup);
 static union {
 	struct vdso_data	data;
 	u8			page[PAGE_SIZE];
-} vdso_data_store __attribute__((__section__(".data.page_aligned")));
+} vdso_data_store __page_aligned_data;
 struct vdso_data *vdso_data = &vdso_data_store.data;
 
 /*
@@ -144,7 +155,6 @@ out:
 	return -ENOMEM;
 }
 
-#ifdef CONFIG_HOTPLUG_CPU
 void vdso_free_per_cpu(int cpu, struct _lowcore *lowcore)
 {
 	unsigned long segment_table, page_table, page_frame;
@@ -163,7 +173,6 @@ void vdso_free_per_cpu(int cpu, struct _lowcore *lowcore)
 	free_page(page_table);
 	free_pages(segment_table, SEGMENT_ORDER);
 }
-#endif /* CONFIG_HOTPLUG_CPU */
 
 static void __vdso_init_cr5(void *dummy)
 {
@@ -205,7 +214,7 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 	vdso_pagelist = vdso64_pagelist;
 	vdso_pages = vdso64_pages;
 #ifdef CONFIG_COMPAT
-	if (test_thread_flag(TIF_31BIT)) {
+	if (is_compat_task()) {
 		vdso_pagelist = vdso32_pagelist;
 		vdso_pages = vdso32_pages;
 	}
@@ -238,6 +247,13 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 	}
 
 	/*
+	 * Put vDSO base into mm struct. We need to do this before calling
+	 * install_special_mapping or the perf counter mmap tracking code
+	 * will fail to recognise it as a vDSO (since arch_vma_name fails).
+	 */
+	current->mm->context.vdso_base = vdso_base;
+
+	/*
 	 * our vma flags don't have VM_WRITE so by default, the process
 	 * isn't allowed to write those pages.
 	 * gdb can break that with ptrace interface, and thus trigger COW
@@ -258,14 +274,7 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 				     VM_ALWAYSDUMP,
 				     vdso_pagelist);
 	if (rc)
-		goto out_up;
-
-	/* Put vDSO base into mm struct */
-	current->mm->context.vdso_base = vdso_base;
-
-	up_write(&mm->mmap_sem);
-	return 0;
-
+		current->mm->context.vdso_base = 0;
 out_up:
 	up_write(&mm->mmap_sem);
 	return rc;

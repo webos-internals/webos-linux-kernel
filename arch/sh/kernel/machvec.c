@@ -14,6 +14,7 @@
 #include <linux/string.h>
 #include <asm/machvec.h>
 #include <asm/sections.h>
+#include <asm/addrspace.h>
 #include <asm/setup.h>
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -129,7 +130,10 @@ void __init sh_mv_setup(void)
 	mv_set(ioport_map);
 	mv_set(ioport_unmap);
 	mv_set(irq_demux);
+	mv_set(mode_pins);
 
 	if (!sh_mv.mv_nr_irqs)
 		sh_mv.mv_nr_irqs = NR_IRQS;
+
+	__set_io_port_base(P2SEG);
 }

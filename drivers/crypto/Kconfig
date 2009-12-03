@@ -12,8 +12,7 @@ if CRYPTO_HW
 
 config CRYPTO_DEV_PADLOCK
 	tristate "Support for VIA PadLock ACE"
-	depends on X86_32 && !UML
-	select CRYPTO_ALGAPI
+	depends on X86 && !UML
 	help
 	  Some VIA processors come with an integrated crypto engine
 	  (so called VIA PadLock ACE, Advanced Cryptography Engine)
@@ -34,11 +33,12 @@ config CRYPTO_DEV_PADLOCK_AES
 	  Available in VIA C3 and newer CPUs.
 
 	  If unsure say M. The compiled module will be
-	  called padlock-aes.ko
+	  called padlock-aes.
 
 config CRYPTO_DEV_PADLOCK_SHA
 	tristate "PadLock driver for SHA1 and SHA256 algorithms"
 	depends on CRYPTO_DEV_PADLOCK
+	select CRYPTO_HASH
 	select CRYPTO_SHA1
 	select CRYPTO_SHA256
 	help
@@ -47,7 +47,7 @@ config CRYPTO_DEV_PADLOCK_SHA
 	  Available in VIA C7 and newer processors.
 
 	  If unsure say M. The compiled module will be
-	  called padlock-sha.ko
+	  called padlock-sha.
 
 config CRYPTO_DEV_GEODE
 	tristate "Support for the Geode LX AES engine"
@@ -79,14 +79,14 @@ config ZCRYPT_MONOLITHIC
 	bool "Monolithic zcrypt module"
 	depends on ZCRYPT="m"
 	help
-	  Select this option if you want to have a single module z90crypt.ko
+	  Select this option if you want to have a single module z90crypt,
 	  that contains all parts of the crypto device driver (ap bus,
 	  request router and all the card drivers).
 
 config CRYPTO_SHA1_S390
 	tristate "SHA1 digest algorithm"
 	depends on S390
-	select CRYPTO_ALGAPI
+	select CRYPTO_HASH
 	help
 	  This is the s390 hardware accelerated implementation of the
 	  SHA-1 secure hash standard (FIPS 180-1/DFIPS 180-2).
@@ -94,7 +94,7 @@ config CRYPTO_SHA1_S390
 config CRYPTO_SHA256_S390
 	tristate "SHA256 digest algorithm"
 	depends on S390
-	select CRYPTO_ALGAPI
+	select CRYPTO_HASH
 	help
 	  This is the s390 hardware accelerated implementation of the
 	  SHA256 secure hash standard (DFIPS 180-2).
@@ -105,7 +105,7 @@ config CRYPTO_SHA256_S390
 config CRYPTO_SHA512_S390
 	tristate "SHA384 and SHA512 digest algorithm"
 	depends on S390
-	select CRYPTO_ALGAPI
+	select CRYPTO_HASH
 	help
 	  This is the s390 hardware accelerated implementation of the
 	  SHA512 secure hash standard.
@@ -157,6 +157,19 @@ config S390_PRNG
 	  ANSI X9.17 standard. The PRNG is usable via the char device
 	  /dev/prandom.
 
+config CRYPTO_DEV_MV_CESA
+	tristate "Marvell's Cryptographic Engine"
+	depends on PLAT_ORION
+	select CRYPTO_ALGAPI
+	select CRYPTO_AES
+	select CRYPTO_BLKCIPHER2
+	help
+	  This driver allows you to utilize the Cryptographic Engines and
+	  Security Accelerator (CESA) which can be found on the Marvell Orion
+	  and Kirkwood SoCs, such as QNAP's TS-209.
+
+	  Currently the driver supports AES in ECB and CBC mode without DMA.
+
 config CRYPTO_DEV_HIFN_795X
 	tristate "Driver HIFN 795x crypto accelerator chips"
 	select CRYPTO_DES
@@ -199,5 +212,14 @@ config CRYPTO_DEV_IXP4XX
 	select CRYPTO_BLKCIPHER
 	help
 	  Driver for the IXP4xx NPE crypto engine.
+
+config CRYPTO_DEV_PPC4XX
+	tristate "Driver AMCC PPC4xx crypto accelerator"
+	depends on PPC && 4xx
+	select CRYPTO_HASH
+	select CRYPTO_ALGAPI
+	select CRYPTO_BLKCIPHER
+	help
+	  This option allows you to have support for AMCC crypto acceleration.
 
 endif # CRYPTO_HW

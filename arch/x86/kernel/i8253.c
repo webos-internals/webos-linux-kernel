@@ -3,26 +3,21 @@
  *
  */
 #include <linux/clockchips.h>
-#include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/spinlock.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
-#include <linux/spinlock.h>
+#include <linux/timex.h>
+#include <linux/delay.h>
+#include <linux/init.h>
+#include <linux/io.h>
 
-#include <asm/smp.h>
-#include <asm/delay.h>
 #include <asm/i8253.h>
-#include <asm/io.h>
 #include <asm/hpet.h>
+#include <asm/smp.h>
 
 DEFINE_SPINLOCK(i8253_lock);
 EXPORT_SYMBOL(i8253_lock);
-
-#ifdef CONFIG_X86_32
-static void pit_disable_clocksource(void);
-#else
-static inline void pit_disable_clocksource(void) { }
-#endif
 
 /*
  * HPET replaces the PIT, when enabled. So we need to know, which of
@@ -40,7 +35,7 @@ static void init_pit_timer(enum clock_event_mode mode,
 {
 	spin_lock(&i8253_lock);
 
-	switch(mode) {
+	switch (mode) {
 	case CLOCK_EVT_MODE_PERIODIC:
 		/* binary, mode 2, LSB/MSB, ch 0 */
 		outb_pit(0x34, PIT_MODE);
@@ -56,12 +51,10 @@ static void init_pit_timer(enum clock_event_mode mode,
 			outb_pit(0, PIT_CH0);
 			outb_pit(0, PIT_CH0);
 		}
-		pit_disable_clocksource();
 		break;
 
 	case CLOCK_EVT_MODE_ONESHOT:
 		/* One shot setup */
-		pit_disable_clocksource();
 		outb_pit(0x38, PIT_MODE);
 		break;
 
@@ -95,7 +88,7 @@ static int pit_next_event(unsigned long delta, struct clock_event_device *evt)
  * registered. This mechanism replaces the previous #ifdef LOCAL_APIC -
  * !using_apic_timer decisions in do_timer_interrupt_hook()
  */
-static struct clock_event_device pit_clockevent = {
+static struct clock_event_device pit_ce = {
 	.name		= "pit",
 	.features	= CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
 	.set_mode	= init_pit_timer,
@@ -114,15 +107,13 @@ void __init setup_pit_timer(void)
 	 * Start pit with the boot cpu mask and make it global after the
 	 * IO_APIC has been initialized.
 	 */
-	pit_clockevent.cpumask = cpumask_of(smp_processor_id());
-	pit_clockevent.mult = div_sc(CLOCK_TICK_RATE, NSEC_PER_SEC,
-				     pit_clockevent.shift);
-	pit_clockevent.max_delta_ns =
-		clockevent_delta2ns(0x7FFF, &pit_clockevent);
-	pit_clockevent.min_delta_ns =
-		clockevent_delta2ns(0xF, &pit_clockevent);
-	clockevents_register_device(&pit_clockevent);
-	global_clock_event = &pit_clockevent;
+	pit_ce.cpumask = cpumask_of(smp_processor_id());
+	pit_ce.mult = div_sc(CLOCK_TICK_RATE, NSEC_PER_SEC, pit_ce.shift);
+	pit_ce.max_delta_ns = clockevent_delta2ns(0x7FFF, &pit_ce);
+	pit_ce.min_delta_ns = clockevent_delta2ns(0xF, &pit_ce);
+
+	clockevents_register_device(&pit_ce);
+	global_clock_event = &pit_ce;
 }
 
 #ifndef CONFIG_X86_64
@@ -131,13 +122,13 @@ void __init setup_pit_timer(void)
  * to just read by itself. So use jiffies to emulate a free
  * running counter:
  */
-static cycle_t pit_read(void)
+static cycle_t pit_read(struct clocksource *cs)
 {
+	static int old_count;
+	static u32 old_jifs;
 	unsigned long flags;
 	int count;
 	u32 jifs;
-	static int old_count;
-	static u32 old_jifs;
 
 	spin_lock_irqsave(&i8253_lock, flags);
 	/*
@@ -179,9 +170,9 @@ static cycle_t pit_read(void)
 	 * Previous attempts to handle these cases intelligently were
 	 * buggy, so we just do the simple thing now.
 	 */
-	if (count > old_count && jifs == old_jifs) {
+	if (count > old_count && jifs == old_jifs)
 		count = old_count;
-	}
+
 	old_count = count;
 	old_jifs = jifs;
 
@@ -192,25 +183,14 @@ static cycle_t pit_read(void)
 	return (cycle_t)(jifs * LATCH) + count;
 }
 
-static struct clocksource clocksource_pit = {
-	.name	= "pit",
-	.rating = 110,
-	.read	= pit_read,
-	.mask	= CLOCKSOURCE_MASK(32),
-	.mult	= 0,
-	.shift	= 20,
+static struct clocksource pit_cs = {
+	.name		= "pit",
+	.rating		= 110,
+	.read		= pit_read,
+	.mask		= CLOCKSOURCE_MASK(32),
+	.mult		= 0,
+	.shift		= 20,
 };
-
-static void pit_disable_clocksource(void)
-{
-	/*
-	 * Use mult to check whether it is registered or not
-	 */
-	if (clocksource_pit.mult) {
-		clocksource_unregister(&clocksource_pit);
-		clocksource_pit.mult = 0;
-	}
-}
 
 static int __init init_pit_clocksource(void)
 {
@@ -222,13 +202,13 @@ static int __init init_pit_clocksource(void)
 	  * - when local APIC timer is active (PIT is switched off)
 	  */
 	if (num_possible_cpus() > 1 || is_hpet_enabled() ||
-	    pit_clockevent.mode != CLOCK_EVT_MODE_PERIODIC)
+	    pit_ce.mode != CLOCK_EVT_MODE_PERIODIC)
 		return 0;
 
-	clocksource_pit.mult = clocksource_hz2mult(CLOCK_TICK_RATE,
-						   clocksource_pit.shift);
-	return clocksource_register(&clocksource_pit);
+	pit_cs.mult = clocksource_hz2mult(CLOCK_TICK_RATE, pit_cs.shift);
+
+	return clocksource_register(&pit_cs);
 }
 arch_initcall(init_pit_clocksource);
 
-#endif
+#endif /* !CONFIG_X86_64 */

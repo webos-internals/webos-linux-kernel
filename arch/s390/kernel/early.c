@@ -1,25 +1,32 @@
 /*
  *  arch/s390/kernel/early.c
  *
- *    Copyright IBM Corp. 2007
+ *    Copyright IBM Corp. 2007, 2009
  *    Author(s): Hongjie Yang <hongjie@us.ibm.com>,
  *		 Heiko Carstens <heiko.carstens@de.ibm.com>
  */
 
+#define KMSG_COMPONENT "setup"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
+#include <linux/compiler.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/ctype.h>
+#include <linux/ftrace.h>
 #include <linux/lockdep.h>
 #include <linux/module.h>
 #include <linux/pfn.h>
 #include <linux/uaccess.h>
+#include <linux/kernel.h>
 #include <asm/ebcdic.h>
 #include <asm/ipl.h>
 #include <asm/lowcore.h>
 #include <asm/processor.h>
 #include <asm/sections.h>
 #include <asm/setup.h>
+#include <asm/sysinfo.h>
 #include <asm/cpcmd.h>
 #include <asm/sclp.h>
 #include "entry.h"
@@ -34,6 +41,22 @@ char kernel_nss_name[NSS_NAME_SIZE + 1];
 
 static void __init setup_boot_command_line(void);
 
+/*
+ * Get the TOD clock running.
+ */
+static void __init reset_tod_clock(void)
+{
+	u64 time;
+
+	if (store_clock(&time) == 0)
+		return;
+	/* TOD clock not running. Set the clock to Unix Epoch. */
+	if (set_clock(TOD_UNIX_EPOCH) != 0 || store_clock(&time) != 0)
+		disabled_wait(0);
+
+	sched_clock_base_cc = TOD_UNIX_EPOCH;
+	S390_lowcore.last_update_clock = sched_clock_base_cc;
+}
 
 #ifdef CONFIG_SHARED_KERNEL
 int __init savesys_ipl_nss(char *cmd, const int cmdlen);
@@ -61,6 +84,8 @@ asm(
 	"	br	14\n"
 	"	.size	savesys_ipl_nss, .-savesys_ipl_nss\n");
 
+static __initdata char upper_command_line[COMMAND_LINE_SIZE];
+
 static noinline __init void create_kernel_nss(void)
 {
 	unsigned int i, stext_pfn, eshared_pfn, end_pfn, min_size;
@@ -70,7 +95,6 @@ static noinline __init void create_kernel_nss(void)
 	int response;
 	size_t len;
 	char *savesys_ptr;
-	char upper_command_line[COMMAND_LINE_SIZE];
 	char defsys_cmd[DEFSYS_CMD_SIZE];
 	char savesys_cmd[SAVESYS_CMD_SIZE];
 
@@ -121,6 +145,8 @@ static noinline __init void create_kernel_nss(void)
 	__cpcmd(defsys_cmd, NULL, 0, &response);
 
 	if (response != 0) {
+		pr_err("Defining the Linux kernel NSS failed with rc=%d\n",
+			response);
 		kernel_nss_name[0] = '\0';
 		return;
 	}
@@ -133,11 +159,22 @@ static noinline __init void create_kernel_nss(void)
 	 *	       max SAVESYS_CMD_SIZE
 	 * On error: response contains the numeric portion of cp error message.
 	 *	     for SAVESYS it will be >= 263
+	 *	     for missing privilege class, it will be 1
 	 */
-	if (response > SAVESYS_CMD_SIZE) {
+	if (response > SAVESYS_CMD_SIZE || response == 1) {
+		pr_err("Saving the Linux kernel NSS failed with rc=%d\n",
+			response);
 		kernel_nss_name[0] = '\0';
 		return;
 	}
+
+	/* re-initialize cputime accounting. */
+	sched_clock_base_cc = get_clock();
+	S390_lowcore.last_update_clock = sched_clock_base_cc;
+	S390_lowcore.last_update_timer = 0x7fffffffffffffffULL;
+	S390_lowcore.user_timer = 0;
+	S390_lowcore.system_timer = 0;
+	asm volatile("SPT 0(%0)" : : "a" (&S390_lowcore.last_update_timer));
 
 	/* re-setup boot command line with new ipl vm parms */
 	ipl_update_parameters();
@@ -173,19 +210,21 @@ static noinline __init void init_kernel_storage_key(void)
 		page_set_storage_key(init_pfn << PAGE_SHIFT, PAGE_DEFAULT_KEY);
 }
 
+static __initdata struct sysinfo_3_2_2 vmms __aligned(PAGE_SIZE);
+
 static noinline __init void detect_machine_type(void)
 {
-	struct cpuinfo_S390 *cpuinfo = &S390_lowcore.cpu_data;
+	/* No VM information? Looks like LPAR */
+	if (stsi(&vmms, 3, 2, 2) == -ENOSYS)
+		return;
+	if (!vmms.count)
+		return;
 
-	get_cpu_id(&S390_lowcore.cpu_data.cpu_id);
-
-	/* Running under z/VM ? */
-	if (cpuinfo->cpu_id.version == 0xff)
-		machine_flags |= MACHINE_FLAG_VM;
-
-	/* Running under KVM ? */
-	if (cpuinfo->cpu_id.version == 0xfe)
-		machine_flags |= MACHINE_FLAG_KVM;
+	/* Running under KVM? If not we assume z/VM */
+	if (!memcmp(vmms.vm[0].cpi, "\xd2\xe5\xd4", 3))
+		S390_lowcore.machine_flags |= MACHINE_FLAG_KVM;
+	else
+		S390_lowcore.machine_flags |= MACHINE_FLAG_VM;
 }
 
 static __init void early_pgm_check_handler(void)
@@ -220,7 +259,7 @@ static noinline __init void setup_hpage(void)
 	facilities = stfl();
 	if (!(facilities & (1UL << 23)) || !(facilities & (1UL << 29)))
 		return;
-	machine_flags |= MACHINE_FLAG_HPAGE;
+	S390_lowcore.machine_flags |= MACHINE_FLAG_HPAGE;
 	__ctl_set_bit(0, 23);
 #endif
 }
@@ -238,7 +277,7 @@ static __init void detect_mvpg(void)
 		EX_TABLE(0b,1b)
 		: "=d" (rc) : "0" (-EOPNOTSUPP), "a" (0) : "memory", "cc", "0");
 	if (!rc)
-		machine_flags |= MACHINE_FLAG_MVPG;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_MVPG;
 #endif
 }
 
@@ -254,7 +293,7 @@ static __init void detect_ieee(void)
 		EX_TABLE(0b,1b)
 		: "=d" (rc), "=d" (tmp): "0" (-EOPNOTSUPP) : "cc");
 	if (!rc)
-		machine_flags |= MACHINE_FLAG_IEEE;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_IEEE;
 #endif
 }
 
@@ -273,7 +312,7 @@ static __init void detect_csp(void)
 		EX_TABLE(0b,1b)
 		: "=d" (rc) : "0" (-EOPNOTSUPP) : "cc", "0", "1", "2");
 	if (!rc)
-		machine_flags |= MACHINE_FLAG_CSP;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_CSP;
 #endif
 }
 
@@ -290,7 +329,7 @@ static __init void detect_diag9c(void)
 		EX_TABLE(0b,1b)
 		: "=d" (rc) : "0" (-EOPNOTSUPP), "d" (cpu_address) : "cc");
 	if (!rc)
-		machine_flags |= MACHINE_FLAG_DIAG9C;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_DIAG9C;
 }
 
 static __init void detect_diag44(void)
@@ -305,7 +344,7 @@ static __init void detect_diag44(void)
 		EX_TABLE(0b,1b)
 		: "=d" (rc) : "0" (-EOPNOTSUPP) : "cc");
 	if (!rc)
-		machine_flags |= MACHINE_FLAG_DIAG44;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_DIAG44;
 #endif
 }
 
@@ -316,11 +355,11 @@ static __init void detect_machine_facilities(void)
 
 	facilities = stfl();
 	if (facilities & (1 << 28))
-		machine_flags |= MACHINE_FLAG_IDTE;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_IDTE;
 	if (facilities & (1 << 23))
-		machine_flags |= MACHINE_FLAG_PFMF;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_PFMF;
 	if (facilities & (1 << 4))
-		machine_flags |= MACHINE_FLAG_MVCOS;
+		S390_lowcore.machine_flags |= MACHINE_FLAG_MVCOS;
 #endif
 }
 
@@ -342,22 +381,35 @@ static __init void rescue_initrd(void)
 }
 
 /* Set up boot command line */
+static void __init append_to_cmdline(size_t (*ipl_data)(char *, size_t))
+{
+	char *parm, *delim;
+	size_t rc, len;
+
+	len = strlen(boot_command_line);
+
+	delim = boot_command_line + len;	/* '\0' character position */
+	parm  = boot_command_line + len + 1;	/* append right after '\0' */
+
+	rc = ipl_data(parm, COMMAND_LINE_SIZE - len - 1);
+	if (rc) {
+		if (*parm == '=')
+			memmove(boot_command_line, parm + 1, rc);
+		else
+			*delim = ' ';		/* replace '\0' with space */
+	}
+}
+
 static void __init setup_boot_command_line(void)
 {
-	char *parm = NULL;
-
 	/* copy arch command line */
 	strlcpy(boot_command_line, COMMAND_LINE, ARCH_COMMAND_LINE_SIZE);
-	boot_command_line[ARCH_COMMAND_LINE_SIZE - 1] = 0;
 
 	/* append IPL PARM data to the boot command line */
-	if (MACHINE_IS_VM) {
-		parm = boot_command_line + strlen(boot_command_line);
-		*parm++ = ' ';
-		get_ipl_vmparm(parm);
-		if (parm[0] == '=')
-			memmove(boot_command_line, parm + 1, strlen(parm));
-	}
+	if (MACHINE_IS_VM)
+		append_to_cmdline(append_ipl_vmparm);
+
+	append_to_cmdline(append_ipl_scpdata);
 }
 
 
@@ -367,6 +419,7 @@ static void __init setup_boot_command_line(void)
  */
 void __init startup_init(void)
 {
+	reset_tod_clock();
 	ipl_save_parameters();
 	rescue_initrd();
 	clear_bss_section();
@@ -388,5 +441,8 @@ void __init startup_init(void)
 	setup_hpage();
 	sclp_facilities_detect();
 	detect_memory_layout(memory_chunk);
+#ifdef CONFIG_DYNAMIC_FTRACE
+	S390_lowcore.ftrace_func = (unsigned long)ftrace_caller;
+#endif
 	lockdep_on();
 }

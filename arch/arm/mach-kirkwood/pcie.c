@@ -14,6 +14,7 @@
 #include <asm/irq.h>
 #include <asm/mach/pci.h>
 #include <plat/pcie.h>
+#include <mach/bridge-regs.h>
 #include "common.h"
 
 
@@ -92,9 +93,10 @@ static struct pci_ops pcie_ops = {
 };
 
 
-static int kirkwood_pcie_setup(int nr, struct pci_sys_data *sys)
+static int __init kirkwood_pcie_setup(int nr, struct pci_sys_data *sys)
 {
 	struct resource *res;
+	extern unsigned int kirkwood_clk_ctrl;
 
 	/*
 	 * Generic PCIe unit setup.
@@ -113,7 +115,7 @@ static int kirkwood_pcie_setup(int nr, struct pci_sys_data *sys)
 	 */
 	res[0].name = "PCIe I/O Space";
 	res[0].flags = IORESOURCE_IO;
-	res[0].start = KIRKWOOD_PCIE_IO_PHYS_BASE;
+	res[0].start = KIRKWOOD_PCIE_IO_BUS_BASE;
 	res[0].end = res[0].start + KIRKWOOD_PCIE_IO_SIZE - 1;
 	if (request_resource(&ioport_resource, &res[0]))
 		panic("Request PCIe IO resource failed\n");
@@ -124,7 +126,7 @@ static int kirkwood_pcie_setup(int nr, struct pci_sys_data *sys)
 	 */
 	res[1].name = "PCIe Memory Space";
 	res[1].flags = IORESOURCE_MEM;
-	res[1].start = KIRKWOOD_PCIE_MEM_PHYS_BASE;
+	res[1].start = KIRKWOOD_PCIE_MEM_BUS_BASE;
 	res[1].end = res[1].start + KIRKWOOD_PCIE_MEM_SIZE - 1;
 	if (request_resource(&iomem_resource, &res[1]))
 		panic("Request PCIe Memory resource failed\n");
@@ -132,6 +134,8 @@ static int kirkwood_pcie_setup(int nr, struct pci_sys_data *sys)
 
 	sys->resource[2] = NULL;
 	sys->io_offset = 0;
+
+	kirkwood_clk_ctrl |= CGC_PEX0;
 
 	return 1;
 }

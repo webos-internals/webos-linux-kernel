@@ -56,8 +56,8 @@
 .macro KVM_HANDLER ivor_nr
 _GLOBAL(kvmppc_handler_\ivor_nr)
 	/* Get pointer to vcpu and record exit number. */
-	mtspr	SPRN_SPRG0, r4
-	mfspr	r4, SPRN_SPRG1
+	mtspr	SPRN_SPRG_WSCRATCH0, r4
+	mfspr	r4, SPRN_SPRG_RVCPU
 	stw	r5, VCPU_GPR(r5)(r4)
 	stw	r6, VCPU_GPR(r6)(r4)
 	mfctr	r5
@@ -86,13 +86,16 @@ KVM_HANDLER BOOKE_INTERRUPT_WATCHDOG
 KVM_HANDLER BOOKE_INTERRUPT_DTLB_MISS
 KVM_HANDLER BOOKE_INTERRUPT_ITLB_MISS
 KVM_HANDLER BOOKE_INTERRUPT_DEBUG
+KVM_HANDLER BOOKE_INTERRUPT_SPE_UNAVAIL
+KVM_HANDLER BOOKE_INTERRUPT_SPE_FP_DATA
+KVM_HANDLER BOOKE_INTERRUPT_SPE_FP_ROUND
 
 _GLOBAL(kvmppc_handler_len)
 	.long kvmppc_handler_1 - kvmppc_handler_0
 
 
 /* Registers:
- *  SPRG0: guest r4
+ *  SPRG_SCRATCH0: guest r4
  *  r4: vcpu pointer
  *  r5: KVM exit number
  */
@@ -178,7 +181,7 @@ _GLOBAL(kvmppc_resume_host)
 	stw	r3, VCPU_LR(r4)
 	mfxer	r3
 	stw	r3, VCPU_XER(r4)
-	mfspr	r3, SPRN_SPRG0
+	mfspr	r3, SPRN_SPRG_RSCRATCH0
 	stw	r3, VCPU_GPR(r4)(r4)
 	mfspr	r3, SPRN_SRR0
 	stw	r3, VCPU_PC(r4)
@@ -347,7 +350,9 @@ lightweight_exit:
 	lwz	r3, VCPU_SHADOW_PID(r4)
 	mtspr	SPRN_PID, r3
 
+#ifdef CONFIG_44x
 	iccci	0, 0 /* XXX hack */
+#endif
 
 	/* Load some guest volatiles. */
 	lwz	r0, VCPU_GPR(r0)(r4)
@@ -369,7 +374,7 @@ lightweight_exit:
 	mtspr	SPRN_IVPR, r8
 
 	/* Save vcpu pointer for the exception handlers. */
-	mtspr	SPRN_SPRG1, r4
+	mtspr	SPRN_SPRG_WVCPU, r4
 
 	/* Can't switch the stack pointer until after IVPR is switched,
 	 * because host interrupt handlers would get confused. */
@@ -379,13 +384,13 @@ lightweight_exit:
 	/* Host interrupt handlers may have clobbered these guest-readable
 	 * SPRGs, so we need to reload them here with the guest's values. */
 	lwz	r3, VCPU_SPRG4(r4)
-	mtspr	SPRN_SPRG4, r3
+	mtspr	SPRN_SPRG4W, r3
 	lwz	r3, VCPU_SPRG5(r4)
-	mtspr	SPRN_SPRG5, r3
+	mtspr	SPRN_SPRG5W, r3
 	lwz	r3, VCPU_SPRG6(r4)
-	mtspr	SPRN_SPRG6, r3
+	mtspr	SPRN_SPRG6W, r3
 	lwz	r3, VCPU_SPRG7(r4)
-	mtspr	SPRN_SPRG7, r3
+	mtspr	SPRN_SPRG7W, r3
 
 #ifdef CONFIG_KVM_EXIT_TIMING
 	/* save enter time */

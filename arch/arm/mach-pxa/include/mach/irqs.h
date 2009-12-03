@@ -68,9 +68,10 @@
 #ifdef CONFIG_PXA3xx
 #define IRQ_SSP4	PXA_IRQ(13)	/* SSP4 service request */
 #define IRQ_CIR		PXA_IRQ(34)	/* Consumer IR */
+#define IRQ_COMM_WDT	PXA_IRQ(35) 	/* Comm WDT interrupt */
 #define IRQ_TSI		PXA_IRQ(36)	/* Touch Screen Interface (PXA320) */
 #define IRQ_USIM2	PXA_IRQ(38)	/* USIM2 Controller */
-#define IRQ_GRPHICS	PXA_IRQ(39)	/* Graphics Controller */
+#define IRQ_GCU		PXA_IRQ(39)	/* Graphics Controller */
 #define IRQ_MMC2	PXA_IRQ(41)	/* MMC2 Controller */
 #define IRQ_1WIRE	PXA_IRQ(44)	/* 1-Wire Controller */
 #define IRQ_NAND	PXA_IRQ(45)	/* NAND Controller */
@@ -81,8 +82,31 @@
 #define IRQ_MMC3	PXA_IRQ(55)	/* MMC3 Controller (PXA310) */
 #endif
 
-#define PXA_GPIO_IRQ_BASE	PXA_IRQ(64)
-#define PXA_GPIO_IRQ_NUM	(128)
+#ifdef CONFIG_CPU_PXA935
+#define IRQ_U2O		PXA_IRQ(64)	/* USB OTG 2.0 Controller (PXA935) */
+#define IRQ_U2H		PXA_IRQ(65)	/* USB Host 2.0 Controller (PXA935) */
+
+#define IRQ_MMC3_PXA935	PXA_IRQ(72)	/* MMC3 Controller (PXA935) */
+#define IRQ_MMC4_PXA935	PXA_IRQ(73)	/* MMC4 Controller (PXA935) */
+#define IRQ_MMC5_PXA935	PXA_IRQ(74)	/* MMC5 Controller (PXA935) */
+
+#define IRQ_U2P		PXA_IRQ(93)	/* USB PHY D+/D- Lines (PXA935) */
+#endif
+
+#ifdef CONFIG_CPU_PXA930
+#define IRQ_ENHROT	PXA_IRQ(37)	/* Enhanced Rotary (PXA930) */
+#define IRQ_ACIPC0	PXA_IRQ(5)
+#define IRQ_ACIPC1	PXA_IRQ(40)
+#define IRQ_ACIPC2	PXA_IRQ(19)
+#define IRQ_TRKBALL	PXA_IRQ(43)	/* Track Ball */
+#endif
+
+#ifdef CONFIG_CPU_PXA950
+#define IRQ_GC500	PXA_IRQ(70)	/* Graphics Controller (PXA950) */
+#endif
+
+#define PXA_GPIO_IRQ_BASE	PXA_IRQ(96)
+#define PXA_GPIO_IRQ_NUM	(192)
 
 #define GPIO_2_x_TO_IRQ(x)	(PXA_GPIO_IRQ_BASE + (x))
 #define IRQ_GPIO(x)	(((x) < 2) ? (IRQ_GPIO0 + (x)) : GPIO_2_x_TO_IRQ(x))
@@ -91,13 +115,25 @@
 #define IRQ_TO_GPIO(i)	(((i) < IRQ_GPIO(2)) ? ((i) - IRQ_GPIO0) : IRQ_TO_GPIO_2_x(i))
 
 /*
- * The next 16 interrupts are for board specific purposes.  Since
+ * The following interrupts are for board specific purposes. Since
  * the kernel can only run on one machine at a time, we can re-use
- * these.  If you need more, increase IRQ_BOARD_END, but keep it
- * within sensible limits.
+ * these.  There will be 16 IRQs by default.  If it is not enough,
+ * IRQ_BOARD_END is allowed be customized for each board, but keep
+ * the numbers within sensible limits and in descending order, so
+ * when multiple config options are selected, the maximum will be
+ * used.
  */
 #define IRQ_BOARD_START		(PXA_GPIO_IRQ_BASE + PXA_GPIO_IRQ_NUM)
+
+#if defined(CONFIG_MACH_H4700)
+#define IRQ_BOARD_END		(IRQ_BOARD_START + 70)
+#elif defined(CONFIG_MACH_ZYLONITE)
+#define IRQ_BOARD_END		(IRQ_BOARD_START + 32)
+#elif defined(CONFIG_PXA_EZX)
+#define IRQ_BOARD_END		(IRQ_BOARD_START + 23)
+#else
 #define IRQ_BOARD_END		(IRQ_BOARD_START + 16)
+#endif
 
 #define IRQ_SA1111_START	(IRQ_BOARD_END)
 #define IRQ_GPAIN0		(IRQ_BOARD_END + 0)
@@ -188,8 +224,6 @@
 #define NR_IRQS			(IRQ_LOCOMO_SPI_TEND + 1)
 #elif defined(CONFIG_PXA_HAVE_BOARD_IRQS)
 #define NR_IRQS			(IRQ_BOARD_END)
-#elif defined(CONFIG_MACH_ZYLONITE)
-#define NR_IRQS			(IRQ_BOARD_START + 32)
 #else
 #define NR_IRQS			(IRQ_BOARD_START)
 #endif
@@ -228,6 +262,16 @@
 #define MAINSTONE_S1_CD_IRQ	MAINSTONE_IRQ(13)
 #define MAINSTONE_S1_STSCHG_IRQ	MAINSTONE_IRQ(14)
 #define MAINSTONE_S1_IRQ	MAINSTONE_IRQ(15)
+
+/* Balloon3 Interrupts */
+#define BALLOON3_IRQ(x)		(IRQ_BOARD_START + (x))
+
+#define BALLOON3_BP_CF_NRDY_IRQ	BALLOON3_IRQ(0)
+#define BALLOON3_BP_NSTSCHG_IRQ	BALLOON3_IRQ(1)
+
+#define BALLOON3_AUX_NIRQ	IRQ_GPIO(BALLOON3_GPIO_AUX_NIRQ)
+#define BALLOON3_CODEC_IRQ	IRQ_GPIO(BALLOON3_GPIO_CODEC_IRQ)
+#define BALLOON3_S0_CD_IRQ	IRQ_GPIO(BALLOON3_GPIO_S0_CD)
 
 /* LoCoMo Interrupts (CONFIG_SHARP_LOCOMO) */
 #define IRQ_LOCOMO_KEY_BASE	(IRQ_BOARD_START + 0)

@@ -1,23 +1,8 @@
 /*
- * File:         arch/blackfin/mach-bf561/smp.c
- * Author:       Philippe Gerum <rpm@xenomai.org>
+ * Copyright 2007-2009 Analog Devices Inc.
+ *               Philippe Gerum <rpm@xenomai.org>
  *
- *               Copyright 2007 Analog Devices Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see the file COPYING, or write
- * to the Free Software Foundation, Inc.,
- * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/init.h>
@@ -133,9 +118,9 @@ void __init platform_request_ipi(irq_handler_t handler)
 	int ret;
 
 	ret = request_irq(IRQ_SUPPLE_0, handler, IRQF_DISABLED,
-			  "SMP interrupt", handler);
+			  "Supplemental Interrupt0", handler);
 	if (ret)
-		panic("Cannot request supplemental interrupt 0 for IPI service\n");
+		panic("Cannot request supplemental interrupt 0 for IPI service");
 }
 
 void platform_send_ipi(cpumask_t callmap)

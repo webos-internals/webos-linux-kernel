@@ -16,6 +16,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/smp_lock.h>
 #include <linux/errno.h>
 #include <linux/mutex.h>
 #include <asm/uaccess.h>
@@ -312,7 +313,8 @@ static int lcd_probe(struct usb_interface *interface, const struct usb_device_id
 
 	if (le16_to_cpu(dev->udev->descriptor.idProduct) != 0x0001) {
 		dev_warn(&interface->dev, "USBLCD model not supported.\n");
-		return -ENODEV;
+		retval = -ENODEV;
+		goto error;
 	}
 	
 	/* set up the endpoint information */

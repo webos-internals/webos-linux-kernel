@@ -1,9 +1,5 @@
 /*
- * arch/blackfin/kernel/setup.c
- *
- * Copyright 2004-2006 Analog Devices Inc.
- *
- * Enter bugs at http://blackfin.uclinux.org/
+ * Copyright 2004-2009 Analog Devices Inc.
  *
  * Licensed under the GPL-2 or later.
  */
@@ -18,9 +14,12 @@
 #include <linux/tty.h>
 #include <linux/pfn.h>
 
+#ifdef CONFIG_MTD_UCLINUX
+#include <linux/mtd/map.h>
 #include <linux/ext2_fs.h>
 #include <linux/cramfs_fs.h>
 #include <linux/romfs_fs.h>
+#endif
 
 #include <asm/cplb.h>
 #include <asm/cacheflush.h>
@@ -45,6 +44,7 @@ EXPORT_SYMBOL(_ramend);
 EXPORT_SYMBOL(reserved_mem_dcache_on);
 
 #ifdef CONFIG_MTD_UCLINUX
+extern struct map_info uclinux_ram_map;
 unsigned long memory_mtd_end, memory_mtd_start, mtd_size;
 unsigned long _ebss;
 EXPORT_SYMBOL(memory_mtd_end);
@@ -108,20 +108,54 @@ void __cpuinit bfin_setup_caches(unsigned int cpu)
 	/*
 	 * In cache coherence emulation mode, we need to have the
 	 * D-cache enabled before running any atomic operation which
-	 * might invove cache invalidation (i.e. spinlock, rwlock).
+	 * might involve cache invalidation (i.e. spinlock, rwlock).
 	 * So printk's are deferred until then.
 	 */
 #ifdef CONFIG_BFIN_ICACHE
 	printk(KERN_INFO "Instruction Cache Enabled for CPU%u\n", cpu);
-#endif
-#ifdef CONFIG_BFIN_DCACHE
-	printk(KERN_INFO "Data Cache Enabled for CPU%u"
-# if defined CONFIG_BFIN_WB
-		" (write-back)"
-# elif defined CONFIG_BFIN_WT
-		" (write-through)"
+	printk(KERN_INFO "  External memory:"
+# ifdef CONFIG_BFIN_EXTMEM_ICACHEABLE
+	       " cacheable"
+# else
+	       " uncacheable"
 # endif
-		"\n", cpu);
+	       " in instruction cache\n");
+	if (L2_LENGTH)
+		printk(KERN_INFO "  L2 SRAM        :"
+# ifdef CONFIG_BFIN_L2_ICACHEABLE
+		       " cacheable"
+# else
+		       " uncacheable"
+# endif
+		       " in instruction cache\n");
+
+#else
+	printk(KERN_INFO "Instruction Cache Disabled for CPU%u\n", cpu);
+#endif
+
+#ifdef CONFIG_BFIN_DCACHE
+	printk(KERN_INFO "Data Cache Enabled for CPU%u\n", cpu);
+	printk(KERN_INFO "  External memory:"
+# if defined CONFIG_BFIN_EXTMEM_WRITEBACK
+	       " cacheable (write-back)"
+# elif defined CONFIG_BFIN_EXTMEM_WRITETHROUGH
+	       " cacheable (write-through)"
+# else
+	       " uncacheable"
+# endif
+	       " in data cache\n");
+	if (L2_LENGTH)
+		printk(KERN_INFO "  L2 SRAM        :"
+# if defined CONFIG_BFIN_L2_WRITEBACK
+		       " cacheable (write-back)"
+# elif defined CONFIG_BFIN_L2_WRITETHROUGH
+		       " cacheable (write-through)"
+# else
+		       " uncacheable"
+# endif
+		       " in data cache\n");
+#else
+	printk(KERN_INFO "Data Cache Disabled for CPU%u\n", cpu);
 #endif
 }
 
@@ -130,7 +164,6 @@ void __cpuinit bfin_setup_cpudata(unsigned int cpu)
 	struct blackfin_cpudata *cpudata = &per_cpu(cpu_data, cpu);
 
 	cpudata->idle = current;
-	cpudata->loops_per_jiffy = loops_per_jiffy;
 	cpudata->imemctl = bfin_read_IMEM_CONTROL();
 	cpudata->dmemctl = bfin_read_DMEM_CONTROL();
 }
@@ -150,40 +183,47 @@ void __init bfin_relocate_l1_mem(void)
 	unsigned long l1_data_b_length;
 	unsigned long l2_length;
 
-	blackfin_dma_early_init();
+	early_shadow_stamp();
 
-	l1_code_length = _etext_l1 - _stext_l1;
-	if (l1_code_length > L1_CODE_LENGTH)
-		panic("L1 Instruction SRAM Overflow\n");
-	/* cannot complain as printk is not available as yet.
-	 * But we can continue booting and complain later!
+	/*
+	 * due to the ALIGN(4) in the arch/blackfin/kernel/vmlinux.lds.S
+	 * we know that everything about l1 text/data is nice and aligned,
+	 * so copy by 4 byte chunks, and don't worry about overlapping
+	 * src/dest.
+	 *
+	 * We can't use the dma_memcpy functions, since they can call
+	 * scheduler functions which might be in L1 :( and core writes
+	 * into L1 instruction cause bad access errors, so we are stuck,
+	 * we are required to use DMA, but can't use the common dma
+	 * functions. We can't use memcpy either - since that might be
+	 * going to be in the relocated L1
 	 */
 
-	/* Copy _stext_l1 to _etext_l1 to L1 instruction SRAM */
-	dma_memcpy(_stext_l1, _l1_lma_start, l1_code_length);
+	blackfin_dma_early_init();
 
+	/* if necessary, copy _stext_l1 to _etext_l1 to L1 instruction SRAM */
+	l1_code_length = _etext_l1 - _stext_l1;
+	if (l1_code_length)
+		early_dma_memcpy(_stext_l1, _l1_lma_start, l1_code_length);
+
+	/* if necessary, copy _sdata_l1 to _sbss_l1 to L1 data bank A SRAM */
 	l1_data_a_length = _sbss_l1 - _sdata_l1;
-	if (l1_data_a_length > L1_DATA_A_LENGTH)
-		panic("L1 Data SRAM Bank A Overflow\n");
+	if (l1_data_a_length)
+		early_dma_memcpy(_sdata_l1, _l1_lma_start + l1_code_length, l1_data_a_length);
 
-	/* Copy _sdata_l1 to _sbss_l1 to L1 data bank A SRAM */
-	dma_memcpy(_sdata_l1, _l1_lma_start + l1_code_length, l1_data_a_length);
-
+	/* if necessary, copy _sdata_b_l1 to _sbss_b_l1 to L1 data bank B SRAM */
 	l1_data_b_length = _sbss_b_l1 - _sdata_b_l1;
-	if (l1_data_b_length > L1_DATA_B_LENGTH)
-		panic("L1 Data SRAM Bank B Overflow\n");
-
-	/* Copy _sdata_b_l1 to _sbss_b_l1 to L1 data bank B SRAM */
-	dma_memcpy(_sdata_b_l1, _l1_lma_start + l1_code_length +
+	if (l1_data_b_length)
+		early_dma_memcpy(_sdata_b_l1, _l1_lma_start + l1_code_length +
 			l1_data_a_length, l1_data_b_length);
 
+	early_dma_memcpy_done();
+
+	/* if necessary, copy _stext_l2 to _edata_l2 to L2 SRAM */
 	if (L2_LENGTH != 0) {
 		l2_length = _sbss_l2 - _stext_l2;
-		if (l2_length > L2_LENGTH)
-			panic("L2 SRAM Overflow\n");
-
-		/* Copy _stext_l2 to _edata_l2 to L2 SRAM */
-		dma_memcpy(_stext_l2, _l2_lma_start, l2_length);
+		if (l2_length)
+			memcpy(_stext_l2, _l2_lma_start, l2_length);
 	}
 }
 
@@ -365,13 +405,14 @@ static void __init print_memory_map(char *who)
 			bfin_memmap.map[i].addr + bfin_memmap.map[i].size);
 		switch (bfin_memmap.map[i].type) {
 		case BFIN_MEMMAP_RAM:
-				printk("(usable)\n");
-				break;
+			printk(KERN_CONT "(usable)\n");
+			break;
 		case BFIN_MEMMAP_RESERVED:
-				printk("(reserved)\n");
-				break;
-		default:	printk("type %lu\n", bfin_memmap.map[i].type);
-				break;
+			printk(KERN_CONT "(reserved)\n");
+			break;
+		default:
+			printk(KERN_CONT "type %lu\n", bfin_memmap.map[i].type);
+			break;
 		}
 	}
 }
@@ -434,9 +475,11 @@ static __init void parse_cmdline_early(char *cmdline_p)
 			} else if (!memcmp(to, "clkin_hz=", 9)) {
 				to += 9;
 				early_init_clkin_hz(to);
+#ifdef CONFIG_EARLY_PRINTK
 			} else if (!memcmp(to, "earlyprintk=", 12)) {
 				to += 12;
 				setup_early_printk(to);
+#endif
 			} else if (!memcmp(to, "memmap=", 7)) {
 				to += 7;
 				parse_memmap(to);
@@ -466,16 +509,32 @@ static __init void memory_setup(void)
 #ifdef CONFIG_MTD_UCLINUX
 	unsigned long mtd_phys = 0;
 #endif
+	unsigned long max_mem;
 
 	_rambase = (unsigned long)_stext;
 	_ramstart = (unsigned long)_end;
 
 	if (DMA_UNCACHED_REGION > (_ramend - _ramstart)) {
 		console_init();
-		panic("DMA region exceeds memory limit: %lu.\n",
+		panic("DMA region exceeds memory limit: %lu.",
 			_ramend - _ramstart);
 	}
-	memory_end = _ramend - DMA_UNCACHED_REGION;
+	max_mem = memory_end = _ramend - DMA_UNCACHED_REGION;
+
+#if (defined(CONFIG_BFIN_EXTMEM_ICACHEABLE) && ANOMALY_05000263)
+	/* Due to a Hardware Anomaly we need to limit the size of usable
+	 * instruction memory to max 60MB, 56 if HUNT_FOR_ZERO is on
+	 * 05000263 - Hardware loop corrupted when taking an ICPLB exception
+	 */
+# if (defined(CONFIG_DEBUG_HUNT_FOR_ZERO))
+	if (max_mem >= 56 * 1024 * 1024)
+		max_mem = 56 * 1024 * 1024;
+# else
+	if (max_mem >= 60 * 1024 * 1024)
+		max_mem = 60 * 1024 * 1024;
+# endif				/* CONFIG_DEBUG_HUNT_FOR_ZERO */
+#endif				/* ANOMALY_05000263 */
+
 
 #ifdef CONFIG_MPU
 	/* Round up to multiple of 4MB */
@@ -504,52 +563,45 @@ static __init void memory_setup(void)
 
 # if defined(CONFIG_ROMFS_FS)
 	if (((unsigned long *)mtd_phys)[0] == ROMSB_WORD0
-	    && ((unsigned long *)mtd_phys)[1] == ROMSB_WORD1)
+	    && ((unsigned long *)mtd_phys)[1] == ROMSB_WORD1) {
 		mtd_size =
 		    PAGE_ALIGN(be32_to_cpu(((unsigned long *)mtd_phys)[2]));
-#  if (defined(CONFIG_BFIN_ICACHE) && ANOMALY_05000263)
-	/* Due to a Hardware Anomaly we need to limit the size of usable
-	 * instruction memory to max 60MB, 56 if HUNT_FOR_ZERO is on
-	 * 05000263 - Hardware loop corrupted when taking an ICPLB exception
-	 */
-#   if (defined(CONFIG_DEBUG_HUNT_FOR_ZERO))
-	if (memory_end >= 56 * 1024 * 1024)
-		memory_end = 56 * 1024 * 1024;
-#   else
-	if (memory_end >= 60 * 1024 * 1024)
-		memory_end = 60 * 1024 * 1024;
-#   endif				/* CONFIG_DEBUG_HUNT_FOR_ZERO */
-#  endif				/* ANOMALY_05000263 */
+
+		/* ROM_FS is XIP, so if we found it, we need to limit memory */
+		if (memory_end > max_mem) {
+			pr_info("Limiting kernel memory to %liMB due to anomaly 05000263\n", max_mem >> 20);
+			memory_end = max_mem;
+		}
+	}
 # endif				/* CONFIG_ROMFS_FS */
 
-	memory_end -= mtd_size;
+	/* Since the default MTD_UCLINUX has no magic number, we just blindly
+	 * read 8 past the end of the kernel's image, and look at it.
+	 * When no image is attached, mtd_size is set to a random number
+	 * Do some basic sanity checks before operating on things
+	 */
+	if (mtd_size == 0 || memory_end <= mtd_size) {
+		pr_emerg("Could not find valid ram mtd attached.\n");
+	} else {
+		memory_end -= mtd_size;
 
-	if (mtd_size == 0) {
-		console_init();
-		panic("Don't boot kernel without rootfs attached.\n");
+		/* Relocate MTD image to the top of memory after the uncached memory area */
+		uclinux_ram_map.phys = memory_mtd_start = memory_end;
+		uclinux_ram_map.size = mtd_size;
+		pr_info("Found mtd parition at 0x%p, (len=0x%lx), moving to 0x%p\n",
+			_end, mtd_size, (void *)memory_mtd_start);
+		dma_memcpy((void *)uclinux_ram_map.phys, _end, uclinux_ram_map.size);
 	}
-
-	/* Relocate MTD image to the top of memory after the uncached memory area */
-	dma_memcpy((char *)memory_end, _end, mtd_size);
-
-	memory_mtd_start = memory_end;
-	_ebss = memory_mtd_start;	/* define _ebss for compatible */
 #endif				/* CONFIG_MTD_UCLINUX */
 
-#if (defined(CONFIG_BFIN_ICACHE) && ANOMALY_05000263)
-	/* Due to a Hardware Anomaly we need to limit the size of usable
-	 * instruction memory to max 60MB, 56 if HUNT_FOR_ZERO is on
-	 * 05000263 - Hardware loop corrupted when taking an ICPLB exception
+	/* We need lo limit memory, since everything could have a text section
+	 * of userspace in it, and expose anomaly 05000263. If the anomaly
+	 * doesn't exist, or we don't need to - then dont.
 	 */
-#if (defined(CONFIG_DEBUG_HUNT_FOR_ZERO))
-	if (memory_end >= 56 * 1024 * 1024)
-		memory_end = 56 * 1024 * 1024;
-#else
-	if (memory_end >= 60 * 1024 * 1024)
-		memory_end = 60 * 1024 * 1024;
-#endif				/* CONFIG_DEBUG_HUNT_FOR_ZERO */
-	printk(KERN_NOTICE "Warning: limiting memory to %liMB due to hardware anomaly 05000263\n", memory_end >> 20);
-#endif				/* ANOMALY_05000263 */
+	if (memory_end > max_mem) {
+		pr_info("Limiting kernel memory to %liMB due to anomaly 05000263\n", max_mem >> 20);
+		memory_end = max_mem;
+	}
 
 #ifdef CONFIG_MPU
 	page_mask_nelts = ((_ramend >> PAGE_SHIFT) + 31) / 32;
@@ -570,19 +622,19 @@ static __init void memory_setup(void)
 	printk(KERN_INFO "Kernel Managed Memory: %ldMB\n", _ramend >> 20);
 
 	printk(KERN_INFO "Memory map:\n"
-		KERN_INFO "  fixedcode = 0x%p-0x%p\n"
-		KERN_INFO "  text      = 0x%p-0x%p\n"
-		KERN_INFO "  rodata    = 0x%p-0x%p\n"
-		KERN_INFO "  bss       = 0x%p-0x%p\n"
-		KERN_INFO "  data      = 0x%p-0x%p\n"
-		KERN_INFO "    stack   = 0x%p-0x%p\n"
-		KERN_INFO "  init      = 0x%p-0x%p\n"
-		KERN_INFO "  available = 0x%p-0x%p\n"
+	       "  fixedcode = 0x%p-0x%p\n"
+	       "  text      = 0x%p-0x%p\n"
+	       "  rodata    = 0x%p-0x%p\n"
+	       "  bss       = 0x%p-0x%p\n"
+	       "  data      = 0x%p-0x%p\n"
+	       "    stack   = 0x%p-0x%p\n"
+	       "  init      = 0x%p-0x%p\n"
+	       "  available = 0x%p-0x%p\n"
 #ifdef CONFIG_MTD_UCLINUX
-		KERN_INFO "  rootfs    = 0x%p-0x%p\n"
+	       "  rootfs    = 0x%p-0x%p\n"
 #endif
 #if DMA_UNCACHED_REGION > 0
-		KERN_INFO "  DMA Zone  = 0x%p-0x%p\n"
+	       "  DMA Zone  = 0x%p-0x%p\n"
 #endif
 		, (void *)FIXED_CODE_START, (void *)FIXED_CODE_END,
 		_stext, _etext,
@@ -643,7 +695,7 @@ static __init void setup_bootmem_allocator(void)
 	sanitize_memmap(bfin_memmap.map, &bfin_memmap.nr_map);
 	print_memory_map("boot memmap");
 
-	/* intialize globals in linux/bootmem.h */
+	/* initialize globals in linux/bootmem.h */
 	find_min_max_pfn();
 	/* pfn of the last usable page frame */
 	if (max_pfn > memory_end >> PAGE_SHIFT)
@@ -756,6 +808,13 @@ void __init setup_arch(char **cmdline_p)
 {
 	unsigned long sclk, cclk;
 
+	enable_shadow_console();
+
+	/* Check to make sure we are running on the right processor */
+	if (unlikely(CPUID != bfin_cpuid()))
+		printk(KERN_ERR "ERROR: Not running on ADSP-%s: unknown CPUID 0x%04x Rev 0.%d\n",
+			CPU, bfin_cpuid(), bfin_revid());
+
 #ifdef CONFIG_DUMMY_CONSOLE
 	conswitchp = &dummy_con;
 #endif
@@ -770,13 +829,16 @@ void __init setup_arch(char **cmdline_p)
 	memcpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
 	boot_command_line[COMMAND_LINE_SIZE - 1] = '\0';
 
-	/* setup memory defaults from the user config */
-	physical_mem_end = 0;
-	_ramend = get_mem_size() * 1024 * 1024;
-
 	memset(&bfin_memmap, 0, sizeof(bfin_memmap));
 
+	/* If the user does not specify things on the command line, use
+	 * what the bootloader set things up as
+	 */
+	physical_mem_end = 0;
 	parse_cmdline_early(&command_line[0]);
+
+	if (_ramend == 0)
+		_ramend = get_mem_size() * 1024 * 1024;
 
 	if (physical_mem_end == 0)
 		physical_mem_end = _ramend;
@@ -796,10 +858,8 @@ void __init setup_arch(char **cmdline_p)
 	cclk = get_cclk();
 	sclk = get_sclk();
 
-#if !defined(CONFIG_BFIN_KERNEL_CLOCK)
-	if (ANOMALY_05000273 && cclk == sclk)
-		panic("ANOMALY 05000273, SCLK can not be same as CCLK");
-#endif
+	if ((ANOMALY_05000273 || ANOMALY_05000274) && (cclk >> 1) < sclk)
+		panic("ANOMALY 05000273 or 05000274: CCLK must be >= 2*SCLK");
 
 #ifdef BF561_FAMILY
 	if (ANOMALY_05000266) {
@@ -809,20 +869,13 @@ void __init setup_arch(char **cmdline_p)
 #endif
 	printk(KERN_INFO "Hardware Trace ");
 	if (bfin_read_TBUFCTL() & 0x1)
-		printk("Active ");
+		printk(KERN_CONT "Active ");
 	else
-		printk("Off ");
+		printk(KERN_CONT "Off ");
 	if (bfin_read_TBUFCTL() & 0x2)
-		printk("and Enabled\n");
+		printk(KERN_CONT "and Enabled\n");
 	else
-	printk("and Disabled\n");
-
-#if defined(CONFIG_CHR_DEV_FLASH) || defined(CONFIG_BLK_DEV_FLASH)
-	/* we need to initialize the Flashrom device here since we might
-	 * do things with flash early on in the boot
-	 */
-	flash_probe();
-#endif
+		printk(KERN_CONT "and Disabled\n");
 
 	printk(KERN_INFO "Boot Mode: %i\n", bfin_read_SYSCR() & 0xF);
 
@@ -831,7 +884,8 @@ void __init setup_arch(char **cmdline_p)
     defined(CONFIG_BF538) || defined(CONFIG_BF539)
 	_bfin_swrst = bfin_read_SWRST();
 #else
-	_bfin_swrst = bfin_read_SYSCR();
+	/* Clear boot mode field */
+	_bfin_swrst = bfin_read_SYSCR() & ~0xf;
 #endif
 
 #ifdef CONFIG_DEBUG_DOUBLEFAULT_PRINT
@@ -869,10 +923,7 @@ void __init setup_arch(char **cmdline_p)
 	else
 		printk(KERN_INFO "Compiled for ADSP-%s Rev 0.%d\n", CPU, bfin_compiled_revid());
 
-	if (unlikely(CPUID != bfin_cpuid()))
-		printk(KERN_ERR "ERROR: Not running on ADSP-%s: unknown CPUID 0x%04x Rev 0.%d\n",
-			CPU, bfin_cpuid(), bfin_revid());
-	else {
+	if (likely(CPUID == bfin_cpuid())) {
 		if (bfin_revid() != bfin_compiled_revid()) {
 			if (bfin_compiled_revid() == -1)
 				printk(KERN_ERR "Warning: Compiled for Rev none, but running on Rev %d\n",
@@ -881,7 +932,7 @@ void __init setup_arch(char **cmdline_p)
 				printk(KERN_ERR "Warning: Compiled for Rev %d, but running on Rev %d\n",
 				       bfin_compiled_revid(), bfin_revid());
 				if (bfin_compiled_revid() > bfin_revid())
-					panic("Error: you are missing anomaly workarounds for this rev\n");
+					panic("Error: you are missing anomaly workarounds for this rev");
 			}
 		}
 		if (bfin_revid() < CONFIG_BF_REV_MIN || bfin_revid() > CONFIG_BF_REV_MAX)
@@ -889,17 +940,10 @@ void __init setup_arch(char **cmdline_p)
 			       CPU, bfin_revid());
 	}
 
-	/* We can't run on BF548-0.1 due to ANOMALY 05000448 */
-	if (bfin_cpuid() == 0x27de && bfin_revid() == 1)
-		panic("You can't run on this processor due to 05000448\n");
-
 	printk(KERN_INFO "Blackfin Linux support by http://blackfin.uclinux.org/\n");
 
 	printk(KERN_INFO "Processor Speed: %lu MHz core clock and %lu MHz System Clock\n",
 	       cclk / 1000000, sclk / 1000000);
-
-	if (ANOMALY_05000273 && (cclk >> 1) <= sclk)
-		printk("\n\n\nANOMALY_05000273: CCLK must be >= 2*SCLK !!!\n\n\n");
 
 	setup_bootmem_allocator();
 
@@ -1095,7 +1139,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 			CPUID, bfin_cpuid());
 
 	seq_printf(m, "model name\t: ADSP-%s %lu(MHz CCLK) %lu(MHz SCLK) (%s)\n"
-		"stepping\t: %d\n",
+		"stepping\t: %d ",
 		cpu, cclk/1000000, sclk/1000000,
 #ifdef CONFIG_MPU
 		"mpu on",
@@ -1104,14 +1148,23 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 #endif
 		revid);
 
-	seq_printf(m, "cpu MHz\t\t: %lu.%03lu/%lu.%03lu\n",
+	if (bfin_revid() != bfin_compiled_revid()) {
+		if (bfin_compiled_revid() == -1)
+			seq_printf(m, "(Compiled for Rev none)");
+		else if (bfin_compiled_revid() == 0xffff)
+			seq_printf(m, "(Compiled for Rev any)");
+		else
+			seq_printf(m, "(Compiled for Rev %d)", bfin_compiled_revid());
+	}
+
+	seq_printf(m, "\ncpu MHz\t\t: %lu.%03lu/%lu.%03lu\n",
 		cclk/1000000, cclk%1000000,
 		sclk/1000000, sclk%1000000);
 	seq_printf(m, "bogomips\t: %lu.%02lu\n"
 		"Calibration\t: %lu loops\n",
-		(cpudata->loops_per_jiffy * HZ) / 500000,
-		((cpudata->loops_per_jiffy * HZ) / 5000) % 100,
-		(cpudata->loops_per_jiffy * HZ));
+		(loops_per_jiffy * HZ) / 500000,
+		((loops_per_jiffy * HZ) / 5000) % 100,
+		(loops_per_jiffy * HZ));
 
 	/* Check Cache configutation */
 	switch (cpudata->dmemctl & (1 << DMC0_P | 1 << DMC1_P)) {
@@ -1145,16 +1198,25 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		icache_size = 0;
 
 	seq_printf(m, "cache size\t: %d KB(L1 icache) "
-		"%d KB(L1 dcache%s) %d KB(L2 cache)\n",
-		icache_size, dcache_size,
-#if defined CONFIG_BFIN_WB
-		"-wb"
-#elif defined CONFIG_BFIN_WT
-		"-wt"
-#endif
-		"", 0);
-
+		"%d KB(L1 dcache) %d KB(L2 cache)\n",
+		icache_size, dcache_size, 0);
 	seq_printf(m, "%s\n", cache);
+	seq_printf(m, "external memory\t: "
+#if defined(CONFIG_BFIN_EXTMEM_ICACHEABLE)
+		   "cacheable"
+#else
+		   "uncacheable"
+#endif
+		   " in instruction cache\n");
+	seq_printf(m, "external memory\t: "
+#if defined(CONFIG_BFIN_EXTMEM_WRITEBACK)
+		      "cacheable (write-back)"
+#elif defined(CONFIG_BFIN_EXTMEM_WRITETHROUGH)
+		      "cacheable (write-through)"
+#else
+		      "uncacheable"
+#endif
+		      " in data cache\n");
 
 	if (icache_size)
 		seq_printf(m, "icache setup\t: %d Sub-banks/%d Ways, %d Lines/Way\n",
@@ -1169,63 +1231,32 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 #ifdef __ARCH_SYNC_CORE_DCACHE
 	seq_printf(m, "SMP Dcache Flushes\t: %lu\n\n", cpudata->dcache_invld_count);
 #endif
-#ifdef CONFIG_BFIN_ICACHE_LOCK
-	switch ((cpudata->imemctl >> 3) & WAYALL_L) {
-	case WAY0_L:
-		seq_printf(m, "Way0 Locked-Down\n");
-		break;
-	case WAY1_L:
-		seq_printf(m, "Way1 Locked-Down\n");
-		break;
-	case WAY01_L:
-		seq_printf(m, "Way0,Way1 Locked-Down\n");
-		break;
-	case WAY2_L:
-		seq_printf(m, "Way2 Locked-Down\n");
-		break;
-	case WAY02_L:
-		seq_printf(m, "Way0,Way2 Locked-Down\n");
-		break;
-	case WAY12_L:
-		seq_printf(m, "Way1,Way2 Locked-Down\n");
-		break;
-	case WAY012_L:
-		seq_printf(m, "Way0,Way1 & Way2 Locked-Down\n");
-		break;
-	case WAY3_L:
-		seq_printf(m, "Way3 Locked-Down\n");
-		break;
-	case WAY03_L:
-		seq_printf(m, "Way0,Way3 Locked-Down\n");
-		break;
-	case WAY13_L:
-		seq_printf(m, "Way1,Way3 Locked-Down\n");
-		break;
-	case WAY013_L:
-		seq_printf(m, "Way 0,Way1,Way3 Locked-Down\n");
-		break;
-	case WAY32_L:
-		seq_printf(m, "Way3,Way2 Locked-Down\n");
-		break;
-	case WAY320_L:
-		seq_printf(m, "Way3,Way2,Way0 Locked-Down\n");
-		break;
-	case WAY321_L:
-		seq_printf(m, "Way3,Way2,Way1 Locked-Down\n");
-		break;
-	case WAYALL_L:
-		seq_printf(m, "All Ways are locked\n");
-		break;
-	default:
-		seq_printf(m, "No Ways are locked\n");
-	}
+#ifdef __ARCH_SYNC_CORE_ICACHE
+	seq_printf(m, "SMP Icache Flushes\t: %lu\n\n", cpudata->icache_invld_count);
 #endif
 
 	if (cpu_num != num_possible_cpus() - 1)
 		return 0;
 
-	if (L2_LENGTH)
+	if (L2_LENGTH) {
 		seq_printf(m, "L2 SRAM\t\t: %dKB\n", L2_LENGTH/0x400);
+		seq_printf(m, "L2 SRAM\t\t: "
+#if defined(CONFIG_BFIN_L2_ICACHEABLE)
+			      "cacheable"
+#else
+			      "uncacheable"
+#endif
+			      " in instruction cache\n");
+		seq_printf(m, "L2 SRAM\t\t: "
+#if defined(CONFIG_BFIN_L2_WRITEBACK)
+			      "cacheable (write-back)"
+#elif defined(CONFIG_BFIN_L2_WRITETHROUGH)
+			      "cacheable (write-through)"
+#else
+			      "uncacheable"
+#endif
+			      " in data cache\n");
+	}
 	seq_printf(m, "board name\t: %s\n", bfin_board_name);
 	seq_printf(m, "board memory\t: %ld kB (0x%p -> 0x%p)\n",
 		 physical_mem_end >> 10, (void *)0, (void *)physical_mem_end);
@@ -1268,6 +1299,7 @@ const struct seq_operations cpuinfo_op = {
 
 void __init cmdline_init(const char *r0)
 {
+	early_shadow_stamp();
 	if (r0)
 		strncpy(command_line, r0, COMMAND_LINE_SIZE);
 }

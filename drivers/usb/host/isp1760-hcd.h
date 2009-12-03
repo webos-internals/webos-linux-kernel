@@ -2,9 +2,10 @@
 #define _ISP1760_HCD_H_
 
 /* exports for if */
-struct usb_hcd *isp1760_register(u64 res_start, u64 res_len, int irq,
-		u64 irqflags, struct device *dev, const char *busname,
-		unsigned int devflags);
+struct usb_hcd *isp1760_register(phys_addr_t res_start, resource_size_t res_len,
+				 int irq, unsigned long irqflags,
+				 struct device *dev, const char *busname,
+				 unsigned int devflags);
 int init_kmem_once(void);
 void deinit_kmem_cache(void);
 
@@ -141,6 +142,8 @@ typedef void (packet_enqueue)(struct usb_hcd *hcd, struct isp1760_qh *qh,
 #define ISP1760_FLAG_DACK_POL_HIGH	0x00000010 /* DACK active high */
 #define ISP1760_FLAG_DREQ_POL_HIGH	0x00000020 /* DREQ active high */
 #define ISP1760_FLAG_ISP1761		0x00000040 /* Chip is ISP1761 */
+#define ISP1760_FLAG_INTR_POL_HIGH	0x00000080 /* Interrupt polarity active high */
+#define ISP1760_FLAG_INTR_EDGE_TRIG	0x00000100 /* Interrupt edge triggered */
 
 /* chip memory management */
 struct memory_chunk {

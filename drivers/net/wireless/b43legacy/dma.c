@@ -846,7 +846,7 @@ static u64 supported_dma_mask(struct b43legacy_wldev *dev)
 
 	tmp = b43legacy_read32(dev, SSB_TMSHIGH);
 	if (tmp & SSB_TMSHIGH_DMA64)
-		return DMA_64BIT_MASK;
+		return DMA_BIT_MASK(64);
 	mmio_base = b43legacy_dmacontroller_base(0, 0);
 	b43legacy_write32(dev,
 			mmio_base + B43legacy_DMA32_TXCTL,
@@ -854,18 +854,18 @@ static u64 supported_dma_mask(struct b43legacy_wldev *dev)
 	tmp = b43legacy_read32(dev, mmio_base +
 			       B43legacy_DMA32_TXCTL);
 	if (tmp & B43legacy_DMA32_TXADDREXT_MASK)
-		return DMA_32BIT_MASK;
+		return DMA_BIT_MASK(32);
 
-	return DMA_30BIT_MASK;
+	return DMA_BIT_MASK(30);
 }
 
 static enum b43legacy_dmatype dma_mask_to_engine_type(u64 dmamask)
 {
-	if (dmamask == DMA_30BIT_MASK)
+	if (dmamask == DMA_BIT_MASK(30))
 		return B43legacy_DMA_30BIT;
-	if (dmamask == DMA_32BIT_MASK)
+	if (dmamask == DMA_BIT_MASK(32))
 		return B43legacy_DMA_32BIT;
-	if (dmamask == DMA_64BIT_MASK)
+	if (dmamask == DMA_BIT_MASK(64))
 		return B43legacy_DMA_64BIT;
 	B43legacy_WARN_ON(1);
 	return B43legacy_DMA_30BIT;
@@ -1042,13 +1042,13 @@ static int b43legacy_dma_set_mask(struct b43legacy_wldev *dev, u64 mask)
 		err = ssb_dma_set_mask(dev->dev, mask);
 		if (!err)
 			break;
-		if (mask == DMA_64BIT_MASK) {
-			mask = DMA_32BIT_MASK;
+		if (mask == DMA_BIT_MASK(64)) {
+			mask = DMA_BIT_MASK(32);
 			fallback = 1;
 			continue;
 		}
-		if (mask == DMA_32BIT_MASK) {
-			mask = DMA_30BIT_MASK;
+		if (mask == DMA_BIT_MASK(32)) {
+			mask = DMA_BIT_MASK(30);
 			fallback = 1;
 			continue;
 		}
@@ -1366,15 +1366,25 @@ int b43legacy_dma_tx(struct b43legacy_wldev *dev,
 	ring = priority_to_txring(dev, skb_get_queue_mapping(skb));
 	spin_lock_irqsave(&ring->lock, flags);
 	B43legacy_WARN_ON(!ring->tx);
-	if (unlikely(free_slots(ring) < SLOTS_PER_PACKET)) {
-		b43legacywarn(dev->wl, "DMA queue overflow\n");
+
+	if (unlikely(ring->stopped)) {
+		/* We get here only because of a bug in mac80211.
+		 * Because of a race, one packet may be queued after
+		 * the queue is stopped, thus we got called when we shouldn't.
+		 * For now, just refuse the transmit. */
+		if (b43legacy_debug(dev, B43legacy_DBG_DMAVERBOSE))
+			b43legacyerr(dev->wl, "Packet after queue stopped\n");
 		err = -ENOSPC;
 		goto out_unlock;
 	}
-	/* Check if the queue was stopped in mac80211,
-	 * but we got called nevertheless.
-	 * That would be a mac80211 bug. */
-	B43legacy_BUG_ON(ring->stopped);
+
+	if (unlikely(WARN_ON(free_slots(ring) < SLOTS_PER_PACKET))) {
+		/* If we get here, we have a real error with the queue
+		 * full, but queues not stopped. */
+		b43legacyerr(dev->wl, "DMA queue overflow\n");
+		err = -ENOSPC;
+		goto out_unlock;
+	}
 
 	err = dma_tx_fragment(ring, skb);
 	if (unlikely(err == -ENOKEY)) {

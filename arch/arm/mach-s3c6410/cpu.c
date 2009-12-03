@@ -31,6 +31,7 @@
 
 #include <plat/cpu-freq.h>
 #include <plat/regs-serial.h>
+#include <plat/regs-clock.h>
 
 #include <plat/cpu.h>
 #include <plat/devs.h>
@@ -61,6 +62,8 @@ void __init s3c6410_map_io(void)
 	/* the i2c devices are directly compatible with s3c2440 */
 	s3c_i2c0_setname("s3c2440-i2c");
 	s3c_i2c1_setname("s3c2440-i2c");
+
+	s3c_device_nand.name = "s3c6400-nand";
 }
 
 void __init s3c6410_init_clocks(int xtal)
@@ -68,7 +71,7 @@ void __init s3c6410_init_clocks(int xtal)
 	printk(KERN_DEBUG "%s: initialising clocks\n", __func__);
 	s3c24xx_register_baseclocks(xtal);
 	s3c64xx_register_clocks();
-	s3c6400_register_clocks();
+	s3c6400_register_clocks(S3C6410_CLKDIV0_ARM_MASK);
 	s3c6400_setup_clocks();
 }
 

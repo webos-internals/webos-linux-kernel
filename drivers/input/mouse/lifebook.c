@@ -33,11 +33,11 @@ static int lifebook_set_serio_phys(const struct dmi_system_id *d)
 	return 0;
 }
 
-static unsigned char lifebook_use_6byte_proto;
+static bool lifebook_use_6byte_proto;
 
 static int lifebook_set_6byte_proto(const struct dmi_system_id *d)
 {
-	lifebook_use_6byte_proto = 1;
+	lifebook_use_6byte_proto = true;
 	return 0;
 }
 
@@ -58,6 +58,12 @@ static const struct dmi_system_id lifebook_dmi_table[] = {
 		.ident = "Lifebook B",
 		.matches = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "LIFEBOOK B Series"),
+		},
+	},
+	{
+		.ident = "Lifebook B-2130",
+		.matches = {
+			DMI_MATCH(DMI_BOARD_NAME, "ZEPHYR"),
 		},
 	},
 	{
@@ -101,8 +107,7 @@ static const struct dmi_system_id lifebook_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "CF-72"),
 		},
-		.callback = lifebook_set_serio_phys,
-		.driver_data = "isa0060/serio3",
+		.callback = lifebook_set_6byte_proto,
 	},
 	{
 		.ident = "Lifebook B142",
@@ -119,7 +124,7 @@ static psmouse_ret_t lifebook_process_byte(struct psmouse *psmouse)
 	struct input_dev *dev1 = psmouse->dev;
 	struct input_dev *dev2 = priv ? priv->dev2 : NULL;
 	unsigned char *packet = psmouse->packet;
-	int relative_packet = packet[0] & 0x08;
+	bool relative_packet = packet[0] & 0x08;
 
 	if (relative_packet || !lifebook_use_6byte_proto) {
 		if (psmouse->pktcnt != 3)
@@ -153,20 +158,21 @@ static psmouse_ret_t lifebook_process_byte(struct psmouse *psmouse)
 		if (!dev2)
 			printk(KERN_WARNING "lifebook.c: got relative packet "
 				"but no relative device set up\n");
-	} else if (lifebook_use_6byte_proto) {
-		input_report_abs(dev1, ABS_X,
-				 ((packet[1] & 0x3f) << 6) | (packet[2] & 0x3f));
-		input_report_abs(dev1, ABS_Y,
-				 4096 - (((packet[4] & 0x3f) << 6) | (packet[5] & 0x3f)));
 	} else {
-		input_report_abs(dev1, ABS_X,
-				 (packet[1] | ((packet[0] & 0x30) << 4)));
-		input_report_abs(dev1, ABS_Y,
-				 1024 - (packet[2] | ((packet[0] & 0xC0) << 2)));
+		if (lifebook_use_6byte_proto) {
+			input_report_abs(dev1, ABS_X,
+				((packet[1] & 0x3f) << 6) | (packet[2] & 0x3f));
+			input_report_abs(dev1, ABS_Y,
+				4096 - (((packet[4] & 0x3f) << 6) | (packet[5] & 0x3f)));
+		} else {
+			input_report_abs(dev1, ABS_X,
+				(packet[1] | ((packet[0] & 0x30) << 4)));
+			input_report_abs(dev1, ABS_Y,
+				1024 - (packet[2] | ((packet[0] & 0xC0) << 2)));
+		}
+		input_report_key(dev1, BTN_TOUCH, packet[0] & 0x04);
+		input_sync(dev1);
 	}
-
-	input_report_key(dev1, BTN_TOUCH, packet[0] & 0x04);
-	input_sync(dev1);
 
 	if (dev2) {
 		if (relative_packet) {
@@ -235,7 +241,7 @@ static void lifebook_disconnect(struct psmouse *psmouse)
 	psmouse->private = NULL;
 }
 
-int lifebook_detect(struct psmouse *psmouse, int set_properties)
+int lifebook_detect(struct psmouse *psmouse, bool set_properties)
 {
         if (!dmi_check_system(lifebook_dmi_table))
                 return -1;

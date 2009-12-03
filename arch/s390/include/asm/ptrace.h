@@ -172,6 +172,8 @@
 #define NUM_CRS		16
 #define NUM_ACRS	16
 
+#define NUM_CR_WORDS	3
+
 #define FPR_SIZE	8
 #define FPC_SIZE	4
 #define FPC_PAD_SIZE	4 /* gcc insists on aligning the fpregs */
@@ -309,10 +311,12 @@ typedef struct
 	__u32		orig_gpr2;
 } s390_compat_regs;
 
+typedef struct
+{
+	__u32		gprs_high[NUM_GPRS];
+} s390_compat_regs_high;
 
 #ifdef __KERNEL__
-#include <asm/setup.h>
-#include <asm/page.h>
 
 /*
  * The pt_regs struct defines the way the registers are stored on
@@ -334,7 +338,7 @@ struct pt_regs
  */
 typedef struct
 {
-	unsigned long cr[3];
+	unsigned long cr[NUM_CR_WORDS];
 } per_cr_words;
 
 #define PER_EM_MASK 0xE8000000UL

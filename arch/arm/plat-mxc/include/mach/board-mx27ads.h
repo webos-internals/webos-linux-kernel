@@ -26,12 +26,6 @@
 				MXC_MAX_VIRTUAL_INTS)
 
 /*
- * MXC UART EVB board level configurations
- */
-#define MXC_LL_UART_PADDR       UART1_BASE_ADDR
-#define MXC_LL_UART_VADDR       AIPI_IO_ADDRESS(UART1_BASE_ADDR)
-
-/*
  * @name Memory Size parameters
  */
 
@@ -47,8 +41,9 @@
 /*
  * Base address of PBC controller, CS4
  */
-#define PBC_BASE_ADDRESS        0xEB000000
-#define PBC_REG_ADDR(offset)    (PBC_BASE_ADDRESS + (offset))
+#define PBC_BASE_ADDRESS        0xf4300000
+#define PBC_REG_ADDR(offset)    (void __force __iomem *) \
+		(PBC_BASE_ADDRESS + (offset))
 
 /*
  * PBC Interupt name definitions

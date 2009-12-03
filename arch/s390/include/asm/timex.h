@@ -11,6 +11,9 @@
 #ifndef _ASM_S390_TIMEX_H
 #define _ASM_S390_TIMEX_H
 
+/* The value of the TOD clock for 1.1.1970. */
+#define TOD_UNIX_EPOCH 0x7d91048bca000000ULL
+
 /* Inline functions for clock register access. */
 static inline int set_clock(__u64 time)
 {
@@ -84,5 +87,29 @@ static inline cycles_t get_cycles(void)
 int get_sync_clock(unsigned long long *clock);
 void init_cpu_timer(void);
 unsigned long long monotonic_clock(void);
+
+void tod_to_timeval(__u64, struct timespec *);
+
+static inline
+void stck_to_timespec(unsigned long long stck, struct timespec *ts)
+{
+	tod_to_timeval(stck - TOD_UNIX_EPOCH, ts);
+}
+
+extern u64 sched_clock_base_cc;
+
+/**
+ * get_clock_monotonic - returns current time in clock rate units
+ *
+ * The caller must ensure that preemption is disabled.
+ * The clock and sched_clock_base get changed via stop_machine.
+ * Therefore preemption must be disabled when calling this
+ * function, otherwise the returned value is not guaranteed to
+ * be monotonic.
+ */
+static inline unsigned long long get_clock_monotonic(void)
+{
+	return get_clock_xt() - sched_clock_base_cc;
+}
 
 #endif

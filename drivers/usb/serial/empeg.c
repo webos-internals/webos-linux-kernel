@@ -79,10 +79,8 @@ static int debug;
 #define EMPEG_PRODUCT_ID		0x0001
 
 /* function prototypes for an empeg-car player */
-static int  empeg_open(struct tty_struct *tty, struct usb_serial_port *port,
-						struct file *filp);
-static void empeg_close(struct tty_struct *tty, struct usb_serial_port *port,
-						struct file *filp);
+static int  empeg_open(struct tty_struct *tty, struct usb_serial_port *port);
+static void empeg_close(struct usb_serial_port *port);
 static int  empeg_write(struct tty_struct *tty, struct usb_serial_port *port,
 						const unsigned char *buf,
 						int count);
@@ -91,9 +89,7 @@ static int  empeg_chars_in_buffer(struct tty_struct *tty);
 static void empeg_throttle(struct tty_struct *tty);
 static void empeg_unthrottle(struct tty_struct *tty);
 static int  empeg_startup(struct usb_serial *serial);
-static void empeg_shutdown(struct usb_serial *serial);
-static void empeg_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios);
+static void empeg_init_termios(struct tty_struct *tty);
 static void empeg_write_bulk_callback(struct urb *urb);
 static void empeg_read_bulk_callback(struct urb *urb);
 
@@ -125,8 +121,7 @@ static struct usb_serial_driver empeg_device = {
 	.throttle =		empeg_throttle,
 	.unthrottle =		empeg_unthrottle,
 	.attach =		empeg_startup,
-	.shutdown =		empeg_shutdown,
-	.set_termios =		empeg_set_termios,
+	.init_termios =		empeg_init_termios,
 	.write =		empeg_write,
 	.write_room =		empeg_write_room,
 	.chars_in_buffer =	empeg_chars_in_buffer,
@@ -145,16 +140,12 @@ static int		bytes_out;
 /******************************************************************************
  * Empeg specific driver functions
  ******************************************************************************/
-static int empeg_open(struct tty_struct *tty, struct usb_serial_port *port,
-				struct file *filp)
+static int empeg_open(struct tty_struct *tty,struct usb_serial_port *port)
 {
 	struct usb_serial *serial = port->serial;
 	int result = 0;
 
 	dbg("%s - port %d", __func__, port->number);
-
-	/* Force default termio settings */
-	empeg_set_termios(tty, port, NULL) ;
 
 	bytes_in = 0;
 	bytes_out = 0;
@@ -181,8 +172,7 @@ static int empeg_open(struct tty_struct *tty, struct usb_serial_port *port,
 }
 
 
-static void empeg_close(struct tty_struct *tty, struct usb_serial_port *port,
-				struct file *filp)
+static void empeg_close(struct usb_serial_port *port)
 {
 	dbg("%s - port %d", __func__, port->number);
 
@@ -401,7 +391,7 @@ static void empeg_unthrottle(struct tty_struct *tty)
 	dbg("%s - port %d", __func__, port->number);
 
 	port->read_urb->dev = port->serial->dev;
-	result = usb_submit_urb(port->read_urb, GFP_ATOMIC);
+	result = usb_submit_urb(port->read_urb, GFP_KERNEL);
 	if (result)
 		dev_err(&port->dev,
 			"%s - failed submitting read urb, error %d\n",
@@ -429,17 +419,9 @@ static int  empeg_startup(struct usb_serial *serial)
 }
 
 
-static void empeg_shutdown(struct usb_serial *serial)
-{
-	dbg("%s", __func__);
-}
-
-
-static void empeg_set_termios(struct tty_struct *tty,
-		struct usb_serial_port *port, struct ktermios *old_termios)
+static void empeg_init_termios(struct tty_struct *tty)
 {
 	struct ktermios *termios = tty->termios;
-	dbg("%s - port %d", __func__, port->number);
 
 	/*
 	 * The empeg-car player wants these particular tty settings.
@@ -478,12 +460,6 @@ static void empeg_set_termios(struct tty_struct *tty,
 	termios->c_cflag
 		|= CS8;		/* character size 8 bits */
 
-	/*
-	 * Force low_latency on; otherwise the pushes are scheduled;
-	 * this is bad as it opens up the possibility of dropping bytes
-	 * on the floor.  We don't want to drop bytes on the floor. :)
-	 */
-	tty->low_latency = 1;
 	tty_encode_baud_rate(tty, 115200, 115200);
 }
 

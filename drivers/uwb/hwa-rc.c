@@ -501,7 +501,7 @@ int hwarc_filter_event_WUSB_0100(struct uwb_rc *rc, struct uwb_rceb **header,
 	int result = -ENOANO;
 	struct uwb_rceb *rceb = *header;
 	int event = le16_to_cpu(rceb->wEvent);
-	size_t event_size;
+	ssize_t event_size;
 	size_t core_size, offset;
 
 	if (rceb->bEventType != UWB_RC_CET_GENERAL)
@@ -887,8 +887,7 @@ static int hwarc_post_reset(struct usb_interface *iface)
 	struct hwarc *hwarc = usb_get_intfdata(iface);
 	struct uwb_rc *uwb_rc = hwarc->uwb_rc;
 
-	uwb_rc_post_reset(uwb_rc);
-	return 0;
+	return uwb_rc_post_reset(uwb_rc);
 }
 
 /** USB device ID's that we handle */

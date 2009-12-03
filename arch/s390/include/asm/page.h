@@ -125,16 +125,12 @@ page_get_storage_key(unsigned long addr)
 	return skey;
 }
 
-#ifdef CONFIG_PAGE_STATES
-
 struct page;
 void arch_free_page(struct page *page, int order);
 void arch_alloc_page(struct page *page, int order);
 
 #define HAVE_ARCH_FREE_PAGE
 #define HAVE_ARCH_ALLOC_PAGE
-
-#endif
 
 #endif /* !__ASSEMBLY__ */
 
@@ -150,7 +146,7 @@ void arch_alloc_page(struct page *page, int order);
 				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
 
 #include <asm-generic/memory_model.h>
-#include <asm-generic/page.h>
+#include <asm-generic/getorder.h>
 
 #define __HAVE_ARCH_GATE_AREA 1
 

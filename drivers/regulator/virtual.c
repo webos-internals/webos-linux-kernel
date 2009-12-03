@@ -27,71 +27,81 @@ struct virtual_consumer_data {
 	unsigned int mode;
 };
 
-static void update_voltage_constraints(struct virtual_consumer_data *data)
+static void update_voltage_constraints(struct device *dev,
+				       struct virtual_consumer_data *data)
 {
 	int ret;
 
 	if (data->min_uV && data->max_uV
 	    && data->min_uV <= data->max_uV) {
+		dev_dbg(dev, "Requesting %d-%duV\n",
+			data->min_uV, data->max_uV);
 		ret = regulator_set_voltage(data->regulator,
-					    data->min_uV, data->max_uV);
+					data->min_uV, data->max_uV);
 		if (ret != 0) {
-			printk(KERN_ERR "regulator_set_voltage() failed: %d\n",
-			       ret);
+			dev_err(dev,
+				"regulator_set_voltage() failed: %d\n", ret);
 			return;
 		}
 	}
 
 	if (data->min_uV && data->max_uV && !data->enabled) {
+		dev_dbg(dev, "Enabling regulator\n");
 		ret = regulator_enable(data->regulator);
 		if (ret == 0)
 			data->enabled = 1;
 		else
-			printk(KERN_ERR "regulator_enable() failed: %d\n",
+			dev_err(dev, "regulator_enable() failed: %d\n",
 				ret);
 	}
 
 	if (!(data->min_uV && data->max_uV) && data->enabled) {
+		dev_dbg(dev, "Disabling regulator\n");
 		ret = regulator_disable(data->regulator);
 		if (ret == 0)
 			data->enabled = 0;
 		else
-			printk(KERN_ERR "regulator_disable() failed: %d\n",
+			dev_err(dev, "regulator_disable() failed: %d\n",
 				ret);
 	}
 }
 
-static void update_current_limit_constraints(struct virtual_consumer_data
-						*data)
+static void update_current_limit_constraints(struct device *dev,
+					  struct virtual_consumer_data *data)
 {
 	int ret;
 
 	if (data->max_uA
 	    && data->min_uA <= data->max_uA) {
+		dev_dbg(dev, "Requesting %d-%duA\n",
+			data->min_uA, data->max_uA);
 		ret = regulator_set_current_limit(data->regulator,
 					data->min_uA, data->max_uA);
 		if (ret != 0) {
-			pr_err("regulator_set_current_limit() failed: %d\n",
-			       ret);
+			dev_err(dev,
+				"regulator_set_current_limit() failed: %d\n",
+				ret);
 			return;
 		}
 	}
 
 	if (data->max_uA && !data->enabled) {
+		dev_dbg(dev, "Enabling regulator\n");
 		ret = regulator_enable(data->regulator);
 		if (ret == 0)
 			data->enabled = 1;
 		else
-			printk(KERN_ERR "regulator_enable() failed: %d\n",
+			dev_err(dev, "regulator_enable() failed: %d\n",
 				ret);
 	}
 
 	if (!(data->min_uA && data->max_uA) && data->enabled) {
+		dev_dbg(dev, "Disabling regulator\n");
 		ret = regulator_disable(data->regulator);
 		if (ret == 0)
 			data->enabled = 0;
 		else
-			printk(KERN_ERR "regulator_disable() failed: %d\n",
+			dev_err(dev, "regulator_disable() failed: %d\n",
 				ret);
 	}
 }
@@ -115,7 +125,7 @@ static ssize_t set_min_uV(struct device *dev, struct device_attribute *attr,
 	mutex_lock(&data->lock);
 
 	data->min_uV = val;
-	update_voltage_constraints(data);
+	update_voltage_constraints(dev, data);
 
 	mutex_unlock(&data->lock);
 
@@ -141,7 +151,7 @@ static ssize_t set_max_uV(struct device *dev, struct device_attribute *attr,
 	mutex_lock(&data->lock);
 
 	data->max_uV = val;
-	update_voltage_constraints(data);
+	update_voltage_constraints(dev, data);
 
 	mutex_unlock(&data->lock);
 
@@ -167,7 +177,7 @@ static ssize_t set_min_uA(struct device *dev, struct device_attribute *attr,
 	mutex_lock(&data->lock);
 
 	data->min_uA = val;
-	update_current_limit_constraints(data);
+	update_current_limit_constraints(dev, data);
 
 	mutex_unlock(&data->lock);
 
@@ -193,7 +203,7 @@ static ssize_t set_max_uA(struct device *dev, struct device_attribute *attr,
 	mutex_lock(&data->lock);
 
 	data->max_uA = val;
-	update_current_limit_constraints(data);
+	update_current_limit_constraints(dev, data);
 
 	mutex_unlock(&data->lock);
 
@@ -226,13 +236,17 @@ static ssize_t set_mode(struct device *dev, struct device_attribute *attr,
 	unsigned int mode;
 	int ret;
 
-	if (strncmp(buf, "fast", strlen("fast")) == 0)
+	/*
+	 * sysfs_streq() doesn't need the \n's, but we add them so the strings
+	 * will be shared with show_mode(), above.
+	 */
+	if (sysfs_streq(buf, "fast\n"))
 		mode = REGULATOR_MODE_FAST;
-	else if (strncmp(buf, "normal", strlen("normal")) == 0)
+	else if (sysfs_streq(buf, "normal\n"))
 		mode = REGULATOR_MODE_NORMAL;
-	else if (strncmp(buf, "idle", strlen("idle")) == 0)
+	else if (sysfs_streq(buf, "idle\n"))
 		mode = REGULATOR_MODE_IDLE;
-	else if (strncmp(buf, "standby", strlen("standby")) == 0)
+	else if (sysfs_streq(buf, "standby\n"))
 		mode = REGULATOR_MODE_STANDBY;
 	else {
 		dev_err(dev, "Configuring invalid mode\n");
@@ -256,7 +270,7 @@ static DEVICE_ATTR(min_microamps, 0666, show_min_uA, set_min_uA);
 static DEVICE_ATTR(max_microamps, 0666, show_max_uA, set_max_uA);
 static DEVICE_ATTR(mode, 0666, show_mode, set_mode);
 
-struct device_attribute *attributes[] = {
+static struct device_attribute *attributes[] = {
 	&dev_attr_min_microvolts,
 	&dev_attr_max_microvolts,
 	&dev_attr_min_microamps,
@@ -272,8 +286,7 @@ static int regulator_virtual_consumer_probe(struct platform_device *pdev)
 
 	drvdata = kzalloc(sizeof(struct virtual_consumer_data), GFP_KERNEL);
 	if (drvdata == NULL) {
-		ret = -ENOMEM;
-		goto err;
+		return -ENOMEM;
 	}
 
 	mutex_init(&drvdata->lock);
@@ -281,13 +294,18 @@ static int regulator_virtual_consumer_probe(struct platform_device *pdev)
 	drvdata->regulator = regulator_get(&pdev->dev, reg_id);
 	if (IS_ERR(drvdata->regulator)) {
 		ret = PTR_ERR(drvdata->regulator);
+		dev_err(&pdev->dev, "Failed to obtain supply '%s': %d\n",
+			reg_id, ret);
 		goto err;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(attributes); i++) {
 		ret = device_create_file(&pdev->dev, attributes[i]);
-		if (ret != 0)
-			goto err;
+		if (ret != 0) {
+			dev_err(&pdev->dev, "Failed to create attr %d: %d\n",
+				i, ret);
+			goto err_regulator;
+		}
 	}
 
 	drvdata->mode = regulator_get_mode(drvdata->regulator);
@@ -296,6 +314,8 @@ static int regulator_virtual_consumer_probe(struct platform_device *pdev)
 
 	return 0;
 
+err_regulator:
+	regulator_put(drvdata->regulator);
 err:
 	for (i = 0; i < ARRAY_SIZE(attributes); i++)
 		device_remove_file(&pdev->dev, attributes[i]);
@@ -343,3 +363,4 @@ module_exit(regulator_virtual_consumer_exit);
 MODULE_AUTHOR("Mark Brown <broonie@opensource.wolfsonmicro.com>");
 MODULE_DESCRIPTION("Virtual regulator consumer");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:reg-virt-consumer");

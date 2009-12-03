@@ -115,7 +115,8 @@ struct lancedata {
 
 static int ariadne_open(struct net_device *dev);
 static void ariadne_init_ring(struct net_device *dev);
-static int ariadne_start_xmit(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t ariadne_start_xmit(struct sk_buff *skb,
+				      struct net_device *dev);
 static void ariadne_tx_timeout(struct net_device *dev);
 static int ariadne_rx(struct net_device *dev);
 static void ariadne_reset(struct net_device *dev);
@@ -153,6 +154,18 @@ static struct zorro_driver ariadne_driver = {
     .id_table	= ariadne_zorro_tbl,
     .probe	= ariadne_init_one,
     .remove	= __devexit_p(ariadne_remove_one),
+};
+
+static const struct net_device_ops ariadne_netdev_ops = {
+	.ndo_open		= ariadne_open,
+	.ndo_stop		= ariadne_close,
+	.ndo_start_xmit		= ariadne_start_xmit,
+	.ndo_tx_timeout		= ariadne_tx_timeout,
+	.ndo_get_stats		= ariadne_get_stats,
+	.ndo_set_multicast_list	= set_multicast_list,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address	= eth_mac_addr,
 };
 
 static int __devinit ariadne_init_one(struct zorro_dev *z,
@@ -197,13 +210,8 @@ static int __devinit ariadne_init_one(struct zorro_dev *z,
     dev->mem_start = ZTWO_VADDR(mem_start);
     dev->mem_end = dev->mem_start+ARIADNE_RAM_SIZE;
 
-    dev->open = &ariadne_open;
-    dev->stop = &ariadne_close;
-    dev->hard_start_xmit = &ariadne_start_xmit;
-    dev->tx_timeout = &ariadne_tx_timeout;
+    dev->netdev_ops = &ariadne_netdev_ops;
     dev->watchdog_timeo = 5*HZ;
-    dev->get_stats = &ariadne_get_stats;
-    dev->set_multicast_list = &set_multicast_list;
 
     err = register_netdev(dev);
     if (err) {
@@ -582,7 +590,8 @@ static void ariadne_tx_timeout(struct net_device *dev)
 }
 
 
-static int ariadne_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t ariadne_start_xmit(struct sk_buff *skb,
+				      struct net_device *dev)
 {
     struct ariadne_private *priv = netdev_priv(dev);
     volatile struct Am79C960 *lance = (struct Am79C960*)dev->base_addr;
@@ -603,7 +612,7 @@ static int ariadne_start_xmit(struct sk_buff *skb, struct net_device *dev)
     if (skb->len < ETH_ZLEN)
     {
     	if (skb_padto(skb, ETH_ZLEN))
-    	    return 0;
+    	    return NETDEV_TX_OK;
     	len = ETH_ZLEN;
     }
 
@@ -678,7 +687,7 @@ static int ariadne_start_xmit(struct sk_buff *skb, struct net_device *dev)
     }
     local_irq_restore(flags);
 
-    return 0;
+    return NETDEV_TX_OK;
 }
 
 

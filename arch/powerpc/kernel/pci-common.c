@@ -38,6 +38,7 @@
 #include <asm/eeh.h>
 
 static DEFINE_SPINLOCK(hose_spinlock);
+LIST_HEAD(hose_list);
 
 /* XXX kill that some day ... */
 static int global_phb_number;		/* Global phb counter */
@@ -49,14 +50,14 @@ resource_size_t isa_mem_base;
 unsigned int ppc_pci_flags = 0;
 
 
-static struct dma_mapping_ops *pci_dma_ops;
+static struct dma_map_ops *pci_dma_ops = &dma_direct_ops;
 
-void set_pci_dma_ops(struct dma_mapping_ops *dma_ops)
+void set_pci_dma_ops(struct dma_map_ops *dma_ops)
 {
 	pci_dma_ops = dma_ops;
 }
 
-struct dma_mapping_ops *get_pci_dma_ops(void)
+struct dma_map_ops *get_pci_dma_ops(void)
 {
 	return pci_dma_ops;
 }
@@ -113,19 +114,24 @@ void pcibios_free_controller(struct pci_controller *phb)
 		kfree(phb);
 }
 
+static resource_size_t pcibios_io_size(const struct pci_controller *hose)
+{
+#ifdef CONFIG_PPC64
+	return hose->pci_io_size;
+#else
+	return hose->io_resource.end - hose->io_resource.start + 1;
+#endif
+}
+
 int pcibios_vaddr_is_ioport(void __iomem *address)
 {
 	int ret = 0;
 	struct pci_controller *hose;
-	unsigned long size;
+	resource_size_t size;
 
 	spin_lock(&hose_spinlock);
 	list_for_each_entry(hose, &hose_list, list_node) {
-#ifdef CONFIG_PPC64
-		size = hose->pci_io_size;
-#else
-		size = hose->io_resource.end - hose->io_resource.start + 1;
-#endif
+		size = pcibios_io_size(hose);
 		if (address >= hose->io_base_virt &&
 		    address < (hose->io_base_virt + size)) {
 			ret = 1;
@@ -135,6 +141,29 @@ int pcibios_vaddr_is_ioport(void __iomem *address)
 	spin_unlock(&hose_spinlock);
 	return ret;
 }
+
+unsigned long pci_address_to_pio(phys_addr_t address)
+{
+	struct pci_controller *hose;
+	resource_size_t size;
+	unsigned long ret = ~0;
+
+	spin_lock(&hose_spinlock);
+	list_for_each_entry(hose, &hose_list, list_node) {
+		size = pcibios_io_size(hose);
+		if (address >= hose->io_base_phys &&
+		    address < (hose->io_base_phys + size)) {
+			unsigned long base =
+				(unsigned long)hose->io_base_virt - _IO_BASE;
+			ret = base + (address - hose->io_base_phys);
+			break;
+		}
+	}
+	spin_unlock(&hose_spinlock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pci_address_to_pio);
 
 /*
  * Return the domain number for this bus.
@@ -146,8 +175,6 @@ int pci_domain_nr(struct pci_bus *bus)
 	return hose->global_number;
 }
 EXPORT_SYMBOL(pci_domain_nr);
-
-#ifdef CONFIG_PPC_OF
 
 /* This routine is meant to be used early during boot, when the
  * PCI bus numbers have not yet been assigned, and you need to
@@ -181,17 +208,11 @@ static ssize_t pci_show_devspec(struct device *dev,
 	return sprintf(buf, "%s", np->full_name);
 }
 static DEVICE_ATTR(devspec, S_IRUGO, pci_show_devspec, NULL);
-#endif /* CONFIG_PPC_OF */
 
 /* Add sysfs properties */
 int pcibios_add_platform_entries(struct pci_dev *pdev)
 {
-#ifdef CONFIG_PPC_OF
 	return device_create_file(&pdev->dev, &dev_attr_devspec);
-#else
-	return 0;
-#endif /* CONFIG_PPC_OF */
-
 }
 
 char __devinit *pcibios_setup(char *str)
@@ -1096,7 +1117,7 @@ void __devinit pcibios_setup_bus_devices(struct pci_bus *bus)
 
 		/* Hook up default DMA ops */
 		sd->dma_ops = pci_dma_ops;
-		sd->dma_data = (void *)PCI_DRAM_OFFSET;
+		set_dma_offset(&dev->dev, PCI_DRAM_OFFSET);
 
 		/* Additional platform DMA/iommu setup */
 		if (ppc_md.pci_dma_dev_setup)
@@ -1169,7 +1190,7 @@ EXPORT_SYMBOL(pcibios_align_resource);
  * Reparent resource children of pr that conflict with res
  * under res, and make res replace those children.
  */
-static int __init reparent_resources(struct resource *parent,
+static int reparent_resources(struct resource *parent,
 				     struct resource *res)
 {
 	struct resource *p, **pp;
@@ -1337,12 +1358,17 @@ static void __init pcibios_allocate_resources(int pass)
 
 	for_each_pci_dev(dev) {
 		pci_read_config_word(dev, PCI_COMMAND, &command);
-		for (idx = 0; idx < 6; idx++) {
+		for (idx = 0; idx <= PCI_ROM_RESOURCE; idx++) {
 			r = &dev->resource[idx];
 			if (r->parent)		/* Already allocated */
 				continue;
 			if (!r->flags || (r->flags & IORESOURCE_UNSET))
 				continue;	/* Not assigned at all */
+			/* We only allocate ROMs on pass 1 just in case they
+			 * have been screwed up by firmware
+			 */
+			if (idx == PCI_ROM_RESOURCE )
+				disabled = 1;
 			if (r->flags & IORESOURCE_IO)
 				disabled = !(command & PCI_COMMAND_IO);
 			else
@@ -1353,17 +1379,19 @@ static void __init pcibios_allocate_resources(int pass)
 		if (pass)
 			continue;
 		r = &dev->resource[PCI_ROM_RESOURCE];
-		if (r->flags & IORESOURCE_ROM_ENABLE) {
+		if (r->flags) {
 			/* Turn the ROM off, leave the resource region,
 			 * but keep it unregistered.
 			 */
 			u32 reg;
-			pr_debug("PCI: Switching off ROM of %s\n",
-				 pci_name(dev));
-			r->flags &= ~IORESOURCE_ROM_ENABLE;
 			pci_read_config_dword(dev, dev->rom_base_reg, &reg);
-			pci_write_config_dword(dev, dev->rom_base_reg,
-					       reg & ~PCI_ROM_ADDRESS_ENABLE);
+			if (reg & PCI_ROM_ADDRESS_ENABLE) {
+				pr_debug("PCI: Switching off ROM of %s\n",
+					 pci_name(dev));
+				r->flags &= ~IORESOURCE_ROM_ENABLE;
+				pci_write_config_dword(dev, dev->rom_base_reg,
+						       reg & ~PCI_ROM_ADDRESS_ENABLE);
+			}
 		}
 	}
 }
@@ -1453,7 +1481,7 @@ void __init pcibios_resource_survey(void)
 	 * we proceed to assigning things that were left unassigned
 	 */
 	if (!(ppc_pci_flags & PPC_PCI_PROBE_ONLY)) {
-		pr_debug("PCI: Assigning unassigned resouces...\n");
+		pr_debug("PCI: Assigning unassigned resources...\n");
 		pci_assign_unassigned_resources();
 	}
 
@@ -1469,7 +1497,7 @@ void __init pcibios_resource_survey(void)
  * rest of the code later, for now, keep it as-is as our main
  * resource allocation function doesn't deal with sub-trees yet.
  */
-void __devinit pcibios_claim_one_bus(struct pci_bus *bus)
+void pcibios_claim_one_bus(struct pci_bus *bus)
 {
 	struct pci_dev *dev;
 	struct pci_bus *child_bus;
@@ -1497,7 +1525,6 @@ void __devinit pcibios_claim_one_bus(struct pci_bus *bus)
 	list_for_each_entry(child_bus, &bus->children, node)
 		pcibios_claim_one_bus(child_bus);
 }
-EXPORT_SYMBOL_GPL(pcibios_claim_one_bus);
 
 
 /* pcibios_finish_adding_to_bus
@@ -1591,3 +1618,122 @@ void __devinit pcibios_setup_phb_resources(struct pci_controller *hose)
 
 }
 
+/*
+ * Null PCI config access functions, for the case when we can't
+ * find a hose.
+ */
+#define NULL_PCI_OP(rw, size, type)					\
+static int								\
+null_##rw##_config_##size(struct pci_dev *dev, int offset, type val)	\
+{									\
+	return PCIBIOS_DEVICE_NOT_FOUND;    				\
+}
+
+static int
+null_read_config(struct pci_bus *bus, unsigned int devfn, int offset,
+		 int len, u32 *val)
+{
+	return PCIBIOS_DEVICE_NOT_FOUND;
+}
+
+static int
+null_write_config(struct pci_bus *bus, unsigned int devfn, int offset,
+		  int len, u32 val)
+{
+	return PCIBIOS_DEVICE_NOT_FOUND;
+}
+
+static struct pci_ops null_pci_ops =
+{
+	.read = null_read_config,
+	.write = null_write_config,
+};
+
+/*
+ * These functions are used early on before PCI scanning is done
+ * and all of the pci_dev and pci_bus structures have been created.
+ */
+static struct pci_bus *
+fake_pci_bus(struct pci_controller *hose, int busnr)
+{
+	static struct pci_bus bus;
+
+	if (hose == 0) {
+		printk(KERN_ERR "Can't find hose for PCI bus %d!\n", busnr);
+	}
+	bus.number = busnr;
+	bus.sysdata = hose;
+	bus.ops = hose? hose->ops: &null_pci_ops;
+	return &bus;
+}
+
+#define EARLY_PCI_OP(rw, size, type)					\
+int early_##rw##_config_##size(struct pci_controller *hose, int bus,	\
+			       int devfn, int offset, type value)	\
+{									\
+	return pci_bus_##rw##_config_##size(fake_pci_bus(hose, bus),	\
+					    devfn, offset, value);	\
+}
+
+EARLY_PCI_OP(read, byte, u8 *)
+EARLY_PCI_OP(read, word, u16 *)
+EARLY_PCI_OP(read, dword, u32 *)
+EARLY_PCI_OP(write, byte, u8)
+EARLY_PCI_OP(write, word, u16)
+EARLY_PCI_OP(write, dword, u32)
+
+extern int pci_bus_find_capability (struct pci_bus *bus, unsigned int devfn, int cap);
+int early_find_capability(struct pci_controller *hose, int bus, int devfn,
+			  int cap)
+{
+	return pci_bus_find_capability(fake_pci_bus(hose, bus), devfn, cap);
+}
+
+/**
+ * pci_scan_phb - Given a pci_controller, setup and scan the PCI bus
+ * @hose: Pointer to the PCI host controller instance structure
+ * @sysdata: value to use for sysdata pointer.  ppc32 and ppc64 differ here
+ *
+ * Note: the 'data' pointer is a temporary measure.  As 32 and 64 bit
+ * pci code gets merged, this parameter should become unnecessary because
+ * both will use the same value.
+ */
+void __devinit pcibios_scan_phb(struct pci_controller *hose, void *sysdata)
+{
+	struct pci_bus *bus;
+	struct device_node *node = hose->dn;
+	int mode;
+
+	pr_debug("PCI: Scanning PHB %s\n",
+		 node ? node->full_name : "<NO NAME>");
+
+	/* Create an empty bus for the toplevel */
+	bus = pci_create_bus(hose->parent, hose->first_busno, hose->ops,
+			     sysdata);
+	if (bus == NULL) {
+		pr_err("Failed to create bus for PCI domain %04x\n",
+			hose->global_number);
+		return;
+	}
+	bus->secondary = hose->first_busno;
+	hose->bus = bus;
+
+	/* Get some IO space for the new PHB */
+	pcibios_setup_phb_io_space(hose);
+
+	/* Wire up PHB bus resources */
+	pcibios_setup_phb_resources(hose);
+
+	/* Get probe mode and perform scan */
+	mode = PCI_PROBE_NORMAL;
+	if (node && ppc_md.pci_probe_mode)
+		mode = ppc_md.pci_probe_mode(bus);
+	pr_debug("    probe mode: %d\n", mode);
+	if (mode == PCI_PROBE_DEVTREE) {
+		bus->subordinate = hose->last_busno;
+		of_scan_bus(node, bus);
+	}
+
+	if (mode == PCI_PROBE_NORMAL)
+		hose->last_busno = bus->subordinate = pci_scan_child_bus(bus);
+}

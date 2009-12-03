@@ -156,7 +156,8 @@ static int sealevel_ioctl(struct net_device *d, struct ifreq *ifr, int cmd)
  *	Passed network frames, fire them downwind.
  */
 
-static int sealevel_queue_xmit(struct sk_buff *skb, struct net_device *d)
+static netdev_tx_t sealevel_queue_xmit(struct sk_buff *skb,
+					     struct net_device *d)
 {
 	return z8530_queue_xmit(dev_to_chan(d)->chan, skb);
 }
@@ -169,6 +170,14 @@ static int sealevel_attach(struct net_device *dev, unsigned short encoding,
 	return -EINVAL;
 }
 
+static const struct net_device_ops sealevel_ops = {
+	.ndo_open       = sealevel_open,
+	.ndo_stop       = sealevel_close,
+	.ndo_change_mtu = hdlc_change_mtu,
+	.ndo_start_xmit = hdlc_start_xmit,
+	.ndo_do_ioctl   = sealevel_ioctl,
+};
+
 static int slvl_setup(struct slvl_device *sv, int iobase, int irq)
 {
 	struct net_device *dev = alloc_hdlcdev(sv);
@@ -177,9 +186,7 @@ static int slvl_setup(struct slvl_device *sv, int iobase, int irq)
 
 	dev_to_hdlc(dev)->attach = sealevel_attach;
 	dev_to_hdlc(dev)->xmit = sealevel_queue_xmit;
-	dev->open = sealevel_open;
-	dev->stop = sealevel_close;
-	dev->do_ioctl = sealevel_ioctl;
+	dev->netdev_ops = &sealevel_ops;
 	dev->base_addr = iobase;
 	dev->irq = irq;
 

@@ -32,14 +32,6 @@ struct mtd_blkcore_priv {
 	spinlock_t queue_lock;
 };
 
-static int blktrans_discard_request(struct request_queue *q,
-				    struct request *req)
-{
-	req->cmd_type = REQ_TYPE_LINUX_BLOCK;
-	req->cmd[0] = REQ_LB_OP_DISCARD;
-	return 0;
-}
-
 static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 			       struct mtd_blktrans_dev *dev,
 			       struct request *req)
@@ -47,40 +39,40 @@ static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 	unsigned long block, nsect;
 	char *buf;
 
-	block = req->sector << 9 >> tr->blkshift;
-	nsect = req->current_nr_sectors << 9 >> tr->blkshift;
+	block = blk_rq_pos(req) << 9 >> tr->blkshift;
+	nsect = blk_rq_cur_bytes(req) >> tr->blkshift;
 
 	buf = req->buffer;
 
-	if (req->cmd_type == REQ_TYPE_LINUX_BLOCK &&
-	    req->cmd[0] == REQ_LB_OP_DISCARD)
-		return !tr->discard(dev, block, nsect);
-
 	if (!blk_fs_request(req))
-		return 0;
+		return -EIO;
 
-	if (req->sector + req->current_nr_sectors > get_capacity(req->rq_disk))
-		return 0;
+	if (blk_rq_pos(req) + blk_rq_cur_sectors(req) >
+	    get_capacity(req->rq_disk))
+		return -EIO;
+
+	if (blk_discard_rq(req))
+		return tr->discard(dev, block, nsect);
 
 	switch(rq_data_dir(req)) {
 	case READ:
 		for (; nsect > 0; nsect--, block++, buf += tr->blksize)
 			if (tr->readsect(dev, block, buf))
-				return 0;
-		return 1;
+				return -EIO;
+		return 0;
 
 	case WRITE:
 		if (!tr->writesect)
-			return 0;
+			return -EIO;
 
 		for (; nsect > 0; nsect--, block++, buf += tr->blksize)
 			if (tr->writesect(dev, block, buf))
-				return 0;
-		return 1;
+				return -EIO;
+		return 0;
 
 	default:
 		printk(KERN_NOTICE "Unknown request %u\n", rq_data_dir(req));
-		return 0;
+		return -EIO;
 	}
 }
 
@@ -88,19 +80,18 @@ static int mtd_blktrans_thread(void *arg)
 {
 	struct mtd_blktrans_ops *tr = arg;
 	struct request_queue *rq = tr->blkcore_priv->rq;
+	struct request *req = NULL;
 
 	/* we might get involved when memory gets low, so use PF_MEMALLOC */
 	current->flags |= PF_MEMALLOC;
 
 	spin_lock_irq(rq->queue_lock);
+
 	while (!kthread_should_stop()) {
-		struct request *req;
 		struct mtd_blktrans_dev *dev;
-		int res = 0;
+		int res;
 
-		req = elv_next_request(rq);
-
-		if (!req) {
+		if (!req && !(req = blk_fetch_request(rq))) {
 			set_current_state(TASK_INTERRUPTIBLE);
 			spin_unlock_irq(rq->queue_lock);
 			schedule();
@@ -119,8 +110,13 @@ static int mtd_blktrans_thread(void *arg)
 
 		spin_lock_irq(rq->queue_lock);
 
-		end_request(req, res);
+		if (!__blk_end_request_cur(req, res))
+			req = NULL;
 	}
+
+	if (req)
+		__blk_end_request_all(req, -EIO);
+
 	spin_unlock_irq(rq->queue_lock);
 
 	return 0;
@@ -139,7 +135,7 @@ static int blktrans_open(struct block_device *bdev, fmode_t mode)
 	struct mtd_blktrans_ops *tr = dev->tr;
 	int ret = -ENODEV;
 
-	if (!try_module_get(dev->mtd->owner))
+	if (!get_mtd_device(NULL, dev->mtd->index))
 		goto out;
 
 	if (!try_module_get(tr->owner))
@@ -153,7 +149,7 @@ static int blktrans_open(struct block_device *bdev, fmode_t mode)
 	ret = 0;
 	if (tr->open && (ret = tr->open(dev))) {
 		dev->mtd->usecount--;
-		module_put(dev->mtd->owner);
+		put_mtd_device(dev->mtd);
 	out_tr:
 		module_put(tr->owner);
 	}
@@ -172,7 +168,7 @@ static int blktrans_release(struct gendisk *disk, fmode_t mode)
 
 	if (!ret) {
 		dev->mtd->usecount--;
-		module_put(dev->mtd->owner);
+		put_mtd_device(dev->mtd);
 		module_put(tr->owner);
 	}
 
@@ -205,7 +201,7 @@ static int blktrans_ioctl(struct block_device *bdev, fmode_t mode,
 	}
 }
 
-static struct block_device_operations mtd_blktrans_ops = {
+static const struct block_device_operations mtd_blktrans_ops = {
 	.owner		= THIS_MODULE,
 	.open		= blktrans_open,
 	.release	= blktrans_release,
@@ -286,6 +282,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	gd->private_data = new;
 	new->blkcore_priv = gd;
 	gd->queue = tr->blkcore_priv->rq;
+	gd->driverfs_dev = &new->mtd->dev;
 
 	if (new->readonly)
 		set_disk_ro(gd, 1);
@@ -372,21 +369,22 @@ int register_mtd_blktrans(struct mtd_blktrans_ops *tr)
 	}
 
 	tr->blkcore_priv->rq->queuedata = tr;
-	blk_queue_hardsect_size(tr->blkcore_priv->rq, tr->blksize);
+	blk_queue_logical_block_size(tr->blkcore_priv->rq, tr->blksize);
 	if (tr->discard)
-		blk_queue_set_discard(tr->blkcore_priv->rq,
-				      blktrans_discard_request);
+		queue_flag_set_unlocked(QUEUE_FLAG_DISCARD,
+					tr->blkcore_priv->rq);
 
 	tr->blkshift = ffs(tr->blksize) - 1;
 
 	tr->blkcore_priv->thread = kthread_run(mtd_blktrans_thread, tr,
 			"%sd", tr->name);
 	if (IS_ERR(tr->blkcore_priv->thread)) {
+		int ret = PTR_ERR(tr->blkcore_priv->thread);
 		blk_cleanup_queue(tr->blkcore_priv->rq);
 		unregister_blkdev(tr->major, tr->name);
 		kfree(tr->blkcore_priv);
 		mutex_unlock(&mtd_table_mutex);
-		return PTR_ERR(tr->blkcore_priv->thread);
+		return ret;
 	}
 
 	INIT_LIST_HEAD(&tr->devs);

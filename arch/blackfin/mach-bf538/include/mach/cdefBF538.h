@@ -1,31 +1,7 @@
 /*
- * File:         include/asm-blackfin/mach-bf538/cdefBF538.h
- * Based on:
- * Author:
+ * Copyright 2008-2009 Analog Devices Inc.
  *
- * Created:
- * Description:
- *
- * Rev:
- *
- * Modified:
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; see the file COPYING.
- * If not, write to the Free Software Foundation,
- * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _CDEF_BF538_H
@@ -67,14 +43,14 @@
 #define bfin_write_SIC_ISR0(val)       bfin_write32(SIC_ISR0, val)
 #define bfin_read_SIC_ISR1()           bfin_read32(SIC_ISR1)
 #define bfin_write_SIC_ISR1(val)       bfin_write32(SIC_ISR1, val)
-#define bfin_read_SIC_ISR(x)	       bfin_read32(SIC_ISR0 + x * (SIC_ISR1 - SIC_ISR0))
+#define bfin_read_SIC_ISR(x)           bfin_read32(SIC_ISR0 + x * (SIC_ISR1 - SIC_ISR0))
 #define bfin_write_SIC_ISR(x, val)     bfin_write32(SIC_ISR0 + x * (SIC_ISR1 - SIC_ISR0), val)
 #define bfin_read_SIC_IWR0()           bfin_read32(SIC_IWR0)
 #define bfin_write_SIC_IWR0(val)       bfin_write32(SIC_IWR0, val)
 #define bfin_read_SIC_IWR1()           bfin_read32(SIC_IWR1)
 #define bfin_write_SIC_IWR1(val)       bfin_write32(SIC_IWR1, val)
-#define bfin_read_SIC_IWR(x)	       bfin_read32(SIC_IWR0 + x * (SIC_IWR1 - SIC_IWR0))
-#define bfin_write_SIC_IWR(x, val)     bfin_write32((SIC_IWR0 + x * (SIC_IWR1 - SIC_IWR0), val)
+#define bfin_read_SIC_IWR(x)           bfin_read32(SIC_IWR0 + x * (SIC_IWR1 - SIC_IWR0))
+#define bfin_write_SIC_IWR(x, val)     bfin_write32(SIC_IWR0 + x * (SIC_IWR1 - SIC_IWR0), val)
 #define bfin_read_SIC_IAR0()           bfin_read32(SIC_IAR0)
 #define bfin_write_SIC_IAR0(val)       bfin_write32(SIC_IAR0, val)
 #define bfin_read_SIC_IAR1()           bfin_read32(SIC_IAR1)
@@ -1247,10 +1223,70 @@
 #define bfin_write_MDMA1_S1_CURR_X_COUNT(val) bfin_write16(MDMA1_S1_CURR_X_COUNT, val)
 #define bfin_read_MDMA1_S1_CURR_Y_COUNT() bfin_read16(MDMA1_S1_CURR_Y_COUNT)
 #define bfin_write_MDMA1_S1_CURR_Y_COUNT(val) bfin_write16(MDMA1_S1_CURR_Y_COUNT, val)
+
+#define bfin_read_MDMA_S0_CONFIG()  bfin_read_MDMA0_S0_CONFIG()
+#define bfin_write_MDMA_S0_CONFIG(val) bfin_write_MDMA0_S0_CONFIG(val)
+#define bfin_read_MDMA_S0_IRQ_STATUS()  bfin_read_MDMA0_S0_IRQ_STATUS()
+#define bfin_write_MDMA_S0_IRQ_STATUS(val) bfin_write_MDMA0_S0_IRQ_STATUS(val)
+#define bfin_read_MDMA_S0_X_MODIFY()  bfin_read_MDMA0_S0_X_MODIFY()
+#define bfin_write_MDMA_S0_X_MODIFY(val) bfin_write_MDMA0_S0_X_MODIFY(val)
+#define bfin_read_MDMA_S0_Y_MODIFY()  bfin_read_MDMA0_S0_Y_MODIFY()
+#define bfin_write_MDMA_S0_Y_MODIFY(val) bfin_write_MDMA0_S0_Y_MODIFY(val)
+#define bfin_read_MDMA_S0_X_COUNT()  bfin_read_MDMA0_S0_X_COUNT()
+#define bfin_write_MDMA_S0_X_COUNT(val) bfin_write_MDMA0_S0_X_COUNT(val)
+#define bfin_read_MDMA_S0_Y_COUNT()  bfin_read_MDMA0_S0_Y_COUNT()
+#define bfin_write_MDMA_S0_Y_COUNT(val) bfin_write_MDMA0_S0_Y_COUNT(val)
+#define bfin_read_MDMA_S0_START_ADDR()  bfin_read_MDMA0_S0_START_ADDR()
+#define bfin_write_MDMA_S0_START_ADDR(val) bfin_write_MDMA0_S0_START_ADDR(val)
+#define bfin_read_MDMA_D0_CONFIG()  bfin_read_MDMA0_D0_CONFIG()
+#define bfin_write_MDMA_D0_CONFIG(val) bfin_write_MDMA0_D0_CONFIG(val)
+#define bfin_read_MDMA_D0_IRQ_STATUS()  bfin_read_MDMA0_D0_IRQ_STATUS()
+#define bfin_write_MDMA_D0_IRQ_STATUS(val) bfin_write_MDMA0_D0_IRQ_STATUS(val)
+#define bfin_read_MDMA_D0_X_MODIFY()  bfin_read_MDMA0_D0_X_MODIFY()
+#define bfin_write_MDMA_D0_X_MODIFY(val) bfin_write_MDMA0_D0_X_MODIFY(val)
+#define bfin_read_MDMA_D0_Y_MODIFY()  bfin_read_MDMA0_D0_Y_MODIFY()
+#define bfin_write_MDMA_D0_Y_MODIFY(val) bfin_write_MDMA0_D0_Y_MODIFY(val)
+#define bfin_read_MDMA_D0_X_COUNT()  bfin_read_MDMA0_D0_X_COUNT()
+#define bfin_write_MDMA_D0_X_COUNT(val) bfin_write_MDMA0_D0_X_COUNT(val)
+#define bfin_read_MDMA_D0_Y_COUNT()  bfin_read_MDMA0_D0_Y_COUNT()
+#define bfin_write_MDMA_D0_Y_COUNT(val) bfin_write_MDMA0_D0_Y_COUNT(val)
+#define bfin_read_MDMA_D0_START_ADDR()  bfin_read_MDMA0_D0_START_ADDR()
+#define bfin_write_MDMA_D0_START_ADDR(val) bfin_write_MDMA0_D0_START_ADDR(val)
+
+#define bfin_read_MDMA_S1_CONFIG()  bfin_read_MDMA0_S1_CONFIG()
+#define bfin_write_MDMA_S1_CONFIG(val) bfin_write_MDMA0_S1_CONFIG(val)
+#define bfin_read_MDMA_S1_IRQ_STATUS()  bfin_read_MDMA0_S1_IRQ_STATUS()
+#define bfin_write_MDMA_S1_IRQ_STATUS(val) bfin_write_MDMA0_S1_IRQ_STATUS(val)
+#define bfin_read_MDMA_S1_X_MODIFY()  bfin_read_MDMA0_S1_X_MODIFY()
+#define bfin_write_MDMA_S1_X_MODIFY(val) bfin_write_MDMA0_S1_X_MODIFY(val)
+#define bfin_read_MDMA_S1_Y_MODIFY()  bfin_read_MDMA0_S1_Y_MODIFY()
+#define bfin_write_MDMA_S1_Y_MODIFY(val) bfin_write_MDMA0_S1_Y_MODIFY(val)
+#define bfin_read_MDMA_S1_X_COUNT()  bfin_read_MDMA0_S1_X_COUNT()
+#define bfin_write_MDMA_S1_X_COUNT(val) bfin_write_MDMA0_S1_X_COUNT(val)
+#define bfin_read_MDMA_S1_Y_COUNT()  bfin_read_MDMA0_S1_Y_COUNT()
+#define bfin_write_MDMA_S1_Y_COUNT(val) bfin_write_MDMA0_S1_Y_COUNT(val)
+#define bfin_read_MDMA_S1_START_ADDR()  bfin_read_MDMA0_S1_START_ADDR()
+#define bfin_write_MDMA_S1_START_ADDR(val) bfin_write_MDMA0_S1_START_ADDR(val)
+#define bfin_read_MDMA_D1_CONFIG()  bfin_read_MDMA0_D1_CONFIG()
+#define bfin_write_MDMA_D1_CONFIG(val) bfin_write_MDMA0_D1_CONFIG(val)
+#define bfin_read_MDMA_D1_IRQ_STATUS()  bfin_read_MDMA0_D1_IRQ_STATUS()
+#define bfin_write_MDMA_D1_IRQ_STATUS(val) bfin_write_MDMA0_D1_IRQ_STATUS(val)
+#define bfin_read_MDMA_D1_X_MODIFY()  bfin_read_MDMA0_D1_X_MODIFY()
+#define bfin_write_MDMA_D1_X_MODIFY(val) bfin_write_MDMA0_D1_X_MODIFY(val)
+#define bfin_read_MDMA_D1_Y_MODIFY()  bfin_read_MDMA0_D1_Y_MODIFY()
+#define bfin_write_MDMA_D1_Y_MODIFY(val) bfin_write_MDMA0_D1_Y_MODIFY(val)
+#define bfin_read_MDMA_D1_X_COUNT()  bfin_read_MDMA0_D1_X_COUNT()
+#define bfin_write_MDMA_D1_X_COUNT(val) bfin_write_MDMA0_D1_X_COUNT(val)
+#define bfin_read_MDMA_D1_Y_COUNT()  bfin_read_MDMA0_D1_Y_COUNT()
+#define bfin_write_MDMA_D1_Y_COUNT(val) bfin_write_MDMA0_D1_Y_COUNT(val)
+#define bfin_read_MDMA_D1_START_ADDR()  bfin_read_MDMA0_D1_START_ADDR()
+#define bfin_write_MDMA_D1_START_ADDR(val) bfin_write_MDMA0_D1_START_ADDR(val)
+
 #define bfin_read_PPI_CONTROL()        bfin_read16(PPI_CONTROL)
 #define bfin_write_PPI_CONTROL(val)    bfin_write16(PPI_CONTROL, val)
 #define bfin_read_PPI_STATUS()         bfin_read16(PPI_STATUS)
 #define bfin_write_PPI_STATUS(val)     bfin_write16(PPI_STATUS, val)
+#define bfin_clear_PPI_STATUS()        bfin_read_PPI_STATUS()
 #define bfin_read_PPI_DELAY()          bfin_read16(PPI_DELAY)
 #define bfin_write_PPI_DELAY(val)      bfin_write16(PPI_DELAY, val)
 #define bfin_read_PPI_COUNT()          bfin_read16(PPI_COUNT)

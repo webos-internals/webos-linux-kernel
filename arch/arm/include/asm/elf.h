@@ -45,11 +45,18 @@ typedef struct user_fp elf_fpregset_t;
 #define EF_ARM_HASENTRY		0x00000002	/* All */
 #define EF_ARM_RELEXEC		0x00000001	/* All */
 
-#define R_ARM_NONE	0
-#define R_ARM_PC24	1
-#define R_ARM_ABS32	2
-#define R_ARM_CALL	28
-#define R_ARM_JUMP24	29
+#define R_ARM_NONE		0
+#define R_ARM_PC24		1
+#define R_ARM_ABS32		2
+#define R_ARM_CALL		28
+#define R_ARM_JUMP24		29
+#define R_ARM_V4BX		40
+#define R_ARM_PREL31		42
+#define R_ARM_MOVW_ABS_NC	43
+#define R_ARM_MOVT_ABS		44
+
+#define R_ARM_THM_CALL		10
+#define R_ARM_THM_JUMP24	30
 
 /*
  * These are used to set parameters in the core dumps.
@@ -90,6 +97,9 @@ extern int elf_check_arch(const struct elf32_hdr *);
 
 extern int arm_elf_read_implies_exec(const struct elf32_hdr *, int);
 #define elf_read_implies_exec(ex,stk) arm_elf_read_implies_exec(&(ex), stk)
+
+int dump_task_regs(struct task_struct *t, elf_gregset_t *elfregs);
+#define ELF_CORE_COPY_TASK_REGS dump_task_regs
 
 #define USE_ELF_CORE_DUMP
 #define ELF_EXEC_PAGESIZE	4096

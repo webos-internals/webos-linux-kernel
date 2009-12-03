@@ -433,10 +433,10 @@ acpi_ds_method_data_get_value(u8 type,
 
 			case ACPI_REFCLASS_LOCAL:
 
-				ACPI_ERROR((AE_INFO,
-					    "Uninitialized Local[%d] at node %p",
-					    index, node));
-
+				/*
+				 * No error message for this case, will be trapped again later to
+				 * detect and ignore cases of Store(local_x,local_x)
+				 */
 				return_ACPI_STATUS(AE_AML_UNINITIALIZED_LOCAL);
 
 			default:
@@ -713,6 +713,6 @@ acpi_ds_method_data_get_type(u16 opcode,
 
 	/* Get the object type */
 
-	return_VALUE(ACPI_GET_OBJECT_TYPE(object));
+	return_VALUE(object->type);
 }
 #endif

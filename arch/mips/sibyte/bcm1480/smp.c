@@ -82,11 +82,12 @@ static void bcm1480_send_ipi_single(int cpu, unsigned int action)
 	__raw_writeq((((u64)action)<< 48), mailbox_0_set_regs[cpu]);
 }
 
-static void bcm1480_send_ipi_mask(cpumask_t mask, unsigned int action)
+static void bcm1480_send_ipi_mask(const struct cpumask *mask,
+				  unsigned int action)
 {
 	unsigned int i;
 
-	for_each_cpu_mask(i, mask)
+	for_each_cpu(i, mask)
 		bcm1480_send_ipi_single(i, action);
 }
 
@@ -178,9 +179,10 @@ struct plat_smp_ops bcm1480_smp_ops = {
 void bcm1480_mailbox_interrupt(void)
 {
 	int cpu = smp_processor_id();
+	int irq = K_BCM1480_INT_MBOX_0_0;
 	unsigned int action;
 
-	kstat_this_cpu.irqs[K_BCM1480_INT_MBOX_0_0]++;
+	kstat_incr_irqs_this_cpu(irq, irq_to_desc(irq));
 	/* Load the mailbox register to figure out what we're supposed to do */
 	action = (__raw_readq(mailbox_0_regs[cpu]) >> 48) & 0xffff;
 

@@ -265,7 +265,7 @@ sys_call_table:
 	PTR	sys_olduname
 	PTR	sys_umask			/* 4060 */
 	PTR	sys_chroot
-	PTR	sys_32_ustat
+	PTR	compat_sys_ustat
 	PTR	sys_dup2
 	PTR	sys_getppid
 	PTR	sys_getpgrp			/* 4065 */
@@ -378,8 +378,8 @@ sys_call_table:
 	PTR	sys_getsockname
 	PTR	sys_getsockopt
 	PTR	sys_listen
-	PTR	sys_recv			/* 4175 */
-	PTR	sys_recvfrom
+	PTR	compat_sys_recv			/* 4175 */
+	PTR	compat_sys_recvfrom
 	PTR	compat_sys_recvmsg
 	PTR	sys_send
 	PTR	compat_sys_sendmsg
@@ -450,7 +450,7 @@ sys_call_table:
 	PTR	sys_io_submit
 	PTR	sys_io_cancel			/* 4245 */
 	PTR	sys_exit_group
-	PTR	sys_lookup_dcookie
+	PTR	sys32_lookup_dcookie
 	PTR	sys_epoll_create
 	PTR	sys_epoll_ctl
 	PTR	sys_epoll_wait			/* 4250 */
@@ -505,7 +505,7 @@ sys_call_table:
 	PTR	sys_fchmodat
 	PTR	sys_faccessat			/* 4300 */
 	PTR	compat_sys_pselect6
-	PTR	sys_ppoll
+	PTR	compat_sys_ppoll
 	PTR	sys_unshare
 	PTR	sys_splice
 	PTR	sys32_sync_file_range		/* 4305 */
@@ -525,12 +525,17 @@ sys_call_table:
 	PTR	sys_eventfd
 	PTR	sys32_fallocate			/* 4320 */
 	PTR	sys_timerfd_create
-	PTR	sys_timerfd_gettime
-	PTR	sys_timerfd_settime
+	PTR	compat_sys_timerfd_gettime
+	PTR	compat_sys_timerfd_settime
 	PTR	compat_sys_signalfd4
 	PTR	sys_eventfd2			/* 4325 */
 	PTR	sys_epoll_create1
 	PTR	sys_dup3
 	PTR	sys_pipe2
 	PTR	sys_inotify_init1
+	PTR	compat_sys_preadv		/* 4330 */
+	PTR	compat_sys_pwritev
+	PTR	compat_sys_rt_tgsigqueueinfo
+	PTR	sys_perf_event_open
+	PTR	sys_accept4
 	.size	sys_call_table,.-sys_call_table

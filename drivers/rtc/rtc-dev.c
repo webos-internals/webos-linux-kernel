@@ -13,6 +13,7 @@
 
 #include <linux/module.h>
 #include <linux/rtc.h>
+#include <linux/sched.h>
 #include "rtc-core.h"
 
 static dev_t rtc_devt;
@@ -60,8 +61,7 @@ static void rtc_uie_task(struct work_struct *work)
 
 	err = rtc_read_time(rtc, &tm);
 
-	local_irq_disable();
-	spin_lock(&rtc->irq_lock);
+	spin_lock_irq(&rtc->irq_lock);
 	if (rtc->stop_uie_polling || err) {
 		rtc->uie_task_active = 0;
 	} else if (rtc->oldsecs != tm.tm_sec) {
@@ -74,10 +74,9 @@ static void rtc_uie_task(struct work_struct *work)
 	} else if (schedule_work(&rtc->uie_task) == 0) {
 		rtc->uie_task_active = 0;
 	}
-	spin_unlock(&rtc->irq_lock);
+	spin_unlock_irq(&rtc->irq_lock);
 	if (num)
 		rtc_update_irq(rtc, num, RTC_UF | RTC_IRQF);
-	local_irq_enable();
 }
 static void rtc_uie_timer(unsigned long data)
 {

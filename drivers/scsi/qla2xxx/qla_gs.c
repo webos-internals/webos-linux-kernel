@@ -1107,7 +1107,7 @@ qla2x00_mgmt_svr_login(scsi_qla_host_t *vha)
 		return ret;
 
 	ha->isp_ops->fabric_login(vha, vha->mgmt_svr_loop_id, 0xff, 0xff, 0xfa,
-	    mb, BIT_1);
+	    mb, BIT_1|BIT_0);
 	if (mb[0] != MBS_COMMAND_COMPLETE) {
 		DEBUG2_13(printk("%s(%ld): Failed MANAGEMENT_SERVER login: "
 		    "loop_id=%x mb[0]=%x mb[1]=%x mb[2]=%x mb[6]=%x mb[7]=%x\n",
@@ -1674,6 +1674,10 @@ int
 qla2x00_fdmi_register(scsi_qla_host_t *vha)
 {
 	int rval;
+       struct qla_hw_data *ha = vha->hw;
+
+	if (IS_QLA2100(ha) || IS_QLA2200(ha))
+		return QLA_FUNCTION_FAILED;
 
 	rval = qla2x00_mgmt_svr_login(vha);
 	if (rval)
@@ -1878,6 +1882,9 @@ qla2x00_gpsc(scsi_qla_host_t *vha, sw_info_t *list)
 				break;
 			case BIT_13:
 				list[i].fp_speed = PORT_SPEED_4GB;
+				break;
+			case BIT_12:
+				list[i].fp_speed = PORT_SPEED_10GB;
 				break;
 			case BIT_11:
 				list[i].fp_speed = PORT_SPEED_8GB;

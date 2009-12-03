@@ -289,7 +289,7 @@ static void	TLan_EisaProbe( void );
 static void	TLan_Eisa_Cleanup( void );
 static int      TLan_Init( struct net_device * );
 static int	TLan_Open( struct net_device *dev );
-static int	TLan_StartTx( struct sk_buff *, struct net_device *);
+static netdev_tx_t TLan_StartTx( struct sk_buff *, struct net_device *);
 static irqreturn_t TLan_HandleInterrupt( int, void *);
 static int	TLan_Close( struct net_device *);
 static struct	net_device_stats *TLan_GetStats( struct net_device *);
@@ -570,7 +570,7 @@ static int __devinit TLan_probe1(struct pci_dev *pdev,
 
 		priv->adapter = &board_info[ent->driver_data];
 
-		rc = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
+		rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
 		if (rc) {
 			printk(KERN_ERR "TLAN: No suitable PCI mapping available.\n");
 			goto err_out_free_dev;
@@ -1004,8 +1004,6 @@ static int TLan_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 
 
 	case SIOCSMIIREG:		/* Write MII PHY register. */
-			if (!capable(CAP_NET_ADMIN))
-				return -EPERM;
 			TLan_MiiWriteReg(dev, data->phy_id & 0x1f,
 					 data->reg_num & 0x1f, data->val_in);
 			return 0;
@@ -1083,7 +1081,7 @@ static void TLan_tx_timeout_work(struct work_struct *work)
 	 *
 	 **************************************************************/
 
-static int TLan_StartTx( struct sk_buff *skb, struct net_device *dev )
+static netdev_tx_t TLan_StartTx( struct sk_buff *skb, struct net_device *dev )
 {
 	TLanPrivateInfo *priv = netdev_priv(dev);
 	dma_addr_t	tail_list_phys;
@@ -1095,11 +1093,11 @@ static int TLan_StartTx( struct sk_buff *skb, struct net_device *dev )
 		TLAN_DBG( TLAN_DEBUG_TX, "TRANSMIT:  %s PHY is not ready\n",
 			  dev->name );
 		dev_kfree_skb_any(skb);
-		return 0;
+		return NETDEV_TX_OK;
 	}
 
 	if (skb_padto(skb, TLAN_MIN_FRAME_SIZE))
-		return 0;
+		return NETDEV_TX_OK;
 	txlen = max(skb->len, (unsigned int)TLAN_MIN_FRAME_SIZE);
 
 	tail_list = priv->txList + priv->txTail;
@@ -1111,7 +1109,7 @@ static int TLan_StartTx( struct sk_buff *skb, struct net_device *dev )
 			  dev->name, priv->txHead, priv->txTail );
 		netif_stop_queue(dev);
 		priv->txBusyCount++;
-		return 1;
+		return NETDEV_TX_BUSY;
 	}
 
 	tail_list->forward = 0;
@@ -1150,7 +1148,7 @@ static int TLan_StartTx( struct sk_buff *skb, struct net_device *dev )
 	CIRC_INC( priv->txTail, TLAN_NUM_TX_LISTS );
 
 	dev->trans_start = jiffies;
-	return 0;
+	return NETDEV_TX_OK;
 
 } /* TLan_StartTx */
 

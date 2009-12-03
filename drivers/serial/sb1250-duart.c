@@ -204,7 +204,7 @@ static int sbd_receive_drain(struct sbd_port *sport)
 {
 	int loops = 10000;
 
-	while (sbd_receive_ready(sport) && loops--)
+	while (sbd_receive_ready(sport) && --loops)
 		read_sbdchn(sport, R_DUART_RX_HOLD);
 	return loops;
 }
@@ -218,7 +218,7 @@ static int __maybe_unused sbd_transmit_drain(struct sbd_port *sport)
 {
 	int loops = 10000;
 
-	while (!sbd_transmit_ready(sport) && loops--)
+	while (!sbd_transmit_ready(sport) && --loops)
 		udelay(2);
 	return loops;
 }
@@ -232,7 +232,7 @@ static int sbd_line_drain(struct sbd_port *sport)
 {
 	int loops = 10000;
 
-	while (!sbd_transmit_empty(sport) && loops--)
+	while (!sbd_transmit_empty(sport) && --loops)
 		udelay(2);
 	return loops;
 }
@@ -384,13 +384,13 @@ static void sbd_receive_chars(struct sbd_port *sport)
 		uart_insert_char(uport, status, M_DUART_OVRUN_ERR, ch, flag);
 	}
 
-	tty_flip_buffer_push(uport->info->port.tty);
+	tty_flip_buffer_push(uport->state->port.tty);
 }
 
 static void sbd_transmit_chars(struct sbd_port *sport)
 {
 	struct uart_port *uport = &sport->port;
-	struct circ_buf *xmit = &sport->port.info->xmit;
+	struct circ_buf *xmit = &sport->port.state->xmit;
 	unsigned int mask;
 	int stop_tx;
 
@@ -440,7 +440,7 @@ static void sbd_status_handle(struct sbd_port *sport)
 
 	if (delta & ((M_DUART_IN_PIN2_VAL | M_DUART_IN_PIN0_VAL) <<
 		     S_DUART_IN_PIN_CHNG))
-		wake_up_interruptible(&uport->info->delta_msr_wait);
+		wake_up_interruptible(&uport->state->port.delta_msr_wait);
 }
 
 static irqreturn_t sbd_interrupt(int irq, void *dev_id)

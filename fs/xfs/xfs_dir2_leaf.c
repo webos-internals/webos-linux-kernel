@@ -549,7 +549,7 @@ xfs_dir2_leaf_addname(
  * Check the internal consistency of a leaf1 block.
  * Pop an assert if something is wrong.
  */
-void
+STATIC void
 xfs_dir2_leaf_check(
 	xfs_inode_t		*dp,		/* incore directory inode */
 	xfs_dabuf_t		*bp)		/* leaf's buffer */
@@ -780,7 +780,6 @@ xfs_dir2_leaf_getdents(
 	int			ra_index;	/* *map index for read-ahead */
 	int			ra_offset;	/* map entry offset for ra */
 	int			ra_want;	/* readahead count wanted */
-	xfs_ino_t		ino;
 
 	/*
 	 * If the offset is at or past the largest allowed value,
@@ -855,6 +854,7 @@ xfs_dir2_leaf_getdents(
 			 */
 			ra_want = howmany(bufsize + mp->m_dirblksize,
 					  mp->m_sb.sb_blocksize) - 1;
+			ASSERT(ra_want >= 0);
 
 			/*
 			 * If we don't have as many as we want, and we haven't
@@ -1076,24 +1076,12 @@ xfs_dir2_leaf_getdents(
 			continue;
 		}
 
-		/*
-		 * Copy the entry into the putargs, and try formatting it.
-		 */
 		dep = (xfs_dir2_data_entry_t *)ptr;
-
 		length = xfs_dir2_data_entsize(dep->namelen);
 
-		ino = be64_to_cpu(dep->inumber);
-#if XFS_BIG_INUMS
-		ino += mp->m_inoadd;
-#endif
-
-		/*
-		 * Won't fit.  Return to caller.
-		 */
 		if (filldir(dirent, dep->name, dep->namelen,
 			    xfs_dir2_byte_to_dataptr(mp, curoff) & 0x7fffffff,
-			    ino, DT_UNKNOWN))
+			    be64_to_cpu(dep->inumber), DT_UNKNOWN))
 			break;
 
 		/*
@@ -1101,7 +1089,8 @@ xfs_dir2_leaf_getdents(
 		 */
 		ptr += length;
 		curoff += length;
-		bufsize -= length;
+		/* bufsize may have just been a guess; don't go negative */
+		bufsize = bufsize > length ? bufsize - length : 0;
 	}
 
 	/*

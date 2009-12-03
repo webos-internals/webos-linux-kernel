@@ -13,14 +13,16 @@
 
 static inline void arch_idle(void)
 {
+	/* ixp4xx does not implement the XScale PWRMODE register,
+	 * so it must not call cpu_do_idle() here.
+	 */
 #if 0
-	if (!hlt_counter)
-		cpu_do_idle(0);
+	cpu_do_idle();
 #endif
 }
 
 
-static inline void arch_reset(char mode)
+static inline void arch_reset(char mode, const char *cmd)
 {
 	if ( 1 && mode == 's') {
 		/* Jump into ROM at address 0 */

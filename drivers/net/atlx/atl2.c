@@ -821,7 +821,8 @@ static inline int TxdFreeBytes(struct atl2_adapter *adapter)
 		(int) (txd_read_ptr - adapter->txd_write_ptr - 1);
 }
 
-static int atl2_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
+static netdev_tx_t atl2_xmit_frame(struct sk_buff *skb,
+					 struct net_device *netdev)
 {
 	struct atl2_adapter *adapter = netdev_priv(netdev);
 	struct tx_pkt_header *txph;
@@ -965,8 +966,6 @@ static int atl2_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 		data->phy_id = 0;
 		break;
 	case SIOCGMIIREG:
-		if (!capable(CAP_NET_ADMIN))
-			return -EPERM;
 		spin_lock_irqsave(&adapter->stats_lock, flags);
 		if (atl2_read_phy_reg(&adapter->hw,
 			data->reg_num & 0x1F, &data->val_out)) {
@@ -976,8 +975,6 @@ static int atl2_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 		spin_unlock_irqrestore(&adapter->stats_lock, flags);
 		break;
 	case SIOCSMIIREG:
-		if (!capable(CAP_NET_ADMIN))
-			return -EPERM;
 		if (data->reg_num & ~(0x1F))
 			return -EFAULT;
 		spin_lock_irqsave(&adapter->stats_lock, flags);
@@ -1358,8 +1355,8 @@ static int __devinit atl2_probe(struct pci_dev *pdev,
 	 * until the kernel has the proper infrastructure to support 64-bit DMA
 	 * on these devices.
 	 */
-	if (pci_set_dma_mask(pdev, DMA_32BIT_MASK) &&
-		pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK)) {
+	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32)) &&
+		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32))) {
 		printk(KERN_ERR "atl2: No usable DMA configuration, aborting\n");
 		goto err_dma;
 	}
@@ -2071,7 +2068,7 @@ static int atl2_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wol)
 	if (wol->wolopts & (WAKE_ARP | WAKE_MAGICSECURE))
 		return -EOPNOTSUPP;
 
-	if (wol->wolopts & (WAKE_MCAST|WAKE_BCAST|WAKE_MCAST))
+	if (wol->wolopts & (WAKE_UCAST | WAKE_BCAST | WAKE_MCAST))
 		return -EOPNOTSUPP;
 
 	/* these settings will always override what we currently have */
@@ -2093,7 +2090,7 @@ static int atl2_nway_reset(struct net_device *netdev)
 	return 0;
 }
 
-static struct ethtool_ops atl2_ethtool_ops = {
+static const struct ethtool_ops atl2_ethtool_ops = {
 	.get_settings		= atl2_get_settings,
 	.set_settings		= atl2_set_settings,
 	.get_drvinfo		= atl2_get_drvinfo,
@@ -2854,7 +2851,7 @@ static void atl2_force_ps(struct atl2_hw *hw)
 #else
 #define ATL2_PARAM(X, desc) \
     static int __devinitdata X[ATL2_MAX_NIC+1] = ATL2_PARAM_INIT; \
-    static int num_##X = 0; \
+    static unsigned int num_##X; \
     module_param_array_named(X, X, int, &num_##X, 0); \
     MODULE_PARM_DESC(X, desc);
 #endif

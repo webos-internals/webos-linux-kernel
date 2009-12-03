@@ -1,5 +1,7 @@
 #include <linux/hardirq.h>
 
+#include <asm/x86_init.h>
+
 #include <xen/interface/xen.h>
 #include <xen/interface/sched.h>
 #include <xen/interface/vcpu.h>
@@ -19,27 +21,12 @@ void xen_force_evtchn_callback(void)
 	(void)HYPERVISOR_xen_version(0, NULL);
 }
 
-static void __init __xen_init_IRQ(void)
-{
-	int i;
-
-	/* Create identity vector->irq map */
-	for(i = 0; i < NR_VECTORS; i++) {
-		int cpu;
-
-		for_each_possible_cpu(cpu)
-			per_cpu(vector_irq, cpu)[i] = i;
-	}
-
-	xen_init_IRQ();
-}
-
 static unsigned long xen_save_fl(void)
 {
 	struct vcpu_info *vcpu;
 	unsigned long flags;
 
-	vcpu = x86_read_percpu(xen_vcpu);
+	vcpu = percpu_read(xen_vcpu);
 
 	/* flag has opposite sense of mask */
 	flags = !vcpu->evtchn_upcall_mask;
@@ -50,6 +37,7 @@ static unsigned long xen_save_fl(void)
 	*/
 	return (-flags) & X86_EFLAGS_IF;
 }
+PV_CALLEE_SAVE_REGS_THUNK(xen_save_fl);
 
 static void xen_restore_fl(unsigned long flags)
 {
@@ -62,7 +50,7 @@ static void xen_restore_fl(unsigned long flags)
 	   make sure we're don't switch CPUs between getting the vcpu
 	   pointer and updating the mask. */
 	preempt_disable();
-	vcpu = x86_read_percpu(xen_vcpu);
+	vcpu = percpu_read(xen_vcpu);
 	vcpu->evtchn_upcall_mask = flags;
 	preempt_enable_no_resched();
 
@@ -76,6 +64,7 @@ static void xen_restore_fl(unsigned long flags)
 			xen_force_evtchn_callback();
 	}
 }
+PV_CALLEE_SAVE_REGS_THUNK(xen_restore_fl);
 
 static void xen_irq_disable(void)
 {
@@ -83,9 +72,10 @@ static void xen_irq_disable(void)
 	   make sure we're don't switch CPUs between getting the vcpu
 	   pointer and updating the mask. */
 	preempt_disable();
-	x86_read_percpu(xen_vcpu)->evtchn_upcall_mask = 1;
+	percpu_read(xen_vcpu)->evtchn_upcall_mask = 1;
 	preempt_enable_no_resched();
 }
+PV_CALLEE_SAVE_REGS_THUNK(xen_irq_disable);
 
 static void xen_irq_enable(void)
 {
@@ -96,7 +86,7 @@ static void xen_irq_enable(void)
 	   the caller is confused and is trying to re-enable interrupts
 	   on an indeterminate processor. */
 
-	vcpu = x86_read_percpu(xen_vcpu);
+	vcpu = percpu_read(xen_vcpu);
 	vcpu->evtchn_upcall_mask = 0;
 
 	/* Doesn't matter if we get preempted here, because any
@@ -106,6 +96,7 @@ static void xen_irq_enable(void)
 	if (unlikely(vcpu->evtchn_upcall_pending))
 		xen_force_evtchn_callback();
 }
+PV_CALLEE_SAVE_REGS_THUNK(xen_irq_enable);
 
 static void xen_safe_halt(void)
 {
@@ -123,11 +114,11 @@ static void xen_halt(void)
 }
 
 static const struct pv_irq_ops xen_irq_ops __initdata = {
-	.init_IRQ = __xen_init_IRQ,
-	.save_fl = xen_save_fl,
-	.restore_fl = xen_restore_fl,
-	.irq_disable = xen_irq_disable,
-	.irq_enable = xen_irq_enable,
+	.save_fl = PV_CALLEE_SAVE(xen_save_fl),
+	.restore_fl = PV_CALLEE_SAVE(xen_restore_fl),
+	.irq_disable = PV_CALLEE_SAVE(xen_irq_disable),
+	.irq_enable = PV_CALLEE_SAVE(xen_irq_enable),
+
 	.safe_halt = xen_safe_halt,
 	.halt = xen_halt,
 #ifdef CONFIG_X86_64
@@ -138,4 +129,5 @@ static const struct pv_irq_ops xen_irq_ops __initdata = {
 void __init xen_init_irq_ops()
 {
 	pv_irq_ops = xen_irq_ops;
+	x86_init.irqs.intr_init = xen_init_IRQ;
 }

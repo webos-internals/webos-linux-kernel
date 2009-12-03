@@ -34,6 +34,7 @@
  *
  *
  */
+#include <linux/capability.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -80,24 +81,6 @@ static int au1000_debug = 3;
 MODULE_AUTHOR(DRV_AUTHOR);
 MODULE_DESCRIPTION(DRV_DESC);
 MODULE_LICENSE("GPL");
-
-// prototypes
-static void hard_stop(struct net_device *);
-static void enable_rx_tx(struct net_device *dev);
-static struct net_device * au1000_probe(int port_num);
-static int au1000_init(struct net_device *);
-static int au1000_open(struct net_device *);
-static int au1000_close(struct net_device *);
-static int au1000_tx(struct sk_buff *, struct net_device *);
-static int au1000_rx(struct net_device *);
-static irqreturn_t au1000_interrupt(int, void *);
-static void au1000_tx_timeout(struct net_device *);
-static void set_rx_mode(struct net_device *);
-static int au1000_ioctl(struct net_device *, struct ifreq *, int);
-static int au1000_mdio_read(struct net_device *, int, int);
-static void au1000_mdio_write(struct net_device *, int, int, u16);
-static void au1000_adjust_link(struct net_device *);
-static void enable_mac(struct net_device *, int);
 
 /*
  * Theory of operation
@@ -187,6 +170,26 @@ struct au1000_private *au_macs[NUM_ETH_INTERFACES];
 #if defined(AU1XXX_PHY0_BUSID) && (AU1XXX_PHY0_BUSID > 0)
 # error MAC0-associated PHY attached 2nd MACs MII bus not supported yet
 #endif
+
+static void enable_mac(struct net_device *dev, int force_reset)
+{
+	unsigned long flags;
+	struct au1000_private *aup = netdev_priv(dev);
+
+	spin_lock_irqsave(&aup->lock, flags);
+
+	if(force_reset || (!aup->mac_enabled)) {
+		*aup->enable = MAC_EN_CLOCK_ENABLE;
+		au_sync_delay(2);
+		*aup->enable = (MAC_EN_RESET0 | MAC_EN_RESET1 | MAC_EN_RESET2
+				| MAC_EN_CLOCK_ENABLE);
+		au_sync_delay(2);
+
+		aup->mac_enabled = 1;
+	}
+
+	spin_unlock_irqrestore(&aup->lock, flags);
+}
 
 /*
  * MII operations
@@ -281,6 +284,107 @@ static int au1000_mdiobus_reset(struct mii_bus *bus)
 	return 0;
 }
 
+static void hard_stop(struct net_device *dev)
+{
+	struct au1000_private *aup = netdev_priv(dev);
+
+	if (au1000_debug > 4)
+		printk(KERN_INFO "%s: hard stop\n", dev->name);
+
+	aup->mac->control &= ~(MAC_RX_ENABLE | MAC_TX_ENABLE);
+	au_sync_delay(10);
+}
+
+static void enable_rx_tx(struct net_device *dev)
+{
+	struct au1000_private *aup = netdev_priv(dev);
+
+	if (au1000_debug > 4)
+		printk(KERN_INFO "%s: enable_rx_tx\n", dev->name);
+
+	aup->mac->control |= (MAC_RX_ENABLE | MAC_TX_ENABLE);
+	au_sync_delay(10);
+}
+
+static void
+au1000_adjust_link(struct net_device *dev)
+{
+	struct au1000_private *aup = netdev_priv(dev);
+	struct phy_device *phydev = aup->phy_dev;
+	unsigned long flags;
+
+	int status_change = 0;
+
+	BUG_ON(!aup->phy_dev);
+
+	spin_lock_irqsave(&aup->lock, flags);
+
+	if (phydev->link && (aup->old_speed != phydev->speed)) {
+		// speed changed
+
+		switch(phydev->speed) {
+		case SPEED_10:
+		case SPEED_100:
+			break;
+		default:
+			printk(KERN_WARNING
+			       "%s: Speed (%d) is not 10/100 ???\n",
+			       dev->name, phydev->speed);
+			break;
+		}
+
+		aup->old_speed = phydev->speed;
+
+		status_change = 1;
+	}
+
+	if (phydev->link && (aup->old_duplex != phydev->duplex)) {
+		// duplex mode changed
+
+		/* switching duplex mode requires to disable rx and tx! */
+		hard_stop(dev);
+
+		if (DUPLEX_FULL == phydev->duplex)
+			aup->mac->control = ((aup->mac->control
+					     | MAC_FULL_DUPLEX)
+					     & ~MAC_DISABLE_RX_OWN);
+		else
+			aup->mac->control = ((aup->mac->control
+					      & ~MAC_FULL_DUPLEX)
+					     | MAC_DISABLE_RX_OWN);
+		au_sync_delay(1);
+
+		enable_rx_tx(dev);
+		aup->old_duplex = phydev->duplex;
+
+		status_change = 1;
+	}
+
+	if(phydev->link != aup->old_link) {
+		// link state changed
+
+		if (!phydev->link) {
+			/* link went down */
+			aup->old_speed = 0;
+			aup->old_duplex = -1;
+		}
+
+		aup->old_link = phydev->link;
+		status_change = 1;
+	}
+
+	spin_unlock_irqrestore(&aup->lock, flags);
+
+	if (status_change) {
+		if (phydev->link)
+			printk(KERN_INFO "%s: link up (%d/%s)\n",
+			       dev->name, phydev->speed,
+			       DUPLEX_FULL == phydev->duplex ? "Full" : "Half");
+		else
+			printk(KERN_INFO "%s: link down\n", dev->name);
+	}
+}
+
 static int mii_probe (struct net_device *dev)
 {
 	struct au1000_private *const aup = netdev_priv(dev);
@@ -355,8 +459,8 @@ static int mii_probe (struct net_device *dev)
 	/* now we are supposed to have a proper phydev, to attach to... */
 	BUG_ON(phydev->attached_dev);
 
-	phydev = phy_connect(dev, phydev->dev.bus_id, &au1000_adjust_link, 0,
-			PHY_INTERFACE_MODE_MII);
+	phydev = phy_connect(dev, dev_name(&phydev->dev), &au1000_adjust_link,
+			0, PHY_INTERFACE_MODE_MII);
 
 	if (IS_ERR(phydev)) {
 		printk(KERN_ERR "%s: Could not attach to PHY\n", dev->name);
@@ -381,8 +485,8 @@ static int mii_probe (struct net_device *dev)
 	aup->phy_dev = phydev;
 
 	printk(KERN_INFO "%s: attached PHY driver [%s] "
-	       "(mii_bus:phy_addr=%s, irq=%d)\n",
-	       dev->name, phydev->drv->name, phydev->dev.bus_id, phydev->irq);
+	       "(mii_bus:phy_addr=%s, irq=%d)\n", dev->name,
+	       phydev->drv->name, dev_name(&phydev->dev), phydev->irq);
 
 	return 0;
 }
@@ -410,48 +514,6 @@ void ReleaseDB(struct au1000_private *aup, db_dest_t *pDB)
 	if (pDBfree)
 		pDBfree->pnext = pDB;
 	aup->pDBfree = pDB;
-}
-
-static void enable_rx_tx(struct net_device *dev)
-{
-	struct au1000_private *aup = netdev_priv(dev);
-
-	if (au1000_debug > 4)
-		printk(KERN_INFO "%s: enable_rx_tx\n", dev->name);
-
-	aup->mac->control |= (MAC_RX_ENABLE | MAC_TX_ENABLE);
-	au_sync_delay(10);
-}
-
-static void hard_stop(struct net_device *dev)
-{
-	struct au1000_private *aup = netdev_priv(dev);
-
-	if (au1000_debug > 4)
-		printk(KERN_INFO "%s: hard stop\n", dev->name);
-
-	aup->mac->control &= ~(MAC_RX_ENABLE | MAC_TX_ENABLE);
-	au_sync_delay(10);
-}
-
-static void enable_mac(struct net_device *dev, int force_reset)
-{
-	unsigned long flags;
-	struct au1000_private *aup = netdev_priv(dev);
-
-	spin_lock_irqsave(&aup->lock, flags);
-
-	if(force_reset || (!aup->mac_enabled)) {
-		*aup->enable = MAC_EN_CLOCK_ENABLE;
-		au_sync_delay(2);
-		*aup->enable = (MAC_EN_RESET0 | MAC_EN_RESET1 | MAC_EN_RESET2
-				| MAC_EN_CLOCK_ENABLE);
-		au_sync_delay(2);
-
-		aup->mac_enabled = 1;
-	}
-
-	spin_unlock_irqrestore(&aup->lock, flags);
 }
 
 static void reset_mac_unlocked(struct net_device *dev)
@@ -542,30 +604,6 @@ static struct {
 static int num_ifs;
 
 /*
- * Setup the base address and interrupt of the Au1xxx ethernet macs
- * based on cpu type and whether the interface is enabled in sys_pinfunc
- * register. The last interface is enabled if SYS_PF_NI2 (bit 4) is 0.
- */
-static int __init au1000_init_module(void)
-{
-	int ni = (int)((au_readl(SYS_PINFUNC) & (u32)(SYS_PF_NI2)) >> 4);
-	struct net_device *dev;
-	int i, found_one = 0;
-
-	num_ifs = NUM_ETH_INTERFACES - ni;
-
-	for(i = 0; i < num_ifs; i++) {
-		dev = au1000_probe(i);
-		iflist[i].dev = dev;
-		if (dev)
-			found_one++;
-	}
-	if (!found_one)
-		return -ENODEV;
-	return 0;
-}
-
-/*
  * ethtool operations
  */
 
@@ -611,199 +649,6 @@ static const struct ethtool_ops au1000_ethtool_ops = {
 	.get_link = ethtool_op_get_link,
 };
 
-static struct net_device * au1000_probe(int port_num)
-{
-	static unsigned version_printed = 0;
-	struct au1000_private *aup = NULL;
-	struct net_device *dev = NULL;
-	db_dest_t *pDB, *pDBfree;
-	char ethaddr[6];
-	int irq, i, err;
-	u32 base, macen;
-
-	if (port_num >= NUM_ETH_INTERFACES)
- 		return NULL;
-
-	base  = CPHYSADDR(iflist[port_num].base_addr );
-	macen = CPHYSADDR(iflist[port_num].macen_addr);
-	irq = iflist[port_num].irq;
-
-	if (!request_mem_region( base, MAC_IOSIZE, "Au1x00 ENET") ||
-	    !request_mem_region(macen, 4, "Au1x00 ENET"))
-		return NULL;
-
-	if (version_printed++ == 0)
-		printk("%s version %s %s\n", DRV_NAME, DRV_VERSION, DRV_AUTHOR);
-
-	dev = alloc_etherdev(sizeof(struct au1000_private));
-	if (!dev) {
-		printk(KERN_ERR "%s: alloc_etherdev failed\n", DRV_NAME);
-		return NULL;
-	}
-
-	if ((err = register_netdev(dev)) != 0) {
-		printk(KERN_ERR "%s: Cannot register net device, error %d\n",
-				DRV_NAME, err);
-		free_netdev(dev);
-		return NULL;
-	}
-
-	printk("%s: Au1xx0 Ethernet found at 0x%x, irq %d\n",
-		dev->name, base, irq);
-
-	aup = netdev_priv(dev);
-
-	spin_lock_init(&aup->lock);
-
-	/* Allocate the data buffers */
-	/* Snooping works fine with eth on all au1xxx */
-	aup->vaddr = (u32)dma_alloc_noncoherent(NULL, MAX_BUF_SIZE *
-						(NUM_TX_BUFFS + NUM_RX_BUFFS),
-						&aup->dma_addr,	0);
-	if (!aup->vaddr) {
-		free_netdev(dev);
-		release_mem_region( base, MAC_IOSIZE);
-		release_mem_region(macen, 4);
-		return NULL;
-	}
-
-	/* aup->mac is the base address of the MAC's registers */
-	aup->mac = (volatile mac_reg_t *)iflist[port_num].base_addr;
-
-	/* Setup some variables for quick register address access */
-	aup->enable = (volatile u32 *)iflist[port_num].macen_addr;
-	aup->mac_id = port_num;
-	au_macs[port_num] = aup;
-
-	if (port_num == 0) {
-		if (prom_get_ethernet_addr(ethaddr) == 0)
-			memcpy(au1000_mac_addr, ethaddr, sizeof(au1000_mac_addr));
-		else {
-			printk(KERN_INFO "%s: No MAC address found\n",
-					 dev->name);
-				/* Use the hard coded MAC addresses */
-		}
-
-		setup_hw_rings(aup, MAC0_RX_DMA_ADDR, MAC0_TX_DMA_ADDR);
-	} else if (port_num == 1)
-		setup_hw_rings(aup, MAC1_RX_DMA_ADDR, MAC1_TX_DMA_ADDR);
-
-	/*
-	 * Assign to the Ethernet ports two consecutive MAC addresses
-	 * to match those that are printed on their stickers
-	 */
-	memcpy(dev->dev_addr, au1000_mac_addr, sizeof(au1000_mac_addr));
-	dev->dev_addr[5] += port_num;
-
-	*aup->enable = 0;
-	aup->mac_enabled = 0;
-
-	aup->mii_bus = mdiobus_alloc();
-	if (aup->mii_bus == NULL)
-		goto err_out;
-
-	aup->mii_bus->priv = dev;
-	aup->mii_bus->read = au1000_mdiobus_read;
-	aup->mii_bus->write = au1000_mdiobus_write;
-	aup->mii_bus->reset = au1000_mdiobus_reset;
-	aup->mii_bus->name = "au1000_eth_mii";
-	snprintf(aup->mii_bus->id, MII_BUS_ID_SIZE, "%x", aup->mac_id);
-	aup->mii_bus->irq = kmalloc(sizeof(int)*PHY_MAX_ADDR, GFP_KERNEL);
-	for(i = 0; i < PHY_MAX_ADDR; ++i)
-		aup->mii_bus->irq[i] = PHY_POLL;
-
-	/* if known, set corresponding PHY IRQs */
-#if defined(AU1XXX_PHY_STATIC_CONFIG)
-# if defined(AU1XXX_PHY0_IRQ)
-	if (AU1XXX_PHY0_BUSID == aup->mac_id)
-		aup->mii_bus->irq[AU1XXX_PHY0_ADDR] = AU1XXX_PHY0_IRQ;
-# endif
-# if defined(AU1XXX_PHY1_IRQ)
-	if (AU1XXX_PHY1_BUSID == aup->mac_id)
-		aup->mii_bus->irq[AU1XXX_PHY1_ADDR] = AU1XXX_PHY1_IRQ;
-# endif
-#endif
-	mdiobus_register(aup->mii_bus);
-
-	if (mii_probe(dev) != 0) {
-		goto err_out;
-	}
-
-	pDBfree = NULL;
-	/* setup the data buffer descriptors and attach a buffer to each one */
-	pDB = aup->db;
-	for (i = 0; i < (NUM_TX_BUFFS+NUM_RX_BUFFS); i++) {
-		pDB->pnext = pDBfree;
-		pDBfree = pDB;
-		pDB->vaddr = (u32 *)((unsigned)aup->vaddr + MAX_BUF_SIZE*i);
-		pDB->dma_addr = (dma_addr_t)virt_to_bus(pDB->vaddr);
-		pDB++;
-	}
-	aup->pDBfree = pDBfree;
-
-	for (i = 0; i < NUM_RX_DMA; i++) {
-		pDB = GetFreeDB(aup);
-		if (!pDB) {
-			goto err_out;
-		}
-		aup->rx_dma_ring[i]->buff_stat = (unsigned)pDB->dma_addr;
-		aup->rx_db_inuse[i] = pDB;
-	}
-	for (i = 0; i < NUM_TX_DMA; i++) {
-		pDB = GetFreeDB(aup);
-		if (!pDB) {
-			goto err_out;
-		}
-		aup->tx_dma_ring[i]->buff_stat = (unsigned)pDB->dma_addr;
-		aup->tx_dma_ring[i]->len = 0;
-		aup->tx_db_inuse[i] = pDB;
-	}
-
-	dev->base_addr = base;
-	dev->irq = irq;
-	dev->open = au1000_open;
-	dev->hard_start_xmit = au1000_tx;
-	dev->stop = au1000_close;
-	dev->set_multicast_list = &set_rx_mode;
-	dev->do_ioctl = &au1000_ioctl;
-	SET_ETHTOOL_OPS(dev, &au1000_ethtool_ops);
-	dev->tx_timeout = au1000_tx_timeout;
-	dev->watchdog_timeo = ETH_TX_TIMEOUT;
-
-	/*
-	 * The boot code uses the ethernet controller, so reset it to start
-	 * fresh.  au1000_init() expects that the device is in reset state.
-	 */
-	reset_mac(dev);
-
-	return dev;
-
-err_out:
-	if (aup->mii_bus != NULL) {
-		mdiobus_unregister(aup->mii_bus);
-		mdiobus_free(aup->mii_bus);
-	}
-
-	/* here we should have a valid dev plus aup-> register addresses
-	 * so we can reset the mac properly.*/
-	reset_mac(dev);
-
-	for (i = 0; i < NUM_RX_DMA; i++) {
-		if (aup->rx_db_inuse[i])
-			ReleaseDB(aup, aup->rx_db_inuse[i]);
-	}
-	for (i = 0; i < NUM_TX_DMA; i++) {
-		if (aup->tx_db_inuse[i])
-			ReleaseDB(aup, aup->tx_db_inuse[i]);
-	}
-	dma_free_noncoherent(NULL, MAX_BUF_SIZE * (NUM_TX_BUFFS + NUM_RX_BUFFS),
-			     (void *)aup->vaddr, aup->dma_addr);
-	unregister_netdev(dev);
-	free_netdev(dev);
-	release_mem_region( base, MAC_IOSIZE);
-	release_mem_region(macen, 4);
-	return NULL;
-}
 
 /*
  * Initialize the interface.
@@ -864,284 +709,6 @@ static int au1000_init(struct net_device *dev)
 	return 0;
 }
 
-static void
-au1000_adjust_link(struct net_device *dev)
-{
-	struct au1000_private *aup = netdev_priv(dev);
-	struct phy_device *phydev = aup->phy_dev;
-	unsigned long flags;
-
-	int status_change = 0;
-
-	BUG_ON(!aup->phy_dev);
-
-	spin_lock_irqsave(&aup->lock, flags);
-
-	if (phydev->link && (aup->old_speed != phydev->speed)) {
-		// speed changed
-
-		switch(phydev->speed) {
-		case SPEED_10:
-		case SPEED_100:
-			break;
-		default:
-			printk(KERN_WARNING
-			       "%s: Speed (%d) is not 10/100 ???\n",
-			       dev->name, phydev->speed);
-			break;
-		}
-
-		aup->old_speed = phydev->speed;
-
-		status_change = 1;
-	}
-
-	if (phydev->link && (aup->old_duplex != phydev->duplex)) {
-		// duplex mode changed
-
-		/* switching duplex mode requires to disable rx and tx! */
-		hard_stop(dev);
-
-		if (DUPLEX_FULL == phydev->duplex)
-			aup->mac->control = ((aup->mac->control
-					     | MAC_FULL_DUPLEX)
-					     & ~MAC_DISABLE_RX_OWN);
-		else
-			aup->mac->control = ((aup->mac->control
-					      & ~MAC_FULL_DUPLEX)
-					     | MAC_DISABLE_RX_OWN);
-		au_sync_delay(1);
-
-		enable_rx_tx(dev);
-		aup->old_duplex = phydev->duplex;
-
-		status_change = 1;
-	}
-
-	if(phydev->link != aup->old_link) {
-		// link state changed
-
-		if (!phydev->link) {
-			/* link went down */
-			aup->old_speed = 0;
-			aup->old_duplex = -1;
-		}
-
-		aup->old_link = phydev->link;
-		status_change = 1;
-	}
-
-	spin_unlock_irqrestore(&aup->lock, flags);
-
-	if (status_change) {
-		if (phydev->link)
-			printk(KERN_INFO "%s: link up (%d/%s)\n",
-			       dev->name, phydev->speed,
-			       DUPLEX_FULL == phydev->duplex ? "Full" : "Half");
-		else
-			printk(KERN_INFO "%s: link down\n", dev->name);
-	}
-}
-
-static int au1000_open(struct net_device *dev)
-{
-	int retval;
-	struct au1000_private *aup = netdev_priv(dev);
-
-	if (au1000_debug > 4)
-		printk("%s: open: dev=%p\n", dev->name, dev);
-
-	if ((retval = request_irq(dev->irq, &au1000_interrupt, 0,
-					dev->name, dev))) {
-		printk(KERN_ERR "%s: unable to get IRQ %d\n",
-				dev->name, dev->irq);
-		return retval;
-	}
-
-	if ((retval = au1000_init(dev))) {
-		printk(KERN_ERR "%s: error in au1000_init\n", dev->name);
-		free_irq(dev->irq, dev);
-		return retval;
-	}
-
-	if (aup->phy_dev) {
-		/* cause the PHY state machine to schedule a link state check */
-		aup->phy_dev->state = PHY_CHANGELINK;
-		phy_start(aup->phy_dev);
-	}
-
-	netif_start_queue(dev);
-
-	if (au1000_debug > 4)
-		printk("%s: open: Initialization done.\n", dev->name);
-
-	return 0;
-}
-
-static int au1000_close(struct net_device *dev)
-{
-	unsigned long flags;
-	struct au1000_private *const aup = netdev_priv(dev);
-
-	if (au1000_debug > 4)
-		printk("%s: close: dev=%p\n", dev->name, dev);
-
-	if (aup->phy_dev)
-		phy_stop(aup->phy_dev);
-
-	spin_lock_irqsave(&aup->lock, flags);
-
-	reset_mac_unlocked (dev);
-
-	/* stop the device */
-	netif_stop_queue(dev);
-
-	/* disable the interrupt */
-	free_irq(dev->irq, dev);
-	spin_unlock_irqrestore(&aup->lock, flags);
-
-	return 0;
-}
-
-static void __exit au1000_cleanup_module(void)
-{
-	int i, j;
-	struct net_device *dev;
-	struct au1000_private *aup;
-
-	for (i = 0; i < num_ifs; i++) {
-		dev = iflist[i].dev;
-		if (dev) {
-			aup = netdev_priv(dev);
-			unregister_netdev(dev);
-			mdiobus_unregister(aup->mii_bus);
-			mdiobus_free(aup->mii_bus);
-			for (j = 0; j < NUM_RX_DMA; j++)
-				if (aup->rx_db_inuse[j])
-					ReleaseDB(aup, aup->rx_db_inuse[j]);
-			for (j = 0; j < NUM_TX_DMA; j++)
-				if (aup->tx_db_inuse[j])
-					ReleaseDB(aup, aup->tx_db_inuse[j]);
- 			dma_free_noncoherent(NULL, MAX_BUF_SIZE *
- 					     (NUM_TX_BUFFS + NUM_RX_BUFFS),
- 					     (void *)aup->vaddr, aup->dma_addr);
- 			release_mem_region(dev->base_addr, MAC_IOSIZE);
- 			release_mem_region(CPHYSADDR(iflist[i].macen_addr), 4);
-			free_netdev(dev);
-		}
-	}
-}
-
-static void update_tx_stats(struct net_device *dev, u32 status)
-{
-	struct au1000_private *aup = netdev_priv(dev);
-	struct net_device_stats *ps = &dev->stats;
-
-	if (status & TX_FRAME_ABORTED) {
-		if (!aup->phy_dev || (DUPLEX_FULL == aup->phy_dev->duplex)) {
-			if (status & (TX_JAB_TIMEOUT | TX_UNDERRUN)) {
-				/* any other tx errors are only valid
-				 * in half duplex mode */
-				ps->tx_errors++;
-				ps->tx_aborted_errors++;
-			}
-		}
-		else {
-			ps->tx_errors++;
-			ps->tx_aborted_errors++;
-			if (status & (TX_NO_CARRIER | TX_LOSS_CARRIER))
-				ps->tx_carrier_errors++;
-		}
-	}
-}
-
-
-/*
- * Called from the interrupt service routine to acknowledge
- * the TX DONE bits.  This is a must if the irq is setup as
- * edge triggered.
- */
-static void au1000_tx_ack(struct net_device *dev)
-{
-	struct au1000_private *aup = netdev_priv(dev);
-	volatile tx_dma_t *ptxd;
-
-	ptxd = aup->tx_dma_ring[aup->tx_tail];
-
-	while (ptxd->buff_stat & TX_T_DONE) {
-		update_tx_stats(dev, ptxd->status);
-		ptxd->buff_stat &= ~TX_T_DONE;
-		ptxd->len = 0;
-		au_sync();
-
-		aup->tx_tail = (aup->tx_tail + 1) & (NUM_TX_DMA - 1);
-		ptxd = aup->tx_dma_ring[aup->tx_tail];
-
-		if (aup->tx_full) {
-			aup->tx_full = 0;
-			netif_wake_queue(dev);
-		}
-	}
-}
-
-
-/*
- * Au1000 transmit routine.
- */
-static int au1000_tx(struct sk_buff *skb, struct net_device *dev)
-{
-	struct au1000_private *aup = netdev_priv(dev);
-	struct net_device_stats *ps = &dev->stats;
-	volatile tx_dma_t *ptxd;
-	u32 buff_stat;
-	db_dest_t *pDB;
-	int i;
-
-	if (au1000_debug > 5)
-		printk("%s: tx: aup %x len=%d, data=%p, head %d\n",
-				dev->name, (unsigned)aup, skb->len,
-				skb->data, aup->tx_head);
-
-	ptxd = aup->tx_dma_ring[aup->tx_head];
-	buff_stat = ptxd->buff_stat;
-	if (buff_stat & TX_DMA_ENABLE) {
-		/* We've wrapped around and the transmitter is still busy */
-		netif_stop_queue(dev);
-		aup->tx_full = 1;
-		return 1;
-	}
-	else if (buff_stat & TX_T_DONE) {
-		update_tx_stats(dev, ptxd->status);
-		ptxd->len = 0;
-	}
-
-	if (aup->tx_full) {
-		aup->tx_full = 0;
-		netif_wake_queue(dev);
-	}
-
-	pDB = aup->tx_db_inuse[aup->tx_head];
-	skb_copy_from_linear_data(skb, pDB->vaddr, skb->len);
-	if (skb->len < ETH_ZLEN) {
-		for (i=skb->len; i<ETH_ZLEN; i++) {
-			((char *)pDB->vaddr)[i] = 0;
-		}
-		ptxd->len = ETH_ZLEN;
-	}
-	else
-		ptxd->len = skb->len;
-
-	ps->tx_packets++;
-	ps->tx_bytes += ptxd->len;
-
-	ptxd->buff_stat = pDB->dma_addr | TX_DMA_ENABLE;
-	au_sync();
-	dev_kfree_skb(skb);
-	aup->tx_head = (aup->tx_head + 1) & (NUM_TX_DMA - 1);
-	dev->trans_start = jiffies;
-	return 0;
-}
-
 static inline void update_rx_stats(struct net_device *dev, u32 status)
 {
 	struct au1000_private *aup = netdev_priv(dev);
@@ -1155,7 +722,7 @@ static inline void update_rx_stats(struct net_device *dev, u32 status)
 		ps->rx_errors++;
 		if (status & RX_MISSED_FRAME)
 			ps->rx_missed_errors++;
-		if (status & (RX_OVERLEN | RX_OVERLEN | RX_LEN_ERROR))
+		if (status & (RX_OVERLEN | RX_RUNT | RX_LEN_ERROR))
 			ps->rx_length_errors++;
 		if (status & RX_CRC_ERROR)
 			ps->rx_crc_errors++;
@@ -1228,8 +795,6 @@ static int au1000_rx(struct net_device *dev)
 					printk("rx len error\n");
 				if (status & RX_U_CNTRL_FRAME)
 					printk("rx u control frame\n");
-				if (status & RX_MISSED_FRAME)
-					printk("rx miss\n");
 			}
 		}
 		prxd->buff_stat = (u32)(pDB->dma_addr | RX_DMA_ENABLE);
@@ -1243,6 +808,56 @@ static int au1000_rx(struct net_device *dev)
 	return 0;
 }
 
+static void update_tx_stats(struct net_device *dev, u32 status)
+{
+	struct au1000_private *aup = netdev_priv(dev);
+	struct net_device_stats *ps = &dev->stats;
+
+	if (status & TX_FRAME_ABORTED) {
+		if (!aup->phy_dev || (DUPLEX_FULL == aup->phy_dev->duplex)) {
+			if (status & (TX_JAB_TIMEOUT | TX_UNDERRUN)) {
+				/* any other tx errors are only valid
+				 * in half duplex mode */
+				ps->tx_errors++;
+				ps->tx_aborted_errors++;
+			}
+		}
+		else {
+			ps->tx_errors++;
+			ps->tx_aborted_errors++;
+			if (status & (TX_NO_CARRIER | TX_LOSS_CARRIER))
+				ps->tx_carrier_errors++;
+		}
+	}
+}
+
+/*
+ * Called from the interrupt service routine to acknowledge
+ * the TX DONE bits.  This is a must if the irq is setup as
+ * edge triggered.
+ */
+static void au1000_tx_ack(struct net_device *dev)
+{
+	struct au1000_private *aup = netdev_priv(dev);
+	volatile tx_dma_t *ptxd;
+
+	ptxd = aup->tx_dma_ring[aup->tx_tail];
+
+	while (ptxd->buff_stat & TX_T_DONE) {
+		update_tx_stats(dev, ptxd->status);
+		ptxd->buff_stat &= ~TX_T_DONE;
+		ptxd->len = 0;
+		au_sync();
+
+		aup->tx_tail = (aup->tx_tail + 1) & (NUM_TX_DMA - 1);
+		ptxd = aup->tx_dma_ring[aup->tx_tail];
+
+		if (aup->tx_full) {
+			aup->tx_full = 0;
+			netif_wake_queue(dev);
+		}
+	}
+}
 
 /*
  * Au1000 interrupt service routine.
@@ -1258,6 +873,122 @@ static irqreturn_t au1000_interrupt(int irq, void *dev_id)
 	return IRQ_RETVAL(1);
 }
 
+static int au1000_open(struct net_device *dev)
+{
+	int retval;
+	struct au1000_private *aup = netdev_priv(dev);
+
+	if (au1000_debug > 4)
+		printk("%s: open: dev=%p\n", dev->name, dev);
+
+	if ((retval = request_irq(dev->irq, &au1000_interrupt, 0,
+					dev->name, dev))) {
+		printk(KERN_ERR "%s: unable to get IRQ %d\n",
+				dev->name, dev->irq);
+		return retval;
+	}
+
+	if ((retval = au1000_init(dev))) {
+		printk(KERN_ERR "%s: error in au1000_init\n", dev->name);
+		free_irq(dev->irq, dev);
+		return retval;
+	}
+
+	if (aup->phy_dev) {
+		/* cause the PHY state machine to schedule a link state check */
+		aup->phy_dev->state = PHY_CHANGELINK;
+		phy_start(aup->phy_dev);
+	}
+
+	netif_start_queue(dev);
+
+	if (au1000_debug > 4)
+		printk("%s: open: Initialization done.\n", dev->name);
+
+	return 0;
+}
+
+static int au1000_close(struct net_device *dev)
+{
+	unsigned long flags;
+	struct au1000_private *const aup = netdev_priv(dev);
+
+	if (au1000_debug > 4)
+		printk("%s: close: dev=%p\n", dev->name, dev);
+
+	if (aup->phy_dev)
+		phy_stop(aup->phy_dev);
+
+	spin_lock_irqsave(&aup->lock, flags);
+
+	reset_mac_unlocked (dev);
+
+	/* stop the device */
+	netif_stop_queue(dev);
+
+	/* disable the interrupt */
+	free_irq(dev->irq, dev);
+	spin_unlock_irqrestore(&aup->lock, flags);
+
+	return 0;
+}
+
+/*
+ * Au1000 transmit routine.
+ */
+static netdev_tx_t au1000_tx(struct sk_buff *skb, struct net_device *dev)
+{
+	struct au1000_private *aup = netdev_priv(dev);
+	struct net_device_stats *ps = &dev->stats;
+	volatile tx_dma_t *ptxd;
+	u32 buff_stat;
+	db_dest_t *pDB;
+	int i;
+
+	if (au1000_debug > 5)
+		printk("%s: tx: aup %x len=%d, data=%p, head %d\n",
+				dev->name, (unsigned)aup, skb->len,
+				skb->data, aup->tx_head);
+
+	ptxd = aup->tx_dma_ring[aup->tx_head];
+	buff_stat = ptxd->buff_stat;
+	if (buff_stat & TX_DMA_ENABLE) {
+		/* We've wrapped around and the transmitter is still busy */
+		netif_stop_queue(dev);
+		aup->tx_full = 1;
+		return NETDEV_TX_BUSY;
+	}
+	else if (buff_stat & TX_T_DONE) {
+		update_tx_stats(dev, ptxd->status);
+		ptxd->len = 0;
+	}
+
+	if (aup->tx_full) {
+		aup->tx_full = 0;
+		netif_wake_queue(dev);
+	}
+
+	pDB = aup->tx_db_inuse[aup->tx_head];
+	skb_copy_from_linear_data(skb, pDB->vaddr, skb->len);
+	if (skb->len < ETH_ZLEN) {
+		for (i=skb->len; i<ETH_ZLEN; i++) {
+			((char *)pDB->vaddr)[i] = 0;
+		}
+		ptxd->len = ETH_ZLEN;
+	}
+	else
+		ptxd->len = skb->len;
+
+	ps->tx_packets++;
+	ps->tx_bytes += ptxd->len;
+
+	ptxd->buff_stat = pDB->dma_addr | TX_DMA_ENABLE;
+	au_sync();
+	dev_kfree_skb(skb);
+	aup->tx_head = (aup->tx_head + 1) & (NUM_TX_DMA - 1);
+	dev->trans_start = jiffies;
+	return NETDEV_TX_OK;
+}
 
 /*
  * The Tx ring has been full longer than the watchdog timeout
@@ -1272,12 +1003,12 @@ static void au1000_tx_timeout(struct net_device *dev)
 	netif_wake_queue(dev);
 }
 
-static void set_rx_mode(struct net_device *dev)
+static void au1000_multicast_list(struct net_device *dev)
 {
 	struct au1000_private *aup = netdev_priv(dev);
 
 	if (au1000_debug > 4)
-		printk("%s: set_rx_mode: flags=%x\n", dev->name, dev->flags);
+		printk("%s: au1000_multicast_list: flags=%x\n", dev->name, dev->flags);
 
 	if (dev->flags & IFF_PROMISC) {			/* Set promiscuous. */
 		aup->mac->control |= MAC_PROMISCUOUS;
@@ -1313,6 +1044,264 @@ static int au1000_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	if (!aup->phy_dev) return -EINVAL; // PHY not controllable
 
 	return phy_mii_ioctl(aup->phy_dev, if_mii(rq), cmd);
+}
+
+static const struct net_device_ops au1000_netdev_ops = {
+	.ndo_open		= au1000_open,
+	.ndo_stop		= au1000_close,
+	.ndo_start_xmit		= au1000_tx,
+	.ndo_set_multicast_list	= au1000_multicast_list,
+	.ndo_do_ioctl		= au1000_ioctl,
+	.ndo_tx_timeout		= au1000_tx_timeout,
+	.ndo_set_mac_address	= eth_mac_addr,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu		= eth_change_mtu,
+};
+
+static struct net_device * au1000_probe(int port_num)
+{
+	static unsigned version_printed = 0;
+	struct au1000_private *aup = NULL;
+	struct net_device *dev = NULL;
+	db_dest_t *pDB, *pDBfree;
+	char ethaddr[6];
+	int irq, i, err;
+	u32 base, macen;
+
+	if (port_num >= NUM_ETH_INTERFACES)
+		return NULL;
+
+	base  = CPHYSADDR(iflist[port_num].base_addr );
+	macen = CPHYSADDR(iflist[port_num].macen_addr);
+	irq = iflist[port_num].irq;
+
+	if (!request_mem_region( base, MAC_IOSIZE, "Au1x00 ENET") ||
+	    !request_mem_region(macen, 4, "Au1x00 ENET"))
+		return NULL;
+
+	if (version_printed++ == 0)
+		printk("%s version %s %s\n", DRV_NAME, DRV_VERSION, DRV_AUTHOR);
+
+	dev = alloc_etherdev(sizeof(struct au1000_private));
+	if (!dev) {
+		printk(KERN_ERR "%s: alloc_etherdev failed\n", DRV_NAME);
+		return NULL;
+	}
+
+	dev->base_addr = base;
+	dev->irq = irq;
+	dev->netdev_ops = &au1000_netdev_ops;
+	SET_ETHTOOL_OPS(dev, &au1000_ethtool_ops);
+	dev->watchdog_timeo = ETH_TX_TIMEOUT;
+
+	err = register_netdev(dev);
+	if (err != 0) {
+		printk(KERN_ERR "%s: Cannot register net device, error %d\n",
+				DRV_NAME, err);
+		free_netdev(dev);
+		return NULL;
+	}
+
+	printk("%s: Au1xx0 Ethernet found at 0x%x, irq %d\n",
+		dev->name, base, irq);
+
+	aup = netdev_priv(dev);
+
+	spin_lock_init(&aup->lock);
+
+	/* Allocate the data buffers */
+	/* Snooping works fine with eth on all au1xxx */
+	aup->vaddr = (u32)dma_alloc_noncoherent(NULL, MAX_BUF_SIZE *
+						(NUM_TX_BUFFS + NUM_RX_BUFFS),
+						&aup->dma_addr,	0);
+	if (!aup->vaddr) {
+		free_netdev(dev);
+		release_mem_region( base, MAC_IOSIZE);
+		release_mem_region(macen, 4);
+		return NULL;
+	}
+
+	/* aup->mac is the base address of the MAC's registers */
+	aup->mac = (volatile mac_reg_t *)iflist[port_num].base_addr;
+
+	/* Setup some variables for quick register address access */
+	aup->enable = (volatile u32 *)iflist[port_num].macen_addr;
+	aup->mac_id = port_num;
+	au_macs[port_num] = aup;
+
+	if (port_num == 0) {
+		if (prom_get_ethernet_addr(ethaddr) == 0)
+			memcpy(au1000_mac_addr, ethaddr, sizeof(au1000_mac_addr));
+		else {
+			printk(KERN_INFO "%s: No MAC address found\n",
+					 dev->name);
+				/* Use the hard coded MAC addresses */
+		}
+
+		setup_hw_rings(aup, MAC0_RX_DMA_ADDR, MAC0_TX_DMA_ADDR);
+	} else if (port_num == 1)
+		setup_hw_rings(aup, MAC1_RX_DMA_ADDR, MAC1_TX_DMA_ADDR);
+
+	/*
+	 * Assign to the Ethernet ports two consecutive MAC addresses
+	 * to match those that are printed on their stickers
+	 */
+	memcpy(dev->dev_addr, au1000_mac_addr, sizeof(au1000_mac_addr));
+	dev->dev_addr[5] += port_num;
+
+	*aup->enable = 0;
+	aup->mac_enabled = 0;
+
+	aup->mii_bus = mdiobus_alloc();
+	if (aup->mii_bus == NULL)
+		goto err_out;
+
+	aup->mii_bus->priv = dev;
+	aup->mii_bus->read = au1000_mdiobus_read;
+	aup->mii_bus->write = au1000_mdiobus_write;
+	aup->mii_bus->reset = au1000_mdiobus_reset;
+	aup->mii_bus->name = "au1000_eth_mii";
+	snprintf(aup->mii_bus->id, MII_BUS_ID_SIZE, "%x", aup->mac_id);
+	aup->mii_bus->irq = kmalloc(sizeof(int)*PHY_MAX_ADDR, GFP_KERNEL);
+	if (aup->mii_bus->irq == NULL)
+		goto err_out;
+
+	for(i = 0; i < PHY_MAX_ADDR; ++i)
+		aup->mii_bus->irq[i] = PHY_POLL;
+
+	/* if known, set corresponding PHY IRQs */
+#if defined(AU1XXX_PHY_STATIC_CONFIG)
+# if defined(AU1XXX_PHY0_IRQ)
+	if (AU1XXX_PHY0_BUSID == aup->mac_id)
+		aup->mii_bus->irq[AU1XXX_PHY0_ADDR] = AU1XXX_PHY0_IRQ;
+# endif
+# if defined(AU1XXX_PHY1_IRQ)
+	if (AU1XXX_PHY1_BUSID == aup->mac_id)
+		aup->mii_bus->irq[AU1XXX_PHY1_ADDR] = AU1XXX_PHY1_IRQ;
+# endif
+#endif
+	mdiobus_register(aup->mii_bus);
+
+	if (mii_probe(dev) != 0) {
+		goto err_out;
+	}
+
+	pDBfree = NULL;
+	/* setup the data buffer descriptors and attach a buffer to each one */
+	pDB = aup->db;
+	for (i = 0; i < (NUM_TX_BUFFS+NUM_RX_BUFFS); i++) {
+		pDB->pnext = pDBfree;
+		pDBfree = pDB;
+		pDB->vaddr = (u32 *)((unsigned)aup->vaddr + MAX_BUF_SIZE*i);
+		pDB->dma_addr = (dma_addr_t)virt_to_bus(pDB->vaddr);
+		pDB++;
+	}
+	aup->pDBfree = pDBfree;
+
+	for (i = 0; i < NUM_RX_DMA; i++) {
+		pDB = GetFreeDB(aup);
+		if (!pDB) {
+			goto err_out;
+		}
+		aup->rx_dma_ring[i]->buff_stat = (unsigned)pDB->dma_addr;
+		aup->rx_db_inuse[i] = pDB;
+	}
+	for (i = 0; i < NUM_TX_DMA; i++) {
+		pDB = GetFreeDB(aup);
+		if (!pDB) {
+			goto err_out;
+		}
+		aup->tx_dma_ring[i]->buff_stat = (unsigned)pDB->dma_addr;
+		aup->tx_dma_ring[i]->len = 0;
+		aup->tx_db_inuse[i] = pDB;
+	}
+
+	/*
+	 * The boot code uses the ethernet controller, so reset it to start
+	 * fresh.  au1000_init() expects that the device is in reset state.
+	 */
+	reset_mac(dev);
+
+	return dev;
+
+err_out:
+	if (aup->mii_bus != NULL) {
+		mdiobus_unregister(aup->mii_bus);
+		mdiobus_free(aup->mii_bus);
+	}
+
+	/* here we should have a valid dev plus aup-> register addresses
+	 * so we can reset the mac properly.*/
+	reset_mac(dev);
+
+	for (i = 0; i < NUM_RX_DMA; i++) {
+		if (aup->rx_db_inuse[i])
+			ReleaseDB(aup, aup->rx_db_inuse[i]);
+	}
+	for (i = 0; i < NUM_TX_DMA; i++) {
+		if (aup->tx_db_inuse[i])
+			ReleaseDB(aup, aup->tx_db_inuse[i]);
+	}
+	dma_free_noncoherent(NULL, MAX_BUF_SIZE * (NUM_TX_BUFFS + NUM_RX_BUFFS),
+			     (void *)aup->vaddr, aup->dma_addr);
+	unregister_netdev(dev);
+	free_netdev(dev);
+	release_mem_region( base, MAC_IOSIZE);
+	release_mem_region(macen, 4);
+	return NULL;
+}
+
+/*
+ * Setup the base address and interrupt of the Au1xxx ethernet macs
+ * based on cpu type and whether the interface is enabled in sys_pinfunc
+ * register. The last interface is enabled if SYS_PF_NI2 (bit 4) is 0.
+ */
+static int __init au1000_init_module(void)
+{
+	int ni = (int)((au_readl(SYS_PINFUNC) & (u32)(SYS_PF_NI2)) >> 4);
+	struct net_device *dev;
+	int i, found_one = 0;
+
+	num_ifs = NUM_ETH_INTERFACES - ni;
+
+	for(i = 0; i < num_ifs; i++) {
+		dev = au1000_probe(i);
+		iflist[i].dev = dev;
+		if (dev)
+			found_one++;
+	}
+	if (!found_one)
+		return -ENODEV;
+	return 0;
+}
+
+static void __exit au1000_cleanup_module(void)
+{
+	int i, j;
+	struct net_device *dev;
+	struct au1000_private *aup;
+
+	for (i = 0; i < num_ifs; i++) {
+		dev = iflist[i].dev;
+		if (dev) {
+			aup = netdev_priv(dev);
+			unregister_netdev(dev);
+			mdiobus_unregister(aup->mii_bus);
+			mdiobus_free(aup->mii_bus);
+			for (j = 0; j < NUM_RX_DMA; j++)
+				if (aup->rx_db_inuse[j])
+					ReleaseDB(aup, aup->rx_db_inuse[j]);
+			for (j = 0; j < NUM_TX_DMA; j++)
+				if (aup->tx_db_inuse[j])
+					ReleaseDB(aup, aup->tx_db_inuse[j]);
+			dma_free_noncoherent(NULL, MAX_BUF_SIZE *
+					     (NUM_TX_BUFFS + NUM_RX_BUFFS),
+					     (void *)aup->vaddr, aup->dma_addr);
+			release_mem_region(dev->base_addr, MAC_IOSIZE);
+			release_mem_region(CPHYSADDR(iflist[i].macen_addr), 4);
+			free_netdev(dev);
+		}
+	}
 }
 
 module_init(au1000_init_module);

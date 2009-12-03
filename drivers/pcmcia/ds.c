@@ -236,7 +236,6 @@ pcmcia_store_new_id(struct device_driver *driver, const char *buf, size_t count)
 	if (!dynid)
 		return -ENOMEM;
 
-	INIT_LIST_HEAD(&dynid->node);
 	dynid->id.match_flags = match_flags;
 	dynid->id.manf_id = manf_id;
 	dynid->id.card_id = card_id;
@@ -246,7 +245,7 @@ pcmcia_store_new_id(struct device_driver *driver, const char *buf, size_t count)
 	memcpy(dynid->id.prod_id_hash, prod_id_hash, sizeof(__u32) * 4);
 
 	spin_lock(&pdrv->dynids.lock);
-	list_add_tail(&pdrv->dynids.list, &dynid->node);
+	list_add_tail(&dynid->node, &pdrv->dynids.list);
 	spin_unlock(&pdrv->dynids.lock);
 
 	if (get_driver(&pdrv->drv)) {
@@ -394,7 +393,7 @@ static int pcmcia_device_probe(struct device * dev)
 	p_drv = to_pcmcia_drv(dev->driver);
 	s = p_dev->socket;
 
-	/* The PCMCIA code passes the match data in via dev->driver_data
+	/* The PCMCIA code passes the match data in via dev_set_drvdata(dev)
 	 * which is an ugly hack. Once the driver probe is called it may
 	 * and often will overwrite the match data so we must save it first
 	 *
@@ -404,7 +403,7 @@ static int pcmcia_device_probe(struct device * dev)
 	 * call which will then check whether there are two
 	 * pseudo devices, and if not, add the second one.
 	 */
-	did = p_dev->dev.driver_data;
+	did = dev_get_drvdata(&p_dev->dev);
 
 	ds_dev_dbg(1, dev, "trying to bind to %s\n", p_drv->drv.name);
 
@@ -499,7 +498,7 @@ static int pcmcia_device_remove(struct device * dev)
 	 * pseudo multi-function card, we need to unbind
 	 * all devices
 	 */
-	did = p_dev->dev.driver_data;
+	did = dev_get_drvdata(&p_dev->dev);
 	if (did && (did->match_flags & PCMCIA_DEV_ID_MATCH_DEVICE_NO) &&
 	    (p_dev->socket->device_count != 0) &&
 	    (p_dev->device_no == 0))
@@ -548,7 +547,7 @@ static int pcmcia_device_query(struct pcmcia_device *p_dev)
 	if (!vers1)
 		return -ENOMEM;
 
-	if (!pccard_read_tuple(p_dev->socket, p_dev->func,
+	if (!pccard_read_tuple(p_dev->socket, BIND_FN_ALL,
 			       CISTPL_MANFID, &manf_id)) {
 		p_dev->manf_id = manf_id.manf;
 		p_dev->card_id = manf_id.card;
@@ -582,9 +581,9 @@ static int pcmcia_device_query(struct pcmcia_device *p_dev)
 		kfree(devgeo);
 	}
 
-	if (!pccard_read_tuple(p_dev->socket, p_dev->func, CISTPL_VERS_1,
+	if (!pccard_read_tuple(p_dev->socket, BIND_FN_ALL, CISTPL_VERS_1,
 			       vers1)) {
-		for (i=0; i < vers1->ns; i++) {
+		for (i = 0; i < min_t(unsigned int, 4, vers1->ns); i++) {
 			char *tmp;
 			unsigned int length;
 
@@ -734,7 +733,7 @@ static int pcmcia_card_add(struct pcmcia_socket *s)
 		return -EAGAIN; /* try again, but later... */
 	}
 
-	ret = pccard_validate_cis(s, BIND_FN_ALL, &no_chains);
+	ret = pccard_validate_cis(s, &no_chains);
 	if (ret || !no_chains) {
 		ds_dev_dbg(0, &s->dev, "invalid CIS or invalid resources\n");
 		return -ENODEV;
@@ -828,7 +827,6 @@ static int pcmcia_load_firmware(struct pcmcia_device *dev, char * filename)
 {
 	struct pcmcia_socket *s = dev->socket;
 	const struct firmware *fw;
-	char path[FIRMWARE_NAME_MAX];
 	int ret = -ENOMEM;
 	int no_funcs;
 	int old_funcs;
@@ -839,16 +837,7 @@ static int pcmcia_load_firmware(struct pcmcia_device *dev, char * filename)
 
 	ds_dev_dbg(1, &dev->dev, "trying to load CIS file %s\n", filename);
 
-	if (strlen(filename) > (FIRMWARE_NAME_MAX - 1)) {
-		dev_printk(KERN_WARNING, &dev->dev,
-			   "pcmcia: CIS filename is too long [%s]\n",
-			   filename);
-		return -EINVAL;
-	}
-
-	snprintf(path, sizeof(path), "%s", filename);
-
-	if (request_firmware(&fw, path, &dev->dev) == 0) {
+	if (request_firmware(&fw, filename, &dev->dev) == 0) {
 		if (fw->size >= CISTPL_MAX_CIS_SIZE) {
 			ret = -EINVAL;
 			dev_printk(KERN_ERR, &dev->dev,
@@ -988,7 +977,7 @@ static inline int pcmcia_devmatch(struct pcmcia_device *dev,
 			return 0;
 	}
 
-	dev->dev.driver_data = (void *) did;
+	dev_set_drvdata(&dev->dev, did);
 
 	return 1;
 }

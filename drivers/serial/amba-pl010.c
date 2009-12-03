@@ -117,7 +117,7 @@ static void pl010_enable_ms(struct uart_port *port)
 
 static void pl010_rx_chars(struct uart_amba_port *uap)
 {
-	struct tty_struct *tty = uap->port.info->port.tty;
+	struct tty_struct *tty = uap->port.state->port.tty;
 	unsigned int status, ch, flag, rsr, max_count = 256;
 
 	status = readb(uap->port.membase + UART01x_FR);
@@ -172,7 +172,7 @@ static void pl010_rx_chars(struct uart_amba_port *uap)
 
 static void pl010_tx_chars(struct uart_amba_port *uap)
 {
-	struct circ_buf *xmit = &uap->port.info->xmit;
+	struct circ_buf *xmit = &uap->port.state->xmit;
 	int count;
 
 	if (uap->port.x_char) {
@@ -225,7 +225,7 @@ static void pl010_modem_status(struct uart_amba_port *uap)
 	if (delta & UART01x_FR_CTS)
 		uart_handle_cts_change(&uap->port, status & UART01x_FR_CTS);
 
-	wake_up_interruptible(&uap->port.info->delta_msr_wait);
+	wake_up_interruptible(&uap->port.state->port.delta_msr_wait);
 }
 
 static irqreturn_t pl010_int(int irq, void *dev_id)
@@ -665,7 +665,7 @@ static struct uart_driver amba_reg = {
 	.cons			= AMBA_CONSOLE,
 };
 
-static int pl010_probe(struct amba_device *dev, void *id)
+static int pl010_probe(struct amba_device *dev, struct amba_id *id)
 {
 	struct uart_amba_port *uap;
 	void __iomem *base;
@@ -686,7 +686,7 @@ static int pl010_probe(struct amba_device *dev, void *id)
 		goto out;
 	}
 
-	base = ioremap(dev->res.start, PAGE_SIZE);
+	base = ioremap(dev->res.start, resource_size(&dev->res));
 	if (!base) {
 		ret = -ENOMEM;
 		goto free;

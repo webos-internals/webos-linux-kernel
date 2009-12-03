@@ -96,8 +96,8 @@
  * Bits in the CSM register
  */
 
-#define CSM_IPOK            0x40	//IP Checkusm validatiaon ok
-#define CSM_TUPOK           0x20	//TCP/UDP Checkusm validatiaon ok
+#define CSM_IPOK            0x40	//IP Checksum validation ok
+#define CSM_TUPOK           0x20	//TCP/UDP Checksum validation ok
 #define CSM_FRAG            0x10	//Fragment IP datagram
 #define CSM_IPKT            0x04	//Received an IP packet
 #define CSM_TCPKT           0x02	//Received a TCP packet
@@ -183,7 +183,7 @@ struct rdesc1 {
 };
 
 enum {
-	RX_INTEN = __constant_cpu_to_le16(0x8000)
+	RX_INTEN = cpu_to_le16(0x8000)
 };
 
 struct rx_desc {
@@ -210,7 +210,7 @@ struct tdesc1 {
 } __attribute__ ((__packed__));
 
 enum {
-	TD_QUEUE = __constant_cpu_to_le16(0x8000)
+	TD_QUEUE = cpu_to_le16(0x8000)
 };
 
 struct td_buf {
@@ -242,7 +242,7 @@ struct velocity_td_info {
 
 enum  velocity_owner {
 	OWNED_BY_HOST = 0,
-	OWNED_BY_NIC = __constant_cpu_to_le16(0x8000)
+	OWNED_BY_NIC = cpu_to_le16(0x8000)
 };
 
 
@@ -819,7 +819,7 @@ enum  velocity_owner {
  *	Bits in the EECSR register
  */
 
-#define EECSR_EMBP          0x40	/* eeprom embeded programming */
+#define EECSR_EMBP          0x40	/* eeprom embedded programming */
 #define EECSR_RELOAD        0x20	/* eeprom content reload */
 #define EECSR_DPM           0x10	/* eeprom direct programming */
 #define EECSR_ECS           0x08	/* eeprom CS pin */
@@ -1503,7 +1503,6 @@ struct velocity_info {
 
 	struct pci_dev *pdev;
 	struct net_device *dev;
-	struct net_device_stats stats;
 
 	struct vlan_group    *vlgrp;
 	u8 ip_addr[4];

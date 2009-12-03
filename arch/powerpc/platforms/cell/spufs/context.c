@@ -28,6 +28,7 @@
 #include <asm/spu.h>
 #include <asm/spu_csa.h>
 #include "spufs.h"
+#include "sputrace.h"
 
 
 atomic_t nr_spu_contexts = ATOMIC_INIT(0);
@@ -35,6 +36,8 @@ atomic_t nr_spu_contexts = ATOMIC_INIT(0);
 struct spu_context *alloc_spu_context(struct spu_gang *gang)
 {
 	struct spu_context *ctx;
+	struct timespec ts;
+
 	ctx = kzalloc(sizeof *ctx, GFP_KERNEL);
 	if (!ctx)
 		goto out;
@@ -64,6 +67,8 @@ struct spu_context *alloc_spu_context(struct spu_gang *gang)
 	__spu_update_sched_info(ctx);
 	spu_set_timeslice(ctx);
 	ctx->stats.util_state = SPU_UTIL_IDLE_LOADED;
+	ktime_get_ts(&ts);
+	ctx->stats.tstamp = timespec_to_ns(&ts);
 
 	atomic_inc(&nr_spu_contexts);
 	goto out;

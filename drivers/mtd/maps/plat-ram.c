@@ -175,7 +175,7 @@ static int platram_probe(struct platform_device *pdev)
 	/* setup map parameters */
 
 	info->map.phys = res->start;
-	info->map.size = (res->end - res->start) + 1;
+	info->map.size = resource_size(res);
 	info->map.name = pdata->mapname != NULL ?
 			(char *)pdata->mapname : (char *)pdev->name;
 	info->map.bankwidth = pdata->bankwidth;
@@ -224,6 +224,7 @@ static int platram_probe(struct platform_device *pdev)
 	}
 
 	info->mtd->owner = THIS_MODULE;
+	info->mtd->dev.parent = &pdev->dev;
 
 	platram_setrw(info, PLATRAM_RW);
 

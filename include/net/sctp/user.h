@@ -147,6 +147,8 @@ enum sctp_optname {
 #define SCTP_GET_LOCAL_ADDRS	SCTP_GET_LOCAL_ADDRS
 	SCTP_SOCKOPT_CONNECTX, /* CONNECTX requests. */
 #define SCTP_SOCKOPT_CONNECTX	SCTP_SOCKOPT_CONNECTX
+	SCTP_SOCKOPT_CONNECTX3, /* CONNECTX requests. (new implementation) */
+#define SCTP_SOCKOPT_CONNECTX3	SCTP_SOCKOPT_CONNECTX3
 };
 
 /*
@@ -207,12 +209,6 @@ enum sctp_sinfo_flags {
 	SCTP_EOF=MSG_FIN,    /* Initiate graceful shutdown process. */	
 };
 
-
-typedef union {
-	__u8   			raw;
-	struct sctp_initmsg	init;
-	struct sctp_sndrcvinfo	sndrcv;
-} sctp_cmsg_data_t;
 
 /* These are cmsg_types.  */
 typedef enum sctp_cmsg_type {

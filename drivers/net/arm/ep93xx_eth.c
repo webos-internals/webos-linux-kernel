@@ -153,7 +153,7 @@ struct ep93xx_descs
 struct ep93xx_priv
 {
 	struct resource		*res;
-	void			*base_addr;
+	void __iomem		*base_addr;
 	int			irq;
 
 	struct ep93xx_descs	*descs;
@@ -253,7 +253,7 @@ static int ep93xx_rx(struct net_device *dev, int processed, int budget)
 		skb = dev_alloc_skb(length + 2);
 		if (likely(skb != NULL)) {
 			skb_reserve(skb, 2);
-			dma_sync_single(NULL, ep->descs->rdesc[entry].buf_addr,
+			dma_sync_single_for_cpu(NULL, ep->descs->rdesc[entry].buf_addr,
 						length, DMA_FROM_DEVICE);
 			skb_copy_to_linear_data(skb, ep->rx_buf[entry], length);
 			skb_put(skb, length);
@@ -298,7 +298,7 @@ poll_some_more:
 		int more = 0;
 
 		spin_lock_irq(&ep->rx_lock);
-		__netif_rx_complete(napi);
+		__napi_complete(napi);
 		wrl(ep, REG_INTEN, REG_INTEN_TX | REG_INTEN_RX);
 		if (ep93xx_have_more_rx(ep)) {
 			wrl(ep, REG_INTEN, REG_INTEN_TX);
@@ -307,7 +307,7 @@ poll_some_more:
 		}
 		spin_unlock_irq(&ep->rx_lock);
 
-		if (more && netif_rx_reschedule(napi))
+		if (more && napi_reschedule(napi))
 			goto poll_some_more;
 	}
 
@@ -331,7 +331,7 @@ static int ep93xx_xmit(struct sk_buff *skb, struct net_device *dev)
 	ep->descs->tdesc[entry].tdesc1 =
 		TDESC1_EOF | (entry << 16) | (skb->len & 0xfff);
 	skb_copy_and_csum_dev(skb, ep->tx_buf[entry]);
-	dma_sync_single(NULL, ep->descs->tdesc[entry].buf_addr,
+	dma_sync_single_for_cpu(NULL, ep->descs->tdesc[entry].buf_addr,
 				skb->len, DMA_TO_DEVICE);
 	dev_kfree_skb(skb);
 
@@ -415,9 +415,9 @@ static irqreturn_t ep93xx_irq(int irq, void *dev_id)
 
 	if (status & REG_INTSTS_RX) {
 		spin_lock(&ep->rx_lock);
-		if (likely(netif_rx_schedule_prep(&ep->napi))) {
+		if (likely(napi_schedule_prep(&ep->napi))) {
 			wrl(ep, REG_INTEN, REG_INTEN_TX);
-			__netif_rx_schedule(&ep->napi);
+			__napi_schedule(&ep->napi);
 		}
 		spin_unlock(&ep->rx_lock);
 	}
@@ -628,15 +628,6 @@ static int ep93xx_open(struct net_device *dev)
 	if (ep93xx_alloc_buffers(ep))
 		return -ENOMEM;
 
-	if (is_zero_ether_addr(dev->dev_addr)) {
-		random_ether_addr(dev->dev_addr);
-		printk(KERN_INFO "%s: generated random MAC address "
-			"%.2x:%.2x:%.2x:%.2x:%.2x:%.2x.\n", dev->name,
-			dev->dev_addr[0], dev->dev_addr[1],
-			dev->dev_addr[2], dev->dev_addr[3],
-			dev->dev_addr[4], dev->dev_addr[5]);
-	}
-
 	napi_enable(&ep->napi);
 
 	if (ep93xx_start_hw(dev)) {
@@ -762,7 +753,7 @@ static u32 ep93xx_get_link(struct net_device *dev)
 	return mii_link_ok(&ep->mii);
 }
 
-static struct ethtool_ops ep93xx_ethtool_ops = {
+static const struct ethtool_ops ep93xx_ethtool_ops = {
 	.get_drvinfo		= ep93xx_get_drvinfo,
 	.get_settings		= ep93xx_get_settings,
 	.set_settings		= ep93xx_set_settings,
@@ -770,7 +761,18 @@ static struct ethtool_ops ep93xx_ethtool_ops = {
 	.get_link		= ep93xx_get_link,
 };
 
-struct net_device *ep93xx_dev_alloc(struct ep93xx_eth_data *data)
+static const struct net_device_ops ep93xx_netdev_ops = {
+	.ndo_open		= ep93xx_open,
+	.ndo_stop		= ep93xx_close,
+	.ndo_start_xmit		= ep93xx_xmit,
+	.ndo_get_stats		= ep93xx_get_stats,
+	.ndo_do_ioctl		= ep93xx_ioctl,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address	= eth_mac_addr,
+};
+
+static struct net_device *ep93xx_dev_alloc(struct ep93xx_eth_data *data)
 {
 	struct net_device *dev;
 
@@ -780,12 +782,8 @@ struct net_device *ep93xx_dev_alloc(struct ep93xx_eth_data *data)
 
 	memcpy(dev->dev_addr, data->dev_addr, ETH_ALEN);
 
-	dev->get_stats = ep93xx_get_stats;
 	dev->ethtool_ops = &ep93xx_ethtool_ops;
-	dev->hard_start_xmit = ep93xx_xmit;
-	dev->open = ep93xx_open;
-	dev->stop = ep93xx_close;
-	dev->do_ioctl = ep93xx_ioctl;
+	dev->netdev_ops = &ep93xx_netdev_ops;
 
 	dev->features |= NETIF_F_SG | NETIF_F_HW_CSUM;
 
@@ -869,6 +867,9 @@ static int ep93xx_eth_probe(struct platform_device *pdev)
 	ep->mii.mdio_read = ep93xx_mdio_read;
 	ep->mii.mdio_write = ep93xx_mdio_write;
 	ep->mdc_divisor = 40;	/* Max HCLK 100 MHz, min MDIO clk 2.5 MHz.  */
+
+	if (is_zero_ether_addr(dev->dev_addr))
+		random_ether_addr(dev->dev_addr);
 
 	err = register_netdev(dev);
 	if (err) {

@@ -7,17 +7,8 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-#include <linux/errno.h>
-#include <linux/fs.h>
-#include <linux/adfs_fs.h>
-#include <linux/time.h>
-#include <linux/stat.h>
-#include <linux/string.h>
-#include <linux/mm.h>
 #include <linux/smp_lock.h>
-#include <linux/module.h>
 #include <linux/buffer_head.h>
-
 #include "adfs.h"
 
 /*
@@ -28,9 +19,6 @@ static int
 adfs_get_block(struct inode *inode, sector_t block, struct buffer_head *bh,
 	       int create)
 {
-	if (block < 0)
-		goto abort_negative;
-
 	if (!create) {
 		if (block >= inode->i_blocks)
 			goto abort_toobig;
@@ -41,10 +29,6 @@ adfs_get_block(struct inode *inode, sector_t block, struct buffer_head *bh,
 		return 0;
 	}
 	/* don't support allocation of blocks yet */
-	return -EIO;
-
-abort_negative:
-	adfs_error(inode->i_sb, "block %d < 0", block);
 	return -EIO;
 
 abort_toobig:
@@ -376,7 +360,7 @@ out:
  * The adfs-specific inode data has already been updated by
  * adfs_notify_change()
  */
-int adfs_write_inode(struct inode *inode, int unused)
+int adfs_write_inode(struct inode *inode, int wait)
 {
 	struct super_block *sb = inode->i_sb;
 	struct object_info obj;
@@ -391,8 +375,7 @@ int adfs_write_inode(struct inode *inode, int unused)
 	obj.attr	= ADFS_I(inode)->attr;
 	obj.size	= inode->i_size;
 
-	ret = adfs_dir_update(sb, &obj);
+	ret = adfs_dir_update(sb, &obj, wait);
 	unlock_kernel();
 	return ret;
 }
-MODULE_LICENSE("GPL");

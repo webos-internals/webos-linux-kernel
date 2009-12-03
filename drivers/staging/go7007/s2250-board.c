@@ -21,21 +21,18 @@
 #include <linux/i2c.h>
 #include <linux/videodev2.h>
 #include <media/v4l2-common.h>
+#include "s2250-loader.h"
 #include "go7007-priv.h"
 #include "wis-i2c.h"
 
-extern int s2250loader_init(void);
-extern void s2250loader_cleanup(void);
-
 #define TLV320_ADDRESS      0x34
-#define S2250_VIDDEC        0x86
 #define VPX322_ADDR_ANALOGCONTROL1	0x02
 #define VPX322_ADDR_BRIGHTNESS0		0x0127
 #define VPX322_ADDR_BRIGHTNESS1		0x0131
 #define VPX322_ADDR_CONTRAST0		0x0128
 #define VPX322_ADDR_CONTRAST1		0x0132
 #define VPX322_ADDR_HUE			0x00dc
-#define VPX322_ADDR_SAT	 	        0x0030
+#define VPX322_ADDR_SAT			0x0030
 
 struct go7007_usb_board {
 	unsigned int flags;
@@ -44,7 +41,7 @@ struct go7007_usb_board {
 
 struct go7007_usb {
 	struct go7007_usb_board *board;
-	struct semaphore i2c_lock;
+	struct mutex i2c_lock;
 	struct usb_device *usbdev;
 	struct urb *video_urbs[8];
 	struct urb *audio_urbs[8];
@@ -115,7 +112,7 @@ static u16 vid_regs_fp_pal[] =
 };
 
 struct s2250 {
-	int std;
+	v4l2_std_id std;
 	int input;
 	int brightness;
 	int contrast;
@@ -123,6 +120,7 @@ struct s2250 {
 	int hue;
 	int reg12b_val;
 	int audio_input;
+	struct i2c_client *audio;
 };
 
 /* from go7007-usb.c which is Copyright (C) 2005-2006 Micronas USA Inc.*/
@@ -149,7 +147,7 @@ static int go7007_usb_vendor_request(struct go7007 *go, u16 request,
 static int write_reg(struct i2c_client *client, u8 reg, u8 value)
 {
 	struct go7007 *go = i2c_get_adapdata(client->adapter);
-	struct go7007_usb *usb = go->hpi_context;
+	struct go7007_usb *usb;
 	int rc;
 	int dev_addr = client->addr;
 	u8 *buf;
@@ -164,8 +162,10 @@ static int write_reg(struct i2c_client *client, u8 reg, u8 value)
 	if (buf == NULL)
 		return -ENOMEM;
 
-	if (down_interruptible(&usb->i2c_lock) != 0) {
+	usb = go->hpi_context;
+	if (mutex_lock_interruptible(&usb->i2c_lock) != 0) {
 		printk(KERN_INFO "i2c lock failed\n");
+		kfree(buf);
 		return -EINTR;
 	}
 	rc = go7007_usb_vendor_request(go, 0x55, dev_addr,
@@ -173,7 +173,7 @@ static int write_reg(struct i2c_client *client, u8 reg, u8 value)
 				       buf,
 				       16, 1);
 
-	up(&usb->i2c_lock);
+	mutex_unlock(&usb->i2c_lock);
 	kfree(buf);
 	return rc;
 }
@@ -181,7 +181,7 @@ static int write_reg(struct i2c_client *client, u8 reg, u8 value)
 static int write_reg_fp(struct i2c_client *client, u16 addr, u16 val)
 {
 	struct go7007 *go = i2c_get_adapdata(client->adapter);
-	struct go7007_usb *usb = go->hpi_context;
+	struct go7007_usb *usb;
 	u8 *buf;
 	struct s2250 *dec = i2c_get_clientdata(client);
 
@@ -200,19 +200,24 @@ static int write_reg_fp(struct i2c_client *client, u16 addr, u16 val)
 
 	memset(buf, 0xcd, 6);
 
-	if (down_interruptible(&usb->i2c_lock) != 0) {
+	usb = go->hpi_context;
+	if (mutex_lock_interruptible(&usb->i2c_lock) != 0) {
 		printk(KERN_INFO "i2c lock failed\n");
+		kfree(buf);
 		return -EINTR;
 	}
-	if (go7007_usb_vendor_request(go, 0x57, addr, val, buf, 16, 1) < 0)
+	if (go7007_usb_vendor_request(go, 0x57, addr, val, buf, 16, 1) < 0) {
+		kfree(buf);
 		return -EFAULT;
+	}
 
-	up(&usb->i2c_lock);
+	mutex_unlock(&usb->i2c_lock);
 	if (buf[0] == 0) {
 		unsigned int subaddr, val_read;
 
 		subaddr = (buf[4] << 8) + buf[5];
 		val_read = (buf[2] << 8) + buf[3];
+		kfree(buf);
 		if (val_read != val) {
 			printk(KERN_INFO "invalid fp write %x %x\n",
 			       val_read, val);
@@ -223,8 +228,10 @@ static int write_reg_fp(struct i2c_client *client, u16 addr, u16 val)
 			       subaddr, addr);
 			return -EFAULT;
 		}
-	} else
+	} else {
+		kfree(buf);
 		return -EFAULT;
+	}
 
 	/* save last 12b value */
 	if (addr == 0x12b)
@@ -232,6 +239,45 @@ static int write_reg_fp(struct i2c_client *client, u16 addr, u16 val)
 
 	return 0;
 }
+
+static int read_reg_fp(struct i2c_client *client, u16 addr, u16 *val)
+{
+	struct go7007 *go = i2c_get_adapdata(client->adapter);
+	struct go7007_usb *usb;
+	u8 *buf;
+
+	if (go == NULL)
+		return -ENODEV;
+
+	if (go->status == STATUS_SHUTDOWN)
+		return -EBUSY;
+
+	buf = kzalloc(16, GFP_KERNEL);
+
+	if (buf == NULL)
+		return -ENOMEM;
+
+
+
+	memset(buf, 0xcd, 6);
+	usb = go->hpi_context;
+	if (mutex_lock_interruptible(&usb->i2c_lock) != 0) {
+		printk(KERN_INFO "i2c lock failed\n");
+		kfree(buf);
+		return -EINTR;
+	}
+	if (go7007_usb_vendor_request(go, 0x58, addr, 0, buf, 16, 1) < 0) {
+		kfree(buf);
+		return -EFAULT;
+	}
+	mutex_unlock(&usb->i2c_lock);
+
+	*val = (buf[0] << 8) | buf[1];
+	kfree(buf);
+
+	return 0;
+}
+
 
 static int write_regs(struct i2c_client *client, u8 *regs)
 {
@@ -347,14 +393,42 @@ static int s2250_command(struct i2c_client *client,
 	{
 		struct v4l2_control *ctrl = arg;
 		int value1;
+		u16 oldvalue;
 
 		switch (ctrl->id) {
 		case V4L2_CID_BRIGHTNESS:
-			printk(KERN_INFO "s2250: future setting\n");
-			return -EINVAL;
+			if (ctrl->value > 100)
+				dec->brightness = 100;
+			else if (ctrl->value < 0)
+				dec->brightness = 0;
+			else
+				dec->brightness = ctrl->value;
+			value1 = (dec->brightness - 50) * 255 / 100;
+			read_reg_fp(client, VPX322_ADDR_BRIGHTNESS0, &oldvalue);
+			write_reg_fp(client, VPX322_ADDR_BRIGHTNESS0,
+				     value1 | (oldvalue & ~0xff));
+			read_reg_fp(client, VPX322_ADDR_BRIGHTNESS1, &oldvalue);
+			write_reg_fp(client, VPX322_ADDR_BRIGHTNESS1,
+				     value1 | (oldvalue & ~0xff));
+			write_reg_fp(client, 0x140, 0x60);
+			break;
 		case V4L2_CID_CONTRAST:
-			printk(KERN_INFO "s2250: future setting\n");
-			return -EINVAL;
+			if (ctrl->value > 100)
+				dec->contrast = 100;
+			else if (ctrl->value < 0)
+				dec->contrast = 0;
+			else
+				dec->contrast = ctrl->value;
+			value1 = dec->contrast * 0x40 / 100;
+			if (value1 > 0x3f)
+				value1 = 0x3f; /* max */
+			read_reg_fp(client, VPX322_ADDR_CONTRAST0, &oldvalue);
+			write_reg_fp(client, VPX322_ADDR_CONTRAST0,
+				     value1 | (oldvalue & ~0x3f));
+			read_reg_fp(client, VPX322_ADDR_CONTRAST1, &oldvalue);
+			write_reg_fp(client, VPX322_ADDR_CONTRAST1,
+				     value1 | (oldvalue & ~0x3f));
+			write_reg_fp(client, 0x140, 0x60);
 			break;
 		case V4L2_CID_SATURATION:
 			if (ctrl->value > 127)
@@ -449,16 +523,15 @@ static int s2250_command(struct i2c_client *client,
 	{
 		struct v4l2_audio *audio = arg;
 
-		client->addr = TLV320_ADDRESS;
 		switch (audio->index) {
 		case 0:
-			write_reg(client, 0x08, 0x02); /* Line In */
+			write_reg(dec->audio, 0x08, 0x02); /* Line In */
 			break;
 		case 1:
-			write_reg(client, 0x08, 0x04); /* Mic */
+			write_reg(dec->audio, 0x08, 0x04); /* Mic */
 			break;
 		case 2:
-			write_reg(client, 0x08, 0x05); /* Mic Boost */
+			write_reg(dec->audio, 0x08, 0x05); /* Mic Boost */
 			break;
 		default:
 			return -EINVAL;
@@ -474,31 +547,23 @@ static int s2250_command(struct i2c_client *client,
 	return 0;
 }
 
-static struct i2c_driver s2250_driver;
-
-static struct i2c_client s2250_client_templ = {
-	.name		= "Sensoray 2250",
-	.driver		= &s2250_driver,
-};
-
-static int s2250_detect(struct i2c_adapter *adapter, int addr, int kind)
+static int s2250_probe(struct i2c_client *client,
+		       const struct i2c_device_id *id)
 {
-	struct i2c_client *client;
+	struct i2c_client *audio;
+	struct i2c_adapter *adapter = client->adapter;
 	struct s2250 *dec;
 	u8 *data;
 	struct go7007 *go = i2c_get_adapdata(adapter);
 	struct go7007_usb *usb = go->hpi_context;
 
-	client = kmalloc(sizeof(struct i2c_client), GFP_KERNEL);
-	if (client == NULL)
+	audio = i2c_new_dummy(adapter, TLV320_ADDRESS >> 1);
+	if (audio == NULL)
 		return -ENOMEM;
-	memcpy(client, &s2250_client_templ,
-	       sizeof(s2250_client_templ));
-	client->adapter = adapter;
 
 	dec = kmalloc(sizeof(struct s2250), GFP_KERNEL);
 	if (dec == NULL) {
-		kfree(client);
+		i2c_unregister_device(audio);
 		return -ENOMEM;
 	}
 
@@ -507,7 +572,7 @@ static int s2250_detect(struct i2c_adapter *adapter, int addr, int kind)
 	dec->contrast = 50;
 	dec->saturation = 50;
 	dec->hue = 0;
-	client->addr = TLV320_ADDRESS;
+	dec->audio = audio;
 	i2c_set_clientdata(client, dec);
 
 	printk(KERN_DEBUG
@@ -515,28 +580,25 @@ static int s2250_detect(struct i2c_adapter *adapter, int addr, int kind)
 	       adapter->name);
 
 	/* initialize the audio */
-	client->addr = TLV320_ADDRESS;
-	if (write_regs(client, aud_regs) < 0) {
+	if (write_regs(audio, aud_regs) < 0) {
 		printk(KERN_ERR
 		       "s2250: error initializing audio\n");
-		kfree(client);
+		i2c_unregister_device(audio);
 		kfree(dec);
 		return 0;
 	}
-	client->addr = S2250_VIDDEC;
-	i2c_set_clientdata(client, dec);
 
 	if (write_regs(client, vid_regs) < 0) {
 		printk(KERN_ERR
 		       "s2250: error initializing decoder\n");
-		kfree(client);
+		i2c_unregister_device(audio);
 		kfree(dec);
 		return 0;
 	}
 	if (write_regs_fp(client, vid_regs_fp) < 0) {
 		printk(KERN_ERR
 		       "s2250: error initializing decoder\n");
-		kfree(client);
+		i2c_unregister_device(audio);
 		kfree(dec);
 		return 0;
 	}
@@ -550,7 +612,7 @@ static int s2250_detect(struct i2c_adapter *adapter, int addr, int kind)
 	dec->audio_input = 0;
 	write_reg(client, 0x08, 0x02); /* Line In */
 
-	if (down_interruptible(&usb->i2c_lock) == 0) {
+	if (mutex_lock_interruptible(&usb->i2c_lock) == 0) {
 		data = kzalloc(16, GFP_KERNEL);
 		if (data != NULL) {
 			int rc;
@@ -569,35 +631,36 @@ static int s2250_detect(struct i2c_adapter *adapter, int addr, int kind)
 			}
 			kfree(data);
 		}
-		up(&usb->i2c_lock);
+		mutex_unlock(&usb->i2c_lock);
 	}
 
-	i2c_attach_client(client);
 	printk("s2250: initialized successfully\n");
 	return 0;
 }
 
-static int s2250_detach(struct i2c_client *client)
+static int s2250_remove(struct i2c_client *client)
 {
 	struct s2250 *dec = i2c_get_clientdata(client);
-	int r;
 
-	r = i2c_detach_client(client);
-	if (r < 0)
-		return r;
-
-	kfree(client);
+	i2c_set_clientdata(client, NULL);
+	i2c_unregister_device(dec->audio);
 	kfree(dec);
 	return 0;
 }
+
+static struct i2c_device_id s2250_id[] = {
+	{ "s2250_board", 0 },
+	{ }
+};
 
 static struct i2c_driver s2250_driver = {
 	.driver = {
 		.name	= "Sensoray 2250 board driver",
 	},
-	.id		= I2C_DRIVERID_S2250,
-	.detach_client	= s2250_detach,
+	.probe		= s2250_probe,
+	.remove		= s2250_remove,
 	.command	= s2250_command,
+	.id_table	= s2250_id,
 };
 
 static int __init s2250_init(void)
@@ -610,13 +673,13 @@ static int __init s2250_init(void)
 
 	r = i2c_add_driver(&s2250_driver);
 	if (r < 0)
-		return r;
-	return wis_i2c_add_driver(s2250_driver.id, s2250_detect);
+		s2250loader_cleanup();
+
+	return r;
 }
 
 static void __exit s2250_cleanup(void)
 {
-	wis_i2c_del_driver(s2250_detect);
 	i2c_del_driver(&s2250_driver);
 
 	s2250loader_cleanup();

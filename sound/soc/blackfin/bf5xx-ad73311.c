@@ -114,7 +114,7 @@ static int snd_ad73311_configure(void)
 	SSYNC();
 
 	/* When TUVF is set, the data is already send out */
-	while (!(status & TUVF) && count++ < 10000) {
+	while (!(status & TUVF) && ++count < 10000) {
 		udelay(1);
 		status = bfin_read_SPORT_STAT();
 		SSYNC();
@@ -123,7 +123,7 @@ static int snd_ad73311_configure(void)
 	SSYNC();
 	local_irq_enable();
 
-	if (count == 10000) {
+	if (count >= 10000) {
 		printk(KERN_ERR "ad73311: failed to configure codec\n");
 		return -1;
 	}
@@ -203,23 +203,23 @@ static struct snd_soc_device bf5xx_ad73311_snd_devdata = {
 	.codec_dev = &soc_codec_dev_ad73311,
 };
 
-static struct platform_device *bf52x_ad73311_snd_device;
+static struct platform_device *bf5xx_ad73311_snd_device;
 
 static int __init bf5xx_ad73311_init(void)
 {
 	int ret;
 
 	pr_debug("%s enter\n", __func__);
-	bf52x_ad73311_snd_device = platform_device_alloc("soc-audio", -1);
-	if (!bf52x_ad73311_snd_device)
+	bf5xx_ad73311_snd_device = platform_device_alloc("soc-audio", -1);
+	if (!bf5xx_ad73311_snd_device)
 		return -ENOMEM;
 
-	platform_set_drvdata(bf52x_ad73311_snd_device, &bf5xx_ad73311_snd_devdata);
-	bf5xx_ad73311_snd_devdata.dev = &bf52x_ad73311_snd_device->dev;
-	ret = platform_device_add(bf52x_ad73311_snd_device);
+	platform_set_drvdata(bf5xx_ad73311_snd_device, &bf5xx_ad73311_snd_devdata);
+	bf5xx_ad73311_snd_devdata.dev = &bf5xx_ad73311_snd_device->dev;
+	ret = platform_device_add(bf5xx_ad73311_snd_device);
 
 	if (ret)
-		platform_device_put(bf52x_ad73311_snd_device);
+		platform_device_put(bf5xx_ad73311_snd_device);
 
 	return ret;
 }
@@ -227,7 +227,7 @@ static int __init bf5xx_ad73311_init(void)
 static void __exit bf5xx_ad73311_exit(void)
 {
 	pr_debug("%s enter\n", __func__);
-	platform_device_unregister(bf52x_ad73311_snd_device);
+	platform_device_unregister(bf5xx_ad73311_snd_device);
 }
 
 module_init(bf5xx_ad73311_init);

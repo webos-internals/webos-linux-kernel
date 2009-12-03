@@ -160,7 +160,7 @@
 
 
 // 100: init, 200: dle0, 250:dle1, 300: get cid (dial), 350: "hup" (no cid), 400: hup, 500: reset, 600: dial, 700: ring
-struct reply_t gigaset_tab_nocid_m10x[]= /* with dle mode */
+struct reply_t gigaset_tab_nocid[] =
 {
 	/* resp_code, min_ConState, max_ConState, parameter, new_ConState, timeout, action, command */
 
@@ -207,7 +207,6 @@ struct reply_t gigaset_tab_nocid_m10x[]= /* with dle mode */
 	/* leave dle mode */
 	{RSP_INIT,      0,  0,SEQ_DLE0,           201, 5, {0},             "^SDLE=0\r"},
 	{RSP_OK,      201,201, -1,                202,-1},
-	//{RSP_ZDLE,    202,202,  0,                202, 0, {ACT_ERROR}},//DELETE
 	{RSP_ZDLE,    202,202,  0,                  0, 0, {ACT_DLE0}},
 	{RSP_NODEV,   200,249, -1,                  0, 0, {ACT_FAKEDLE0}},
 	{RSP_ERROR,   200,249, -1,                  0, 0, {ACT_FAILDLE0}},
@@ -265,6 +264,7 @@ struct reply_t gigaset_tab_nocid_m10x[]= /* with dle mode */
 	{EV_SHUTDOWN,  -1, -1, -1,                 -1,-1, {ACT_SHUTDOWN}}, //FIXME
 
 	/* misc. */
+	{RSP_ERROR,    -1, -1, -1,                 -1, -1, {ACT_ERROR} },
 	{RSP_EMPTY,    -1, -1, -1,                 -1,-1, {ACT_DEBUG}}, //FIXME
 	{RSP_ZCFGT,    -1, -1, -1,                 -1,-1, {ACT_DEBUG}}, //FIXME
 	{RSP_ZCFG,     -1, -1, -1,                 -1,-1, {ACT_DEBUG}}, //FIXME
@@ -280,7 +280,7 @@ struct reply_t gigaset_tab_nocid_m10x[]= /* with dle mode */
 };
 
 // 600: start dialing, 650: dial in progress, 800: connection is up, 700: ring, 400: hup, 750: accepted icall
-struct reply_t gigaset_tab_cid_m10x[] = /* for M10x */
+struct reply_t gigaset_tab_cid[] =
 {
 	/* resp_code, min_ConState, max_ConState, parameter, new_ConState, timeout, action, command */
 
@@ -294,32 +294,33 @@ struct reply_t gigaset_tab_cid_m10x[] = /* for M10x */
 	{RSP_OK,      604,604, -1,                605, 5, {ACT_CMD+AT_MSN}},
 	{RSP_OK,      605,605, -1,                606, 5, {ACT_CMD+AT_ISO}},
 	{RSP_NULL,    605,605, -1,                606, 5, {ACT_CMD+AT_ISO}},
-	{RSP_OK,      606,606, -1,                607, 5, {0},             "+VLS=17\r"}, /* set "Endgeraetemodus" */
+	{RSP_OK,      606,606, -1,                607, 5, {0}, "+VLS=17\r"},
 	{RSP_OK,      607,607, -1,                608,-1},
-	//{RSP_ZSAU,    608,608,ZSAU_PROCEEDING,    608, 0, {ACT_ERROR}},//DELETE
 	{RSP_ZSAU,    608,608,ZSAU_PROCEEDING,    609, 5, {ACT_CMD+AT_DIAL}},
 	{RSP_OK,      609,609, -1,                650, 0, {ACT_DIALING}},
 
-	{RSP_ZVLS,    608,608, 17,                 -1,-1, {ACT_DEBUG}},
-	{RSP_ZCTP,    609,609, -1,                 -1,-1, {ACT_DEBUG}},
-	{RSP_ZCPN,    609,609, -1,                 -1,-1, {ACT_DEBUG}},
 	{RSP_ERROR,   601,609, -1,                  0, 0, {ACT_ABORTDIAL}},
 	{EV_TIMEOUT,  601,609, -1,                  0, 0, {ACT_ABORTDIAL}},
 
-	/* dialing */
-	{RSP_ZCTP,    650,650, -1,                 -1,-1, {ACT_DEBUG}},
-	{RSP_ZCPN,    650,650, -1,                 -1,-1, {ACT_DEBUG}},
-	{RSP_ZSAU,    650,650,ZSAU_CALL_DELIVERED, -1,-1, {ACT_DEBUG}}, /* some devices don't send this */
+	/* optional dialing responses */
+	{EV_BC_OPEN,  650,650, -1,                651,-1},
+	{RSP_ZVLS,    608,651, 17,                 -1,-1, {ACT_DEBUG}},
+	{RSP_ZCTP,    609,651, -1,                 -1,-1, {ACT_DEBUG}},
+	{RSP_ZCPN,    609,651, -1,                 -1,-1, {ACT_DEBUG}},
+	{RSP_ZSAU,    650,651,ZSAU_CALL_DELIVERED, -1,-1, {ACT_DEBUG}},
 
-	/* connection established  */
-	{RSP_ZSAU,    650,650,ZSAU_ACTIVE,        800,-1, {ACT_CONNECT}}, //FIXME -> DLE1
-	{RSP_ZSAU,    750,750,ZSAU_ACTIVE,        800,-1, {ACT_CONNECT}}, //FIXME -> DLE1
-
-	{EV_BC_OPEN,  800,800, -1,                800,-1, {ACT_NOTIFY_BC_UP}}, //FIXME new constate + timeout
+	/* connect */
+	{RSP_ZSAU,    650,650,ZSAU_ACTIVE,        800,-1, {ACT_CONNECT}},
+	{RSP_ZSAU,    651,651,ZSAU_ACTIVE,        800,-1, {ACT_CONNECT,
+							   ACT_NOTIFY_BC_UP}},
+	{RSP_ZSAU,    750,750,ZSAU_ACTIVE,        800,-1, {ACT_CONNECT}},
+	{RSP_ZSAU,    751,751,ZSAU_ACTIVE,        800,-1, {ACT_CONNECT,
+							   ACT_NOTIFY_BC_UP}},
+	{EV_BC_OPEN,  800,800, -1,                800,-1, {ACT_NOTIFY_BC_UP}},
 
 	/* remote hangup */
-	{RSP_ZSAU,    650,650,ZSAU_DISCONNECT_IND,  0, 0, {ACT_REMOTEREJECT}},
-	{RSP_ZSAU,    750,750,ZSAU_DISCONNECT_IND,  0, 0, {ACT_REMOTEHUP}},
+	{RSP_ZSAU,    650,651,ZSAU_DISCONNECT_IND,  0, 0, {ACT_REMOTEREJECT}},
+	{RSP_ZSAU,    750,751,ZSAU_DISCONNECT_IND,  0, 0, {ACT_REMOTEHUP}},
 	{RSP_ZSAU,    800,800,ZSAU_DISCONNECT_IND,  0, 0, {ACT_REMOTEHUP}},
 
 	/* hangup */
@@ -327,10 +328,9 @@ struct reply_t gigaset_tab_cid_m10x[] = /* for M10x */
 	{RSP_INIT,     -1, -1,SEQ_HUP,            401, 5, {0},             "+VLS=0\r"}, /* hang up */ //-1,-1?
 	{RSP_OK,      401,401, -1,                402, 5},
 	{RSP_ZVLS,    402,402,  0,                403, 5},
-	{RSP_ZSAU,    403,403,ZSAU_DISCONNECT_REQ, -1,-1, {ACT_DEBUG}}, /* if not remote hup */
-	//{RSP_ZSAU,    403,403,ZSAU_NULL,          401, 0, {ACT_ERROR}}, //DELETE//FIXME -> DLE0 // should we do this _before_ hanging up for base driver?
-	{RSP_ZSAU,    403,403,ZSAU_NULL,            0, 0, {ACT_DISCONNECT}}, //FIXME -> DLE0 // should we do this _before_ hanging up for base driver?
-	{RSP_NODEV,   401,403, -1,                  0, 0, {ACT_FAKEHUP}}, //FIXME -> DLE0 // should we do this _before_ hanging up for base driver?
+	{RSP_ZSAU,    403, 403, ZSAU_DISCONNECT_REQ, -1, -1, {ACT_DEBUG} },
+	{RSP_ZSAU,    403, 403, ZSAU_NULL,            0,  0, {ACT_DISCONNECT} },
+	{RSP_NODEV,   401, 403, -1,                   0,  0, {ACT_FAKEHUP} },
 	{RSP_ERROR,   401,401, -1,                  0, 0, {ACT_ABORTHUP}},
 	{EV_TIMEOUT,  401,403, -1,                  0, 0, {ACT_ABORTHUP}},
 
@@ -358,7 +358,8 @@ struct reply_t gigaset_tab_cid_m10x[] = /* for M10x */
 	{RSP_ZSAU,    700,729,ZSAU_ACTIVE,          0, 0, {ACT_ABORTACCEPT}},
 	{RSP_ZSAU,    700,729,ZSAU_DISCONNECT_IND,  0, 0, {ACT_ABORTACCEPT}},
 
-	{EV_TIMEOUT,  750,750, -1,                  0, 0, {ACT_CONNTIMEOUT}},
+	{EV_BC_OPEN,  750,750, -1,                751,-1},
+	{EV_TIMEOUT,  750,751, -1,                  0, 0, {ACT_CONNTIMEOUT}},
 
 	/* B channel closed (general case) */
 	{EV_BC_CLOSED, -1, -1, -1,                 -1,-1, {ACT_NOTIFY_BC_DOWN}}, //FIXME
@@ -472,8 +473,13 @@ static int cid_of_response(char *s)
 	//FIXME is ;<digit>+ at end of non-CID response really impossible?
 }
 
-/* This function will be called via task queue from the callback handler.
- * We received a modem response and have to handle it..
+/**
+ * gigaset_handle_modem_response() - process received modem response
+ * @cs:		device descriptor structure.
+ *
+ * Called by asyncdata/isocdata if a block of data received from the
+ * device must be processed as a modem command response. The data is
+ * already in the cs structure.
  */
 void gigaset_handle_modem_response(struct cardstate *cs)
 {
@@ -705,6 +711,11 @@ static void disconnect(struct at_state_t **at_state_p)
 	if (bcs) {
 		/* B channel assigned: invoke hardware specific handler */
 		cs->ops->close_bchannel(bcs);
+		/* notify LL */
+		if (bcs->chstate & (CHS_D_UP | CHS_NOTIFY_LL)) {
+			bcs->chstate &= ~(CHS_D_UP | CHS_NOTIFY_LL);
+			gigaset_i4l_channel_cmd(bcs, ISDN_STAT_DHUP);
+		}
 	} else {
 		/* no B channel assigned: just deallocate */
 		spin_lock_irqsave(&cs->lock, flags);
@@ -876,12 +887,6 @@ static void bchannel_down(struct bc_state *bcs)
 
 static void bchannel_up(struct bc_state *bcs)
 {
-	if (!(bcs->chstate & CHS_D_UP)) {
-		dev_notice(bcs->cs->dev, "%s: D channel not up\n", __func__);
-		bcs->chstate |= CHS_D_UP;
-		gigaset_i4l_channel_cmd(bcs, ISDN_STAT_DCONN);
-	}
-
 	if (bcs->chstate & CHS_B_UP) {
 		dev_notice(bcs->cs->dev, "%s: B channel already up\n",
 			   __func__);
@@ -1433,11 +1438,12 @@ static void do_action(int action, struct cardstate *cs,
 		cs->gotfwver = -1;
 		dev_err(cs->dev, "could not read firmware version.\n");
 		break;
-#ifdef CONFIG_GIGASET_DEBUG
 	case ACT_ERROR:
-		*p_genresp = 1;
-		*p_resp_code = RSP_ERROR;
+		gig_dbg(DEBUG_ANY, "%s: ERROR response in ConState %d",
+			__func__, at_state->ConState);
+		cs->cur_at_seq = SEQ_NONE;
 		break;
+#ifdef CONFIG_GIGASET_DEBUG
 	case ACT_TEST:
 		{
 			static int count = 3; //2; //1;

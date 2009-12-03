@@ -32,6 +32,7 @@
 #include <linux/blkpg.h>
 #include <linux/timer.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/init.h>
 #include <linux/hdreg.h>
 #include <linux/spinlock.h>
@@ -177,7 +178,6 @@ static int cpqarray_register_ctlr(int ctlr, struct pci_dev *pdev);
 
 #ifdef CONFIG_PROC_FS
 static void ida_procinit(int i);
-static int ida_proc_get_info(char *buffer, char **start, off_t offset, int length, int *eof, void *data);
 #else
 static void ida_procinit(int i) {}
 #endif
@@ -193,7 +193,7 @@ static inline ctlr_info_t *get_host(struct gendisk *disk)
 }
 
 
-static struct block_device_operations ida_fops  = {
+static const struct block_device_operations ida_fops  = {
 	.owner		= THIS_MODULE,
 	.open		= ida_open,
 	.release	= ida_release,
@@ -206,6 +206,7 @@ static struct block_device_operations ida_fops  = {
 #ifdef CONFIG_PROC_FS
 
 static struct proc_dir_entry *proc_array;
+static const struct file_operations ida_proc_fops;
 
 /*
  * Get us a file in /proc/array that says something about each controller.
@@ -218,19 +219,16 @@ static void __init ida_procinit(int i)
 		if (!proc_array) return;
 	}
 
-	create_proc_read_entry(hba[i]->devname, 0, proc_array,
-			       ida_proc_get_info, hba[i]);
+	proc_create_data(hba[i]->devname, 0, proc_array, &ida_proc_fops, hba[i]);
 }
 
 /*
  * Report information about this controller.
  */
-static int ida_proc_get_info(char *buffer, char **start, off_t offset, int length, int *eof, void *data)
+static int ida_proc_show(struct seq_file *m, void *v)
 {
-	off_t pos = 0;
-	off_t len = 0;
-	int size, i, ctlr;
-	ctlr_info_t *h = (ctlr_info_t*)data;
+	int i, ctlr;
+	ctlr_info_t *h = (ctlr_info_t*)m->private;
 	drv_info_t *drv;
 #ifdef CPQ_PROC_PRINT_QUEUES
 	cmdlist_t *c;
@@ -238,7 +236,7 @@ static int ida_proc_get_info(char *buffer, char **start, off_t offset, int lengt
 #endif
 
 	ctlr = h->ctlr;
-	size = sprintf(buffer, "%s:  Compaq %s Controller\n"
+	seq_printf(m, "%s:  Compaq %s Controller\n"
 		"       Board ID: 0x%08lx\n"
 		"       Firmware Revision: %c%c%c%c\n"
 		"       Controller Sig: 0x%08lx\n"
@@ -258,55 +256,54 @@ static int ida_proc_get_info(char *buffer, char **start, off_t offset, int lengt
 		h->log_drives, h->phys_drives,
 		h->Qdepth, h->maxQsinceinit);
 
-	pos += size; len += size;
-	
-	size = sprintf(buffer+len, "Logical Drive Info:\n");
-	pos += size; len += size;
+	seq_puts(m, "Logical Drive Info:\n");
 
 	for(i=0; i<h->log_drives; i++) {
 		drv = &h->drv[i];
-		size = sprintf(buffer+len, "ida/c%dd%d: blksz=%d nr_blks=%d\n",
+		seq_printf(m, "ida/c%dd%d: blksz=%d nr_blks=%d\n",
 				ctlr, i, drv->blk_size, drv->nr_blks);
-		pos += size; len += size;
 	}
 
 #ifdef CPQ_PROC_PRINT_QUEUES
 	spin_lock_irqsave(IDA_LOCK(h->ctlr), flags); 
-	size = sprintf(buffer+len, "\nCurrent Queues:\n");
-	pos += size; len += size;
+	seq_puts(m, "\nCurrent Queues:\n");
 
 	c = h->reqQ;
-	size = sprintf(buffer+len, "reqQ = %p", c); pos += size; len += size;
+	seq_printf(m, "reqQ = %p", c);
 	if (c) c=c->next;
 	while(c && c != h->reqQ) {
-		size = sprintf(buffer+len, "->%p", c);
-		pos += size; len += size;
+		seq_printf(m, "->%p", c);
 		c=c->next;
 	}
 
 	c = h->cmpQ;
-	size = sprintf(buffer+len, "\ncmpQ = %p", c); pos += size; len += size;
+	seq_printf(m, "\ncmpQ = %p", c);
 	if (c) c=c->next;
 	while(c && c != h->cmpQ) {
-		size = sprintf(buffer+len, "->%p", c);
-		pos += size; len += size;
+		seq_printf(m, "->%p", c);
 		c=c->next;
 	}
 
-	size = sprintf(buffer+len, "\n"); pos += size; len += size;
+	seq_putc(m, '\n');
 	spin_unlock_irqrestore(IDA_LOCK(h->ctlr), flags); 
 #endif
-	size = sprintf(buffer+len, "nr_allocs = %d\nnr_frees = %d\n",
+	seq_printf(m, "nr_allocs = %d\nnr_frees = %d\n",
 			h->nr_allocs, h->nr_frees);
-	pos += size; len += size;
-
-	*eof = 1;
-	*start = buffer+offset;
-	len -= offset;
-	if (len>length)
-		len = length;
-	return len;
+	return 0;
 }
+
+static int ida_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ida_proc_show, PDE(inode)->data);
+}
+
+static const struct file_operations ida_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ida_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 #endif /* CONFIG_PROC_FS */
 
 module_param_array(eisa, int, NULL, 0);
@@ -474,7 +471,7 @@ static int __init cpqarray_register_ctlr( int i, struct pci_dev *pdev)
 		disk->fops = &ida_fops;
 		if (j && !drv->nr_blks)
 			continue;
-		blk_queue_hardsect_size(hba[i]->queue, drv->blk_size);
+		blk_queue_logical_block_size(hba[i]->queue, drv->blk_size);
 		set_capacity(disk, drv->nr_blks);
 		disk->queue = hba[i]->queue;
 		disk->private_data = drv;
@@ -617,6 +614,7 @@ static int cpqarray_pci_init(ctlr_info_t *c, struct pci_dev *pdev)
 	int i;
 
 	c->pci_dev = pdev;
+	pci_set_master(pdev);
 	if (pci_enable_device(pdev)) {
 		printk(KERN_ERR "cpqarray: Unable to Enable PCI device\n");
 		return -1;
@@ -902,7 +900,7 @@ static void do_ida_request(struct request_queue *q)
 		goto startio;
 
 queue_next:
-	creq = elv_next_request(q);
+	creq = blk_peek_request(q);
 	if (!creq)
 		goto startio;
 
@@ -911,17 +909,18 @@ queue_next:
 	if ((c = cmd_alloc(h,1)) == NULL)
 		goto startio;
 
-	blkdev_dequeue_request(creq);
+	blk_start_request(creq);
 
 	c->ctlr = h->ctlr;
 	c->hdr.unit = (drv_info_t *)(creq->rq_disk->private_data) - h->drv;
 	c->hdr.size = sizeof(rblk_t) >> 2;
 	c->size += sizeof(rblk_t);
 
-	c->req.hdr.blk = creq->sector;
+	c->req.hdr.blk = blk_rq_pos(creq);
 	c->rq = creq;
 DBGPX(
-	printk("sector=%d, nr_sectors=%d\n", creq->sector, creq->nr_sectors);
+	printk("sector=%d, nr_sectors=%u\n",
+	       blk_rq_pos(creq), blk_rq_sectors(creq));
 );
 	sg_init_table(tmp_sg, SG_MAX);
 	seg = blk_rq_map_sg(q, creq, tmp_sg);
@@ -939,9 +938,9 @@ DBGPX(
 						 tmp_sg[i].offset,
 						 tmp_sg[i].length, dir);
 	}
-DBGPX(	printk("Submitting %d sectors in %d segments\n", creq->nr_sectors, seg); );
+DBGPX(	printk("Submitting %u sectors in %d segments\n", blk_rq_sectors(creq), seg); );
 	c->req.hdr.sg_cnt = seg;
-	c->req.hdr.blk_cnt = creq->nr_sectors;
+	c->req.hdr.blk_cnt = blk_rq_sectors(creq);
 	c->req.hdr.cmd = (rq_data_dir(creq) == READ) ? IDA_READ : IDA_WRITE;
 	c->type = CMD_RWREQ;
 
@@ -1023,8 +1022,7 @@ static inline void complete_command(cmdlist_t *cmd, int timeout)
 				cmd->req.sg[i].size, ddir);
 
 	DBGPX(printk("Done with %p\n", rq););
-	if (__blk_end_request(rq, error, blk_rq_bytes(rq)))
-		BUG();
+	__blk_end_request_all(rq, error);
 }
 
 /*
@@ -1545,7 +1543,7 @@ static int revalidate_allvol(ctlr_info_t *host)
 		drv_info_t *drv = &host->drv[i];
 		if (i && !drv->nr_blks)
 			continue;
-		blk_queue_hardsect_size(host->queue, drv->blk_size);
+		blk_queue_logical_block_size(host->queue, drv->blk_size);
 		set_capacity(disk, drv->nr_blks);
 		disk->queue = host->queue;
 		disk->private_data = drv;

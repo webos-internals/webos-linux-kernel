@@ -1017,7 +1017,7 @@ static ssize_t cmm_read(struct file *filp, __user char *buf, size_t count,
 		}
 	}
 
-	if (dev->proto == 0 && count > dev->rlen - dev->rpos) {
+	if (dev->proto == 0 && count > dev->rlen - dev->rpos && i) {
 		DEBUGP(4, dev, "T=0 and count > buffer\n");
 		dev->rbuf[i] = dev->rbuf[i - 1];
 		dev->rbuf[i - 1] = dev->procbyte;
@@ -1575,7 +1575,8 @@ static long cmm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		clear_bit(LOCK_IO, &dev->flags);
 		wake_up_interruptible(&dev->ioq);
 
-		return 0;
+		rc = 0;
+		break;
 	case CM_IOCSPTS:
 		{
 			struct ptsreq krnptsreq;

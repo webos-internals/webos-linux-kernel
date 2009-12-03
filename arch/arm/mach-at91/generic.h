@@ -14,6 +14,7 @@ extern void __init at91sam9260_initialize(unsigned long main_clock);
 extern void __init at91sam9261_initialize(unsigned long main_clock);
 extern void __init at91sam9263_initialize(unsigned long main_clock);
 extern void __init at91sam9rl_initialize(unsigned long main_clock);
+extern void __init at91sam9g45_initialize(unsigned long main_clock);
 extern void __init at91x40_initialize(unsigned long main_clock);
 extern void __init at91cap9_initialize(unsigned long main_clock);
 
@@ -23,6 +24,7 @@ extern void __init at91sam9260_init_interrupts(unsigned int priority[]);
 extern void __init at91sam9261_init_interrupts(unsigned int priority[]);
 extern void __init at91sam9263_init_interrupts(unsigned int priority[]);
 extern void __init at91sam9rl_init_interrupts(unsigned int priority[]);
+extern void __init at91sam9g45_init_interrupts(unsigned int priority[]);
 extern void __init at91x40_init_interrupts(unsigned int priority[]);
 extern void __init at91cap9_init_interrupts(unsigned int priority[]);
 extern void __init at91_aic_init(unsigned int priority[]);
@@ -47,9 +49,6 @@ extern void at91_irq_resume(void);
 #define AT91RM9200_BGA		4	/* AT91RM9200 BGA package has 4 banks */
 
 struct at91_gpio_bank {
-	unsigned chipbase;		/* bank's first GPIO number */
-	void __iomem *regbase;		/* base of register bank */
-	struct at91_gpio_bank *next;	/* bank sharing same IRQ/clock/... */
 	unsigned short id;		/* peripheral ID */
 	unsigned long offset;		/* offset from system peripheral base */
 	struct clk *clock;		/* associated clock */

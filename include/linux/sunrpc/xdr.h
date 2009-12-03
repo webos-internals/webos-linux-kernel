@@ -11,8 +11,8 @@
 
 #include <linux/uio.h>
 #include <asm/byteorder.h>
+#include <asm/unaligned.h>
 #include <linux/scatterlist.h>
-#include <linux/smp_lock.h>
 
 /*
  * Buffer adjustment
@@ -69,27 +69,27 @@ struct xdr_buf {
  * pre-xdr'ed macros.
  */
 
-#define	xdr_zero	__constant_htonl(0)
-#define	xdr_one		__constant_htonl(1)
-#define	xdr_two		__constant_htonl(2)
+#define	xdr_zero	cpu_to_be32(0)
+#define	xdr_one		cpu_to_be32(1)
+#define	xdr_two		cpu_to_be32(2)
 
-#define	rpc_success		__constant_htonl(RPC_SUCCESS)
-#define	rpc_prog_unavail	__constant_htonl(RPC_PROG_UNAVAIL)
-#define	rpc_prog_mismatch	__constant_htonl(RPC_PROG_MISMATCH)
-#define	rpc_proc_unavail	__constant_htonl(RPC_PROC_UNAVAIL)
-#define	rpc_garbage_args	__constant_htonl(RPC_GARBAGE_ARGS)
-#define	rpc_system_err		__constant_htonl(RPC_SYSTEM_ERR)
-#define	rpc_drop_reply		__constant_htonl(RPC_DROP_REPLY)
+#define	rpc_success		cpu_to_be32(RPC_SUCCESS)
+#define	rpc_prog_unavail	cpu_to_be32(RPC_PROG_UNAVAIL)
+#define	rpc_prog_mismatch	cpu_to_be32(RPC_PROG_MISMATCH)
+#define	rpc_proc_unavail	cpu_to_be32(RPC_PROC_UNAVAIL)
+#define	rpc_garbage_args	cpu_to_be32(RPC_GARBAGE_ARGS)
+#define	rpc_system_err		cpu_to_be32(RPC_SYSTEM_ERR)
+#define	rpc_drop_reply		cpu_to_be32(RPC_DROP_REPLY)
 
-#define	rpc_auth_ok		__constant_htonl(RPC_AUTH_OK)
-#define	rpc_autherr_badcred	__constant_htonl(RPC_AUTH_BADCRED)
-#define	rpc_autherr_rejectedcred __constant_htonl(RPC_AUTH_REJECTEDCRED)
-#define	rpc_autherr_badverf	__constant_htonl(RPC_AUTH_BADVERF)
-#define	rpc_autherr_rejectedverf __constant_htonl(RPC_AUTH_REJECTEDVERF)
-#define	rpc_autherr_tooweak	__constant_htonl(RPC_AUTH_TOOWEAK)
-#define	rpcsec_gsserr_credproblem	__constant_htonl(RPCSEC_GSS_CREDPROBLEM)
-#define	rpcsec_gsserr_ctxproblem	__constant_htonl(RPCSEC_GSS_CTXPROBLEM)
-#define	rpc_autherr_oldseqnum	__constant_htonl(101)
+#define	rpc_auth_ok		cpu_to_be32(RPC_AUTH_OK)
+#define	rpc_autherr_badcred	cpu_to_be32(RPC_AUTH_BADCRED)
+#define	rpc_autherr_rejectedcred cpu_to_be32(RPC_AUTH_REJECTEDCRED)
+#define	rpc_autherr_badverf	cpu_to_be32(RPC_AUTH_BADVERF)
+#define	rpc_autherr_rejectedverf cpu_to_be32(RPC_AUTH_REJECTEDVERF)
+#define	rpc_autherr_tooweak	cpu_to_be32(RPC_AUTH_TOOWEAK)
+#define	rpcsec_gsserr_credproblem	cpu_to_be32(RPCSEC_GSS_CREDPROBLEM)
+#define	rpcsec_gsserr_ctxproblem	cpu_to_be32(RPCSEC_GSS_CTXPROBLEM)
+#define	rpc_autherr_oldseqnum	cpu_to_be32(101)
 
 /*
  * Miscellaneous XDR helper functions
@@ -118,17 +118,15 @@ static inline __be32 *xdr_encode_array(__be32 *p, const void *s, unsigned int le
 static inline __be32 *
 xdr_encode_hyper(__be32 *p, __u64 val)
 {
-	*p++ = htonl(val >> 32);
-	*p++ = htonl(val & 0xFFFFFFFF);
-	return p;
+	put_unaligned_be64(val, p);
+	return p + 2;
 }
 
 static inline __be32 *
 xdr_decode_hyper(__be32 *p, __u64 *valp)
 {
-	*valp  = ((__u64) ntohl(*p++)) << 32;
-	*valp |= ntohl(*p++);
-	return p;
+	*valp = get_unaligned_be64(p);
+	return p + 2;
 }
 
 /*

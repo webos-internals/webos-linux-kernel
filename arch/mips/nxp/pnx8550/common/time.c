@@ -35,7 +35,7 @@
 
 static unsigned long cpj;
 
-static cycle_t hpt_read(void)
+static cycle_t hpt_read(struct clocksource *cs)
 {
 	return read_c0_count2();
 }
@@ -59,7 +59,7 @@ static irqreturn_t pnx8xxx_timer_interrupt(int irq, void *dev_id)
 
 static struct irqaction pnx8xxx_timer_irq = {
 	.handler	= pnx8xxx_timer_interrupt,
-	.flags		= IRQF_DISABLED | IRQF_PERCPU,
+	.flags		= IRQF_DISABLED | IRQF_PERCPU | IRQF_TIMER,
 	.name		= "pnx8xxx_timer",
 };
 
@@ -72,7 +72,7 @@ static irqreturn_t monotonic_interrupt(int irq, void *dev_id)
 
 static struct irqaction monotonic_irqaction = {
 	.handler = monotonic_interrupt,
-	.flags = IRQF_DISABLED,
+	.flags = IRQF_DISABLED | IRQF_TIMER,
 	.name = "Monotonic timer",
 };
 
@@ -138,7 +138,7 @@ __init void plat_time_init(void)
 	 * HZ timer interrupts per second.
 	 */
 	mips_hpt_frequency = 27UL * ((1000000UL * n)/(m * pow2p));
-	cpj = (mips_hpt_frequency + HZ / 2) / HZ;
+	cpj = DIV_ROUND_CLOSEST(mips_hpt_frequency, HZ);
 	write_c0_count(0);
 	timer_ack();
 

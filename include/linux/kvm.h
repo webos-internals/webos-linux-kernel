@@ -14,7 +14,7 @@
 
 #define KVM_API_VERSION 12
 
-/* for KVM_TRACE_ENABLE */
+/* for KVM_TRACE_ENABLE, deprecated */
 struct kvm_user_trace_setup {
 	__u32 buf_size; /* sub_buffer size of each per-cpu */
 	__u32 buf_nr; /* the number of sub_buffers of each per-cpu */
@@ -48,7 +48,10 @@ struct kvm_irq_level {
 	 * For IA-64 (APIC model) IOAPIC0: irq 0-23; IOAPIC1: irq 24-47..
 	 * For X86 (standard AT mode) PIC0/1: irq 0-15. IOAPIC0: 0-23..
 	 */
-	__u32 irq;
+	union {
+		__u32 irq;
+		__s32 status;
+	};
 	__u32 level;
 };
 
@@ -67,6 +70,14 @@ struct kvm_irqchip {
 	} chip;
 };
 
+/* for KVM_CREATE_PIT2 */
+struct kvm_pit_config {
+	__u32 flags;
+	__u32 pad[15];
+};
+
+#define KVM_PIT_SPEAKER_DUMMY     1
+
 #define KVM_EXIT_UNKNOWN          0
 #define KVM_EXIT_EXCEPTION        1
 #define KVM_EXIT_IO               2
@@ -84,6 +95,10 @@ struct kvm_irqchip {
 #define KVM_EXIT_S390_RESET       14
 #define KVM_EXIT_DCR              15
 #define KVM_EXIT_NMI              16
+#define KVM_EXIT_INTERNAL_ERROR   17
+
+/* For KVM_EXIT_INTERNAL_ERROR */
+#define KVM_INTERNAL_ERROR_EMULATION 1
 
 /* for KVM_RUN, returned by mmap(vcpu_fd, offset=0) */
 struct kvm_run {
@@ -116,7 +131,7 @@ struct kvm_run {
 			__u32 error_code;
 		} ex;
 		/* KVM_EXIT_IO */
-		struct kvm_io {
+		struct {
 #define KVM_EXIT_IO_IN  0
 #define KVM_EXIT_IO_OUT 1
 			__u8 direction;
@@ -126,6 +141,7 @@ struct kvm_run {
 			__u64 data_offset; /* relative to kvm_run start */
 		} io;
 		struct {
+			struct kvm_debug_exit_arch arch;
 		} debug;
 		/* KVM_EXIT_MMIO */
 		struct {
@@ -169,6 +185,9 @@ struct kvm_run {
 			__u32 data;
 			__u8  is_write;
 		} dcr;
+		struct {
+			__u32 suberror;
+		} internal;
 		/* Fix the size of the union. */
 		char padding[256];
 	};
@@ -217,28 +236,13 @@ struct kvm_interrupt {
 	__u32 irq;
 };
 
-struct kvm_breakpoint {
-	__u32 enabled;
-	__u32 padding;
-	__u64 address;
-};
-
-/* for KVM_DEBUG_GUEST */
-struct kvm_debug_guest {
-	/* int */
-	__u32 enabled;
-	__u32 pad;
-	struct kvm_breakpoint breakpoints[4];
-	__u32 singlestep;
-};
-
 /* for KVM_GET_DIRTY_LOG */
 struct kvm_dirty_log {
 	__u32 slot;
-	__u32 padding;
+	__u32 padding1;
 	union {
 		void __user *dirty_bitmap; /* one bit per page */
-		__u64 padding;
+		__u64 padding2;
 	};
 };
 
@@ -292,6 +296,39 @@ struct kvm_s390_interrupt {
 	__u64 parm64;
 };
 
+/* for KVM_SET_GUEST_DEBUG */
+
+#define KVM_GUESTDBG_ENABLE		0x00000001
+#define KVM_GUESTDBG_SINGLESTEP		0x00000002
+
+struct kvm_guest_debug {
+	__u32 control;
+	__u32 pad;
+	struct kvm_guest_debug_arch arch;
+};
+
+enum {
+	kvm_ioeventfd_flag_nr_datamatch,
+	kvm_ioeventfd_flag_nr_pio,
+	kvm_ioeventfd_flag_nr_deassign,
+	kvm_ioeventfd_flag_nr_max,
+};
+
+#define KVM_IOEVENTFD_FLAG_DATAMATCH (1 << kvm_ioeventfd_flag_nr_datamatch)
+#define KVM_IOEVENTFD_FLAG_PIO       (1 << kvm_ioeventfd_flag_nr_pio)
+#define KVM_IOEVENTFD_FLAG_DEASSIGN  (1 << kvm_ioeventfd_flag_nr_deassign)
+
+#define KVM_IOEVENTFD_VALID_FLAG_MASK  ((1 << kvm_ioeventfd_flag_nr_max) - 1)
+
+struct kvm_ioeventfd {
+	__u64 datamatch;
+	__u64 addr;        /* legal pio/mmio address */
+	__u32 len;         /* 1, 2, 4, or 8 bytes    */
+	__s32 fd;
+	__u32 flags;
+	__u8  pad[36];
+};
+
 #define KVM_TRC_SHIFT           16
 /*
  * kvm trace categories
@@ -309,35 +346,6 @@ struct kvm_s390_interrupt {
 #define KVM_TRC_HEAD_SIZE       12
 #define KVM_TRC_CYCLE_SIZE      8
 #define KVM_TRC_EXTRA_MAX       7
-
-/* This structure represents a single trace buffer record. */
-struct kvm_trace_rec {
-	/* variable rec_val
-	 * is split into:
-	 * bits 0 - 27  -> event id
-	 * bits 28 -30  -> number of extra data args of size u32
-	 * bits 31      -> binary indicator for if tsc is in record
-	 */
-	__u32 rec_val;
-	__u32 pid;
-	__u32 vcpu_id;
-	union {
-		struct {
-			__u64 timestamp;
-			__u32 extra_u32[KVM_TRC_EXTRA_MAX];
-		} __attribute__((packed)) timestamp;
-		struct {
-			__u32 extra_u32[KVM_TRC_EXTRA_MAX];
-		} notimestamp;
-	} u;
-};
-
-#define TRACE_REC_EVENT_ID(val) \
-		(0x0fffffff & (val))
-#define TRACE_REC_NUM_DATA_ARGS(val) \
-		(0x70000000 & ((val) << 28))
-#define TRACE_REC_TCS(val) \
-		(0x80000000 & ((val) << 31))
 
 #define KVMIO 0xAE
 
@@ -396,16 +404,103 @@ struct kvm_trace_rec {
 #ifdef __KVM_HAVE_USER_NMI
 #define KVM_CAP_USER_NMI 22
 #endif
+#ifdef __KVM_HAVE_GUEST_DEBUG
+#define KVM_CAP_SET_GUEST_DEBUG 23
+#endif
+#ifdef __KVM_HAVE_PIT
+#define KVM_CAP_REINJECT_CONTROL 24
+#endif
+#ifdef __KVM_HAVE_IOAPIC
+#define KVM_CAP_IRQ_ROUTING 25
+#endif
+#define KVM_CAP_IRQ_INJECT_STATUS 26
+#ifdef __KVM_HAVE_DEVICE_ASSIGNMENT
+#define KVM_CAP_DEVICE_DEASSIGNMENT 27
+#endif
+#ifdef __KVM_HAVE_MSIX
+#define KVM_CAP_DEVICE_MSIX 28
+#endif
+#define KVM_CAP_ASSIGN_DEV_IRQ 29
+/* Another bug in KVM_SET_USER_MEMORY_REGION fixed: */
+#define KVM_CAP_JOIN_MEMORY_REGIONS_WORKS 30
+#ifdef __KVM_HAVE_MCE
+#define KVM_CAP_MCE 31
+#endif
+#define KVM_CAP_IRQFD 32
+#ifdef __KVM_HAVE_PIT
+#define KVM_CAP_PIT2 33
+#endif
+#define KVM_CAP_SET_BOOT_CPU_ID 34
+#ifdef __KVM_HAVE_PIT_STATE2
+#define KVM_CAP_PIT_STATE2 35
+#endif
+#define KVM_CAP_IOEVENTFD 36
+#define KVM_CAP_SET_IDENTITY_MAP_ADDR 37
+
+#ifdef KVM_CAP_IRQ_ROUTING
+
+struct kvm_irq_routing_irqchip {
+	__u32 irqchip;
+	__u32 pin;
+};
+
+struct kvm_irq_routing_msi {
+	__u32 address_lo;
+	__u32 address_hi;
+	__u32 data;
+	__u32 pad;
+};
+
+/* gsi routing entry types */
+#define KVM_IRQ_ROUTING_IRQCHIP 1
+#define KVM_IRQ_ROUTING_MSI 2
+
+struct kvm_irq_routing_entry {
+	__u32 gsi;
+	__u32 type;
+	__u32 flags;
+	__u32 pad;
+	union {
+		struct kvm_irq_routing_irqchip irqchip;
+		struct kvm_irq_routing_msi msi;
+		__u32 pad[8];
+	} u;
+};
+
+struct kvm_irq_routing {
+	__u32 nr;
+	__u32 flags;
+	struct kvm_irq_routing_entry entries[0];
+};
+
+#endif
+
+#ifdef KVM_CAP_MCE
+/* x86 MCE */
+struct kvm_x86_mce {
+	__u64 status;
+	__u64 addr;
+	__u64 misc;
+	__u64 mcg_status;
+	__u8 bank;
+	__u8 pad1[7];
+	__u64 pad2[3];
+};
+#endif
+
+#define KVM_IRQFD_FLAG_DEASSIGN (1 << 0)
+
+struct kvm_irqfd {
+	__u32 fd;
+	__u32 gsi;
+	__u32 flags;
+	__u8  pad[20];
+};
 
 /*
  * ioctls for VM fds
  */
 #define KVM_SET_MEMORY_REGION     _IOW(KVMIO, 0x40, struct kvm_memory_region)
-#define KVM_SET_NR_MMU_PAGES      _IO(KVMIO, 0x44)
-#define KVM_GET_NR_MMU_PAGES      _IO(KVMIO, 0x45)
-#define KVM_SET_USER_MEMORY_REGION _IOW(KVMIO, 0x46,\
-					struct kvm_userspace_memory_region)
-#define KVM_SET_TSS_ADDR          _IO(KVMIO, 0x47)
 /*
  * KVM_CREATE_VCPU receives as a parameter the vcpu slot, and returns
  * a vcpu fd.
@@ -413,6 +508,12 @@ struct kvm_trace_rec {
 #define KVM_CREATE_VCPU           _IO(KVMIO,  0x41)
 #define KVM_GET_DIRTY_LOG         _IOW(KVMIO, 0x42, struct kvm_dirty_log)
 #define KVM_SET_MEMORY_ALIAS      _IOW(KVMIO, 0x43, struct kvm_memory_alias)
+#define KVM_SET_NR_MMU_PAGES      _IO(KVMIO, 0x44)
+#define KVM_GET_NR_MMU_PAGES      _IO(KVMIO, 0x45)
+#define KVM_SET_USER_MEMORY_REGION _IOW(KVMIO, 0x46,\
+					struct kvm_userspace_memory_region)
+#define KVM_SET_TSS_ADDR          _IO(KVMIO, 0x47)
+#define KVM_SET_IDENTITY_MAP_ADDR _IOW(KVMIO, 0x48, __u64)
 /* Device model IOC */
 #define KVM_CREATE_IRQCHIP	  _IO(KVMIO,  0x60)
 #define KVM_IRQ_LINE		  _IOW(KVMIO, 0x61, struct kvm_irq_level)
@@ -421,14 +522,30 @@ struct kvm_trace_rec {
 #define KVM_CREATE_PIT		  _IO(KVMIO,  0x64)
 #define KVM_GET_PIT		  _IOWR(KVMIO, 0x65, struct kvm_pit_state)
 #define KVM_SET_PIT		  _IOR(KVMIO,  0x66, struct kvm_pit_state)
+#define KVM_IRQ_LINE_STATUS	  _IOWR(KVMIO, 0x67, struct kvm_irq_level)
 #define KVM_REGISTER_COALESCED_MMIO \
 			_IOW(KVMIO,  0x67, struct kvm_coalesced_mmio_zone)
 #define KVM_UNREGISTER_COALESCED_MMIO \
 			_IOW(KVMIO,  0x68, struct kvm_coalesced_mmio_zone)
 #define KVM_ASSIGN_PCI_DEVICE _IOR(KVMIO, 0x69, \
 				   struct kvm_assigned_pci_dev)
+#define KVM_SET_GSI_ROUTING       _IOW(KVMIO, 0x6a, struct kvm_irq_routing)
+/* deprecated, replaced by KVM_ASSIGN_DEV_IRQ */
 #define KVM_ASSIGN_IRQ _IOR(KVMIO, 0x70, \
 			    struct kvm_assigned_irq)
+#define KVM_ASSIGN_DEV_IRQ        _IOW(KVMIO, 0x70, struct kvm_assigned_irq)
+#define KVM_REINJECT_CONTROL      _IO(KVMIO, 0x71)
+#define KVM_DEASSIGN_PCI_DEVICE _IOW(KVMIO, 0x72, \
+				     struct kvm_assigned_pci_dev)
+#define KVM_ASSIGN_SET_MSIX_NR \
+			_IOW(KVMIO, 0x73, struct kvm_assigned_msix_nr)
+#define KVM_ASSIGN_SET_MSIX_ENTRY \
+			_IOW(KVMIO, 0x74, struct kvm_assigned_msix_entry)
+#define KVM_DEASSIGN_DEV_IRQ       _IOW(KVMIO, 0x75, struct kvm_assigned_irq)
+#define KVM_IRQFD                  _IOW(KVMIO, 0x76, struct kvm_irqfd)
+#define KVM_CREATE_PIT2		   _IOW(KVMIO, 0x77, struct kvm_pit_config)
+#define KVM_SET_BOOT_CPU_ID        _IO(KVMIO, 0x78)
+#define KVM_IOEVENTFD             _IOW(KVMIO, 0x79, struct kvm_ioeventfd)
 
 /*
  * ioctls for vcpu fds
@@ -440,7 +557,8 @@ struct kvm_trace_rec {
 #define KVM_SET_SREGS             _IOW(KVMIO,  0x84, struct kvm_sregs)
 #define KVM_TRANSLATE             _IOWR(KVMIO, 0x85, struct kvm_translation)
 #define KVM_INTERRUPT             _IOW(KVMIO,  0x86, struct kvm_interrupt)
-#define KVM_DEBUG_GUEST           _IOW(KVMIO,  0x87, struct kvm_debug_guest)
+/* KVM_DEBUG_GUEST is no longer supported, use KVM_SET_GUEST_DEBUG instead */
+#define KVM_DEBUG_GUEST           __KVM_DEPRECATED_DEBUG_GUEST
 #define KVM_GET_MSRS              _IOWR(KVMIO, 0x88, struct kvm_msrs)
 #define KVM_SET_MSRS              _IOW(KVMIO,  0x89, struct kvm_msrs)
 #define KVM_SET_CPUID             _IOW(KVMIO,  0x8a, struct kvm_cpuid)
@@ -469,6 +587,36 @@ struct kvm_trace_rec {
 #define KVM_SET_MP_STATE          _IOW(KVMIO,  0x99, struct kvm_mp_state)
 /* Available with KVM_CAP_NMI */
 #define KVM_NMI                   _IO(KVMIO,  0x9a)
+/* Available with KVM_CAP_SET_GUEST_DEBUG */
+#define KVM_SET_GUEST_DEBUG       _IOW(KVMIO,  0x9b, struct kvm_guest_debug)
+/* MCE for x86 */
+#define KVM_X86_SETUP_MCE         _IOW(KVMIO,  0x9c, __u64)
+#define KVM_X86_GET_MCE_CAP_SUPPORTED _IOR(KVMIO,  0x9d, __u64)
+#define KVM_X86_SET_MCE           _IOW(KVMIO,  0x9e, struct kvm_x86_mce)
+
+/*
+ * Deprecated interfaces
+ */
+struct kvm_breakpoint {
+	__u32 enabled;
+	__u32 padding;
+	__u64 address;
+};
+
+struct kvm_debug_guest {
+	__u32 enabled;
+	__u32 pad;
+	struct kvm_breakpoint breakpoints[4];
+	__u32 singlestep;
+};
+
+#define __KVM_DEPRECATED_DEBUG_GUEST _IOW(KVMIO,  0x87, struct kvm_debug_guest)
+
+#define KVM_IA64_VCPU_GET_STACK   _IOR(KVMIO,  0x9a, void *)
+#define KVM_IA64_VCPU_SET_STACK   _IOW(KVMIO,  0x9b, void *)
+
+#define KVM_GET_PIT2   _IOR(KVMIO,   0x9f, struct kvm_pit_state2)
+#define KVM_SET_PIT2   _IOW(KVMIO,   0xa0, struct kvm_pit_state2)
 
 #define KVM_TRC_INJ_VIRQ         (KVM_TRC_HANDLER + 0x02)
 #define KVM_TRC_REDELIVER_EVT    (KVM_TRC_HANDLER + 0x03)
@@ -495,6 +643,8 @@ struct kvm_trace_rec {
 #define KVM_TRC_STLB_INVAL       (KVM_TRC_HANDLER + 0x18)
 #define KVM_TRC_PPC_INSTR        (KVM_TRC_HANDLER + 0x19)
 
+#define KVM_DEV_ASSIGN_ENABLE_IOMMU	(1 << 0)
+
 struct kvm_assigned_pci_dev {
 	__u32 assigned_dev_id;
 	__u32 busnr;
@@ -504,6 +654,17 @@ struct kvm_assigned_pci_dev {
 		__u32 reserved[12];
 	};
 };
+
+#define KVM_DEV_IRQ_HOST_INTX    (1 << 0)
+#define KVM_DEV_IRQ_HOST_MSI     (1 << 1)
+#define KVM_DEV_IRQ_HOST_MSIX    (1 << 2)
+
+#define KVM_DEV_IRQ_GUEST_INTX   (1 << 8)
+#define KVM_DEV_IRQ_GUEST_MSI    (1 << 9)
+#define KVM_DEV_IRQ_GUEST_MSIX   (1 << 10)
+
+#define KVM_DEV_IRQ_HOST_MASK	 0x00ff
+#define KVM_DEV_IRQ_GUEST_MASK   0xff00
 
 struct kvm_assigned_irq {
 	__u32 assigned_dev_id;
@@ -520,8 +681,19 @@ struct kvm_assigned_irq {
 	};
 };
 
-#define KVM_DEV_ASSIGN_ENABLE_IOMMU	(1 << 0)
 
-#define KVM_DEV_IRQ_ASSIGN_ENABLE_MSI	(1 << 0)
+struct kvm_assigned_msix_nr {
+	__u32 assigned_dev_id;
+	__u16 entry_nr;
+	__u16 padding;
+};
+
+#define KVM_MAX_MSIX_PER_DEV		256
+struct kvm_assigned_msix_entry {
+	__u32 assigned_dev_id;
+	__u32 gsi;
+	__u16 entry; /* The index of entry in the MSI-X table */
+	__u16 padding[3];
+};
 
 #endif

@@ -115,6 +115,10 @@ static uint32_t process_qset(struct whc *whc, struct whc_qset *qset)
 		if (status & QTD_STS_HALTED) {
 			/* Ug, an error. */
 			process_halted_qtd(whc, qset, td);
+			/* A halted qTD always triggers an update
+			   because the qset was either removed or
+			   reactivated. */
+			update |= WHC_UPDATE_UPDATED;
 			goto done;
 		}
 
@@ -122,7 +126,8 @@ static uint32_t process_qset(struct whc *whc, struct whc_qset *qset)
 		process_inactive_qtd(whc, qset, td);
 	}
 
-	update |= qset_add_qtds(whc, qset);
+	if (!qset->remove)
+		update |= qset_add_qtds(whc, qset);
 
 done:
 	/*
@@ -226,11 +231,21 @@ void scan_async_work(struct work_struct *work)
 	/*
 	 * Now that the ASL is updated, complete the removal of any
 	 * removed qsets.
+	 *
+	 * If the qset was to be reset, do so and reinsert it into the
+	 * ASL if it has pending transfers.
 	 */
 	spin_lock_irq(&whc->lock);
 
 	list_for_each_entry_safe(qset, t, &whc->async_removed_list, list_node) {
 		qset_remove_complete(whc, qset);
+		if (qset->reset) {
+			qset_reset(whc, qset);
+			if (!list_empty(&qset->stds)) {
+				asl_qset_insert_begin(whc, qset);
+				queue_work(whc->workqueue, &whc->async_work);
+			}
+		}
 	}
 
 	spin_unlock_irq(&whc->lock);
@@ -254,23 +269,29 @@ int asl_urb_enqueue(struct whc *whc, struct urb *urb, gfp_t mem_flags)
 
 	spin_lock_irqsave(&whc->lock, flags);
 
+	err = usb_hcd_link_urb_to_ep(&whc->wusbhc.usb_hcd, urb);
+	if (err < 0) {
+		spin_unlock_irqrestore(&whc->lock, flags);
+		return err;
+	}
+
 	qset = get_qset(whc, urb, GFP_ATOMIC);
 	if (qset == NULL)
 		err = -ENOMEM;
 	else
 		err = qset_add_urb(whc, qset, urb, GFP_ATOMIC);
 	if (!err) {
-		usb_hcd_link_urb_to_ep(&whc->wusbhc.usb_hcd, urb);
-		if (!qset->in_sw_list)
+		if (!qset->in_sw_list && !qset->remove)
 			asl_qset_insert_begin(whc, qset);
-	}
+	} else
+		usb_hcd_unlink_urb_from_ep(&whc->wusbhc.usb_hcd, urb);
 
 	spin_unlock_irqrestore(&whc->lock, flags);
 
 	if (!err)
 		queue_work(whc->workqueue, &whc->async_work);
 
-	return 0;
+	return err;
 }
 
 /**
@@ -288,6 +309,7 @@ int asl_urb_dequeue(struct whc *whc, struct urb *urb, int status)
 	struct whc_urb *wurb = urb->hcpriv;
 	struct whc_qset *qset = wurb->qset;
 	struct whc_std *std, *t;
+	bool has_qtd = false;
 	int ret;
 	unsigned long flags;
 
@@ -298,17 +320,21 @@ int asl_urb_dequeue(struct whc *whc, struct urb *urb, int status)
 		goto out;
 
 	list_for_each_entry_safe(std, t, &qset->stds, list_node) {
-		if (std->urb == urb)
+		if (std->urb == urb) {
+			if (std->qtd)
+				has_qtd = true;
 			qset_free_std(whc, std);
-		else
+		} else
 			std->qtd = NULL; /* so this std is re-added when the qset is */
 	}
 
-	asl_qset_remove(whc, qset);
-	wurb->status = status;
-	wurb->is_async = true;
-	queue_work(whc->workqueue, &wurb->dequeue_work);
-
+	if (has_qtd) {
+		asl_qset_remove(whc, qset);
+		wurb->status = status;
+		wurb->is_async = true;
+		queue_work(whc->workqueue, &wurb->dequeue_work);
+	} else
+		qset_remove_urb(whc, qset, urb, status);
 out:
 	spin_unlock_irqrestore(&whc->lock, flags);
 

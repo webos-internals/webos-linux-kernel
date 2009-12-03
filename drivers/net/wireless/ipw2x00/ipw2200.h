@@ -19,7 +19,7 @@
   file called LICENSE.
 
   Contact Information:
-  James P. Ketrenos <ipw2100-admin@linux.intel.com>
+  Intel Linux Wireless <ilw@linux.intel.com>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
 ******************************************************************************/
@@ -49,12 +49,13 @@
 #include <asm/io.h>
 
 #include <net/lib80211.h>
-#include <net/ieee80211.h>
 #include <net/ieee80211_radiotap.h>
 
 #define DRV_NAME	"ipw2200"
 
 #include <linux/workqueue.h>
+
+#include "libipw.h"
 
 /* Authentication  and Association States */
 enum connection_manager_assoc_states {
@@ -364,8 +365,8 @@ enum connection_manager_assoc_states {
 /* QoS sturctures */
 struct ipw_qos_info {
 	int qos_enable;
-	struct ieee80211_qos_parameters *def_qos_parm_OFDM;
-	struct ieee80211_qos_parameters *def_qos_parm_CCK;
+	struct libipw_qos_parameters *def_qos_parm_OFDM;
+	struct libipw_qos_parameters *def_qos_parm_CCK;
 	u32 burst_duration_CCK;
 	u32 burst_duration_OFDM;
 	u16 qos_no_ack_mask;
@@ -533,7 +534,7 @@ typedef void destructor_func(const void *);
 struct clx2_tx_queue {
 	struct clx2_queue q;
 	struct tfd_frame *bd;
-	struct ieee80211_txb **txb;
+	struct libipw_txb **txb;
 };
 
 /*
@@ -1143,7 +1144,7 @@ enum ipw_prom_filter {
 struct ipw_priv;
 struct ipw_prom_priv {
 	struct ipw_priv *priv;
-	struct ieee80211_device *ieee;
+	struct libipw_device *ieee;
 	enum ipw_prom_filter filter;
 	int tx_packets;
 	int rx_packets;
@@ -1174,7 +1175,7 @@ struct ipw_rt_hdr {
 
 struct ipw_priv {
 	/* ieee device used by generic ieee processing code */
-	struct ieee80211_device *ieee;
+	struct libipw_device *ieee;
 
 	spinlock_t lock;
 	spinlock_t irq_lock;
@@ -1221,7 +1222,7 @@ struct ipw_priv {
 	u32 roaming_threshold;
 
 	struct ipw_associate assoc_request;
-	struct ieee80211_network *assoc_network;
+	struct libipw_network *assoc_network;
 
 	unsigned long ts_scan_abort;
 	struct ipw_supported_rates rates;
@@ -1345,6 +1346,10 @@ struct ipw_priv {
 	u8 adapter;
 
 	s8 tx_power;
+
+	/* Track time in suspend */
+	unsigned long suspend_at;
+	unsigned long suspend_time;
 
 #ifdef CONFIG_PM
 	u32 pm_state[16];

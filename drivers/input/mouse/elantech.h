@@ -1,7 +1,7 @@
 /*
- * Elantech Touchpad driver (v5)
+ * Elantech Touchpad driver (v6)
  *
- * Copyright (C) 2007-2008 Arjan Opmeer <arjan@opmeer.net>
+ * Copyright (C) 2007-2009 Arjan Opmeer <arjan@opmeer.net>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 as published
@@ -104,14 +104,15 @@ struct elantech_data {
 	unsigned char fw_version_min;
 	unsigned char hw_version;
 	unsigned char paritycheck;
+	unsigned char jumpy_cursor;
 	unsigned char parity[256];
 };
 
 #ifdef CONFIG_MOUSE_PS2_ELANTECH
-int elantech_detect(struct psmouse *psmouse, int set_properties);
+int elantech_detect(struct psmouse *psmouse, bool set_properties);
 int elantech_init(struct psmouse *psmouse);
 #else
-static inline int elantech_detect(struct psmouse *psmouse, int set_properties)
+static inline int elantech_detect(struct psmouse *psmouse, bool set_properties)
 {
 	return -ENOSYS;
 }

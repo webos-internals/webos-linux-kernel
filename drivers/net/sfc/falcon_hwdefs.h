@@ -456,9 +456,6 @@
 #define MD_PRT_ADR_WIDTH 5
 #define MD_DEV_ADR_LBN 6
 #define MD_DEV_ADR_WIDTH 5
-/* Used for writing both at once */
-#define MD_PRT_DEV_ADR_LBN 6
-#define MD_PRT_DEV_ADR_WIDTH 10
 
 /* PHY management status & mask register (DWORD read only) */
 #define MD_STAT_REG_KER 0xc50
@@ -703,6 +700,8 @@
 /* XGXS/XAUI powerdown/reset register */
 #define XX_PWR_RST_REG 0x1300
 
+#define XX_SD_RST_ACT_LBN 16
+#define XX_SD_RST_ACT_WIDTH 1
 #define XX_PWRDND_EN_LBN 15
 #define XX_PWRDND_EN_WIDTH 1
 #define XX_PWRDNC_EN_LBN 14

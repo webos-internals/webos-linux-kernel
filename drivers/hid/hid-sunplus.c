@@ -65,12 +65,12 @@ static struct hid_driver sp_driver = {
 	.input_mapping = sp_input_mapping,
 };
 
-static int sp_init(void)
+static int __init sp_init(void)
 {
 	return hid_register_driver(&sp_driver);
 }
 
-static void sp_exit(void)
+static void __exit sp_exit(void)
 {
 	hid_unregister_driver(&sp_driver);
 }
@@ -78,5 +78,3 @@ static void sp_exit(void)
 module_init(sp_init);
 module_exit(sp_exit);
 MODULE_LICENSE("GPL");
-
-HID_COMPAT_LOAD_DRIVER(sunplus);

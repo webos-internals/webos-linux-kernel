@@ -6,7 +6,7 @@
  */
 
 #ifdef CONFIG_SMP
-static int select_task_rq_idle(struct task_struct *p, int sync)
+static int select_task_rq_idle(struct task_struct *p, int sd_flag, int flags)
 {
 	return task_cpu(p); /* IDLE tasks as never migrated */
 }
@@ -14,7 +14,7 @@ static int select_task_rq_idle(struct task_struct *p, int sync)
 /*
  * Idle tasks are unconditionally rescheduled:
  */
-static void check_preempt_curr_idle(struct rq *rq, struct task_struct *p, int sync)
+static void check_preempt_curr_idle(struct rq *rq, struct task_struct *p, int flags)
 {
 	resched_task(rq->idle);
 }
@@ -22,7 +22,8 @@ static void check_preempt_curr_idle(struct rq *rq, struct task_struct *p, int sy
 static struct task_struct *pick_next_task_idle(struct rq *rq)
 {
 	schedstat_inc(rq, sched_goidle);
-
+	/* adjust the active tasks as we might go into a long sleep */
+	calc_load_account_active(rq);
 	return rq->idle;
 }
 
@@ -96,6 +97,11 @@ static void prio_changed_idle(struct rq *rq, struct task_struct *p,
 		check_preempt_curr(rq, p, 0);
 }
 
+unsigned int get_rr_interval_idle(struct task_struct *task)
+{
+	return 0;
+}
+
 /*
  * Simple, special scheduling class for the per-CPU idle tasks:
  */
@@ -120,6 +126,8 @@ static const struct sched_class idle_sched_class = {
 
 	.set_curr_task          = set_curr_task_idle,
 	.task_tick		= task_tick_idle,
+
+	.get_rr_interval	= get_rr_interval_idle,
 
 	.prio_changed		= prio_changed_idle,
 	.switched_to		= switched_to_idle,

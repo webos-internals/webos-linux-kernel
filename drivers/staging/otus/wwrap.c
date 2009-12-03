@@ -26,10 +26,7 @@
 #include "usbdrv.h"
 
 #include <linux/netlink.h>
-
-#if WIRELESS_EXT > 12
 #include <net/iw_handler.h>
-#endif
 
 extern void zfiRecv80211(zdev_t* dev, zbuf_t* buf, struct zsAdditionInfo* addInfo);
 extern void zfCoreRecv(zdev_t* dev, zbuf_t* buf, struct zsAdditionInfo* addInfo);
@@ -350,8 +347,7 @@ void zfLnxUsbDataIn_callback(urb_t *urb)
     buf->len = 0;
 #endif
 
-    if ((buf->tail + urb->actual_length) > buf->end)
-        BUG();
+    BUG_ON((buf->tail + urb->actual_length) > buf->end);
 
     skb_put(buf, urb->actual_length);
 
@@ -971,8 +967,7 @@ int zfLnxCencSendMsg(struct sock *netlink_sk, u_int8_t *msg, int len)
 out:
 	return ret;
 nlmsg_failure: /*NLMSG_PUT Ê§°Ü£¬Ôò³·ÏúÌ×½Ó×Ö»º´æ*/
-  	if(skb)
-    		kfree_skb(skb);
+	kfree_skb(skb);
 	goto out;
 
 #undef COMMTYPE_GROUP
@@ -1019,11 +1014,6 @@ void kevent(struct work_struct *work)
     struct usbdrv_private *macp =
                container_of(work, struct usbdrv_private, kevent);
     zdev_t *dev = macp->device;
-
-    if (macp == NULL)
-    {
-        return;
-    }
 
     if (test_and_set_bit(0, (void *)&smp_kevent_Lock))
     {

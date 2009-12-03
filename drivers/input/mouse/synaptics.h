@@ -97,13 +97,15 @@ struct synaptics_data {
 	unsigned long int capabilities;		/* Capabilities */
 	unsigned long int ext_cap;		/* Extended Capabilities */
 	unsigned long int identity;		/* Identification */
+	int x_res;				/* X resolution in units/mm */
+	int y_res;				/* Y resolution in units/mm */
 
 	unsigned char pkt_type;			/* packet type - old, new, etc */
 	unsigned char mode;			/* current mode byte */
 	int scroll;
 };
 
-int synaptics_detect(struct psmouse *psmouse, int set_properties);
+int synaptics_detect(struct psmouse *psmouse, bool set_properties);
 int synaptics_init(struct psmouse *psmouse);
 void synaptics_reset(struct psmouse *psmouse);
 

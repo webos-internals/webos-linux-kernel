@@ -364,7 +364,7 @@ static ssize_t qeth_dev_layer2_show(struct device *dev,
 	if (!card)
 		return -EINVAL;
 
-	return sprintf(buf, "%i\n", card->options.layer2 ? 1:0);
+	return sprintf(buf, "%i\n", card->options.layer2);
 }
 
 static ssize_t qeth_dev_layer2_store(struct device *dev,
@@ -427,8 +427,6 @@ static ssize_t qeth_dev_large_send_show(struct device *dev,
 	switch (card->options.large_send) {
 	case QETH_LARGE_SEND_NO:
 		return sprintf(buf, "%s\n", "no");
-	case QETH_LARGE_SEND_EDDP:
-		return sprintf(buf, "%s\n", "EDDP");
 	case QETH_LARGE_SEND_TSO:
 		return sprintf(buf, "%s\n", "TSO");
 	default:
@@ -449,8 +447,6 @@ static ssize_t qeth_dev_large_send_store(struct device *dev,
 	tmp = strsep((char **) &buf, "\n");
 	if (!strcmp(tmp, "no")) {
 		type = QETH_LARGE_SEND_NO;
-	} else if (!strcmp(tmp, "EDDP")) {
-		type = QETH_LARGE_SEND_EDDP;
 	} else if (!strcmp(tmp, "TSO")) {
 		type = QETH_LARGE_SEND_TSO;
 	} else {

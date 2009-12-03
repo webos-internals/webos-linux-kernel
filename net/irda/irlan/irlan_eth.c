@@ -30,6 +30,7 @@
 #include <linux/inetdevice.h>
 #include <linux/if_arp.h>
 #include <linux/module.h>
+#include <linux/sched.h>
 #include <net/arp.h>
 
 #include <net/irda/irda.h>
@@ -41,9 +42,20 @@
 
 static int  irlan_eth_open(struct net_device *dev);
 static int  irlan_eth_close(struct net_device *dev);
-static int  irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t  irlan_eth_xmit(struct sk_buff *skb,
+					 struct net_device *dev);
 static void irlan_eth_set_multicast_list( struct net_device *dev);
 static struct net_device_stats *irlan_eth_get_stats(struct net_device *dev);
+
+static const struct net_device_ops irlan_eth_netdev_ops = {
+	.ndo_open               = irlan_eth_open,
+	.ndo_stop               = irlan_eth_close,
+	.ndo_start_xmit    	= irlan_eth_xmit,
+	.ndo_get_stats	        = irlan_eth_get_stats,
+	.ndo_set_multicast_list = irlan_eth_set_multicast_list,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+};
 
 /*
  * Function irlan_eth_setup (dev)
@@ -53,14 +65,11 @@ static struct net_device_stats *irlan_eth_get_stats(struct net_device *dev);
  */
 static void irlan_eth_setup(struct net_device *dev)
 {
-	dev->open               = irlan_eth_open;
-	dev->stop               = irlan_eth_close;
-	dev->hard_start_xmit    = irlan_eth_xmit;
-	dev->get_stats	        = irlan_eth_get_stats;
-	dev->set_multicast_list = irlan_eth_set_multicast_list;
+	ether_setup(dev);
+
+	dev->netdev_ops		= &irlan_eth_netdev_ops;
 	dev->destructor		= free_netdev;
 
-	ether_setup(dev);
 
 	/*
 	 * Lets do all queueing in IrTTP instead of this device driver.
@@ -155,7 +164,8 @@ static int irlan_eth_close(struct net_device *dev)
  *    Transmits ethernet frames over IrDA link.
  *
  */
-static int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t irlan_eth_xmit(struct sk_buff *skb,
+					struct net_device *dev)
 {
 	struct irlan_cb *self = netdev_priv(dev);
 	int ret;
@@ -170,7 +180,7 @@ static int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 
 		/* Did the realloc succeed? */
 		if (new_skb == NULL)
-			return 0;
+			return NETDEV_TX_OK;
 
 		/* Use the new skb instead */
 		skb = new_skb;
@@ -202,7 +212,7 @@ static int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 		self->stats.tx_bytes += skb->len;
 	}
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 /*

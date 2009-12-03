@@ -39,7 +39,6 @@
 #include <linux/pid_namespace.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include <linux/marker.h>
 
 #include <asm/io.h>
 #include <asm/mmu_context.h>
@@ -47,6 +46,8 @@
 #include <asm/spu_csa.h>
 #include <asm/spu_priv1.h>
 #include "spufs.h"
+#define CREATE_TRACE_POINTS
+#include "sputrace.h"
 
 struct spu_prio_array {
 	DECLARE_BITMAP(bitmap, MAX_PRIO);
@@ -508,7 +509,7 @@ static void __spu_add_to_rq(struct spu_context *ctx)
 		list_add_tail(&ctx->rq, &spu_prio->runq[ctx->prio]);
 		set_bit(ctx->prio, spu_prio->bitmap);
 		if (!spu_prio->nr_waiting++)
-			__mod_timer(&spusched_timer, jiffies + SPUSCHED_TICK);
+			mod_timer(&spusched_timer, jiffies + SPUSCHED_TICK);
 	}
 }
 

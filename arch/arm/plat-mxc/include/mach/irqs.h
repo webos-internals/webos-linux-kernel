@@ -24,6 +24,10 @@
 #define MXC_GPIO_IRQS		(32 * 6)
 #elif defined CONFIG_ARCH_MX3
 #define MXC_GPIO_IRQS		(32 * 3)
+#elif defined CONFIG_ARCH_MX25
+#define MXC_GPIO_IRQS		(32 * 4)
+#elif defined CONFIG_ARCH_MXC91231
+#define MXC_GPIO_IRQS		(32 * 4)
 #endif
 
 /*
@@ -45,7 +49,7 @@
 
 #define NR_IRQS			(MXC_IPU_IRQ_START + MX3_IPU_IRQS)
 
-extern void imx_irq_set_priority(unsigned char irq, unsigned char prio);
+extern int imx_irq_set_priority(unsigned char irq, unsigned char prio);
 
 /* all normal IRQs can be FIQs */
 #define FIQ_START	0

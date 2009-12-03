@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -73,14 +73,14 @@ static int rt2x00mac_tx_rts_cts(struct rt2x00_dev *rt2x00dev,
 	else
 		rts_info->flags &= ~IEEE80211_TX_CTL_NO_ACK;
 
-	skb->do_not_encrypt = 1;
+	/* Disable hardware encryption */
+	rts_info->control.hw_key = NULL;
 
 	/*
 	 * RTS/CTS frame should use the length of the frame plus any
 	 * encryption overhead that will be added by the hardware.
 	 */
-	if (!frag_skb->do_not_encrypt)
-		data_length += rt2x00crypto_tx_overhead(tx_info);
+	data_length += rt2x00crypto_tx_overhead(rt2x00dev, skb);
 
 	if (tx_info->control.rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT)
 		ieee80211_ctstoself_get(rt2x00dev->hw, tx_info->control.vif,
@@ -226,6 +226,8 @@ int rt2x00mac_add_interface(struct ieee80211_hw *hw,
 		break;
 	case NL80211_IFTYPE_STATION:
 	case NL80211_IFTYPE_ADHOC:
+	case NL80211_IFTYPE_MESH_POINT:
+	case NL80211_IFTYPE_WDS:
 		/*
 		 * We don't support mixed combinations of
 		 * sta and ap interfaces.
@@ -272,6 +274,7 @@ int rt2x00mac_add_interface(struct ieee80211_hw *hw,
 
 	spin_lock_init(&intf->lock);
 	spin_lock_init(&intf->seqlock);
+	mutex_init(&intf->beacon_skb_mutex);
 	intf->beacon = entry;
 
 	if (conf->type == NL80211_IFTYPE_AP)
@@ -336,111 +339,47 @@ int rt2x00mac_config(struct ieee80211_hw *hw, u32 changed)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
 	struct ieee80211_conf *conf = &hw->conf;
-	int status;
 
 	/*
-	 * Mac80211 might be calling this function while we are trying
+	 * mac80211 might be calling this function while we are trying
 	 * to remove the device or perhaps suspending it.
 	 */
 	if (!test_bit(DEVICE_STATE_PRESENT, &rt2x00dev->flags))
 		return 0;
 
 	/*
-	 * Only change device state when the radio is enabled. It does not
-	 * matter what parameters we have configured when the radio is disabled
-	 * because we won't be able to send or receive anyway. Also note that
-	 * some configuration parameters (e.g. channel and antenna values) can
-	 * only be set when the radio is enabled.
+	 * Some configuration parameters (e.g. channel and antenna values) can
+	 * only be set when the radio is enabled, but do require the RX to
+	 * be off.
 	 */
-	if (conf->radio_enabled) {
-		/* For programming the values, we have to turn RX off */
-		rt2x00lib_toggle_rx(rt2x00dev, STATE_RADIO_RX_OFF);
+	rt2x00lib_toggle_rx(rt2x00dev, STATE_RADIO_RX_OFF);
 
-		/* Enable the radio */
-		status = rt2x00lib_enable_radio(rt2x00dev);
-		if (unlikely(status))
-			return status;
+	/*
+	 * When we've just turned on the radio, we want to reprogram
+	 * everything to ensure a consistent state
+	 */
+	rt2x00lib_config(rt2x00dev, conf, changed);
 
-		/*
-		 * When we've just turned on the radio, we want to reprogram
-		 * everything to ensure a consistent state
-		 */
-		rt2x00lib_config(rt2x00dev, conf, changed);
+	/*
+	 * After the radio has been enabled we need to configure
+	 * the antenna to the default settings. rt2x00lib_config_antenna()
+	 * should determine if any action should be taken based on
+	 * checking if diversity has been enabled or no antenna changes
+	 * have been made since the last configuration change.
+	 */
+	rt2x00lib_config_antenna(rt2x00dev, rt2x00dev->default_ant);
 
-		/*
-		 * The radio was enabled, configure the antenna to the
-		 * default settings, the link tuner will later start
-		 * continue configuring the antenna based on the software
-		 * diversity. But for non-diversity configurations, we need
-		 * to have configured the correct state now.
-		 */
-		if (changed & IEEE80211_CONF_CHANGE_RADIO_ENABLED)
-			rt2x00lib_config_antenna(rt2x00dev,
-						 &rt2x00dev->default_ant);
-
-		/* Turn RX back on */
-		rt2x00lib_toggle_rx(rt2x00dev, STATE_RADIO_RX_ON);
-	} else {
-		/* Disable the radio */
-		rt2x00lib_disable_radio(rt2x00dev);
-	}
+	/* Turn RX back on */
+	rt2x00lib_toggle_rx(rt2x00dev, STATE_RADIO_RX_ON);
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_config);
 
-int rt2x00mac_config_interface(struct ieee80211_hw *hw,
-			       struct ieee80211_vif *vif,
-			       struct ieee80211_if_conf *conf)
-{
-	struct rt2x00_dev *rt2x00dev = hw->priv;
-	struct rt2x00_intf *intf = vif_to_intf(vif);
-	int update_bssid = 0;
-	int status = 0;
-
-	/*
-	 * Mac80211 might be calling this function while we are trying
-	 * to remove the device or perhaps suspending it.
-	 */
-	if (!test_bit(DEVICE_STATE_PRESENT, &rt2x00dev->flags))
-		return 0;
-
-	spin_lock(&intf->lock);
-
-	/*
-	 * conf->bssid can be NULL if coming from the internal
-	 * beacon update routine.
-	 */
-	if (conf->changed & IEEE80211_IFCC_BSSID && conf->bssid) {
-		update_bssid = 1;
-		memcpy(&intf->bssid, conf->bssid, ETH_ALEN);
-	}
-
-	spin_unlock(&intf->lock);
-
-	/*
-	 * Call rt2x00_config_intf() outside of the spinlock context since
-	 * the call will sleep for USB drivers. By using the ieee80211_if_conf
-	 * values as arguments we make keep access to rt2x00_intf thread safe
-	 * even without the lock.
-	 */
-	rt2x00lib_config_intf(rt2x00dev, intf, vif->type, NULL,
-			      update_bssid ? conf->bssid : NULL);
-
-	/*
-	 * Update the beacon.
-	 */
-	if (conf->changed & IEEE80211_IFCC_BEACON)
-		status = rt2x00queue_update_beacon(rt2x00dev, vif);
-
-	return status;
-}
-EXPORT_SYMBOL_GPL(rt2x00mac_config_interface);
-
 void rt2x00mac_configure_filter(struct ieee80211_hw *hw,
 				unsigned int changed_flags,
 				unsigned int *total_flags,
-				int mc_count, struct dev_addr_list *mc_list)
+				u64 multicast)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
 
@@ -453,6 +392,7 @@ void rt2x00mac_configure_filter(struct ieee80211_hw *hw,
 	    FIF_FCSFAIL |
 	    FIF_PLCPFAIL |
 	    FIF_CONTROL |
+	    FIF_PSPOLL |
 	    FIF_OTHER_BSS |
 	    FIF_PROMISC_IN_BSS;
 
@@ -468,30 +408,73 @@ void rt2x00mac_configure_filter(struct ieee80211_hw *hw,
 		*total_flags |= FIF_PROMISC_IN_BSS | FIF_OTHER_BSS;
 
 	/*
+	 * If the device has a single filter for all control frames,
+	 * FIF_CONTROL and FIF_PSPOLL flags imply each other.
+	 * And if the device has more than one filter for control frames
+	 * of different types, but has no a separate filter for PS Poll frames,
+	 * FIF_CONTROL flag implies FIF_PSPOLL.
+	 */
+	if (!test_bit(DRIVER_SUPPORT_CONTROL_FILTERS, &rt2x00dev->flags)) {
+		if (*total_flags & FIF_CONTROL || *total_flags & FIF_PSPOLL)
+			*total_flags |= FIF_CONTROL | FIF_PSPOLL;
+	}
+	if (!test_bit(DRIVER_SUPPORT_CONTROL_FILTER_PSPOLL, &rt2x00dev->flags)) {
+		if (*total_flags & FIF_CONTROL)
+			*total_flags |= FIF_PSPOLL;
+	}
+
+	/*
 	 * Check if there is any work left for us.
 	 */
 	if (rt2x00dev->packet_filter == *total_flags)
 		return;
 	rt2x00dev->packet_filter = *total_flags;
 
-	if (!test_bit(DRIVER_REQUIRE_SCHEDULED, &rt2x00dev->flags))
-		rt2x00dev->ops->lib->config_filter(rt2x00dev, *total_flags);
-	else
-		queue_work(rt2x00dev->hw->workqueue, &rt2x00dev->filter_work);
+	rt2x00dev->ops->lib->config_filter(rt2x00dev, *total_flags);
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_configure_filter);
 
+int rt2x00mac_set_tim(struct ieee80211_hw *hw, struct ieee80211_sta *sta,
+		      bool set)
+{
+	struct rt2x00_dev *rt2x00dev = hw->priv;
+
+	rt2x00lib_beacondone(rt2x00dev);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rt2x00mac_set_tim);
+
 #ifdef CONFIG_RT2X00_LIB_CRYPTO
+static void memcpy_tkip(struct rt2x00lib_crypto *crypto, u8 *key, u8 key_len)
+{
+	if (key_len > NL80211_TKIP_DATA_OFFSET_ENCR_KEY)
+		memcpy(&crypto->key,
+		       &key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],
+		       sizeof(crypto->key));
+
+	if (key_len > NL80211_TKIP_DATA_OFFSET_TX_MIC_KEY)
+		memcpy(&crypto->tx_mic,
+		       &key[NL80211_TKIP_DATA_OFFSET_TX_MIC_KEY],
+		       sizeof(crypto->tx_mic));
+
+	if (key_len > NL80211_TKIP_DATA_OFFSET_RX_MIC_KEY)
+		memcpy(&crypto->rx_mic,
+		       &key[NL80211_TKIP_DATA_OFFSET_RX_MIC_KEY],
+		       sizeof(crypto->rx_mic));
+}
+
 int rt2x00mac_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
-		      const u8 *local_address, const u8 *address,
+		      struct ieee80211_vif *vif, struct ieee80211_sta *sta,
 		      struct ieee80211_key_conf *key)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
-	struct ieee80211_sta *sta;
+	struct rt2x00_intf *intf = vif_to_intf(vif);
 	int (*set_key) (struct rt2x00_dev *rt2x00dev,
 			struct rt2x00lib_crypto *crypto,
 			struct ieee80211_key_conf *key);
 	struct rt2x00lib_crypto crypto;
+	static const u8 bcast_addr[ETH_ALEN] =
+		{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, };
 
 	if (!test_bit(DEVICE_STATE_PRESENT, &rt2x00dev->flags))
 		return 0;
@@ -509,45 +492,25 @@ int rt2x00mac_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	if (rt2x00dev->intf_sta_count)
 		crypto.bssidx = 0;
 	else
-		crypto.bssidx =
-		    local_address[5] & (rt2x00dev->ops->max_ap_intf - 1);
+		crypto.bssidx = intf->mac[5] & (rt2x00dev->ops->max_ap_intf - 1);
 
 	crypto.cipher = rt2x00crypto_key_to_cipher(key);
 	if (crypto.cipher == CIPHER_NONE)
 		return -EOPNOTSUPP;
 
 	crypto.cmd = cmd;
-	crypto.address = address;
 
-	if (crypto.cipher == CIPHER_TKIP) {
-		if (key->keylen > NL80211_TKIP_DATA_OFFSET_ENCR_KEY)
-			memcpy(&crypto.key,
-			       &key->key[NL80211_TKIP_DATA_OFFSET_ENCR_KEY],
-			       sizeof(crypto.key));
-
-		if (key->keylen > NL80211_TKIP_DATA_OFFSET_TX_MIC_KEY)
-			memcpy(&crypto.tx_mic,
-			       &key->key[NL80211_TKIP_DATA_OFFSET_TX_MIC_KEY],
-			       sizeof(crypto.tx_mic));
-
-		if (key->keylen > NL80211_TKIP_DATA_OFFSET_RX_MIC_KEY)
-			memcpy(&crypto.rx_mic,
-			       &key->key[NL80211_TKIP_DATA_OFFSET_RX_MIC_KEY],
-			       sizeof(crypto.rx_mic));
-	} else
-		memcpy(&crypto.key, &key->key[0], key->keylen);
-
-	/*
-	 * Discover the Association ID from mac80211.
-	 * Some drivers need this information when updating the
-	 * hardware key (either adding or removing).
-	 */
-	rcu_read_lock();
-	sta = ieee80211_find_sta(hw, address);
-	if (sta)
+	if (sta) {
+		/* some drivers need the AID */
 		crypto.aid = sta->aid;
-	rcu_read_unlock();
+		crypto.address = sta->addr;
+	} else
+		crypto.address = bcast_addr;
 
+	if (crypto.cipher == CIPHER_TKIP)
+		memcpy_tkip(&crypto, &key->key[0], key->keylen);
+	else
+		memcpy(&crypto.key, &key->key[0], key->keylen);
 	/*
 	 * Each BSS has a maximum of 4 shared keys.
 	 * Shared key index values:
@@ -619,7 +582,44 @@ void rt2x00mac_bss_info_changed(struct ieee80211_hw *hw,
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
 	struct rt2x00_intf *intf = vif_to_intf(vif);
-	unsigned int delayed = 0;
+	int update_bssid = 0;
+
+	/*
+	 * mac80211 might be calling this function while we are trying
+	 * to remove the device or perhaps suspending it.
+	 */
+	if (!test_bit(DEVICE_STATE_PRESENT, &rt2x00dev->flags))
+		return;
+
+	spin_lock(&intf->lock);
+
+	/*
+	 * conf->bssid can be NULL if coming from the internal
+	 * beacon update routine.
+	 */
+	if (changes & BSS_CHANGED_BSSID) {
+		update_bssid = 1;
+		memcpy(&intf->bssid, bss_conf->bssid, ETH_ALEN);
+	}
+
+	spin_unlock(&intf->lock);
+
+	/*
+	 * Call rt2x00_config_intf() outside of the spinlock context since
+	 * the call will sleep for USB drivers. By using the ieee80211_if_conf
+	 * values as arguments we make keep access to rt2x00_intf thread safe
+	 * even without the lock.
+	 */
+	if (changes & BSS_CHANGED_BSSID)
+		rt2x00lib_config_intf(rt2x00dev, intf, vif->type, NULL,
+				      update_bssid ? bss_conf->bssid : NULL);
+
+	/*
+	 * Update the beacon.
+	 */
+	if (changes & (BSS_CHANGED_BEACON | BSS_CHANGED_BEACON_ENABLED))
+		rt2x00queue_update_beacon(rt2x00dev, vif,
+					  bss_conf->enable_beacon);
 
 	/*
 	 * When the association status has changed we must reset the link
@@ -635,30 +635,15 @@ void rt2x00mac_bss_info_changed(struct ieee80211_hw *hw,
 		else
 			rt2x00dev->intf_associated--;
 
-		if (!test_bit(DRIVER_REQUIRE_SCHEDULED, &rt2x00dev->flags))
-			rt2x00leds_led_assoc(rt2x00dev,
-					     !!rt2x00dev->intf_associated);
-		else
-			delayed |= DELAYED_LED_ASSOC;
+		rt2x00leds_led_assoc(rt2x00dev, !!rt2x00dev->intf_associated);
 	}
 
 	/*
 	 * When the erp information has changed, we should perform
 	 * additional configuration steps. For all other changes we are done.
 	 */
-	if (changes & ~(BSS_CHANGED_ASSOC | BSS_CHANGED_HT)) {
-		if (!test_bit(DRIVER_REQUIRE_SCHEDULED, &rt2x00dev->flags))
-			rt2x00lib_config_erp(rt2x00dev, intf, bss_conf);
-		else
-			delayed |= DELAYED_CONFIG_ERP;
-	}
-
-	spin_lock(&intf->lock);
-	if (delayed) {
-		intf->delayed_flags |= delayed;
-		schedule_work(&rt2x00dev->intf_work);
-	}
-	spin_unlock(&intf->lock);
+	if (changes & ~(BSS_CHANGED_ASSOC | BSS_CHANGED_HT))
+		rt2x00lib_config_erp(rt2x00dev, intf, bss_conf);
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_bss_info_changed);
 
@@ -696,3 +681,12 @@ int rt2x00mac_conf_tx(struct ieee80211_hw *hw, u16 queue_idx,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_conf_tx);
+
+void rt2x00mac_rfkill_poll(struct ieee80211_hw *hw)
+{
+	struct rt2x00_dev *rt2x00dev = hw->priv;
+	bool active = !!rt2x00dev->ops->lib->rfkill_poll(rt2x00dev);
+
+	wiphy_rfkill_set_hw_state(hw->wiphy, !active);
+}
+EXPORT_SYMBOL_GPL(rt2x00mac_rfkill_poll);

@@ -7,6 +7,7 @@
 #include <linux/sched.h>
 #include <linux/kbuild.h>
 #include <asm/vdso.h>
+#include <asm/sigp.h>
 
 int main(void)
 {
@@ -27,6 +28,8 @@ int main(void)
 	DEFINE(__TI_flags, offsetof(struct thread_info, flags));
 	DEFINE(__TI_cpu, offsetof(struct thread_info, cpu));
 	DEFINE(__TI_precount, offsetof(struct thread_info, preempt_count));
+	DEFINE(__TI_user_timer, offsetof(struct thread_info, user_timer));
+	DEFINE(__TI_system_timer, offsetof(struct thread_info, system_timer));
 	BLANK();
 	DEFINE(__PT_ARGS, offsetof(struct pt_regs, args));
 	DEFINE(__PT_PSW, offsetof(struct pt_regs, psw));
@@ -57,6 +60,10 @@ int main(void)
 	DEFINE(CLOCK_REALTIME, CLOCK_REALTIME);
 	DEFINE(CLOCK_MONOTONIC, CLOCK_MONOTONIC);
 	DEFINE(CLOCK_REALTIME_RES, MONOTONIC_RES_NSEC);
-
+	/* constants for SIGP */
+	DEFINE(__SIGP_STOP, sigp_stop);
+	DEFINE(__SIGP_RESTART, sigp_restart);
+	DEFINE(__SIGP_SENSE, sigp_sense);
+	DEFINE(__SIGP_INITIAL_CPU_RESET, sigp_initial_cpu_reset);
 	return 0;
 }

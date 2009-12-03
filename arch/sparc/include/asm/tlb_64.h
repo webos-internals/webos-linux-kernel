@@ -57,6 +57,8 @@ static inline struct mmu_gather *tlb_gather_mmu(struct mm_struct *mm, unsigned i
 
 static inline void tlb_flush_mmu(struct mmu_gather *mp)
 {
+	if (!mp->fullmm)
+		flush_tlb_pending();
 	if (mp->need_flush) {
 		free_pages_and_swap_cache(mp->pages, mp->pages_nr);
 		mp->pages_nr = 0;
@@ -78,8 +80,6 @@ static inline void tlb_finish_mmu(struct mmu_gather *mp, unsigned long start, un
 
 	if (mp->fullmm)
 		mp->fullmm = 0;
-	else
-		flush_tlb_pending();
 
 	/* keep the page table cache within bounds */
 	check_pgt_cache();
@@ -100,9 +100,9 @@ static inline void tlb_remove_page(struct mmu_gather *mp, struct page *page)
 }
 
 #define tlb_remove_tlb_entry(mp,ptep,addr) do { } while (0)
-#define pte_free_tlb(mp, ptepage) pte_free((mp)->mm, ptepage)
-#define pmd_free_tlb(mp, pmdp) pmd_free((mp)->mm, pmdp)
-#define pud_free_tlb(tlb,pudp) __pud_free_tlb(tlb,pudp)
+#define pte_free_tlb(mp, ptepage, addr) pte_free((mp)->mm, ptepage)
+#define pmd_free_tlb(mp, pmdp, addr) pmd_free((mp)->mm, pmdp)
+#define pud_free_tlb(tlb,pudp, addr) __pud_free_tlb(tlb,pudp,addr)
 
 #define tlb_migrate_finish(mm)	do { } while (0)
 #define tlb_start_vma(tlb, vma) do { } while (0)

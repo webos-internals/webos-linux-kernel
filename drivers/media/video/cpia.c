@@ -31,6 +31,7 @@
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/vmalloc.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/proc_fs.h>
 #include <linux/ctype.h>
@@ -1381,9 +1382,7 @@ static void proc_cpia_create(void)
 {
 	cpia_proc_root = proc_mkdir("cpia", NULL);
 
-	if (cpia_proc_root)
-		cpia_proc_root->owner = THIS_MODULE;
-	else
+	if (!cpia_proc_root)
 		LOG("Unable to initialise /proc/cpia\n");
 }
 

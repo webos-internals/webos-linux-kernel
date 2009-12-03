@@ -37,12 +37,17 @@ extern int usb_match_device(struct usb_device *dev,
 extern void usb_forced_unbind_intf(struct usb_interface *intf);
 extern void usb_rebind_intf(struct usb_interface *intf);
 
+extern int usb_hub_claim_port(struct usb_device *hdev, unsigned port,
+		void *owner);
+extern int usb_hub_release_port(struct usb_device *hdev, unsigned port,
+		void *owner);
+extern void usb_hub_release_all_ports(struct usb_device *hdev, void *owner);
+extern bool usb_device_is_owned(struct usb_device *udev);
+
 extern int  usb_hub_init(void);
 extern void usb_hub_cleanup(void);
 extern int usb_major_init(void);
 extern void usb_major_cleanup(void);
-extern int usb_host_init(void);
-extern void usb_host_cleanup(void);
 
 #ifdef	CONFIG_PM
 
@@ -106,11 +111,22 @@ extern struct workqueue_struct *ksuspend_usb_wq;
 extern struct bus_type usb_bus_type;
 extern struct device_type usb_device_type;
 extern struct device_type usb_if_device_type;
+extern struct device_type usb_ep_device_type;
 extern struct usb_device_driver usb_generic_driver;
 
 static inline int is_usb_device(const struct device *dev)
 {
 	return dev->type == &usb_device_type;
+}
+
+static inline int is_usb_interface(const struct device *dev)
+{
+	return dev->type == &usb_if_device_type;
+}
+
+static inline int is_usb_endpoint(const struct device *dev)
+{
+	return dev->type == &usb_ep_device_type;
 }
 
 /* Do the same for device drivers and interface drivers. */
@@ -143,8 +159,8 @@ static inline int is_active(const struct usb_interface *f)
 extern const char *usbcore_name;
 
 /* sysfs stuff */
-extern struct attribute_group *usb_device_groups[];
-extern struct attribute_group *usb_interface_groups[];
+extern const struct attribute_group *usb_device_groups[];
+extern const struct attribute_group *usb_interface_groups[];
 
 /* usbfs stuff */
 extern struct mutex usbfs_mutex;

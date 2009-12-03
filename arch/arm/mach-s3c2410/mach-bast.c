@@ -16,6 +16,7 @@
 #include <linux/list.h>
 #include <linux/timer.h>
 #include <linux/init.h>
+#include <linux/gpio.h>
 #include <linux/sysdev.h>
 #include <linux/serial_core.h>
 #include <linux/platform_device.h>
@@ -44,6 +45,7 @@
 #include <mach/regs-mem.h>
 #include <mach/regs-lcd.h>
 
+#include <plat/hwmon.h>
 #include <plat/nand.h>
 #include <plat/iic.h>
 #include <mach/fb.h>
@@ -58,6 +60,7 @@
 #include <plat/clock.h>
 #include <plat/devs.h>
 #include <plat/cpu.h>
+#include <plat/cpu-freq.h>
 
 #include "usb-simtec.h"
 #include "nor-simtec.h"
@@ -212,15 +215,15 @@ static struct s3c2410_uartcfg bast_uartcfgs[] __initdata = {
 static int bast_pm_suspend(struct sys_device *sd, pm_message_t state)
 {
 	/* ensure that an nRESET is not generated on resume. */
-	s3c2410_gpio_setpin(S3C2410_GPA21, 1);
-	s3c2410_gpio_cfgpin(S3C2410_GPA21, S3C2410_GPA21_OUT);
+	s3c2410_gpio_setpin(S3C2410_GPA(21), 1);
+	s3c2410_gpio_cfgpin(S3C2410_GPA(21), S3C2410_GPIO_OUTPUT);
 
 	return 0;
 }
 
 static int bast_pm_resume(struct sys_device *sd)
 {
-	s3c2410_gpio_cfgpin(S3C2410_GPA21, S3C2410_GPA21_nRSTOUT);
+	s3c2410_gpio_cfgpin(S3C2410_GPA(21), S3C2410_GPA21_nRSTOUT);
 	return 0;
 }
 
@@ -409,8 +412,7 @@ static struct platform_device bast_sio = {
 static struct s3c2410_platform_i2c __initdata bast_i2c_info = {
 	.flags		= 0,
 	.slave_addr	= 0x10,
-	.bus_freq	= 100*1000,
-	.max_freq	= 130*1000,
+	.frequency	= 100*1000,
 };
 
 /* Asix AX88796 10/100 ethernet controller */
@@ -547,7 +549,35 @@ static struct i2c_board_info bast_i2c_devs[] __initdata = {
 	},
 };
 
+static struct s3c_hwmon_pdata bast_hwmon_info = {
+	/* LCD contrast (0-6.6V) */
+	.in[0] = &(struct s3c_hwmon_chcfg) {
+		.name		= "lcd-contrast",
+		.mult		= 3300,
+		.div		= 512,
+	},
+	/* LED current feedback */
+	.in[1] = &(struct s3c_hwmon_chcfg) {
+		.name		= "led-feedback",
+		.mult		= 3300,
+		.div		= 1024,
+	},
+	/* LCD feedback (0-6.6V) */
+	.in[2] = &(struct s3c_hwmon_chcfg) {
+		.name		= "lcd-feedback",
+		.mult		= 3300,
+		.div		= 512,
+	},
+	/* Vcore (1.8-2.0V), Vref 3.3V  */
+	.in[3] = &(struct s3c_hwmon_chcfg) {
+		.name		= "vcore",
+		.mult		= 3300,
+		.div		= 1024,
+	},
+};
+
 /* Standard BAST devices */
+// cat /sys/devices/platform/s3c24xx-adc/s3c-hwmon/in_0
 
 static struct platform_device *bast_devices[] __initdata = {
 	&s3c_device_usb,
@@ -556,6 +586,8 @@ static struct platform_device *bast_devices[] __initdata = {
 	&s3c_device_i2c0,
  	&s3c_device_rtc,
 	&s3c_device_nand,
+	&s3c_device_adc,
+	&s3c_device_hwmon,
 	&bast_device_dm9k,
 	&bast_device_asix,
 	&bast_device_axpp,
@@ -568,6 +600,12 @@ static struct clk *bast_clocks[] __initdata = {
 	&s3c24xx_clkout0,
 	&s3c24xx_clkout1,
 	&s3c24xx_uclk,
+};
+
+static struct s3c_cpufreq_board __initdata bast_cpufreq = {
+	.refresh	= 7800, /* 7.8usec */
+	.auto_io	= 1,
+	.need_io	= 1,
 };
 
 static void __init bast_map_io(void)
@@ -588,14 +626,11 @@ static void __init bast_map_io(void)
 	s3c24xx_register_clocks(bast_clocks, ARRAY_SIZE(bast_clocks));
 
 	s3c_device_nand.dev.platform_data = &bast_nand_info;
-
-	s3c_i2c0_set_platdata(&bast_i2c_info);
+	s3c_device_hwmon.dev.platform_data = &bast_hwmon_info;
 
 	s3c24xx_init_io(bast_iodesc, ARRAY_SIZE(bast_iodesc));
 	s3c24xx_init_clocks(0);
 	s3c24xx_init_uarts(bast_uartcfgs, ARRAY_SIZE(bast_uartcfgs));
-
-	usb_simtec_init();
 }
 
 static void __init bast_init(void)
@@ -603,13 +638,17 @@ static void __init bast_init(void)
 	sysdev_class_register(&bast_pm_sysclass);
 	sysdev_register(&bast_pm_sysdev);
 
+	s3c_i2c0_set_platdata(&bast_i2c_info);
 	s3c24xx_fb_set_platdata(&bast_fb_info);
 	platform_add_devices(bast_devices, ARRAY_SIZE(bast_devices));
 
 	i2c_register_board_info(0, bast_i2c_devs,
 				ARRAY_SIZE(bast_i2c_devs));
 
+	usb_simtec_init();
 	nor_simtec_init();
+
+	s3c_cpufreq_setboard(&bast_cpufreq);
 }
 
 MACHINE_START(BAST, "Simtec-BAST")

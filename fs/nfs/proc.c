@@ -32,7 +32,6 @@
 #include <linux/slab.h>
 #include <linux/time.h>
 #include <linux/mm.h>
-#include <linux/utsname.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/in.h>
@@ -663,4 +662,5 @@ const struct nfs_rpc_ops nfs_v2_clientops = {
 	.commit_setup	= nfs_proc_commit_setup,
 	.lock		= nfs_proc_lock,
 	.lock_check_bounds = nfs_lock_check_bounds,
+	.close_context	= nfs_close_context,
 };

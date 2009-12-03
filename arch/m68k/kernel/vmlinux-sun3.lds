@@ -12,7 +12,7 @@ SECTIONS
   . = 0xE002000;
   _text = .;			/* Text and read-only data */
   .text : {
-	*(.text.head)
+	HEAD_TEXT
 	TEXT_TEXT
 	SCHED_TEXT
 	LOCK_TEXT
@@ -77,13 +77,6 @@ __init_begin = .;
 
   _end = . ;
 
-  /* Sections to be discarded */
-  /DISCARD/ : {
-	EXIT_TEXT
-	EXIT_DATA
-	*(.exitcall.exit)
-	}
-
   .crap : {
 	/* Stabs debugging sections.  */
 	*(.stab)
@@ -96,4 +89,6 @@ __init_begin = .;
 	*(.note)
   }
 
+  /* Sections to be discarded */
+  DISCARDS
 }

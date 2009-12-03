@@ -169,18 +169,8 @@ static void rate_control_pid_sample(struct rc_pid_info *pinfo,
 	 * still a good measurement and copy it. */
 	if (unlikely(spinfo->tx_num_xmit == 0))
 		pf = spinfo->last_pf;
-	else {
-		/* XXX: BAD HACK!!! */
-		struct sta_info *si = container_of(sta, struct sta_info, sta);
-
+	else
 		pf = spinfo->tx_num_failed * 100 / spinfo->tx_num_xmit;
-
-		if (ieee80211_vif_is_mesh(&si->sdata->vif) && pf == 100)
-			mesh_plink_broken(si);
-		pf <<= RC_PID_ARITH_SHIFT;
-		si->fail_avg = ((pf + (spinfo->last_pf << 3)) / 9)
-					>> RC_PID_ARITH_SHIFT;
-	}
 
 	spinfo->tx_num_xmit = 0;
 	spinfo->tx_num_failed = 0;
@@ -276,11 +266,9 @@ rate_control_pid_get_rate(void *priv, struct ieee80211_sta *sta,
 {
 	struct sk_buff *skb = txrc->skb;
 	struct ieee80211_supported_band *sband = txrc->sband;
-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct rc_pid_sta_info *spinfo = priv_sta;
 	int rateidx;
-	u16 fc;
 
 	if (txrc->rts)
 		info->control.rates[0].count =
@@ -289,15 +277,9 @@ rate_control_pid_get_rate(void *priv, struct ieee80211_sta *sta,
 		info->control.rates[0].count =
 			txrc->hw->conf.short_frame_max_tx_count;
 
-	/* Send management frames and broadcast/multicast data using lowest
-	 * rate. */
-	fc = le16_to_cpu(hdr->frame_control);
-	if (!sta || !spinfo ||
-	    (fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_DATA ||
-	    is_multicast_ether_addr(hdr->addr1)) {
-		info->control.rates[0].idx = rate_lowest_index(sband, sta);
+	/* Send management frames and NO_ACK data using lowest rate. */
+	if (rate_control_send_low(sta, priv_sta, txrc))
 		return;
-	}
 
 	rateidx = spinfo->txrate_idx;
 
@@ -317,56 +299,15 @@ rate_control_pid_rate_init(void *priv, struct ieee80211_supported_band *sband,
 			   struct ieee80211_sta *sta, void *priv_sta)
 {
 	struct rc_pid_sta_info *spinfo = priv_sta;
-	struct sta_info *si;
+	struct rc_pid_info *pinfo = priv;
+	struct rc_pid_rateinfo *rinfo = pinfo->rinfo;
+	int i, j, tmp;
+	bool s;
 
 	/* TODO: This routine should consider using RSSI from previous packets
 	 * as we need to have IEEE 802.1X auth succeed immediately after assoc..
 	 * Until that method is implemented, we will use the lowest supported
 	 * rate as a workaround. */
-
-	spinfo->txrate_idx = rate_lowest_index(sband, sta);
-	/* HACK */
-	si = container_of(sta, struct sta_info, sta);
-	si->fail_avg = 0;
-}
-
-static void *rate_control_pid_alloc(struct ieee80211_hw *hw,
-				    struct dentry *debugfsdir)
-{
-	struct rc_pid_info *pinfo;
-	struct rc_pid_rateinfo *rinfo;
-	struct ieee80211_supported_band *sband;
-	int i, j, tmp;
-	bool s;
-#ifdef CONFIG_MAC80211_DEBUGFS
-	struct rc_pid_debugfs_entries *de;
-#endif
-
-	sband = hw->wiphy->bands[hw->conf.channel->band];
-
-	pinfo = kmalloc(sizeof(*pinfo), GFP_ATOMIC);
-	if (!pinfo)
-		return NULL;
-
-	/* We can safely assume that sband won't change unless we get
-	 * reinitialized. */
-	rinfo = kmalloc(sizeof(*rinfo) * sband->n_bitrates, GFP_ATOMIC);
-	if (!rinfo) {
-		kfree(pinfo);
-		return NULL;
-	}
-
-	pinfo->target = RC_PID_TARGET_PF;
-	pinfo->sampling_period = RC_PID_INTERVAL;
-	pinfo->coeff_p = RC_PID_COEFF_P;
-	pinfo->coeff_i = RC_PID_COEFF_I;
-	pinfo->coeff_d = RC_PID_COEFF_D;
-	pinfo->smoothing_shift = RC_PID_SMOOTHING_SHIFT;
-	pinfo->sharpen_factor = RC_PID_SHARPENING_FACTOR;
-	pinfo->sharpen_duration = RC_PID_SHARPENING_DURATION;
-	pinfo->norm_offset = RC_PID_NORM_OFFSET;
-	pinfo->rinfo = rinfo;
-	pinfo->oldrate = 0;
 
 	/* Sort the rates. This is optimized for the most common case (i.e.
 	 * almost-sorted CCK+OFDM rates). Kind of bubble-sort with reversed
@@ -394,6 +335,48 @@ static void *rate_control_pid_alloc(struct ieee80211_hw *hw,
 		if (!s)
 			break;
 	}
+
+	spinfo->txrate_idx = rate_lowest_index(sband, sta);
+}
+
+static void *rate_control_pid_alloc(struct ieee80211_hw *hw,
+				    struct dentry *debugfsdir)
+{
+	struct rc_pid_info *pinfo;
+	struct rc_pid_rateinfo *rinfo;
+	struct ieee80211_supported_band *sband;
+	int i, max_rates = 0;
+#ifdef CONFIG_MAC80211_DEBUGFS
+	struct rc_pid_debugfs_entries *de;
+#endif
+
+	pinfo = kmalloc(sizeof(*pinfo), GFP_ATOMIC);
+	if (!pinfo)
+		return NULL;
+
+	for (i = 0; i < IEEE80211_NUM_BANDS; i++) {
+		sband = hw->wiphy->bands[i];
+		if (sband && sband->n_bitrates > max_rates)
+			max_rates = sband->n_bitrates;
+	}
+
+	rinfo = kmalloc(sizeof(*rinfo) * max_rates, GFP_ATOMIC);
+	if (!rinfo) {
+		kfree(pinfo);
+		return NULL;
+	}
+
+	pinfo->target = RC_PID_TARGET_PF;
+	pinfo->sampling_period = RC_PID_INTERVAL;
+	pinfo->coeff_p = RC_PID_COEFF_P;
+	pinfo->coeff_i = RC_PID_COEFF_I;
+	pinfo->coeff_d = RC_PID_COEFF_D;
+	pinfo->smoothing_shift = RC_PID_SMOOTHING_SHIFT;
+	pinfo->sharpen_factor = RC_PID_SHARPENING_FACTOR;
+	pinfo->sharpen_duration = RC_PID_SHARPENING_DURATION;
+	pinfo->norm_offset = RC_PID_NORM_OFFSET;
+	pinfo->rinfo = rinfo;
+	pinfo->oldrate = 0;
 
 #ifdef CONFIG_MAC80211_DEBUGFS
 	de = &pinfo->dentries;

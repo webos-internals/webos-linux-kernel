@@ -241,6 +241,12 @@ static struct mt352_config dvico_fusionhdtv_dual = {
 	.demod_init    = dvico_dual_demod_init,
 };
 
+static struct zl10353_config cx88_terratec_cinergy_ht_pci_mkii_config = {
+	.demod_address = (0x1e >> 1),
+	.no_tuner      = 1,
+	.if2           = 45600,
+};
+
 #if defined(CONFIG_VIDEO_CX88_VP3054) || (defined(CONFIG_VIDEO_CX88_VP3054_MODULE) && defined(MODULE))
 static int dntv_live_dvbt_pro_demod_init(struct dvb_frontend* fe)
 {
@@ -418,17 +424,16 @@ static int tevii_dvbs_set_voltage(struct dvb_frontend *fe,
 	struct cx8802_dev *dev= fe->dvb->priv;
 	struct cx88_core *core = dev->core;
 
+	cx_set(MO_GP0_IO, 0x6040);
 	switch (voltage) {
 		case SEC_VOLTAGE_13:
-			printk("LNB Voltage SEC_VOLTAGE_13\n");
-			cx_write(MO_GP0_IO, 0x00006040);
+			cx_clear(MO_GP0_IO, 0x20);
 			break;
 		case SEC_VOLTAGE_18:
-			printk("LNB Voltage SEC_VOLTAGE_18\n");
-			cx_write(MO_GP0_IO, 0x00006060);
+			cx_set(MO_GP0_IO, 0x20);
 			break;
 		case SEC_VOLTAGE_OFF:
-			printk("LNB Voltage SEC_VOLTAGE_off\n");
+			cx_clear(MO_GP0_IO, 0x20);
 			break;
 	}
 
@@ -493,8 +498,9 @@ static struct zl10353_config cx88_pinnacle_hybrid_pctv = {
 };
 
 static struct zl10353_config cx88_geniatech_x8000_mt = {
-       .demod_address = (0x1e >> 1),
-       .no_tuner = 1,
+	.demod_address = (0x1e >> 1),
+	.no_tuner = 1,
+	.disable_i2c_gate_ctrl = 1,
 };
 
 static struct s5h1411_config dvico_fusionhdtv7_config = {
@@ -689,6 +695,7 @@ static int dvb_register(struct cx8802_dev *dev)
 		}
 		break;
 	case CX88_BOARD_WINFAST_DTV2000H:
+	case CX88_BOARD_WINFAST_DTV2000H_J:
 	case CX88_BOARD_HAUPPAUGE_HVR1100:
 	case CX88_BOARD_HAUPPAUGE_HVR1100LP:
 	case CX88_BOARD_HAUPPAUGE_HVR1300:
@@ -1008,6 +1015,7 @@ static int dvb_register(struct cx8802_dev *dev)
 		}
 		break;
 	 case CX88_BOARD_PINNACLE_HYBRID_PCTV:
+	case CX88_BOARD_WINFAST_DTV1800H:
 		fe0->dvb.frontend = dvb_attach(zl10353_attach,
 					       &cx88_pinnacle_hybrid_pctv,
 					       &core->i2c_adap);
@@ -1131,6 +1139,16 @@ static int dvb_register(struct cx8802_dev *dev)
 		if (fe0->dvb.frontend != NULL)
 			fe0->dvb.frontend->ops.set_voltage = tevii_dvbs_set_voltage;
 		break;
+	case CX88_BOARD_TERRATEC_CINERGY_HT_PCI_MKII:
+		fe0->dvb.frontend = dvb_attach(zl10353_attach,
+					       &cx88_terratec_cinergy_ht_pci_mkii_config,
+					       &core->i2c_adap);
+		if (fe0->dvb.frontend) {
+			fe0->dvb.frontend->ops.i2c_gate_ctrl = NULL;
+			if (attach_xc3028(0x61, dev) < 0)
+				goto frontend_detach;
+		}
+		break;
 	default:
 		printk(KERN_ERR "%s/2: The frontend of your DVB/ATSC card isn't supported yet\n",
 		       core->name);
@@ -1152,7 +1170,7 @@ static int dvb_register(struct cx8802_dev *dev)
 		fe1->dvb.frontend->ops.ts_bus_ctrl = cx88_dvb_bus_ctrl;
 
 	/* Put the analog decoder in standby to keep it quiet */
-	cx88_call_i2c_clients(core, TUNER_SET_STANDBY, NULL);
+	call_all(core, tuner, s_standby);
 
 	/* register everything */
 	return videobuf_dvb_register_bus(&dev->frontends, THIS_MODULE, dev,
@@ -1332,7 +1350,7 @@ static struct cx8802_driver cx8802_dvb_driver = {
 	.advise_release = cx8802_dvb_advise_release,
 };
 
-static int dvb_init(void)
+static int __init dvb_init(void)
 {
 	printk(KERN_INFO "cx88/2: cx2388x dvb driver version %d.%d.%d loaded\n",
 	       (CX88_VERSION_CODE >> 16) & 0xff,
@@ -1345,7 +1363,7 @@ static int dvb_init(void)
 	return cx8802_register_driver(&cx8802_dvb_driver);
 }
 
-static void dvb_fini(void)
+static void __exit dvb_fini(void)
 {
 	cx8802_unregister_driver(&cx8802_dvb_driver);
 }

@@ -80,6 +80,9 @@
 #ifndef cpu_has_llsc
 #define cpu_has_llsc		(cpu_data[0].options & MIPS_CPU_LLSC)
 #endif
+#ifndef kernel_uses_llsc
+#define kernel_uses_llsc	cpu_has_llsc
+#endif
 #ifndef cpu_has_mips16
 #define cpu_has_mips16		(cpu_data[0].ases & MIPS_ASE_MIPS16)
 #endif
@@ -146,6 +149,19 @@
 #define cpu_has_mips_r2	(cpu_has_mips32r2 | cpu_has_mips64r2)
 #define cpu_has_mips_r	(cpu_has_mips32r1 | cpu_has_mips32r2 | \
 			 cpu_has_mips64r1 | cpu_has_mips64r2)
+
+#ifndef cpu_has_mips_r2_exec_hazard
+#define cpu_has_mips_r2_exec_hazard cpu_has_mips_r2
+#endif
+
+/*
+ * MIPS32, MIPS64, VR5500, IDT32332, IDT32334 and maybe a few other
+ * pre-MIPS32/MIPS53 processors have CLO, CLZ.  For 64-bit kernels
+ * cpu_has_clo_clz also indicates the availability of DCLO and DCLZ.
+ */
+# ifndef cpu_has_clo_clz
+# define cpu_has_clo_clz	cpu_has_mips_r
+# endif
 
 #ifndef cpu_has_dsp
 #define cpu_has_dsp		(cpu_data[0].ases & MIPS_ASE_DSP)
@@ -219,6 +235,10 @@
 #endif
 #ifndef cpu_scache_line_size
 #define cpu_scache_line_size()	cpu_data[0].scache.linesz
+#endif
+
+#ifndef cpu_hwrena_impl_bits
+#define cpu_hwrena_impl_bits		0
 #endif
 
 #endif /* __ASM_CPU_FEATURES_H */

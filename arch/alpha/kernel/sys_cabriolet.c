@@ -71,8 +71,8 @@ cabriolet_end_irq(unsigned int irq)
 		cabriolet_enable_irq(irq);
 }
 
-static struct hw_interrupt_type cabriolet_irq_type = {
-	.typename	= "CABRIOLET",
+static struct irq_chip cabriolet_irq_type = {
+	.name		= "CABRIOLET",
 	.startup	= cabriolet_startup_irq,
 	.shutdown	= cabriolet_disable_irq,
 	.enable		= cabriolet_enable_irq,

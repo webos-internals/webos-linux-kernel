@@ -17,6 +17,7 @@
 
 #include <linux/mISDNif.h>
 #include <linux/kthread.h>
+#include <linux/smp_lock.h>
 #include "core.h"
 
 static u_int	*debug;
@@ -363,7 +364,7 @@ add_layer2(struct mISDNchannel *ch, struct mISDNstack *st)
 static int
 st_own_ctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 {
-	if (!ch->st || ch->st->layer1)
+	if (!ch->st || !ch->st->layer1)
 		return -EINVAL;
 	return ch->st->layer1->ctrl(ch->st->layer1, cmd, arg);
 }

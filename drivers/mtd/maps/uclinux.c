@@ -22,15 +22,19 @@
 
 /****************************************************************************/
 
+extern char _ebss;
+
 struct map_info uclinux_ram_map = {
 	.name = "RAM",
+	.phys = (unsigned long)&_ebss,
+	.size = 0,
 };
 
-struct mtd_info *uclinux_ram_mtdinfo;
+static struct mtd_info *uclinux_ram_mtdinfo;
 
 /****************************************************************************/
 
-struct mtd_partition uclinux_romfs[] = {
+static struct mtd_partition uclinux_romfs[] = {
 	{ .name = "ROMfs" }
 };
 
@@ -38,7 +42,7 @@ struct mtd_partition uclinux_romfs[] = {
 
 /****************************************************************************/
 
-int uclinux_point(struct mtd_info *mtd, loff_t from, size_t len,
+static int uclinux_point(struct mtd_info *mtd, loff_t from, size_t len,
 	size_t *retlen, void **virt, resource_size_t *phys)
 {
 	struct map_info *map = mtd->priv;
@@ -55,12 +59,10 @@ static int __init uclinux_mtd_init(void)
 {
 	struct mtd_info *mtd;
 	struct map_info *mapp;
-	extern char _ebss;
-	unsigned long addr = (unsigned long) &_ebss;
 
 	mapp = &uclinux_ram_map;
-	mapp->phys = addr;
-	mapp->size = PAGE_ALIGN(ntohl(*((unsigned long *)(addr + 8))));
+	if (!mapp->size)
+		mapp->size = PAGE_ALIGN(ntohl(*((unsigned long *)(mapp->phys + 8))));
 	mapp->bankwidth = 4;
 
 	printk("uclinux[mtd]: RAM probe address=0x%x size=0x%x\n",
@@ -87,7 +89,11 @@ static int __init uclinux_mtd_init(void)
 	mtd->priv = mapp;
 
 	uclinux_ram_mtdinfo = mtd;
+#ifdef CONFIG_MTD_PARTITIONS
 	add_mtd_partitions(mtd, uclinux_romfs, NUM_PARTITIONS);
+#else
+	add_mtd_device(mtd);
+#endif
 
 	return(0);
 }
@@ -97,7 +103,11 @@ static int __init uclinux_mtd_init(void)
 static void __exit uclinux_mtd_cleanup(void)
 {
 	if (uclinux_ram_mtdinfo) {
+#ifdef CONFIG_MTD_PARTITIONS
 		del_mtd_partitions(uclinux_ram_mtdinfo);
+#else
+		del_mtd_device(uclinux_ram_mtdinfo);
+#endif
 		map_destroy(uclinux_ram_mtdinfo);
 		uclinux_ram_mtdinfo = NULL;
 	}

@@ -80,8 +80,8 @@ eiger_end_irq(unsigned int irq)
 		eiger_enable_irq(irq);
 }
 
-static struct hw_interrupt_type eiger_irq_type = {
-	.typename	= "EIGER",
+static struct irq_chip eiger_irq_type = {
+	.name		= "EIGER",
 	.startup	= eiger_startup_irq,
 	.shutdown	= eiger_disable_irq,
 	.enable		= eiger_enable_irq,

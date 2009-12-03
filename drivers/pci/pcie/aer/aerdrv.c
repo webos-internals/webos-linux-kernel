@@ -17,6 +17,7 @@
 
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/pm.h>
@@ -38,44 +39,25 @@ MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 
-static int __devinit aer_probe (struct pcie_device *dev,
-	const struct pcie_port_service_id *id );
+static int __devinit aer_probe(struct pcie_device *dev);
 static void aer_remove(struct pcie_device *dev);
-static int aer_suspend(struct pcie_device *dev, pm_message_t state)
-{return 0;}
-static int aer_resume(struct pcie_device *dev) {return 0;}
 static pci_ers_result_t aer_error_detected(struct pci_dev *dev,
 	enum pci_channel_state error);
 static void aer_error_resume(struct pci_dev *dev);
 static pci_ers_result_t aer_root_reset(struct pci_dev *dev);
 
-/*
- * PCI Express bus's AER Root service driver data structure
- */
-static struct pcie_port_service_id aer_id[] = {
-	{
-	.vendor 	= PCI_ANY_ID,
-	.device 	= PCI_ANY_ID,
-	.port_type 	= PCIE_RC_PORT,
-	.service_type 	= PCIE_PORT_SERVICE_AER,
-	},
-	{ /* end: all zeroes */ }
-};
-
 static struct pci_error_handlers aer_error_handlers = {
 	.error_detected = aer_error_detected,
-	.resume = aer_error_resume,
+	.resume		= aer_error_resume,
 };
 
 static struct pcie_port_service_driver aerdriver = {
 	.name		= "aer",
-	.id_table	= &aer_id[0],
+	.port_type	= PCIE_RC_PORT,
+	.service	= PCIE_PORT_SERVICE_AER,
 
 	.probe		= aer_probe,
 	.remove		= aer_remove,
-
-	.suspend	= aer_suspend,
-	.resume		= aer_resume,
 
 	.err_handler	= &aer_error_handlers,
 
@@ -96,7 +78,7 @@ void pci_no_aer(void)
  *
  * Invoked when Root Port detects AER messages.
  **/
-static irqreturn_t aer_irq(int irq, void *context)
+irqreturn_t aer_irq(int irq, void *context)
 {
 	unsigned int status, id;
 	struct pcie_device *pdev = (struct pcie_device *)context;
@@ -145,6 +127,7 @@ static irqreturn_t aer_irq(int irq, void *context)
 
 	return IRQ_HANDLED;
 }
+EXPORT_SYMBOL_GPL(aer_irq);
 
 /**
  * aer_alloc_rpc - allocate Root Port data structure
@@ -152,12 +135,12 @@ static irqreturn_t aer_irq(int irq, void *context)
  *
  * Invoked when Root Port's AER service is loaded.
  **/
-static struct aer_rpc* aer_alloc_rpc(struct pcie_device *dev)
+static struct aer_rpc *aer_alloc_rpc(struct pcie_device *dev)
 {
 	struct aer_rpc *rpc;
 
-	if (!(rpc = kzalloc(sizeof(struct aer_rpc),
-		GFP_KERNEL)))
+	rpc = kzalloc(sizeof(struct aer_rpc), GFP_KERNEL);
+	if (!rpc)
 		return NULL;
 
 	/*
@@ -207,27 +190,28 @@ static void aer_remove(struct pcie_device *dev)
  *
  * Invoked when PCI Express bus loads AER service driver.
  **/
-static int __devinit aer_probe (struct pcie_device *dev,
-				const struct pcie_port_service_id *id )
+static int __devinit aer_probe(struct pcie_device *dev)
 {
 	int status;
 	struct aer_rpc *rpc;
 	struct device *device = &dev->device;
 
 	/* Init */
-	if ((status = aer_init(dev)))
+	status = aer_init(dev);
+	if (status)
 		return status;
 
 	/* Alloc rpc data structure */
-	if (!(rpc = aer_alloc_rpc(dev))) {
+	rpc = aer_alloc_rpc(dev);
+	if (!rpc) {
 		dev_printk(KERN_DEBUG, device, "alloc rpc failed\n");
 		aer_remove(dev);
 		return -ENOMEM;
 	}
 
 	/* Request IRQ ISR */
-	if ((status = request_irq(dev->irq, aer_irq, IRQF_SHARED, "aerdrv",
-				dev))) {
+	status = request_irq(dev->irq, aer_irq, IRQF_SHARED, "aerdrv", dev);
+	if (status) {
 		dev_printk(KERN_DEBUG, device, "request IRQ failed\n");
 		aer_remove(dev);
 		return status;
@@ -334,6 +318,8 @@ static void aer_error_resume(struct pci_dev *dev)
 static int __init aer_service_init(void)
 {
 	if (pcie_aer_disable)
+		return -ENXIO;
+	if (!pci_msi_enabled())
 		return -ENXIO;
 	return pcie_port_service_register(&aerdriver);
 }

@@ -35,6 +35,7 @@
 #include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/freezer.h>
+#include <linux/smp_lock.h>
 #include "cifsfs.h"
 #include "cifspdu.h"
 #define DECLARE_GLOBALS_HERE
@@ -49,7 +50,7 @@
 #define CIFS_MAGIC_NUMBER 0xFF534D42	/* the first four bytes of SMB PDUs */
 
 #ifdef CONFIG_CIFS_QUOTA
-static struct quotactl_ops cifs_quotactl_ops;
+static const struct quotactl_ops cifs_quotactl_ops;
 #endif /* QUOTA */
 
 int cifsFYI = 0;
@@ -63,12 +64,6 @@ unsigned int multiuser_mount = 0;
 unsigned int extended_security = CIFSSEC_DEF;
 /* unsigned int ntlmv2_support = 0; */
 unsigned int sign_CIFS_PDUs = 1;
-extern struct task_struct *oplockThread; /* remove sparse warning */
-struct task_struct *oplockThread = NULL;
-/* extern struct task_struct * dnotifyThread; remove sparse warning */
-#ifdef CONFIG_CIFS_EXPERIMENTAL
-static struct task_struct *dnotifyThread = NULL;
-#endif
 static const struct super_operations cifs_super_ops;
 unsigned int CIFSMaxBufSize = CIFS_MAX_MSGSIZE;
 module_param(CIFSMaxBufSize, int, 0);
@@ -148,7 +143,7 @@ cifs_read_super(struct super_block *sb, void *data,
 #endif
 	sb->s_blocksize = CIFS_MAX_MSGSIZE;
 	sb->s_blocksize_bits = 14;	/* default 2**14 = CIFS_MAX_MSGSIZE */
-	inode = cifs_iget(sb, ROOT_I);
+	inode = cifs_root_iget(sb, ROOT_I);
 
 	if (IS_ERR(inode)) {
 		rc = PTR_ERR(inode);
@@ -187,8 +182,7 @@ out_mount_failed:
 			cifs_sb->mountdata = NULL;
 		}
 #endif
-		if (cifs_sb->local_nls)
-			unload_nls(cifs_sb->local_nls);
+		unload_nls(cifs_sb->local_nls);
 		kfree(cifs_sb);
 	}
 	return rc;
@@ -206,6 +200,9 @@ cifs_put_super(struct super_block *sb)
 		cFYI(1, ("Empty cifs superblock info passed to unmount"));
 		return;
 	}
+
+	lock_kernel();
+
 	rc = cifs_umount(sb, cifs_sb);
 	if (rc)
 		cERROR(1, ("cifs_umount failed with return code %d", rc));
@@ -218,7 +215,8 @@ cifs_put_super(struct super_block *sb)
 
 	unload_nls(cifs_sb->local_nls);
 	kfree(cifs_sb);
-	return;
+
+	unlock_kernel();
 }
 
 static int
@@ -306,7 +304,6 @@ cifs_alloc_inode(struct super_block *sb)
 	if (!cifs_inode)
 		return NULL;
 	cifs_inode->cifsAttrs = 0x20;	/* default */
-	atomic_set(&cifs_inode->inUse, 0);
 	cifs_inode->time = 0;
 	cifs_inode->write_behind_rc = 0;
 	/* Until the file is open and we have gotten oplock
@@ -316,6 +313,7 @@ cifs_alloc_inode(struct super_block *sb)
 	cifs_inode->clientCanCacheAll = false;
 	cifs_inode->delete_pending = false;
 	cifs_inode->vfs_inode.i_blkbits = 14;  /* 2**14 = CIFS_MAX_MSGSIZE */
+	cifs_inode->server_eof = 0;
 
 	/* Can not set i_flags here - they get immediately overwritten
 	   to zero by the VFS */
@@ -330,6 +328,27 @@ cifs_destroy_inode(struct inode *inode)
 	kmem_cache_free(cifs_inode_cachep, CIFS_I(inode));
 }
 
+static void
+cifs_show_address(struct seq_file *s, struct TCP_Server_Info *server)
+{
+	seq_printf(s, ",addr=");
+
+	switch (server->addr.sockAddr.sin_family) {
+	case AF_INET:
+		seq_printf(s, "%pI4", &server->addr.sockAddr.sin_addr.s_addr);
+		break;
+	case AF_INET6:
+		seq_printf(s, "%pI6",
+			   &server->addr.sockAddr6.sin6_addr.s6_addr);
+		if (server->addr.sockAddr6.sin6_scope_id)
+			seq_printf(s, "%%%u",
+				   server->addr.sockAddr6.sin6_scope_id);
+		break;
+	default:
+		seq_printf(s, "(unknown)");
+	}
+}
+
 /*
  * cifs_show_options() is for displaying mount options in /proc/mounts.
  * Not all settable options are displayed but most of the important
@@ -338,85 +357,67 @@ cifs_destroy_inode(struct inode *inode)
 static int
 cifs_show_options(struct seq_file *s, struct vfsmount *m)
 {
-	struct cifs_sb_info *cifs_sb;
-	struct cifsTconInfo *tcon;
-	struct TCP_Server_Info *server;
+	struct cifs_sb_info *cifs_sb = CIFS_SB(m->mnt_sb);
+	struct cifsTconInfo *tcon = cifs_sb->tcon;
 
-	cifs_sb = CIFS_SB(m->mnt_sb);
+	seq_printf(s, ",unc=%s", tcon->treeName);
+	if (tcon->ses->userName)
+		seq_printf(s, ",username=%s", tcon->ses->userName);
+	if (tcon->ses->domainName)
+		seq_printf(s, ",domain=%s", tcon->ses->domainName);
 
-	if (cifs_sb) {
-		tcon = cifs_sb->tcon;
-		if (tcon) {
-			seq_printf(s, ",unc=%s", cifs_sb->tcon->treeName);
-			if (tcon->ses) {
-				if (tcon->ses->userName)
-					seq_printf(s, ",username=%s",
-					   tcon->ses->userName);
-				if (tcon->ses->domainName)
-					seq_printf(s, ",domain=%s",
-					   tcon->ses->domainName);
-				server = tcon->ses->server;
-				if (server) {
-					seq_printf(s, ",addr=");
-					switch (server->addr.sockAddr6.
-						sin6_family) {
-					case AF_INET6:
-						seq_printf(s, "%pI6",
-							   &server->addr.sockAddr6.sin6_addr);
-						break;
-					case AF_INET:
-						seq_printf(s, "%pI4",
-							   &server->addr.sockAddr.sin_addr.s_addr);
-						break;
-					}
-				}
-			}
-			if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_UID) ||
-			   !(tcon->unix_ext))
-				seq_printf(s, ",uid=%d", cifs_sb->mnt_uid);
-			if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_GID) ||
-			   !(tcon->unix_ext))
-				seq_printf(s, ",gid=%d", cifs_sb->mnt_gid);
-			if (!tcon->unix_ext) {
-				seq_printf(s, ",file_mode=0%o,dir_mode=0%o",
+	seq_printf(s, ",uid=%d", cifs_sb->mnt_uid);
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_UID)
+		seq_printf(s, ",forceuid");
+	else
+		seq_printf(s, ",noforceuid");
+
+	seq_printf(s, ",gid=%d", cifs_sb->mnt_gid);
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_OVERR_GID)
+		seq_printf(s, ",forcegid");
+	else
+		seq_printf(s, ",noforcegid");
+
+	cifs_show_address(s, tcon->ses->server);
+
+	if (!tcon->unix_ext)
+		seq_printf(s, ",file_mode=0%o,dir_mode=0%o",
 					   cifs_sb->mnt_file_mode,
 					   cifs_sb->mnt_dir_mode);
-			}
-			if (tcon->seal)
-				seq_printf(s, ",seal");
-			if (tcon->nocase)
-				seq_printf(s, ",nocase");
-			if (tcon->retry)
-				seq_printf(s, ",hard");
-		}
-		if (cifs_sb->prepath)
-			seq_printf(s, ",prepath=%s", cifs_sb->prepath);
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS)
-			seq_printf(s, ",posixpaths");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SET_UID)
-			seq_printf(s, ",setuids");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM)
-			seq_printf(s, ",serverino");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DIRECT_IO)
-			seq_printf(s, ",directio");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_XATTR)
-			seq_printf(s, ",nouser_xattr");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR)
-			seq_printf(s, ",mapchars");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL)
-			seq_printf(s, ",sfu");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_BRL)
-			seq_printf(s, ",nobrl");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_CIFS_ACL)
-			seq_printf(s, ",cifsacl");
-		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DYNPERM)
-			seq_printf(s, ",dynperm");
-		if (m->mnt_sb->s_flags & MS_POSIXACL)
-			seq_printf(s, ",acl");
+	if (tcon->seal)
+		seq_printf(s, ",seal");
+	if (tcon->nocase)
+		seq_printf(s, ",nocase");
+	if (tcon->retry)
+		seq_printf(s, ",hard");
+	if (cifs_sb->prepath)
+		seq_printf(s, ",prepath=%s", cifs_sb->prepath);
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS)
+		seq_printf(s, ",posixpaths");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SET_UID)
+		seq_printf(s, ",setuids");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM)
+		seq_printf(s, ",serverino");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DIRECT_IO)
+		seq_printf(s, ",directio");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_XATTR)
+		seq_printf(s, ",nouser_xattr");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR)
+		seq_printf(s, ",mapchars");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL)
+		seq_printf(s, ",sfu");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_BRL)
+		seq_printf(s, ",nobrl");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_CIFS_ACL)
+		seq_printf(s, ",cifsacl");
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DYNPERM)
+		seq_printf(s, ",dynperm");
+	if (m->mnt_sb->s_flags & MS_POSIXACL)
+		seq_printf(s, ",acl");
 
-		seq_printf(s, ",rsize=%d", cifs_sb->rsize);
-		seq_printf(s, ",wsize=%d", cifs_sb->wsize);
-	}
+	seq_printf(s, ",rsize=%d", cifs_sb->rsize);
+	seq_printf(s, ",wsize=%d", cifs_sb->wsize);
+
 	return 0;
 }
 
@@ -512,7 +513,7 @@ int cifs_xstate_get(struct super_block *sb, struct fs_quota_stat *qstats)
 	return rc;
 }
 
-static struct quotactl_ops cifs_quotactl_ops = {
+static const struct quotactl_ops cifs_quotactl_ops = {
 	.set_xquota	= cifs_xquota_set,
 	.get_xquota	= cifs_xquota_get,
 	.set_xstate	= cifs_xstate_set,
@@ -533,7 +534,13 @@ static void cifs_umount_begin(struct super_block *sb)
 		return;
 
 	read_lock(&cifs_tcp_ses_lock);
-	if (tcon->tc_count == 1)
+	if ((tcon->tc_count > 1) || (tcon->tidStatus == CifsExiting)) {
+		/* we have other mounts to same share or we have
+		   already tried to force umount this and woken up
+		   all waiting network requests, nothing to do */
+		read_unlock(&cifs_tcp_ses_lock);
+		return;
+	} else if (tcon->tc_count == 1)
 		tcon->tidStatus = CifsExiting;
 	read_unlock(&cifs_tcp_ses_lock);
 
@@ -548,7 +555,6 @@ static void cifs_umount_begin(struct super_block *sb)
 		wake_up_all(&tcon->ses->server->response_q);
 		msleep(1);
 	}
-/* BB FIXME - finish add checks for tidStatus BB */
 
 	return;
 }
@@ -601,12 +607,12 @@ cifs_get_sb(struct file_system_type *fs_type,
 
 	rc = cifs_read_super(sb, data, dev_name, flags & MS_SILENT ? 1 : 0);
 	if (rc) {
-		up_write(&sb->s_umount);
-		deactivate_super(sb);
+		deactivate_locked_super(sb);
 		return rc;
 	}
 	sb->s_flags |= MS_ACTIVE;
-	return simple_set_mnt(mnt, sb);
+	simple_set_mnt(mnt, sb);
+	return 0;
 }
 
 static ssize_t cifs_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
@@ -963,117 +969,12 @@ cifs_destroy_mids(void)
 	kmem_cache_destroy(cifs_oplock_cachep);
 }
 
-static int cifs_oplock_thread(void *dummyarg)
-{
-	struct oplock_q_entry *oplock_item;
-	struct cifsTconInfo *pTcon;
-	struct inode *inode;
-	__u16  netfid;
-	int rc, waitrc = 0;
-
-	set_freezable();
-	do {
-		if (try_to_freeze())
-			continue;
-
-		spin_lock(&GlobalMid_Lock);
-		if (list_empty(&GlobalOplock_Q)) {
-			spin_unlock(&GlobalMid_Lock);
-			set_current_state(TASK_INTERRUPTIBLE);
-			schedule_timeout(39*HZ);
-		} else {
-			oplock_item = list_entry(GlobalOplock_Q.next,
-						struct oplock_q_entry, qhead);
-			cFYI(1, ("found oplock item to write out"));
-			pTcon = oplock_item->tcon;
-			inode = oplock_item->pinode;
-			netfid = oplock_item->netfid;
-			spin_unlock(&GlobalMid_Lock);
-			DeleteOplockQEntry(oplock_item);
-			/* can not grab inode sem here since it would
-				deadlock when oplock received on delete
-				since vfs_unlink holds the i_mutex across
-				the call */
-			/* mutex_lock(&inode->i_mutex);*/
-			if (S_ISREG(inode->i_mode)) {
-#ifdef CONFIG_CIFS_EXPERIMENTAL
-				if (CIFS_I(inode)->clientCanCacheAll == 0)
-					break_lease(inode, FMODE_READ);
-				else if (CIFS_I(inode)->clientCanCacheRead == 0)
-					break_lease(inode, FMODE_WRITE);
-#endif
-				rc = filemap_fdatawrite(inode->i_mapping);
-				if (CIFS_I(inode)->clientCanCacheRead == 0) {
-					waitrc = filemap_fdatawait(
-							      inode->i_mapping);
-					invalidate_remote_inode(inode);
-				}
-				if (rc == 0)
-					rc = waitrc;
-			} else
-				rc = 0;
-			/* mutex_unlock(&inode->i_mutex);*/
-			if (rc)
-				CIFS_I(inode)->write_behind_rc = rc;
-			cFYI(1, ("Oplock flush inode %p rc %d",
-				inode, rc));
-
-				/* releasing stale oplock after recent reconnect
-				of smb session using a now incorrect file
-				handle is not a data integrity issue but do
-				not bother sending an oplock release if session
-				to server still is disconnected since oplock
-				already released by the server in that case */
-			if (!pTcon->need_reconnect) {
-				rc = CIFSSMBLock(0, pTcon, netfid,
-						0 /* len */ , 0 /* offset */, 0,
-						0, LOCKING_ANDX_OPLOCK_RELEASE,
-						false /* wait flag */);
-				cFYI(1, ("Oplock release rc = %d", rc));
-			}
-			set_current_state(TASK_INTERRUPTIBLE);
-			schedule_timeout(1);  /* yield in case q were corrupt */
-		}
-	} while (!kthread_should_stop());
-
-	return 0;
-}
-
-#ifdef CONFIG_CIFS_EXPERIMENTAL
-static int cifs_dnotify_thread(void *dummyarg)
-{
-	struct list_head *tmp;
-	struct TCP_Server_Info *server;
-
-	do {
-		if (try_to_freeze())
-			continue;
-		set_current_state(TASK_INTERRUPTIBLE);
-		schedule_timeout(15*HZ);
-		/* check if any stuck requests that need
-		   to be woken up and wakeq so the
-		   thread can wake up and error out */
-		read_lock(&cifs_tcp_ses_lock);
-		list_for_each(tmp, &cifs_tcp_ses_list) {
-			server = list_entry(tmp, struct TCP_Server_Info,
-					 tcp_ses_list);
-			if (atomic_read(&server->inFlight))
-				wake_up_all(&server->response_q);
-		}
-		read_unlock(&cifs_tcp_ses_lock);
-	} while (!kthread_should_stop());
-
-	return 0;
-}
-#endif
-
 static int __init
 init_cifs(void)
 {
 	int rc = 0;
 	cifs_proc_init();
 	INIT_LIST_HEAD(&cifs_tcp_ses_list);
-	INIT_LIST_HEAD(&GlobalOplock_Q);
 #ifdef CONFIG_CIFS_EXPERIMENTAL
 	INIT_LIST_HEAD(&GlobalDnotifyReqList);
 	INIT_LIST_HEAD(&GlobalDnotifyRsp_Q);
@@ -1136,29 +1037,13 @@ init_cifs(void)
 	if (rc)
 		goto out_unregister_key_type;
 #endif
-	oplockThread = kthread_run(cifs_oplock_thread, NULL, "cifsoplockd");
-	if (IS_ERR(oplockThread)) {
-		rc = PTR_ERR(oplockThread);
-		cERROR(1, ("error %d create oplock thread", rc));
-		goto out_unregister_dfs_key_type;
-	}
-
-#ifdef CONFIG_CIFS_EXPERIMENTAL
-	dnotifyThread = kthread_run(cifs_dnotify_thread, NULL, "cifsdnotifyd");
-	if (IS_ERR(dnotifyThread)) {
-		rc = PTR_ERR(dnotifyThread);
-		cERROR(1, ("error %d create dnotify thread", rc));
-		goto out_stop_oplock_thread;
-	}
-#endif
+	rc = slow_work_register_user(THIS_MODULE);
+	if (rc)
+		goto out_unregister_resolver_key;
 
 	return 0;
 
-#ifdef CONFIG_CIFS_EXPERIMENTAL
- out_stop_oplock_thread:
-#endif
-	kthread_stop(oplockThread);
- out_unregister_dfs_key_type:
+ out_unregister_resolver_key:
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	unregister_key_type(&key_type_dns_resolver);
  out_unregister_key_type:
@@ -1195,10 +1080,6 @@ exit_cifs(void)
 	cifs_destroy_inodecache();
 	cifs_destroy_mids();
 	cifs_destroy_request_bufs();
-#ifdef CONFIG_CIFS_EXPERIMENTAL
-	kthread_stop(dnotifyThread);
-#endif
-	kthread_stop(oplockThread);
 }
 
 MODULE_AUTHOR("Steve French <sfrench@us.ibm.com>");

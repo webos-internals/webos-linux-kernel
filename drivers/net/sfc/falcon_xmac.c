@@ -64,13 +64,15 @@ int falcon_reset_xaui(struct efx_nic *efx)
 	efx_oword_t reg;
 	int count;
 
+	/* Start reset sequence */
 	EFX_POPULATE_DWORD_1(reg, XX_RST_XX_EN, 1);
 	falcon_write(efx, &reg, XX_PWR_RST_REG);
 
-	/* Give some time for the link to establish */
-	for (count = 0; count < 1000; count++) { /* wait upto 10ms */
+	/* Wait up to 10 ms for completion, then reinitialise */
+	for (count = 0; count < 1000; count++) {
 		falcon_read(efx, &reg, XX_PWR_RST_REG);
-		if (EFX_OWORD_FIELD(reg, XX_RST_XX_EN) == 0) {
+		if (EFX_OWORD_FIELD(reg, XX_RST_XX_EN) == 0 &&
+		    EFX_OWORD_FIELD(reg, XX_SD_RST_ACT) == 0) {
 			falcon_setup_xaui(efx);
 			return 0;
 		}
@@ -133,7 +135,7 @@ bool falcon_xaui_link_ok(struct efx_nic *efx)
 	/* If the link is up, then check the phy side of the xaui link */
 	if (efx->link_up && link_ok)
 		if (efx->phy_op->mmds & (1 << MDIO_MMD_PHYXS))
-			link_ok = mdio_clause45_phyxgxs_lane_sync(efx);
+			link_ok = efx_mdio_phyxgxs_lane_sync(efx);
 
 	return link_ok;
 }

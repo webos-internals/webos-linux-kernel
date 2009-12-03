@@ -24,93 +24,12 @@
 #include <linux/time.h>
 #include <linux/device.h>
 #include <linux/i2c.h>
-#include <linux/semaphore.h>
+#include <linux/mutex.h>
 #include <linux/uaccess.h>
 #include <asm/system.h>
 
 #include "go7007-priv.h"
 #include "wis-i2c.h"
-
-/************** Registration interface for I2C client drivers **************/
-
-/* Since there's no way to auto-probe the I2C devices connected to the I2C
- * bus on the go7007, we have this silly little registration system that
- * client drivers can use to register their I2C driver ID and their
- * detect_client function (the one that's normally passed to i2c_probe).
- *
- * When a new go7007 device is connected, we can look up in a board info
- * table by the USB or PCI vendor/product/revision ID to determine
- * which I2C client module to load.  The client driver module will register
- * itself here, and then we can call the registered detect_client function
- * to force-load a new client at the address listed in the board info table.
- *
- * Really the I2C subsystem should have a way to force-load I2C client
- * drivers when we have a priori knowledge of what's on the bus, especially
- * since the existing I2C auto-probe mechanism is so hokey, but we'll use
- * our own mechanism for the time being. */
-
-struct wis_i2c_client_driver {
-	unsigned int id;
-	found_proc found_proc;
-	struct list_head list;
-};
-
-static LIST_HEAD(i2c_client_drivers);
-static DECLARE_MUTEX(i2c_client_driver_list_lock);
-
-/* Client drivers register here by their I2C driver ID */
-int wis_i2c_add_driver(unsigned int id, found_proc found_proc)
-{
-	struct wis_i2c_client_driver *driver;
-
-	driver = kmalloc(sizeof(struct wis_i2c_client_driver), GFP_KERNEL);
-	if (driver == NULL)
-		return -ENOMEM;
-	driver->id = id;
-	driver->found_proc = found_proc;
-
-	down(&i2c_client_driver_list_lock);
-	list_add_tail(&driver->list, &i2c_client_drivers);
-	up(&i2c_client_driver_list_lock);
-
-	return 0;
-}
-EXPORT_SYMBOL(wis_i2c_add_driver);
-
-void wis_i2c_del_driver(found_proc found_proc)
-{
-	struct wis_i2c_client_driver *driver, *next;
-
-	down(&i2c_client_driver_list_lock);
-	list_for_each_entry_safe(driver, next, &i2c_client_drivers, list)
-		if (driver->found_proc == found_proc) {
-			list_del(&driver->list);
-			kfree(driver);
-		}
-	up(&i2c_client_driver_list_lock);
-}
-EXPORT_SYMBOL(wis_i2c_del_driver);
-
-/* The main go7007 driver calls this to instantiate a client by driver
- * ID and bus address, which are both stored in the board info table */
-int wis_i2c_probe_device(struct i2c_adapter *adapter,
-				unsigned int id, int addr)
-{
-	struct wis_i2c_client_driver *driver;
-	int found = 0;
-
-	if (addr < 0 || addr > 0x7f)
-		return -1;
-	down(&i2c_client_driver_list_lock);
-	list_for_each_entry(driver, &i2c_client_drivers, list)
-		if (driver->id == id) {
-			if (driver->found_proc(adapter, addr, 0) == 0)
-				found = 1;
-			break;
-		}
-	up(&i2c_client_driver_list_lock);
-	return found;
-}
 
 /********************* Driver for on-board I2C adapter *********************/
 
@@ -129,7 +48,7 @@ int wis_i2c_probe_device(struct i2c_adapter *adapter,
 
 /* There is only one I2C port on the TW2804 that feeds all four GO7007 VIPs
  * on the Adlink PCI-MPG24, so access is shared between all of them. */
-static DECLARE_MUTEX(adlink_mpg24_i2c_lock);
+static DEFINE_MUTEX(adlink_mpg24_i2c_lock);
 
 static int go7007_i2c_xfer(struct go7007 *go, u16 addr, int read,
 		u16 command, int flags, u8 *data)
@@ -150,11 +69,11 @@ static int go7007_i2c_xfer(struct go7007 *go, u16 addr, int read,
 			*data, command, addr);
 #endif
 
-	down(&go->hw_lock);
+	mutex_lock(&go->hw_lock);
 
 	if (go->board_id == GO7007_BOARDID_ADLINK_MPG24) {
 		/* Bridge the I2C port on this GO7007 to the shared bus */
-		down(&adlink_mpg24_i2c_lock);
+		mutex_lock(&adlink_mpg24_i2c_lock);
 		go7007_write_addr(go, 0x3c82, 0x0020);
 	}
 
@@ -215,9 +134,9 @@ i2c_done:
 	if (go->board_id == GO7007_BOARDID_ADLINK_MPG24) {
 		/* Isolate the I2C port on this GO7007 from the shared bus */
 		go7007_write_addr(go, 0x3c82, 0x0000);
-		up(&adlink_mpg24_i2c_lock);
+		mutex_unlock(&adlink_mpg24_i2c_lock);
 	}
-	up(&go->hw_lock);
+	mutex_unlock(&go->hw_lock);
 	return ret;
 }
 
@@ -287,9 +206,7 @@ static struct i2c_algorithm go7007_algo = {
 
 static struct i2c_adapter go7007_adap_templ = {
 	.owner			= THIS_MODULE,
-	.class			= I2C_CLASS_TV_ANALOG,
 	.name			= "WIS GO7007SB",
-	.id			= I2C_ALGO_GO7007,
 	.algo			= &go7007_algo,
 };
 

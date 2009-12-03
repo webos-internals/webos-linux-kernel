@@ -23,11 +23,13 @@ comment "Crypto core or helper"
 
 config CRYPTO_FIPS
 	bool "FIPS 200 compliance"
+	depends on CRYPTO_ANSI_CPRNG
 	help
 	  This options enables the fips boot option which is
 	  required if you want to system to operate in a FIPS 200
 	  certification.  You should say no unless you know what
-	  this is.
+	  this is. Note that CRYPTO_ANSI_CPRNG is requred if this
+	  option is selected
 
 config CRYPTO_ALGAPI
 	tristate
@@ -56,6 +58,7 @@ config CRYPTO_BLKCIPHER2
 	tristate
 	select CRYPTO_ALGAPI2
 	select CRYPTO_RNG2
+	select CRYPTO_WORKQUEUE
 
 config CRYPTO_HASH
 	tristate
@@ -75,6 +78,10 @@ config CRYPTO_RNG2
 	tristate
 	select CRYPTO_ALGAPI2
 
+config CRYPTO_PCOMP
+	tristate
+	select CRYPTO_ALGAPI2
+
 config CRYPTO_MANAGER
 	tristate "Cryptographic algorithm manager"
 	select CRYPTO_MANAGER2
@@ -87,6 +94,7 @@ config CRYPTO_MANAGER2
 	select CRYPTO_AEAD2
 	select CRYPTO_HASH2
 	select CRYPTO_BLKCIPHER2
+	select CRYPTO_PCOMP
 
 config CRYPTO_GF128MUL
 	tristate "GF(2^128) multiplication functions (EXPERIMENTAL)"
@@ -106,11 +114,15 @@ config CRYPTO_NULL
 	help
 	  These are 'Null' algorithms, used by IPsec, which do nothing.
 
+config CRYPTO_WORKQUEUE
+       tristate
+
 config CRYPTO_CRYPTD
 	tristate "Software async crypto daemon"
 	select CRYPTO_BLKCIPHER
 	select CRYPTO_HASH
 	select CRYPTO_MANAGER
+	select CRYPTO_WORKQUEUE
 	help
 	  This is a generic software asynchronous crypto daemon that
 	  converts an arbitrary synchronous software crypto algorithm
@@ -146,7 +158,7 @@ config CRYPTO_GCM
 	tristate "GCM/GMAC support"
 	select CRYPTO_CTR
 	select CRYPTO_AEAD
-	select CRYPTO_GF128MUL
+	select CRYPTO_GHASH
 	help
 	  Support for Galois/Counter Mode (GCM) and Galois Message
 	  Authentication Code (GMAC). Required for IPSec.
@@ -231,6 +243,11 @@ config CRYPTO_XTS
 	  key size 256, 384 or 512 bits. This implementation currently
 	  can't handle a sectorsize which is not a multiple of 16 bytes.
 
+config CRYPTO_FPU
+	tristate
+	select CRYPTO_BLKCIPHER
+	select CRYPTO_MANAGER
+
 comment "Hash modes"
 
 config CRYPTO_HMAC
@@ -251,6 +268,18 @@ config CRYPTO_XCBC
 		http://www.ietf.org/rfc/rfc3566.txt
 		http://csrc.nist.gov/encryption/modes/proposedmodes/
 		 xcbc-mac/xcbc-mac-spec.pdf
+
+config CRYPTO_VMAC
+	tristate "VMAC support"
+	depends on EXPERIMENTAL
+	select CRYPTO_HASH
+	select CRYPTO_MANAGER
+	help
+	  VMAC is a message authentication algorithm designed for
+	  very high speed on 64-bit architectures.
+
+	  See also:
+	  <http://fastcrypto.org/vmac>
 
 comment "Digest"
 
@@ -273,6 +302,13 @@ config CRYPTO_CRC32C_INTEL
 	  which will enable any routine to use the CRC32 instruction to
 	  gain performance compared with software implementation.
 	  Module will be crc32c-intel.
+
+config CRYPTO_GHASH
+	tristate "GHASH digest algorithm"
+	select CRYPTO_SHASH
+	select CRYPTO_GF128MUL
+	help
+	  GHASH is message digest algorithm for GCM (Galois/Counter Mode).
 
 config CRYPTO_MD4
 	tristate "MD4 digest algorithm"
@@ -469,6 +505,36 @@ config CRYPTO_AES_X86_64
 	  The AES specifies three key sizes: 128, 192 and 256 bits
 
 	  See <http://csrc.nist.gov/encryption/aes/> for more information.
+
+config CRYPTO_AES_NI_INTEL
+	tristate "AES cipher algorithms (AES-NI)"
+	depends on (X86 || UML_X86) && 64BIT
+	select CRYPTO_AES_X86_64
+	select CRYPTO_CRYPTD
+	select CRYPTO_ALGAPI
+	select CRYPTO_FPU
+	help
+	  Use Intel AES-NI instructions for AES algorithm.
+
+	  AES cipher algorithms (FIPS-197). AES uses the Rijndael
+	  algorithm.
+
+	  Rijndael appears to be consistently a very good performer in
+	  both hardware and software across a wide range of computing
+	  environments regardless of its use in feedback or non-feedback
+	  modes. Its key setup time is excellent, and its key agility is
+	  good. Rijndael's very low memory requirements make it very well
+	  suited for restricted-space environments, in which it also
+	  demonstrates excellent performance. Rijndael's operations are
+	  among the easiest to defend against power and timing attacks.
+
+	  The AES specifies three key sizes: 128, 192 and 256 bits
+
+	  See <http://csrc.nist.gov/encryption/aes/> for more information.
+
+	  In addition to AES cipher algorithm support, the
+	  acceleration for some popular block cipher mode is supported
+	  too, including ECB, CBC, CTR, LRW, PCBC, XTS.
 
 config CRYPTO_ANUBIS
 	tristate "Anubis cipher algorithm"
@@ -714,6 +780,15 @@ config CRYPTO_DEFLATE
 
 	  You will most probably want this if using IPSec.
 
+config CRYPTO_ZLIB
+	tristate "Zlib compression algorithm"
+	select CRYPTO_PCOMP
+	select ZLIB_INFLATE
+	select ZLIB_DEFLATE
+	select NLATTR
+	help
+	  This is the zlib algorithm.
+
 config CRYPTO_LZO
 	tristate "LZO compression algorithm"
 	select CRYPTO_ALGAPI
@@ -726,13 +801,14 @@ comment "Random Number Generation"
 
 config CRYPTO_ANSI_CPRNG
 	tristate "Pseudo Random Number Generation for Cryptographic modules"
+	default m
 	select CRYPTO_AES
 	select CRYPTO_RNG
-	select CRYPTO_FIPS
 	help
 	  This option enables the generic pseudo random number generator
 	  for cryptographic modules.  Uses the Algorithm specified in
-	  ANSI X9.31 A.2.4
+	  ANSI X9.31 A.2.4. Not this option must be enabled if CRYPTO_FIPS 
+	  is selected
 
 source "drivers/crypto/Kconfig"
 

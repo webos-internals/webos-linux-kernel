@@ -2,6 +2,10 @@
  * linux/arch/arm/plat-omap/common.c
  *
  * Code common to all OMAP machines.
+ * The file is created by Tony Lindgren <tony@atomide.com>
+ *
+ * Copyright (C) 2009 Texas Instruments
+ * Added OMAP4 support - Santosh Shilimkar <santosh.shilimkar@ti.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -11,7 +15,6 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/pm.h>
 #include <linux/console.h>
 #include <linux/serial.h>
 #include <linux/tty.h>
@@ -51,50 +54,6 @@ static const void *get_config(u16 tag, size_t len, int skip, size_t *len_out)
 	struct omap_board_config_kernel *kinfo = NULL;
 	int i;
 
-#ifdef CONFIG_OMAP_BOOT_TAG
-	struct omap_board_config_entry *info = NULL;
-
-	if (omap_bootloader_tag_len > 4)
-		info = (struct omap_board_config_entry *) omap_bootloader_tag;
-	while (info != NULL) {
-		u8 *next;
-
-		if (info->tag == tag) {
-			if (skip == 0)
-				break;
-			skip--;
-		}
-
-		if ((info->len & 0x03) != 0) {
-			/* We bail out to avoid an alignment fault */
-			printk(KERN_ERR "OMAP peripheral config: Length (%d) not word-aligned (tag %04x)\n",
-			       info->len, info->tag);
-			return NULL;
-		}
-		next = (u8 *) info + sizeof(*info) + info->len;
-		if (next >= omap_bootloader_tag + omap_bootloader_tag_len)
-			info = NULL;
-		else
-			info = (struct omap_board_config_entry *) next;
-	}
-	if (info != NULL) {
-		/* Check the length as a lame attempt to check for
-		 * binary inconsistency. */
-		if (len != NO_LENGTH_CHECK) {
-			/* Word-align len */
-			if (len & 0x03)
-				len = (len + 3) & ~0x03;
-			if (info->len != len) {
-				printk(KERN_ERR "OMAP peripheral config: Length mismatch with tag %x (want %d, got %d)\n",
-				       tag, len, info->len);
-				return NULL;
-			}
-		}
-		if (len_out != NULL)
-			*len_out = info->len;
-		return info->data;
-	}
-#endif
 	/* Try to find the config from the board-specific structures
 	 * in the kernel. */
 	for (i = 0; i < omap_board_config_size; i++) {
@@ -124,50 +83,6 @@ const void *omap_get_var_config(u16 tag, size_t *len)
 }
 EXPORT_SYMBOL(omap_get_var_config);
 
-static int __init omap_add_serial_console(void)
-{
-	const struct omap_serial_console_config *con_info;
-	const struct omap_uart_config *uart_info;
-	static char speed[11], *opt = NULL;
-	int line, i, uart_idx;
-
-	uart_info = omap_get_config(OMAP_TAG_UART, struct omap_uart_config);
-	con_info = omap_get_config(OMAP_TAG_SERIAL_CONSOLE,
-					struct omap_serial_console_config);
-	if (uart_info == NULL || con_info == NULL)
-		return 0;
-
-	if (con_info->console_uart == 0)
-		return 0;
-
-	if (con_info->console_speed) {
-		snprintf(speed, sizeof(speed), "%u", con_info->console_speed);
-		opt = speed;
-	}
-
-	uart_idx = con_info->console_uart - 1;
-	if (uart_idx >= OMAP_MAX_NR_PORTS) {
-		printk(KERN_INFO "Console: external UART#%d. "
-			"Not adding it as console this time.\n",
-			uart_idx + 1);
-		return 0;
-	}
-	if (!(uart_info->enabled_uarts & (1 << uart_idx))) {
-		printk(KERN_ERR "Console: Selected UART#%d is "
-			"not enabled for this platform\n",
-			uart_idx + 1);
-		return -1;
-	}
-	line = 0;
-	for (i = 0; i < uart_idx; i++) {
-		if (uart_info->enabled_uarts & (1 << i))
-			line++;
-	}
-	return add_preferred_console("ttyS", line, opt);
-}
-console_initcall(omap_add_serial_console);
-
-
 /*
  * 32KHz clocksource ... always available, on pretty most chips except
  * OMAP 730 and 1510.  Other timers could be used as clocksources, with
@@ -175,25 +90,70 @@ console_initcall(omap_add_serial_console);
  * but systems won't necessarily want to spend resources that way.
  */
 
-#if defined(CONFIG_ARCH_OMAP16XX)
-#define TIMER_32K_SYNCHRONIZED		0xfffbc410
-#elif defined(CONFIG_ARCH_OMAP24XX) || defined(CONFIG_ARCH_OMAP34XX)
-#define TIMER_32K_SYNCHRONIZED		(OMAP2_32KSYNCT_BASE + 0x10)
-#endif
+#define OMAP16XX_TIMER_32K_SYNCHRONIZED		0xfffbc410
 
-#ifdef	TIMER_32K_SYNCHRONIZED
+#if !(defined(CONFIG_ARCH_OMAP730) || defined(CONFIG_ARCH_OMAP15XX))
 
 #include <linux/clocksource.h>
 
-static cycle_t omap_32k_read(void)
+#ifdef CONFIG_ARCH_OMAP16XX
+static cycle_t omap16xx_32k_read(struct clocksource *cs)
 {
-	return omap_readl(TIMER_32K_SYNCHRONIZED);
+	return omap_readl(OMAP16XX_TIMER_32K_SYNCHRONIZED);
+}
+#else
+#define omap16xx_32k_read	NULL
+#endif
+
+#ifdef CONFIG_ARCH_OMAP2420
+static cycle_t omap2420_32k_read(struct clocksource *cs)
+{
+	return omap_readl(OMAP2420_32KSYNCT_BASE + 0x10);
+}
+#else
+#define omap2420_32k_read	NULL
+#endif
+
+#ifdef CONFIG_ARCH_OMAP2430
+static cycle_t omap2430_32k_read(struct clocksource *cs)
+{
+	return omap_readl(OMAP2430_32KSYNCT_BASE + 0x10);
+}
+#else
+#define omap2430_32k_read	NULL
+#endif
+
+#ifdef CONFIG_ARCH_OMAP34XX
+static cycle_t omap34xx_32k_read(struct clocksource *cs)
+{
+	return omap_readl(OMAP3430_32KSYNCT_BASE + 0x10);
+}
+#else
+#define omap34xx_32k_read	NULL
+#endif
+
+#ifdef CONFIG_ARCH_OMAP4
+static cycle_t omap44xx_32k_read(struct clocksource *cs)
+{
+	return omap_readl(OMAP4430_32KSYNCT_BASE + 0x10);
+}
+#else
+#define omap44xx_32k_read	NULL
+#endif
+
+/*
+ * Kernel assumes that sched_clock can be called early but may not have
+ * things ready yet.
+ */
+static cycle_t omap_32k_read_dummy(struct clocksource *cs)
+{
+	return 0;
 }
 
 static struct clocksource clocksource_32k = {
 	.name		= "32k_counter",
 	.rating		= 250,
-	.read		= omap_32k_read,
+	.read		= omap_32k_read_dummy,
 	.mask		= CLOCKSOURCE_MASK(32),
 	.shift		= 10,
 	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
@@ -205,11 +165,8 @@ static struct clocksource clocksource_32k = {
  */
 unsigned long long sched_clock(void)
 {
-	unsigned long long ret;
-
-	ret = (unsigned long long)omap_32k_read();
-	ret = (ret * clocksource_32k.mult_orig) >> clocksource_32k.shift;
-	return ret;
+	return clocksource_cyc2ns(clocksource_32k.read(&clocksource_32k),
+				  clocksource_32k.mult, clocksource_32k.shift);
 }
 
 static int __init omap_init_clocksource_32k(void)
@@ -219,6 +176,19 @@ static int __init omap_init_clocksource_32k(void)
 
 	if (cpu_is_omap16xx() || cpu_class_is_omap2()) {
 		struct clk *sync_32k_ick;
+
+		if (cpu_is_omap16xx())
+			clocksource_32k.read = omap16xx_32k_read;
+		else if (cpu_is_omap2420())
+			clocksource_32k.read = omap2420_32k_read;
+		else if (cpu_is_omap2430())
+			clocksource_32k.read = omap2430_32k_read;
+		else if (cpu_is_omap34xx())
+			clocksource_32k.read = omap34xx_32k_read;
+		else if (cpu_is_omap44xx())
+			clocksource_32k.read = omap44xx_32k_read;
+		else
+			return -ENODEV;
 
 		sync_32k_ick = clk_get(NULL, "omap_32ksync_ick");
 		if (sync_32k_ick)
@@ -234,18 +204,16 @@ static int __init omap_init_clocksource_32k(void)
 }
 arch_initcall(omap_init_clocksource_32k);
 
-#endif	/* TIMER_32K_SYNCHRONIZED */
+#endif	/* !(defined(CONFIG_ARCH_OMAP730) || defined(CONFIG_ARCH_OMAP15XX)) */
 
 /* Global address base setup code */
 
 #if defined(CONFIG_ARCH_OMAP2) || defined(CONFIG_ARCH_OMAP3)
 
-static struct omap_globals *omap2_globals;
-
-static void __init __omap2_set_globals(void)
+static void __init __omap2_set_globals(struct omap_globals *omap2_globals)
 {
 	omap2_set_globals_tap(omap2_globals);
-	omap2_set_globals_memory(omap2_globals);
+	omap2_set_globals_sdrc(omap2_globals);
 	omap2_set_globals_control(omap2_globals);
 	omap2_set_globals_prcm(omap2_globals);
 }
@@ -266,8 +234,7 @@ static struct omap_globals omap242x_globals = {
 
 void __init omap2_set_globals_242x(void)
 {
-	omap2_globals = &omap242x_globals;
-	__omap2_set_globals();
+	__omap2_set_globals(&omap242x_globals);
 }
 #endif
 
@@ -285,8 +252,7 @@ static struct omap_globals omap243x_globals = {
 
 void __init omap2_set_globals_243x(void)
 {
-	omap2_globals = &omap243x_globals;
-	__omap2_set_globals();
+	__omap2_set_globals(&omap243x_globals);
 }
 #endif
 
@@ -304,8 +270,23 @@ static struct omap_globals omap343x_globals = {
 
 void __init omap2_set_globals_343x(void)
 {
-	omap2_globals = &omap343x_globals;
-	__omap2_set_globals();
+	__omap2_set_globals(&omap343x_globals);
+}
+#endif
+
+#if defined(CONFIG_ARCH_OMAP4)
+static struct omap_globals omap4_globals = {
+	.class	= OMAP443X_CLASS,
+	.tap	= OMAP2_IO_ADDRESS(0x4830a000),
+	.ctrl	= OMAP2_IO_ADDRESS(OMAP443X_CTRL_BASE),
+	.prm	= OMAP2_IO_ADDRESS(OMAP4430_PRM_BASE),
+	.cm	= OMAP2_IO_ADDRESS(OMAP4430_CM_BASE),
+};
+
+void __init omap2_set_globals_443x(void)
+{
+	omap2_set_globals_tap(&omap4_globals);
+	omap2_set_globals_control(&omap4_globals);
 }
 #endif
 

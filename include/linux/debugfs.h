@@ -9,7 +9,7 @@
  *	2 as published by the Free Software Foundation.
  *
  *  debugfs is for people to use instead of /proc or /sys.
- *  See Documentation/DocBook/kernel-api for more details.
+ *  See Documentation/DocBook/filesystems for more details.
  */
 
 #ifndef _DEBUGFS_H_
@@ -71,6 +71,9 @@ struct dentry *debugfs_create_bool(const char *name, mode_t mode,
 struct dentry *debugfs_create_blob(const char *name, mode_t mode,
 				  struct dentry *parent,
 				  struct debugfs_blob_wrapper *blob);
+
+bool debugfs_initialized(void);
+
 #else
 
 #include <linux/err.h>
@@ -181,6 +184,11 @@ static inline struct dentry *debugfs_create_blob(const char *name, mode_t mode,
 				  struct debugfs_blob_wrapper *blob)
 {
 	return ERR_PTR(-ENODEV);
+}
+
+static inline bool debugfs_initialized(void)
+{
+	return false;
 }
 
 #endif

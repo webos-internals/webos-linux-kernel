@@ -32,6 +32,8 @@ Currently, these files are in /proc/sys/vm:
 - legacy_va_layout
 - lowmem_reserve_ratio
 - max_map_count
+- memory_failure_early_kill
+- memory_failure_recovery
 - min_free_kbytes
 - min_slab_ratio
 - min_unmapped_ratio
@@ -52,7 +54,6 @@ Currently, these files are in /proc/sys/vm:
 - swappiness
 - vfs_cache_pressure
 - zone_reclaim_mode
-
 
 ==============================================================
 
@@ -87,6 +88,10 @@ will itself start writeback.
 
 If dirty_bytes is written, dirty_ratio becomes a function of its value
 (dirty_bytes / the amount of dirtyable system memory).
+
+Note: the minimum value allowed for dirty_bytes is two pages (in bytes); any
+value lower than this limit will be ignored and the old configuration will be
+retained.
 
 ==============================================================
 
@@ -229,8 +234,8 @@ These protections are added to score to judge whether this zone should be used
 for page allocation or should be reclaimed.
 
 In this example, if normal pages (index=2) are required to this DMA zone and
-pages_high is used for watermark, the kernel judges this zone should not be
-used because pages_free(1355) is smaller than watermark + protection[2]
+watermark[WMARK_HIGH] is used for watermark, the kernel judges this zone should
+not be used because pages_free(1355) is smaller than watermark + protection[2]
 (4 + 2004 = 2008). If this protection value is 0, this zone would be used for
 normal page requirement. If requirement is DMA zone(index=0), protection[0]
 (=0) is used.
@@ -271,14 +276,53 @@ e.g., up to one or two maps per allocation.
 
 The default value is 65536.
 
+=============================================================
+
+memory_failure_early_kill:
+
+Control how to kill processes when uncorrected memory error (typically
+a 2bit error in a memory module) is detected in the background by hardware
+that cannot be handled by the kernel. In some cases (like the page
+still having a valid copy on disk) the kernel will handle the failure
+transparently without affecting any applications. But if there is
+no other uptodate copy of the data it will kill to prevent any data
+corruptions from propagating.
+
+1: Kill all processes that have the corrupted and not reloadable page mapped
+as soon as the corruption is detected.  Note this is not supported
+for a few types of pages, like kernel internally allocated data or
+the swap cache, but works for the majority of user pages.
+
+0: Only unmap the corrupted page from all processes and only kill a process
+who tries to access it.
+
+The kill is done using a catchable SIGBUS with BUS_MCEERR_AO, so processes can
+handle this if they want to.
+
+This is only active on architectures/platforms with advanced machine
+check handling and depends on the hardware capabilities.
+
+Applications can override this setting individually with the PR_MCE_KILL prctl
+
+==============================================================
+
+memory_failure_recovery
+
+Enable memory failure recovery (when supported by the platform)
+
+1: Attempt recovery.
+
+0: Always panic on a memory failure.
+
 ==============================================================
 
 min_free_kbytes:
 
 This is used to force the Linux VM to keep a minimum number
-of kilobytes free.  The VM uses this number to compute a pages_min
-value for each lowmem zone in the system.  Each lowmem zone gets
-a number of reserved free pages based proportionally on its size.
+of kilobytes free.  The VM uses this number to compute a
+watermark[WMARK_MIN] value for each lowmem zone in the system.
+Each lowmem zone gets a number of reserved free pages based
+proportionally on its size.
 
 Some minimal amount of memory is needed to satisfy PF_MEMALLOC
 allocations; if you set this to lower than 1024KB, your system will
@@ -310,10 +354,14 @@ min_unmapped_ratio:
 
 This is available only on NUMA kernels.
 
-A percentage of the total pages in each zone.  Zone reclaim will only
-occur if more than this percentage of pages are file backed and unmapped.
-This is to insure that a minimal amount of local pages is still available for
-file I/O even if the node is overallocated.
+This is a percentage of the total pages in each zone. Zone reclaim will
+only occur if more than this percentage of pages are in a state that
+zone_reclaim_mode allows to be reclaimed.
+
+If zone_reclaim_mode has the value 4 OR'd, then the percentage is compared
+against all file-backed unmapped pages including swapcache pages and tmpfs
+files. Otherwise, only unmapped pages backed by normal files but not tmpfs
+files and similar are considered.
 
 The default is 1 percent.
 
@@ -354,7 +402,7 @@ nr_pdflush_threads
 The current number of pdflush threads.  This value is read-only.
 The value changes according to the number of dirty pages in the system.
 
-When neccessary, additional pdflush threads are created, one per second, up to
+When necessary, additional pdflush threads are created, one per second, up to
 nr_pdflush_threads_max.
 
 ==============================================================
@@ -561,7 +609,7 @@ swappiness
 
 This control is used to define how aggressive the kernel will swap
 memory pages.  Higher values will increase agressiveness, lower values
-descrease the amount of swap.
+decrease the amount of swap.
 
 The default value is 60.
 
@@ -576,7 +624,9 @@ caching of directory and inode objects.
 At the default value of vfs_cache_pressure=100 the kernel will attempt to
 reclaim dentries and inodes at a "fair" rate with respect to pagecache and
 swapcache reclaim.  Decreasing vfs_cache_pressure causes the kernel to prefer
-to retain dentry and inode caches.  Increasing vfs_cache_pressure beyond 100
+to retain dentry and inode caches. When vfs_cache_pressure=0, the kernel will
+never reclaim dentries and inodes due to memory pressure and this can easily
+lead to out-of-memory conditions. Increasing vfs_cache_pressure beyond 100
 causes the kernel to prefer to reclaim dentries and inodes.
 
 ==============================================================

@@ -37,7 +37,7 @@
  */
 #define	MISDN_MAJOR_VERSION	1
 #define	MISDN_MINOR_VERSION	1
-#define MISDN_RELEASE		20
+#define MISDN_RELEASE		21
 
 /* primitives for information exchange
  * generell format
@@ -104,7 +104,7 @@
 #define DL_UNITDATA_IND		0x3108
 #define DL_INFORMATION_IND	0x0008
 
-/* intern layer 2 managment */
+/* intern layer 2 management */
 #define MDL_ASSIGN_REQ		0x1804
 #define MDL_ASSIGN_IND		0x1904
 #define MDL_REMOVE_REQ		0x1A04
@@ -153,6 +153,18 @@
 #define HFC_VOL_CHANGE_RX	0x2602
 #define HFC_SPL_LOOP_ON		0x2603
 #define HFC_SPL_LOOP_OFF	0x2604
+/* for T30 FAX and analog modem */
+#define HW_MOD_FRM		0x4000
+#define HW_MOD_FRH		0x4001
+#define HW_MOD_FTM		0x4002
+#define HW_MOD_FTH		0x4003
+#define HW_MOD_FTS		0x4004
+#define HW_MOD_CONNECT		0x4010
+#define HW_MOD_OK		0x4011
+#define HW_MOD_NOCARR		0x4012
+#define HW_MOD_FCERROR		0x4013
+#define HW_MOD_READY		0x4014
+#define HW_MOD_LASTDATA		0x4015
 
 /* DSP_TONE_PATT_ON parameter */
 #define TONE_OFF			0x0000
@@ -224,11 +236,14 @@
 #define ISDN_P_B_L2DTMF		0x24
 #define ISDN_P_B_L2DSP		0x25
 #define ISDN_P_B_L2DSPHDLC	0x26
+#define ISDN_P_B_T30_FAX	0x27
+#define ISDN_P_B_MODEM_ASYNC	0x28
 
 #define OPTION_L2_PMX		1
 #define OPTION_L2_PTP		2
 #define OPTION_L2_FIXEDTEI	3
 #define OPTION_L2_CLEANUP	4
+#define OPTION_L1_HOLD		5
 
 /* should be in sync with linux/kobject.h:KOBJ_NAME_LEN */
 #define MISDN_MAX_IDLEN		20
@@ -291,19 +306,19 @@ struct mISDN_devrename {
 
 /* MPH_INFORMATION_REQ payload */
 struct ph_info_ch {
-        __u32 protocol;
-        __u64 Flags;
+	__u32 protocol;
+	__u64 Flags;
 };
 
 struct ph_info_dch {
-        struct ph_info_ch ch;
-        __u16 state;
-        __u16 num_bch;
+	struct ph_info_ch ch;
+	__u16 state;
+	__u16 num_bch;
 };
 
 struct ph_info {
-        struct ph_info_dch dch;
-        struct ph_info_ch  bch[];
+	struct ph_info_dch dch;
+	struct ph_info_ch  bch[];
 };
 
 /* timer device ioctl */
@@ -317,6 +332,7 @@ struct ph_info {
 #define IMCTRLREQ	_IOR('I', 69, int)
 #define IMCLEAR_L2	_IOR('I', 70, int)
 #define IMSETDEVNAME	_IOR('I', 71, struct mISDN_devrename)
+#define IMHOLD_L1	_IOR('I', 72, int)
 
 static inline int
 test_channelmap(u_int nr, u_char *map)
@@ -362,7 +378,8 @@ clear_channelmap(u_int nr, u_char *map)
 #define MISDN_CTRL_HFC_RECEIVE_ON	0x4006
 #define MISDN_CTRL_HFC_ECHOCAN_ON 	0x4007
 #define MISDN_CTRL_HFC_ECHOCAN_OFF 	0x4008
-
+#define MISDN_CTRL_HFC_WD_INIT		0x4009
+#define MISDN_CTRL_HFC_WD_RESET		0x400A
 
 /* socket options */
 #define MISDN_TIME_STAMP		0x0001

@@ -16,6 +16,7 @@ config MMU
 
 config NO_DMA
 	bool
+	depends on !COLDFIRE
 	default y
 
 config FPU
@@ -45,6 +46,10 @@ config ARCH_HAS_ILOG2_U64
 config GENERIC_FIND_NEXT_BIT
 	bool
 	default y
+
+config GENERIC_GPIO
+	bool
+	default n
 
 config GENERIC_HWEIGHT
 	bool
@@ -181,6 +186,8 @@ config M527x
 config COLDFIRE
 	bool
 	depends on (M5206 || M5206e || M520x || M523x || M5249 || M527x || M5272 || M528x || M5307 || M532x || M5407)
+	select GENERIC_GPIO
+	select ARCH_REQUIRE_GPIOLIB
 	default y
 
 config CLOCK_SET

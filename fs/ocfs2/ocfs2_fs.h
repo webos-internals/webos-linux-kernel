@@ -66,6 +66,9 @@
 #define OCFS2_GROUP_DESC_SIGNATURE      "GROUP01"
 #define OCFS2_XATTR_BLOCK_SIGNATURE	"XATTR01"
 #define OCFS2_DIR_TRAILER_SIGNATURE	"DIRTRL1"
+#define OCFS2_DX_ROOT_SIGNATURE		"DXDIR01"
+#define OCFS2_DX_LEAF_SIGNATURE		"DXLEAF1"
+#define OCFS2_REFCOUNT_BLOCK_SIGNATURE	"REFCNT1"
 
 /* Compatibility flags */
 #define OCFS2_HAS_COMPAT_FEATURE(sb,mask)			\
@@ -95,7 +98,9 @@
 					 | OCFS2_FEATURE_INCOMPAT_EXTENDED_SLOT_MAP \
 					 | OCFS2_FEATURE_INCOMPAT_USERSPACE_STACK \
 					 | OCFS2_FEATURE_INCOMPAT_XATTR \
-					 | OCFS2_FEATURE_INCOMPAT_META_ECC)
+					 | OCFS2_FEATURE_INCOMPAT_META_ECC \
+					 | OCFS2_FEATURE_INCOMPAT_INDEXED_DIRS \
+					 | OCFS2_FEATURE_INCOMPAT_REFCOUNT_TREE)
 #define OCFS2_FEATURE_RO_COMPAT_SUPP	(OCFS2_FEATURE_RO_COMPAT_UNWRITTEN \
 					 | OCFS2_FEATURE_RO_COMPAT_USRQUOTA \
 					 | OCFS2_FEATURE_RO_COMPAT_GRPQUOTA)
@@ -151,8 +156,14 @@
 /* Support for extended attributes */
 #define OCFS2_FEATURE_INCOMPAT_XATTR		0x0200
 
+/* Support for indexed directores */
+#define OCFS2_FEATURE_INCOMPAT_INDEXED_DIRS	0x0400
+
 /* Metadata checksum and error correction */
 #define OCFS2_FEATURE_INCOMPAT_META_ECC		0x0800
+
+/* Refcount tree support */
+#define OCFS2_FEATURE_INCOMPAT_REFCOUNT_TREE	0x1000
 
 /*
  * backup superblock flag is used to indicate that this volume
@@ -217,6 +228,7 @@
 #define OCFS2_HAS_XATTR_FL	(0x0002)
 #define OCFS2_INLINE_XATTR_FL	(0x0004)
 #define OCFS2_INDEXED_DIR_FL	(0x0008)
+#define OCFS2_HAS_REFCOUNT_FL   (0x0010)
 
 /* Inode attributes, keep in sync with EXT2 */
 #define OCFS2_SECRM_FL		(0x00000001)	/* Secure deletion */
@@ -235,8 +247,11 @@
 /*
  * Extent record flags (e_node.leaf.flags)
  */
-#define OCFS2_EXT_UNWRITTEN	(0x01)	/* Extent is allocated but
-					 * unwritten */
+#define OCFS2_EXT_UNWRITTEN		(0x01)	/* Extent is allocated but
+						 * unwritten */
+#define OCFS2_EXT_REFCOUNTED		(0x02)  /* Extent is reference
+						 * counted in an associated
+						 * refcount tree */
 
 /*
  * ioctl commands
@@ -285,6 +300,15 @@ struct ocfs2_new_group_input {
 #define OCFS2_IOC_GROUP_EXTEND	_IOW('o', 1, int)
 #define OCFS2_IOC_GROUP_ADD	_IOW('o', 2,struct ocfs2_new_group_input)
 #define OCFS2_IOC_GROUP_ADD64	_IOW('o', 3,struct ocfs2_new_group_input)
+
+/* Used to pass 2 file names to reflink. */
+struct reflink_arguments {
+	__u64 old_path;
+	__u64 new_path;
+	__u64 preserve;
+};
+#define OCFS2_IOC_REFLINK	_IOW('o', 4, struct reflink_arguments)
+
 
 /*
  * Journal Flags (ocfs2_dinode.id1.journal1.i_flags)
@@ -411,8 +435,12 @@ static struct ocfs2_system_inode_info ocfs2_system_inodes[NUM_SYSTEM_INODES] = {
 #define OCFS2_DIR_REC_LEN(name_len)	(((name_len) + OCFS2_DIR_MEMBER_LEN + \
                                           OCFS2_DIR_ROUND) & \
 					 ~OCFS2_DIR_ROUND)
+#define OCFS2_DIR_MIN_REC_LEN	OCFS2_DIR_REC_LEN(1)
 
 #define OCFS2_LINK_MAX		32000
+#define	OCFS2_DX_LINK_MAX	((1U << 31) - 1U)
+#define	OCFS2_LINKS_HI_SHIFT	16
+#define	OCFS2_DX_ENTRIES_MAX	(0xffffffffU)
 
 #define S_SHIFT			12
 static unsigned char ocfs2_type_by_mode[S_IFMT >> S_SHIFT] = {
@@ -628,8 +656,9 @@ struct ocfs2_super_block {
 /*B8*/	__le16 s_xattr_inline_size;	/* extended attribute inline size
 					   for this fs*/
 	__le16 s_reserved0;
-	__le32 s_reserved1;
-/*C0*/  __le64 s_reserved2[16];		/* Fill out superblock */
+	__le32 s_dx_seed[3];		/* seed[0-2] for dx dir hash.
+					 * s_uuid_hash serves as seed[3]. */
+/*C0*/  __le64 s_reserved2[15];		/* Fill out superblock */
 /*140*/
 
 	/*
@@ -679,7 +708,7 @@ struct ocfs2_dinode {
 					   belongs to */
 	__le16 i_suballoc_bit;		/* Bit offset in suballocator
 					   block group */
-/*10*/	__le16 i_reserved0;
+/*10*/	__le16 i_links_count_hi;	/* High 16 bits of links count */
 	__le16 i_xattr_inline_size;
 	__le32 i_clusters;		/* Cluster count */
 	__le32 i_uid;			/* Owner UID */
@@ -705,7 +734,9 @@ struct ocfs2_dinode {
 	__le16 i_dyn_features;
 	__le64 i_xattr_loc;
 /*80*/	struct ocfs2_block_check i_check;	/* Error checking */
-/*88*/	__le64 i_reserved2[6];
+/*88*/	__le64 i_dx_root;		/* Pointer to dir index root block */
+/*90*/	__le64 i_refcount_loc;
+	__le64 i_reserved2[4];
 /*B8*/	union {
 		__le64 i_pad1;		/* Generic way to refer to this
 					   64bit union */
@@ -781,6 +812,90 @@ struct ocfs2_dir_block_trailer {
 /*40*/
 };
 
+ /*
+ * A directory entry in the indexed tree. We don't store the full name here,
+ * but instead provide a pointer to the full dirent in the unindexed tree.
+ *
+ * We also store name_len here so as to reduce the number of leaf blocks we
+ * need to search in case of collisions.
+ */
+struct ocfs2_dx_entry {
+	__le32		dx_major_hash;	/* Used to find logical
+					 * cluster in index */
+	__le32		dx_minor_hash;	/* Lower bits used to find
+					 * block in cluster */
+	__le64		dx_dirent_blk;	/* Physical block in unindexed
+					 * tree holding this dirent. */
+};
+
+struct ocfs2_dx_entry_list {
+	__le32		de_reserved;
+	__le16		de_count;	/* Maximum number of entries
+					 * possible in de_entries */
+	__le16		de_num_used;	/* Current number of
+					 * de_entries entries */
+	struct	ocfs2_dx_entry		de_entries[0];	/* Indexed dir entries
+							 * in a packed array of
+							 * length de_num_used */
+};
+
+#define OCFS2_DX_FLAG_INLINE	0x01
+
+/*
+ * A directory indexing block. Each indexed directory has one of these,
+ * pointed to by ocfs2_dinode.
+ *
+ * This block stores an indexed btree root, and a set of free space
+ * start-of-list pointers.
+ */
+struct ocfs2_dx_root_block {
+	__u8		dr_signature[8];	/* Signature for verification */
+	struct ocfs2_block_check dr_check;	/* Error checking */
+	__le16		dr_suballoc_slot;	/* Slot suballocator this
+						 * block belongs to. */
+	__le16		dr_suballoc_bit;	/* Bit offset in suballocator
+						 * block group */
+	__le32		dr_fs_generation;	/* Must match super block */
+	__le64		dr_blkno;		/* Offset on disk, in blocks */
+	__le64		dr_last_eb_blk;		/* Pointer to last
+						 * extent block */
+	__le32		dr_clusters;		/* Clusters allocated
+						 * to the indexed tree. */
+	__u8		dr_flags;		/* OCFS2_DX_FLAG_* flags */
+	__u8		dr_reserved0;
+	__le16		dr_reserved1;
+	__le64		dr_dir_blkno;		/* Pointer to parent inode */
+	__le32		dr_num_entries;		/* Total number of
+						 * names stored in
+						 * this directory.*/
+	__le32		dr_reserved2;
+	__le64		dr_free_blk;		/* Pointer to head of free
+						 * unindexed block list. */
+	__le64		dr_reserved3[15];
+	union {
+		struct ocfs2_extent_list dr_list; /* Keep this aligned to 128
+						   * bits for maximum space
+						   * efficiency. */
+		struct ocfs2_dx_entry_list dr_entries; /* In-root-block list of
+							* entries. We grow out
+							* to extents if this
+							* gets too big. */
+	};
+};
+
+/*
+ * The header of a leaf block in the indexed tree.
+ */
+struct ocfs2_dx_leaf {
+	__u8		dl_signature[8];/* Signature for verification */
+	struct ocfs2_block_check dl_check;	/* Error checking */
+	__le64		dl_blkno;	/* Offset on disk, in blocks */
+	__le32		dl_fs_generation;/* Must match super block */
+	__le32		dl_reserved0;
+	__le64		dl_reserved1;
+	struct ocfs2_dx_entry_list	dl_list;
+};
+
 /*
  * On disk allocator group structure for OCFS2
  */
@@ -803,6 +918,60 @@ struct ocfs2_group_desc
 /*30*/	struct ocfs2_block_check bg_check;	/* Error checking */
 	__le64   bg_reserved2;
 /*40*/	__u8    bg_bitmap[0];
+};
+
+struct ocfs2_refcount_rec {
+/*00*/	__le64 r_cpos;		/* Physical offset, in clusters */
+	__le32 r_clusters;	/* Clusters covered by this extent */
+	__le32 r_refcount;	/* Reference count of this extent */
+/*10*/
+};
+#define OCFS2_32BIT_POS_MASK		(0xffffffffULL)
+
+#define OCFS2_REFCOUNT_LEAF_FL          (0x00000001)
+#define OCFS2_REFCOUNT_TREE_FL          (0x00000002)
+
+struct ocfs2_refcount_list {
+/*00*/	__le16 rl_count;	/* Maximum number of entries possible
+				   in rl_records */
+	__le16 rl_used;		/* Current number of used records */
+	__le32 rl_reserved2;
+	__le64 rl_reserved1;	/* Pad to sizeof(ocfs2_refcount_record) */
+/*10*/	struct ocfs2_refcount_rec rl_recs[0];	/* Refcount records */
+};
+
+
+struct ocfs2_refcount_block {
+/*00*/	__u8 rf_signature[8];		/* Signature for verification */
+	__le16 rf_suballoc_slot;	/* Slot suballocator this block
+					   belongs to */
+	__le16 rf_suballoc_bit;		/* Bit offset in suballocator
+					   block group */
+	__le32 rf_fs_generation;	/* Must match superblock */
+/*10*/	__le64 rf_blkno;		/* Offset on disk, in blocks */
+	__le64 rf_parent;		/* Parent block, only valid if
+					   OCFS2_REFCOUNT_LEAF_FL is set in
+					   rf_flags */
+/*20*/	struct ocfs2_block_check rf_check;	/* Error checking */
+	__le64 rf_last_eb_blk;		/* Pointer to last extent block */
+/*30*/	__le32 rf_count;		/* Number of inodes sharing this
+					   refcount tree */
+	__le32 rf_flags;		/* See the flags above */
+	__le32 rf_clusters;		/* clusters covered by refcount tree. */
+	__le32 rf_cpos;			/* cluster offset in refcount tree.*/
+/*40*/	__le32 rf_generation;		/* generation number. all be the same
+					 * for the same refcount tree. */
+	__le32 rf_reserved0;
+	__le64 rf_reserved1[7];
+/*80*/	union {
+		struct ocfs2_refcount_list rf_records;  /* List of refcount
+							  records */
+		struct ocfs2_extent_list rf_list;	/* Extent record list,
+							only valid if
+							OCFS2_REFCOUNT_TREE_FL
+							is set in rf_flags */
+	};
+/* Actual on-disk size is one block */
 };
 
 /*
@@ -1112,6 +1281,16 @@ static inline int ocfs2_extent_recs_per_inode_with_xattr(
 	return size / sizeof(struct ocfs2_extent_rec);
 }
 
+static inline int ocfs2_extent_recs_per_dx_root(struct super_block *sb)
+{
+	int size;
+
+	size = sb->s_blocksize -
+		offsetof(struct ocfs2_dx_root_block, dr_list.l_recs);
+
+	return size / sizeof(struct ocfs2_extent_rec);
+}
+
 static inline int ocfs2_chain_recs_per_inode(struct super_block *sb)
 {
 	int size;
@@ -1130,6 +1309,26 @@ static inline u16 ocfs2_extent_recs_per_eb(struct super_block *sb)
 		offsetof(struct ocfs2_extent_block, h_list.l_recs);
 
 	return size / sizeof(struct ocfs2_extent_rec);
+}
+
+static inline int ocfs2_dx_entries_per_leaf(struct super_block *sb)
+{
+	int size;
+
+	size = sb->s_blocksize -
+		offsetof(struct ocfs2_dx_leaf, dl_list.de_entries);
+
+	return size / sizeof(struct ocfs2_dx_entry);
+}
+
+static inline int ocfs2_dx_entries_per_root(struct super_block *sb)
+{
+	int size;
+
+	size = sb->s_blocksize -
+		offsetof(struct ocfs2_dx_root_block, dr_entries.de_entries);
+
+	return size / sizeof(struct ocfs2_dx_entry);
 }
 
 static inline u16 ocfs2_local_alloc_size(struct super_block *sb)
@@ -1185,6 +1384,32 @@ static inline u16 ocfs2_xattr_recs_per_xb(struct super_block *sb)
 			 xb_attrs.xb_root.xt_list.l_recs);
 
 	return size / sizeof(struct ocfs2_extent_rec);
+}
+
+static inline u16 ocfs2_extent_recs_per_rb(struct super_block *sb)
+{
+	int size;
+
+	size = sb->s_blocksize -
+		offsetof(struct ocfs2_refcount_block, rf_list.l_recs);
+
+	return size / sizeof(struct ocfs2_extent_rec);
+}
+
+static inline u16 ocfs2_refcount_recs_per_rb(struct super_block *sb)
+{
+	int size;
+
+	size = sb->s_blocksize -
+		offsetof(struct ocfs2_refcount_block, rf_records.rl_recs);
+
+	return size / sizeof(struct ocfs2_refcount_rec);
+}
+
+static inline u32
+ocfs2_get_ref_rec_low_cpos(const struct ocfs2_refcount_rec *rec)
+{
+	return le64_to_cpu(rec->r_cpos) & OCFS2_32BIT_POS_MASK;
 }
 #else
 static inline int ocfs2_fast_symlink_chars(int blocksize)

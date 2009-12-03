@@ -651,7 +651,8 @@ static int sdla_dlci_conf(struct net_device *slave, struct net_device *master, i
  **************************/
 
 /* NOTE: the DLCI driver deals with freeing the SKB!! */
-static int sdla_transmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t sdla_transmit(struct sk_buff *skb,
+				 struct net_device *dev)
 {
 	struct frad_local *flp;
 	int               ret, addr, accept, i;
@@ -711,23 +712,21 @@ static int sdla_transmit(struct sk_buff *skb, struct net_device *dev)
 				}
 				break;
 		}
+
 		switch (ret)
 		{
 			case SDLA_RET_OK:
-				flp->stats.tx_packets++;
-				ret = DLCI_RET_OK;
+				dev->stats.tx_packets++;
 				break;
 
 			case SDLA_RET_CIR_OVERFLOW:
 			case SDLA_RET_BUF_OVERSIZE:
 			case SDLA_RET_NO_BUFS:
-				flp->stats.tx_dropped++;
-				ret = DLCI_RET_DROP;
+				dev->stats.tx_dropped++;
 				break;
 
 			default:
-				flp->stats.tx_errors++;
-				ret = DLCI_RET_ERR;
+				dev->stats.tx_errors++;
 				break;
 		}
 	}
@@ -737,7 +736,9 @@ static int sdla_transmit(struct sk_buff *skb, struct net_device *dev)
 		if(flp->master[i]!=NULL)
 			netif_wake_queue(flp->master[i]);
 	}		
-	return(ret);
+
+	dev_kfree_skb(skb);
+	return NETDEV_TX_OK;
 }
 
 static void sdla_receive(struct net_device *dev)
@@ -807,7 +808,7 @@ static void sdla_receive(struct net_device *dev)
 		if (i == CONFIG_DLCI_MAX)
 		{
 			printk(KERN_NOTICE "%s: Received packet from invalid DLCI %i, ignoring.", dev->name, dlci);
-			flp->stats.rx_errors++;
+			dev->stats.rx_errors++;
 			success = 0;
 		}
 	}
@@ -819,7 +820,7 @@ static void sdla_receive(struct net_device *dev)
 		if (skb == NULL) 
 		{
 			printk(KERN_NOTICE "%s: Memory squeeze, dropping packet.\n", dev->name);
-			flp->stats.rx_dropped++; 
+			dev->stats.rx_dropped++;
 			success = 0;
 		}
 		else
@@ -859,7 +860,7 @@ static void sdla_receive(struct net_device *dev)
 
 	if (success)
 	{
-		flp->stats.rx_packets++;
+		dev->stats.rx_packets++;
 		dlp = netdev_priv(master);
 		(*dlp->receive)(skb, master);
 	}
@@ -1590,13 +1591,14 @@ fail:
 	return err;
 }
  
-static struct net_device_stats *sdla_stats(struct net_device *dev)
-{
-	struct frad_local *flp;
-	flp = netdev_priv(dev);
-
-	return(&flp->stats);
-}
+static const struct net_device_ops sdla_netdev_ops = {
+	.ndo_open	= sdla_open,
+	.ndo_stop	= sdla_close,
+	.ndo_do_ioctl	= sdla_ioctl,
+	.ndo_set_config	= sdla_set_config,
+	.ndo_start_xmit	= sdla_transmit,
+	.ndo_change_mtu	= sdla_change_mtu,
+};
 
 static void setup_sdla(struct net_device *dev)
 {
@@ -1604,19 +1606,12 @@ static void setup_sdla(struct net_device *dev)
 
 	netdev_boot_setup_check(dev);
 
+	dev->netdev_ops		= &sdla_netdev_ops;
 	dev->flags		= 0;
 	dev->type		= 0xFFFF;
 	dev->hard_header_len	= 0;
 	dev->addr_len		= 0;
 	dev->mtu		= SDLA_MAX_MTU;
-
-	dev->open		= sdla_open;
-	dev->stop		= sdla_close;
-	dev->do_ioctl		= sdla_ioctl;
-	dev->set_config		= sdla_set_config;
-	dev->get_stats		= sdla_stats;
-	dev->hard_start_xmit	= sdla_transmit;
-	dev->change_mtu		= sdla_change_mtu;
 
 	flp->activate		= sdla_activate;
 	flp->deactivate		= sdla_deactivate;

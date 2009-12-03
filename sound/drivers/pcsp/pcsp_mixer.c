@@ -50,8 +50,8 @@ static int pcsp_treble_info(struct snd_kcontrol *kcontrol,
 	uinfo->value.enumerated.items = chip->max_treble + 1;
 	if (uinfo->value.enumerated.item > chip->max_treble)
 		uinfo->value.enumerated.item = chip->max_treble;
-	sprintf(uinfo->value.enumerated.name, "%d",
-			PCSP_CALC_RATE(uinfo->value.enumerated.item));
+	sprintf(uinfo->value.enumerated.name, "%lu",
+		(unsigned long)PCSP_CALC_RATE(uinfo->value.enumerated.item));
 	return 0;
 }
 
@@ -72,7 +72,7 @@ static int pcsp_treble_put(struct snd_kcontrol *kcontrol,
 	if (treble != chip->treble) {
 		chip->treble = treble;
 #if PCSP_DEBUG
-		printk(KERN_INFO "PCSP: rate set to %i\n", PCSP_RATE());
+		printk(KERN_INFO "PCSP: rate set to %li\n", PCSP_RATE());
 #endif
 		changed = 1;
 	}

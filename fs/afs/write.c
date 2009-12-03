@@ -712,7 +712,6 @@ int afs_writeback_all(struct afs_vnode *vnode)
 		.bdi		= mapping->backing_dev_info,
 		.sync_mode	= WB_SYNC_ALL,
 		.nr_to_write	= LONG_MAX,
-		.for_writepages = 1,
 		.range_cyclic	= 1,
 	};
 	int ret;
@@ -779,4 +778,25 @@ int afs_fsync(struct file *file, struct dentry *dentry, int datasync)
 	afs_put_writeback(wb);
 	_leave(" = %d", ret);
 	return ret;
+}
+
+/*
+ * notification that a previously read-only page is about to become writable
+ * - if it returns an error, the caller will deliver a bus error signal
+ */
+int afs_page_mkwrite(struct vm_area_struct *vma, struct page *page)
+{
+	struct afs_vnode *vnode = AFS_FS_I(vma->vm_file->f_mapping->host);
+
+	_enter("{{%x:%u}},{%lx}",
+	       vnode->fid.vid, vnode->fid.vnode, page->index);
+
+	/* wait for the page to be written to the cache before we allow it to
+	 * be modified */
+#ifdef CONFIG_AFS_FSCACHE
+	fscache_wait_on_page_write(vnode->cache, page);
+#endif
+
+	_leave(" = 0");
+	return 0;
 }

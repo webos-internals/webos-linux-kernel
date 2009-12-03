@@ -122,8 +122,10 @@ static inline void __raw_spin_unlock(raw_spinlock_t *lp)
 #define __raw_write_can_lock(x) ((x)->lock == 0)
 
 extern void _raw_read_lock_wait(raw_rwlock_t *lp);
+extern void _raw_read_lock_wait_flags(raw_rwlock_t *lp, unsigned long flags);
 extern int _raw_read_trylock_retry(raw_rwlock_t *lp);
 extern void _raw_write_lock_wait(raw_rwlock_t *lp);
+extern void _raw_write_lock_wait_flags(raw_rwlock_t *lp, unsigned long flags);
 extern int _raw_write_trylock_retry(raw_rwlock_t *lp);
 
 static inline void __raw_read_lock(raw_rwlock_t *rw)
@@ -132,6 +134,14 @@ static inline void __raw_read_lock(raw_rwlock_t *rw)
 	old = rw->lock & 0x7fffffffU;
 	if (_raw_compare_and_swap(&rw->lock, old, old + 1) != old)
 		_raw_read_lock_wait(rw);
+}
+
+static inline void __raw_read_lock_flags(raw_rwlock_t *rw, unsigned long flags)
+{
+	unsigned int old;
+	old = rw->lock & 0x7fffffffU;
+	if (_raw_compare_and_swap(&rw->lock, old, old + 1) != old)
+		_raw_read_lock_wait_flags(rw, flags);
 }
 
 static inline void __raw_read_unlock(raw_rwlock_t *rw)
@@ -149,6 +159,12 @@ static inline void __raw_write_lock(raw_rwlock_t *rw)
 {
 	if (unlikely(_raw_compare_and_swap(&rw->lock, 0, 0x80000000) != 0))
 		_raw_write_lock_wait(rw);
+}
+
+static inline void __raw_write_lock_flags(raw_rwlock_t *rw, unsigned long flags)
+{
+	if (unlikely(_raw_compare_and_swap(&rw->lock, 0, 0x80000000) != 0))
+		_raw_write_lock_wait_flags(rw, flags);
 }
 
 static inline void __raw_write_unlock(raw_rwlock_t *rw)
@@ -174,5 +190,34 @@ static inline int __raw_write_trylock(raw_rwlock_t *rw)
 
 #define _raw_read_relax(lock)	cpu_relax()
 #define _raw_write_relax(lock)	cpu_relax()
+
+#define __always_inline__spin_lock
+#define __always_inline__read_lock
+#define __always_inline__write_lock
+#define __always_inline__spin_lock_bh
+#define __always_inline__read_lock_bh
+#define __always_inline__write_lock_bh
+#define __always_inline__spin_lock_irq
+#define __always_inline__read_lock_irq
+#define __always_inline__write_lock_irq
+#define __always_inline__spin_lock_irqsave
+#define __always_inline__read_lock_irqsave
+#define __always_inline__write_lock_irqsave
+#define __always_inline__spin_trylock
+#define __always_inline__read_trylock
+#define __always_inline__write_trylock
+#define __always_inline__spin_trylock_bh
+#define __always_inline__spin_unlock
+#define __always_inline__read_unlock
+#define __always_inline__write_unlock
+#define __always_inline__spin_unlock_bh
+#define __always_inline__read_unlock_bh
+#define __always_inline__write_unlock_bh
+#define __always_inline__spin_unlock_irq
+#define __always_inline__read_unlock_irq
+#define __always_inline__write_unlock_irq
+#define __always_inline__spin_unlock_irqrestore
+#define __always_inline__read_unlock_irqrestore
+#define __always_inline__write_unlock_irqrestore
 
 #endif /* __ASM_SPINLOCK_H */

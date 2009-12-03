@@ -91,7 +91,7 @@ static int snd_pdacf_dev_free(struct snd_device *device)
  */
 static int snd_pdacf_probe(struct pcmcia_device *link)
 {
-	int i;
+	int i, err;
 	struct snd_pdacf *pdacf;
 	struct snd_card *card;
 	static struct snd_device_ops ops = {
@@ -112,20 +112,23 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 		return -ENODEV; /* disabled explicitly */
 
 	/* ok, create a card instance */
-	card = snd_card_new(index[i], id[i], THIS_MODULE, 0);
-	if (card == NULL) {
+	err = snd_card_create(index[i], id[i], THIS_MODULE, 0, &card);
+	if (err < 0) {
 		snd_printk(KERN_ERR "pdacf: cannot create a card instance\n");
-		return -ENOMEM;
+		return err;
 	}
 
 	pdacf = snd_pdacf_create(card);
-	if (! pdacf)
-		return -EIO;
+	if (!pdacf) {
+		snd_card_free(card);
+		return -ENOMEM;
+	}
 
-	if (snd_device_new(card, SNDRV_DEV_LOWLEVEL, pdacf, &ops) < 0) {
+	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, pdacf, &ops);
+	if (err < 0) {
 		kfree(pdacf);
 		snd_card_free(card);
-		return -ENODEV;
+		return err;
 	}
 
 	snd_card_set_dev(card, &handle_to_dev(link));
@@ -214,20 +217,25 @@ static void snd_pdacf_detach(struct pcmcia_device *link)
  * configuration callback
  */
 
-#define CS_CHECK(fn, ret) \
-do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
-
 static int pdacf_config(struct pcmcia_device *link)
 {
 	struct snd_pdacf *pdacf = link->priv;
-	int last_fn, last_ret;
+	int ret;
 
 	snd_printdd(KERN_DEBUG "pdacf_config called\n");
 	link->conf.ConfigIndex = 0x5;
 
-	CS_CHECK(RequestIO, pcmcia_request_io(link, &link->io));
-	CS_CHECK(RequestIRQ, pcmcia_request_irq(link, &link->irq));
-	CS_CHECK(RequestConfiguration, pcmcia_request_configuration(link, &link->conf));
+	ret = pcmcia_request_io(link, &link->io);
+	if (ret)
+		goto failed;
+
+	ret = pcmcia_request_irq(link, &link->irq);
+	if (ret)
+		goto failed;
+
+	ret = pcmcia_request_configuration(link, &link->conf);
+	if (ret)
+		goto failed;
 
 	if (snd_pdacf_assign_resources(pdacf, link->io.BasePort1, link->irq.AssignedIRQ) < 0)
 		goto failed;
@@ -235,8 +243,6 @@ static int pdacf_config(struct pcmcia_device *link)
 	link->dev_node = &pdacf->node;
 	return 0;
 
-cs_failed:
-	cs_error(link, last_fn, last_ret);
 failed:
 	pcmcia_disable_device(link);
 	return -ENODEV;

@@ -288,7 +288,7 @@ enum dmfe_CR6_bits {
 
 /* Global variable declaration ----------------------------- */
 static int __devinitdata printed_version;
-static char version[] __devinitdata =
+static const char version[] __devinitconst =
 	KERN_INFO DRV_NAME ": Davicom DM9xxx net driver, version "
 	DRV_VERSION " (" DRV_RELDATE ")\n";
 
@@ -311,7 +311,7 @@ static u8 SF_mode;		/* Special Function: 1:VLAN, 2:RX Flow Control
 
 /* function declaration ------------------------------------- */
 static int dmfe_open(struct DEVICE *);
-static int dmfe_start_xmit(struct sk_buff *, struct DEVICE *);
+static netdev_tx_t dmfe_start_xmit(struct sk_buff *, struct DEVICE *);
 static int dmfe_stop(struct DEVICE *);
 static void dmfe_set_filter_mode(struct DEVICE *);
 static const struct ethtool_ops netdev_ethtool_ops;
@@ -383,7 +383,7 @@ static int __devinit dmfe_init_one (struct pci_dev *pdev,
 		return -ENOMEM;
 	SET_NETDEV_DEV(dev, &pdev->dev);
 
-	if (pci_set_dma_mask(pdev, DMA_32BIT_MASK)) {
+	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
 		printk(KERN_WARNING DRV_NAME
 			": 32-bit PCI DMA not available.\n");
 		err = -ENODEV;
@@ -661,7 +661,8 @@ static void dmfe_init_dm910x(struct DEVICE *dev)
  *	Send a packet to media from the upper layer.
  */
 
-static int dmfe_start_xmit(struct sk_buff *skb, struct DEVICE *dev)
+static netdev_tx_t dmfe_start_xmit(struct sk_buff *skb,
+					 struct DEVICE *dev)
 {
 	struct dmfe_board_info *db = netdev_priv(dev);
 	struct tx_desc *txptr;
@@ -676,7 +677,7 @@ static int dmfe_start_xmit(struct sk_buff *skb, struct DEVICE *dev)
 	if (skb->len > MAX_PACKET_SIZE) {
 		printk(KERN_ERR DRV_NAME ": big packet = %d\n", (u16)skb->len);
 		dev_kfree_skb(skb);
-		return 0;
+		return NETDEV_TX_OK;
 	}
 
 	spin_lock_irqsave(&db->lock, flags);
@@ -686,7 +687,7 @@ static int dmfe_start_xmit(struct sk_buff *skb, struct DEVICE *dev)
 		spin_unlock_irqrestore(&db->lock, flags);
 		printk(KERN_ERR DRV_NAME ": No Tx resource %ld\n",
 		       db->tx_queue_cnt);
-		return 1;
+		return NETDEV_TX_BUSY;
 	}
 
 	/* Disable NIC interrupt */
@@ -722,7 +723,7 @@ static int dmfe_start_xmit(struct sk_buff *skb, struct DEVICE *dev)
 	/* free this SKB */
 	dev_kfree_skb(skb);
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 

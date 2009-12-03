@@ -52,7 +52,7 @@ int sctp_debug_flag = 1;	/* Initially enable DEBUG */
 #endif	/* SCTP_DEBUG */
 
 /* These are printable forms of Chunk ID's from section 3.1.  */
-static const char *sctp_cid_tbl[SCTP_NUM_BASE_CHUNK_TYPES] = {
+static const char *const sctp_cid_tbl[SCTP_NUM_BASE_CHUNK_TYPES] = {
 	"DATA",
 	"INIT",
 	"INIT_ACK",
@@ -86,6 +86,9 @@ const char *sctp_cname(const sctp_subtype_t cid)
 	case SCTP_CID_FWD_TSN:
 		return "FWD_TSN";
 
+	case SCTP_CID_AUTH:
+		return "AUTH";
+
 	default:
 		break;
 	}
@@ -94,7 +97,7 @@ const char *sctp_cname(const sctp_subtype_t cid)
 }
 
 /* These are printable forms of the states.  */
-const char *sctp_state_tbl[SCTP_STATE_NUM_STATES] = {
+const char *const sctp_state_tbl[SCTP_STATE_NUM_STATES] = {
 	"STATE_EMPTY",
 	"STATE_CLOSED",
 	"STATE_COOKIE_WAIT",
@@ -107,7 +110,7 @@ const char *sctp_state_tbl[SCTP_STATE_NUM_STATES] = {
 };
 
 /* Events that could change the state of an association.  */
-const char *sctp_evttype_tbl[] = {
+const char *const sctp_evttype_tbl[] = {
 	"EVENT_T_unknown",
 	"EVENT_T_CHUNK",
 	"EVENT_T_TIMEOUT",
@@ -116,7 +119,7 @@ const char *sctp_evttype_tbl[] = {
 };
 
 /* Return value of a state function */
-const char *sctp_status_tbl[] = {
+const char *const sctp_status_tbl[] = {
 	"DISPOSITION_DISCARD",
 	"DISPOSITION_CONSUME",
 	"DISPOSITION_NOMEM",
@@ -129,12 +132,13 @@ const char *sctp_status_tbl[] = {
 };
 
 /* Printable forms of primitives */
-static const char *sctp_primitive_tbl[SCTP_NUM_PRIMITIVE_TYPES] = {
+static const char *const sctp_primitive_tbl[SCTP_NUM_PRIMITIVE_TYPES] = {
 	"PRIMITIVE_ASSOCIATE",
 	"PRIMITIVE_SHUTDOWN",
 	"PRIMITIVE_ABORT",
 	"PRIMITIVE_SEND",
 	"PRIMITIVE_REQUESTHEARTBEAT",
+	"PRIMITIVE_ASCONF",
 };
 
 /* Lookup primitive debug name. */
@@ -145,7 +149,7 @@ const char *sctp_pname(const sctp_subtype_t id)
 	return "unknown_primitive";
 }
 
-static const char *sctp_other_tbl[] = {
+static const char *const sctp_other_tbl[] = {
 	"NO_PENDING_TSN",
 	"ICMP_PROTO_UNREACH",
 };
@@ -158,7 +162,7 @@ const char *sctp_oname(const sctp_subtype_t id)
 	return "unknown 'other' event";
 }
 
-static const char *sctp_timer_tbl[] = {
+static const char *const sctp_timer_tbl[] = {
 	"TIMEOUT_NONE",
 	"TIMEOUT_T1_COOKIE",
 	"TIMEOUT_T1_INIT",

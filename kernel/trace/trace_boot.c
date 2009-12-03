@@ -9,8 +9,10 @@
 #include <linux/debugfs.h>
 #include <linux/ftrace.h>
 #include <linux/kallsyms.h>
+#include <linux/time.h>
 
 #include "trace.h"
+#include "trace_output.h"
 
 static struct trace_array *boot_trace;
 static bool pre_initcalls_finished;
@@ -27,23 +29,24 @@ void start_boot_trace(void)
 
 void enable_boot_trace(void)
 {
-	if (pre_initcalls_finished)
+	if (boot_trace && pre_initcalls_finished)
 		tracing_start_sched_switch_record();
 }
 
 void disable_boot_trace(void)
 {
-	if (pre_initcalls_finished)
+	if (boot_trace && pre_initcalls_finished)
 		tracing_stop_sched_switch_record();
 }
 
 static int boot_trace_init(struct trace_array *tr)
 {
-	int cpu;
 	boot_trace = tr;
 
-	for_each_cpu(cpu, cpu_possible_mask)
-		tracing_reset(tr, cpu);
+	if (!tr)
+		return 0;
+
+	tracing_reset_online_cpus(tr);
 
 	tracing_sched_switch_assign_trace(tr);
 	return 0;
@@ -63,7 +66,7 @@ initcall_call_print_line(struct trace_iterator *iter)
 	trace_assign_type(field, entry);
 	call = &field->boot_call;
 	ts = iter->ts;
-	nsec_rem = do_div(ts, 1000000000);
+	nsec_rem = do_div(ts, NSEC_PER_SEC);
 
 	ret = trace_seq_printf(s, "[%5ld.%09ld] calling  %s @ %i\n",
 			(unsigned long)ts, nsec_rem, call->func, call->caller);
@@ -88,7 +91,7 @@ initcall_ret_print_line(struct trace_iterator *iter)
 	trace_assign_type(field, entry);
 	init_ret = &field->boot_ret;
 	ts = iter->ts;
-	nsec_rem = do_div(ts, 1000000000);
+	nsec_rem = do_div(ts, NSEC_PER_SEC);
 
 	ret = trace_seq_printf(s, "[%5ld.%09ld] initcall %s "
 			"returned %d after %llu msecs\n",
@@ -126,12 +129,13 @@ struct tracer boot_tracer __read_mostly =
 
 void trace_boot_call(struct boot_trace_call *bt, initcall_t fn)
 {
+	struct ftrace_event_call *call = &event_boot_call;
 	struct ring_buffer_event *event;
+	struct ring_buffer *buffer;
 	struct trace_boot_call *entry;
-	unsigned long irq_flags;
 	struct trace_array *tr = boot_trace;
 
-	if (!pre_initcalls_finished)
+	if (!tr || !pre_initcalls_finished)
 		return;
 
 	/* Get its name now since this function could
@@ -140,47 +144,42 @@ void trace_boot_call(struct boot_trace_call *bt, initcall_t fn)
 	sprint_symbol(bt->func, (unsigned long)fn);
 	preempt_disable();
 
-	event = ring_buffer_lock_reserve(tr->buffer, sizeof(*entry),
-					 &irq_flags);
+	buffer = tr->buffer;
+	event = trace_buffer_lock_reserve(buffer, TRACE_BOOT_CALL,
+					  sizeof(*entry), 0, 0);
 	if (!event)
 		goto out;
 	entry	= ring_buffer_event_data(event);
-	tracing_generic_entry_update(&entry->ent, 0, 0);
-	entry->ent.type = TRACE_BOOT_CALL;
 	entry->boot_call = *bt;
-	ring_buffer_unlock_commit(tr->buffer, event, irq_flags);
-
-	trace_wake_up();
-
+	if (!filter_check_discard(call, entry, buffer, event))
+		trace_buffer_unlock_commit(buffer, event, 0, 0);
  out:
 	preempt_enable();
 }
 
 void trace_boot_ret(struct boot_trace_ret *bt, initcall_t fn)
 {
+	struct ftrace_event_call *call = &event_boot_ret;
 	struct ring_buffer_event *event;
+	struct ring_buffer *buffer;
 	struct trace_boot_ret *entry;
-	unsigned long irq_flags;
 	struct trace_array *tr = boot_trace;
 
-	if (!pre_initcalls_finished)
+	if (!tr || !pre_initcalls_finished)
 		return;
 
 	sprint_symbol(bt->func, (unsigned long)fn);
 	preempt_disable();
 
-	event = ring_buffer_lock_reserve(tr->buffer, sizeof(*entry),
-					 &irq_flags);
+	buffer = tr->buffer;
+	event = trace_buffer_lock_reserve(buffer, TRACE_BOOT_RET,
+					  sizeof(*entry), 0, 0);
 	if (!event)
 		goto out;
 	entry	= ring_buffer_event_data(event);
-	tracing_generic_entry_update(&entry->ent, 0, 0);
-	entry->ent.type = TRACE_BOOT_RET;
 	entry->boot_ret = *bt;
-	ring_buffer_unlock_commit(tr->buffer, event, irq_flags);
-
-	trace_wake_up();
-
+	if (!filter_check_discard(call, entry, buffer, event))
+		trace_buffer_unlock_commit(buffer, event, 0, 0);
  out:
 	preempt_enable();
 }

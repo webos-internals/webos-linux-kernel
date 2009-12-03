@@ -26,7 +26,6 @@
 
 #include <linux/sys.h>
 #include <linux/linkage.h>
-#include <asm/thread_info.h>
 #include <asm/errno.h>
 #include <asm/setup.h>
 #include <asm/segment.h>
@@ -47,7 +46,7 @@
 ENTRY(buserr)
 	SAVE_ALL
 	moveq	#-1,%d0
-	movel	%d0,%sp@(PT_ORIG_D0)
+	movel	%d0,%sp@(PT_OFF_ORIG_D0)
 	movel	%sp,%sp@- 		/* stack frame pointer argument */
 	jsr	buserr_c
 	addql	#4,%sp
@@ -56,7 +55,7 @@ ENTRY(buserr)
 ENTRY(trap)
 	SAVE_ALL
 	moveq	#-1,%d0
-	movel	%d0,%sp@(PT_ORIG_D0)
+	movel	%d0,%sp@(PT_OFF_ORIG_D0)
 	movel	%sp,%sp@- 		/* stack frame pointer argument */
 	jsr	trap_c
 	addql	#4,%sp
@@ -68,7 +67,7 @@ ENTRY(trap)
 ENTRY(dbginterrupt)
 	SAVE_ALL
 	moveq	#-1,%d0
-	movel	%d0,%sp@(PT_ORIG_D0)
+	movel	%d0,%sp@(PT_OFF_ORIG_D0)
 	movel	%sp,%sp@- 		/* stack frame pointer argument */
 	jsr	dbginterrupt_c
 	addql	#4,%sp

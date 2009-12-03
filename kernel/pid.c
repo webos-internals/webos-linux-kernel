@@ -40,7 +40,7 @@
 #define pid_hashfn(nr, ns)	\
 	hash_long((unsigned long)nr + (unsigned long)ns, pidhash_shift)
 static struct hlist_head *pid_hash;
-static int pidhash_shift;
+static unsigned int pidhash_shift = 4;
 struct pid init_struct_pid = INIT_STRUCT_PID;
 
 int pid_max = PID_MAX_DEFAULT;
@@ -378,31 +378,22 @@ EXPORT_SYMBOL(pid_task);
 /*
  * Must be called under rcu_read_lock() or with tasklist_lock read-held.
  */
-struct task_struct *find_task_by_pid_type_ns(int type, int nr,
-		struct pid_namespace *ns)
+struct task_struct *find_task_by_pid_ns(pid_t nr, struct pid_namespace *ns)
 {
-	return pid_task(find_pid_ns(nr, ns), type);
+	return pid_task(find_pid_ns(nr, ns), PIDTYPE_PID);
 }
-
-EXPORT_SYMBOL(find_task_by_pid_type_ns);
 
 struct task_struct *find_task_by_vpid(pid_t vnr)
 {
-	return find_task_by_pid_type_ns(PIDTYPE_PID, vnr,
-			current->nsproxy->pid_ns);
+	return find_task_by_pid_ns(vnr, current->nsproxy->pid_ns);
 }
-EXPORT_SYMBOL(find_task_by_vpid);
-
-struct task_struct *find_task_by_pid_ns(pid_t nr, struct pid_namespace *ns)
-{
-	return find_task_by_pid_type_ns(PIDTYPE_PID, nr, ns);
-}
-EXPORT_SYMBOL(find_task_by_pid_ns);
 
 struct pid *get_task_pid(struct task_struct *task, enum pid_type type)
 {
 	struct pid *pid;
 	rcu_read_lock();
+	if (type != PIDTYPE_PID)
+		task = task->group_leader;
 	pid = get_pid(task->pids[type].pid);
 	rcu_read_unlock();
 	return pid;
@@ -450,29 +441,30 @@ pid_t pid_vnr(struct pid *pid)
 }
 EXPORT_SYMBOL_GPL(pid_vnr);
 
-pid_t task_pid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns)
+pid_t __task_pid_nr_ns(struct task_struct *task, enum pid_type type,
+			struct pid_namespace *ns)
 {
-	return pid_nr_ns(task_pid(tsk), ns);
+	pid_t nr = 0;
+
+	rcu_read_lock();
+	if (!ns)
+		ns = current->nsproxy->pid_ns;
+	if (likely(pid_alive(task))) {
+		if (type != PIDTYPE_PID)
+			task = task->group_leader;
+		nr = pid_nr_ns(task->pids[type].pid, ns);
+	}
+	rcu_read_unlock();
+
+	return nr;
 }
-EXPORT_SYMBOL(task_pid_nr_ns);
+EXPORT_SYMBOL(__task_pid_nr_ns);
 
 pid_t task_tgid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns)
 {
 	return pid_nr_ns(task_tgid(tsk), ns);
 }
 EXPORT_SYMBOL(task_tgid_nr_ns);
-
-pid_t task_pgrp_nr_ns(struct task_struct *tsk, struct pid_namespace *ns)
-{
-	return pid_nr_ns(task_pgrp(tsk), ns);
-}
-EXPORT_SYMBOL(task_pgrp_nr_ns);
-
-pid_t task_session_nr_ns(struct task_struct *tsk, struct pid_namespace *ns)
-{
-	return pid_nr_ns(task_session(tsk), ns);
-}
-EXPORT_SYMBOL(task_session_nr_ns);
 
 struct pid_namespace *task_active_pid_ns(struct task_struct *tsk)
 {
@@ -507,19 +499,12 @@ struct pid *find_ge_pid(int nr, struct pid_namespace *ns)
 void __init pidhash_init(void)
 {
 	int i, pidhash_size;
-	unsigned long megabytes = nr_kernel_pages >> (20 - PAGE_SHIFT);
 
-	pidhash_shift = max(4, fls(megabytes * 4));
-	pidhash_shift = min(12, pidhash_shift);
+	pid_hash = alloc_large_system_hash("PID", sizeof(*pid_hash), 0, 18,
+					   HASH_EARLY | HASH_SMALL,
+					   &pidhash_shift, NULL, 4096);
 	pidhash_size = 1 << pidhash_shift;
 
-	printk("PID hash table entries: %d (order: %d, %Zd bytes)\n",
-		pidhash_size, pidhash_shift,
-		pidhash_size * sizeof(struct hlist_head));
-
-	pid_hash = alloc_bootmem(pidhash_size *	sizeof(*(pid_hash)));
-	if (!pid_hash)
-		panic("Could not alloc pidhash!\n");
 	for (i = 0; i < pidhash_size; i++)
 		INIT_HLIST_HEAD(&pid_hash[i]);
 }

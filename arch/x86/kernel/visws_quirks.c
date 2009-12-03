@@ -24,17 +24,14 @@
 
 #include <asm/visws/cobalt.h>
 #include <asm/visws/piix4.h>
-#include <asm/arch_hooks.h>
 #include <asm/io_apic.h>
 #include <asm/fixmap.h>
 #include <asm/reboot.h>
 #include <asm/setup.h>
+#include <asm/apic.h>
 #include <asm/e820.h>
+#include <asm/time.h>
 #include <asm/io.h>
-
-#include <mach_ipi.h>
-
-#include "mach_apic.h"
 
 #include <linux/kernel_stat.h>
 
@@ -49,8 +46,6 @@
 
 extern int no_broadcast;
 
-#include <asm/apic.h>
-
 char visws_board_type	= -1;
 char visws_board_rev	= -1;
 
@@ -59,7 +54,7 @@ int is_visws_box(void)
 	return visws_board_type >= 0;
 }
 
-static int __init visws_time_init(void)
+static void __init visws_time_init(void)
 {
 	printk(KERN_INFO "Starting Cobalt Timer system clock\n");
 
@@ -72,21 +67,13 @@ static int __init visws_time_init(void)
 	/* Enable (unmask) the timer interrupt */
 	co_cpu_write(CO_CPU_CTRL, co_cpu_read(CO_CPU_CTRL) & ~CO_CTRL_TIMEMASK);
 
-	/*
-	 * Zero return means the generic timer setup code will set up
-	 * the standard vector:
-	 */
-	return 0;
+	setup_default_timer_irq();
 }
 
-static int __init visws_pre_intr_init(void)
+/* Replaces the default init_ISA_irqs in the generic setup */
+static void __init visws_pre_intr_init(void)
 {
 	init_VISWS_APIC_irqs();
-
-	/*
-	 * We dont want ISA irqs to be set up by the generic code:
-	 */
-	return 1;
 }
 
 /* Quirk for machine specific memory setup. */
@@ -162,12 +149,8 @@ static void visws_machine_power_off(void)
 	outl(PIIX_SPECIAL_STOP, 0xCFC);
 }
 
-static int __init visws_get_smp_config(unsigned int early)
+static void __init visws_get_smp_config(unsigned int early)
 {
-	/*
-	 * Prevent MP-table parsing by the generic code:
-	 */
-	return 1;
 }
 
 /*
@@ -200,7 +183,7 @@ static void __init MP_processor_info(struct mpc_cpu *m)
 		return;
 	}
 
-	apic_cpus = apicid_to_cpu_present(m->apicid);
+	apic_cpus = apic->apicid_to_cpu_present(m->apicid);
 	physids_or(phys_cpu_present_map, phys_cpu_present_map, apic_cpus);
 	/*
 	 * Validate version
@@ -214,7 +197,7 @@ static void __init MP_processor_info(struct mpc_cpu *m)
 	apic_version[m->apicid] = ver;
 }
 
-static int __init visws_find_smp_config(unsigned int reserve)
+static void __init visws_find_smp_config(unsigned int reserve)
 {
 	struct mpc_cpu *mp = phys_to_virt(CO_CPU_TAB_PHYS);
 	unsigned short ncpus = readw(phys_to_virt(CO_CPU_NUM_PHYS));
@@ -236,21 +219,9 @@ static int __init visws_find_smp_config(unsigned int reserve)
 		MP_processor_info(mp++);
 
 	mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
-
-	return 1;
 }
 
-static int visws_trap_init(void);
-
-static struct x86_quirks visws_x86_quirks __initdata = {
-	.arch_time_init		= visws_time_init,
-	.arch_pre_intr_init	= visws_pre_intr_init,
-	.arch_memory_setup	= visws_memory_setup,
-	.arch_intr_init		= NULL,
-	.arch_trap_init		= visws_trap_init,
-	.mach_get_smp_config	= visws_get_smp_config,
-	.mach_find_smp_config	= visws_find_smp_config,
-};
+static void visws_trap_init(void);
 
 void __init visws_early_detect(void)
 {
@@ -263,11 +234,14 @@ void __init visws_early_detect(void)
 		return;
 
 	/*
-	 * Install special quirks for timer, interrupt and memory setup:
-	 * Fall back to generic behavior for traps:
-	 * Override generic MP-table parsing:
+	 * Override the default platform setup functions
 	 */
-	x86_quirks = &visws_x86_quirks;
+	x86_init.resources.memory_setup = visws_memory_setup;
+	x86_init.mpparse.get_smp_config = visws_get_smp_config;
+	x86_init.mpparse.find_smp_config = visws_find_smp_config;
+	x86_init.irqs.pre_vector_init = visws_pre_intr_init;
+	x86_init.irqs.trap_init = visws_trap_init;
+	x86_init.timers.timer_init = visws_time_init;
 
 	/*
 	 * Install reboot quirks:
@@ -406,12 +380,10 @@ static __init void cobalt_init(void)
 		co_apic_read(CO_APIC_ID));
 }
 
-static int __init visws_trap_init(void)
+static void __init visws_trap_init(void)
 {
 	lithium_init();
 	cobalt_init();
-
-	return 1;
 }
 
 /*
@@ -584,7 +556,7 @@ static struct irq_chip piix4_virtual_irq_type = {
 static irqreturn_t piix4_master_intr(int irq, void *dev_id)
 {
 	int realirq;
-	irq_desc_t *desc;
+	struct irq_desc *desc;
 	unsigned long flags;
 
 	spin_lock_irqsave(&i8259A_lock, flags);

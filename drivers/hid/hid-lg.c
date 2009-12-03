@@ -297,6 +297,10 @@ static const struct hid_device_id lg_devices[] = {
 		.driver_data = LG_FF },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_MOMO_WHEEL2),
 		.driver_data = LG_FF },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_G25_WHEEL),
+		.driver_data = LG_FF },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_WINGMAN_FFG ),
+		.driver_data = LG_FF },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_LOGITECH, USB_DEVICE_ID_LOGITECH_RUMBLEPAD2),
 		.driver_data = LG_FF2 },
 	{ }
@@ -313,12 +317,12 @@ static struct hid_driver lg_driver = {
 	.probe = lg_probe,
 };
 
-static int lg_init(void)
+static int __init lg_init(void)
 {
 	return hid_register_driver(&lg_driver);
 }
 
-static void lg_exit(void)
+static void __exit lg_exit(void)
 {
 	hid_unregister_driver(&lg_driver);
 }
@@ -326,5 +330,3 @@ static void lg_exit(void)
 module_init(lg_init);
 module_exit(lg_exit);
 MODULE_LICENSE("GPL");
-
-HID_COMPAT_LOAD_DRIVER(logitech);

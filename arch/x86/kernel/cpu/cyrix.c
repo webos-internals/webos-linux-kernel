@@ -3,10 +3,10 @@
 #include <linux/delay.h>
 #include <linux/pci.h>
 #include <asm/dma.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <asm/processor-cyrix.h>
 #include <asm/processor-flags.h>
-#include <asm/timer.h>
+#include <linux/timer.h>
 #include <asm/pci-direct.h>
 #include <asm/tsc.h>
 
@@ -61,23 +61,23 @@ static void __cpuinit do_cyrix_devid(unsigned char *dir0, unsigned char *dir1)
  */
 static unsigned char Cx86_dir0_msb __cpuinitdata = 0;
 
-static char Cx86_model[][9] __cpuinitdata = {
+static const char __cpuinitconst Cx86_model[][9] = {
 	"Cx486", "Cx486", "5x86 ", "6x86", "MediaGX ", "6x86MX ",
 	"M II ", "Unknown"
 };
-static char Cx486_name[][5] __cpuinitdata = {
+static const char __cpuinitconst Cx486_name[][5] = {
 	"SLC", "DLC", "SLC2", "DLC2", "SRx", "DRx",
 	"SRx2", "DRx2"
 };
-static char Cx486S_name[][4] __cpuinitdata = {
+static const char __cpuinitconst Cx486S_name[][4] = {
 	"S", "S2", "Se", "S2e"
 };
-static char Cx486D_name[][4] __cpuinitdata = {
+static const char __cpuinitconst Cx486D_name[][4] = {
 	"DX", "DX2", "?", "?", "?", "DX4"
 };
 static char Cx86_cb[] __cpuinitdata = "?.5x Core/Bus Clock";
-static char cyrix_model_mult1[] __cpuinitdata = "12??43";
-static char cyrix_model_mult2[] __cpuinitdata = "12233445";
+static const char __cpuinitconst cyrix_model_mult1[] = "12??43";
+static const char __cpuinitconst cyrix_model_mult2[] = "12233445";
 
 /*
  * Reset the slow-loop (SLOP) bit on the 686(L) which is set by some old
@@ -282,7 +282,8 @@ static void __cpuinit init_cyrix(struct cpuinfo_x86 *c)
 		 *  The 5510/5520 companion chips have a funky PIT.
 		 */
 		if (vendor == PCI_VENDOR_ID_CYRIX &&
-	 (device == PCI_DEVICE_ID_CYRIX_5510 || device == PCI_DEVICE_ID_CYRIX_5520))
+			(device == PCI_DEVICE_ID_CYRIX_5510 ||
+					device == PCI_DEVICE_ID_CYRIX_5520))
 			mark_tsc_unstable("cyrix 5510/5520 detected");
 	}
 #endif
@@ -299,7 +300,8 @@ static void __cpuinit init_cyrix(struct cpuinfo_x86 *c)
 			 *  ?  : 0x7x
 			 * GX1 : 0x8x          GX1  datasheet 56
 			 */
-			if ((0x30 <= dir1 && dir1 <= 0x6f) || (0x80 <= dir1 && dir1 <= 0x8f))
+			if ((0x30 <= dir1 && dir1 <= 0x6f) ||
+					(0x80 <= dir1 && dir1 <= 0x8f))
 				geode_configure();
 			return;
 		} else { /* MediaGX */
@@ -427,15 +429,18 @@ static void __cpuinit cyrix_identify(struct cpuinfo_x86 *c)
 			printk(KERN_INFO "Enabling CPUID on Cyrix processor.\n");
 			local_irq_save(flags);
 			ccr3 = getCx86(CX86_CCR3);
-			setCx86(CX86_CCR3, (ccr3 & 0x0f) | 0x10);       /* enable MAPEN  */
-			setCx86_old(CX86_CCR4, getCx86_old(CX86_CCR4) | 0x80);  /* enable cpuid  */
-			setCx86(CX86_CCR3, ccr3);                       /* disable MAPEN */
+			/* enable MAPEN  */
+			setCx86(CX86_CCR3, (ccr3 & 0x0f) | 0x10);
+			/* enable cpuid  */
+			setCx86_old(CX86_CCR4, getCx86_old(CX86_CCR4) | 0x80);
+			/* disable MAPEN */
+			setCx86(CX86_CCR3, ccr3);
 			local_irq_restore(flags);
 		}
 	}
 }
 
-static struct cpu_dev cyrix_cpu_dev __cpuinitdata = {
+static const struct cpu_dev __cpuinitconst cyrix_cpu_dev = {
 	.c_vendor	= "Cyrix",
 	.c_ident	= { "CyrixInstead" },
 	.c_early_init	= early_init_cyrix,
@@ -446,7 +451,7 @@ static struct cpu_dev cyrix_cpu_dev __cpuinitdata = {
 
 cpu_dev_register(cyrix_cpu_dev);
 
-static struct cpu_dev nsc_cpu_dev __cpuinitdata = {
+static const struct cpu_dev __cpuinitconst nsc_cpu_dev = {
 	.c_vendor	= "NSC",
 	.c_ident	= { "Geode by NSC" },
 	.c_init		= init_nsc,

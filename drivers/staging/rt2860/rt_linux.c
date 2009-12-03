@@ -25,6 +25,7 @@
  *************************************************************************
  */
 
+#include <linux/sched.h>
 #include "rt_config.h"
 
 ULONG	RTDebugLevel = RT_DEBUG_ERROR;
@@ -33,9 +34,10 @@ BUILD_TIMER_FUNCTION(MlmePeriodicExec);
 BUILD_TIMER_FUNCTION(AsicRxAntEvalTimeout);
 BUILD_TIMER_FUNCTION(APSDPeriodicExec);
 BUILD_TIMER_FUNCTION(AsicRfTuningExec);
+#ifdef RT2870
+BUILD_TIMER_FUNCTION(BeaconUpdateExec);
+#endif // RT2870 //
 
-
-#ifdef CONFIG_STA_SUPPORT
 BUILD_TIMER_FUNCTION(BeaconTimeout);
 BUILD_TIMER_FUNCTION(ScanTimeout);
 BUILD_TIMER_FUNCTION(AuthTimeout);
@@ -43,19 +45,12 @@ BUILD_TIMER_FUNCTION(AssocTimeout);
 BUILD_TIMER_FUNCTION(ReassocTimeout);
 BUILD_TIMER_FUNCTION(DisassocTimeout);
 BUILD_TIMER_FUNCTION(LinkDownExec);
-#ifdef LEAP_SUPPORT
-BUILD_TIMER_FUNCTION(LeapAuthTimeout);
-#endif
 BUILD_TIMER_FUNCTION(StaQuickResponeForRateUpExec);
 BUILD_TIMER_FUNCTION(WpaDisassocApAndBlockAssoc);
 #ifdef RT2860
 BUILD_TIMER_FUNCTION(PsPollWakeExec);
 BUILD_TIMER_FUNCTION(RadioOnExec);
-#endif // RT2860 //
-#ifdef QOS_DLS_SUPPORT
-BUILD_TIMER_FUNCTION(DlsTimeoutAction);
-#endif // QOS_DLS_SUPPORT //
-#endif // CONFIG_STA_SUPPORT //
+#endif
 
 // for wireless system event message
 char const *pWirelessSysEventText[IW_SYS_EVENT_TYPE_NUM] = {
@@ -292,11 +287,9 @@ VOID	RTMPFreeAdapter(
 
 
 	NdisFreeSpinLock(&pAd->MgmtRingLock);
-
 #ifdef RT2860
 	NdisFreeSpinLock(&pAd->RxRingLock);
-#endif // RT2860 //
-
+#endif
 	for (index =0 ; index < NUM_OF_TX_RING; index++)
 	{
     	NdisFreeSpinLock(&pAd->TxSwQueueLock[index]);
@@ -499,12 +492,7 @@ PNET_DEV get_netdev_from_bssid(
 {
     PNET_DEV dev_p = NULL;
 
-#ifdef CONFIG_STA_SUPPORT
-	IF_DEV_CONFIG_OPMODE_ON_STA(pAd)
-	{
-		dev_p = pAd->net_dev;
-	}
-#endif // CONFIG_STA_SUPPORT //
+	dev_p = pAd->net_dev;
 
 	ASSERT(dev_p);
 	return dev_p; /* return one of MBSS */
@@ -550,9 +538,9 @@ PNDIS_PACKET duplicate_pkt(
 	if ((skb = __dev_alloc_skb(HdrLen + DataSize + 2, MEM_ALLOC_FLAG)) != NULL)
 	{
 		skb_reserve(skb, 2);
-		NdisMoveMemory(skb->tail, pHeader802_3, HdrLen);
+		NdisMoveMemory(skb_tail_pointer(skb), pHeader802_3, HdrLen);
 		skb_put(skb, HdrLen);
-		NdisMoveMemory(skb->tail, pData, DataSize);
+		NdisMoveMemory(skb_tail_pointer(skb), pData, DataSize);
 		skb_put(skb, DataSize);
 		skb->dev = get_netdev_from_bssid(pAd, FromWhichBSSID);
 		pPacket = OSPKT_TO_RTPKT(skb);
@@ -660,13 +648,8 @@ void wlan_802_11_to_802_3_packet(
 	//
 	//
 
-#ifdef CONFIG_STA_SUPPORT
-	IF_DEV_CONFIG_OPMODE_ON_STA(pAd)
-		NdisMoveMemory(skb_push(pOSPkt, LENGTH_802_3), pHeader802_3, LENGTH_802_3);
-#endif // CONFIG_STA_SUPPORT //
-	}
-
-
+	NdisMoveMemory(skb_push(pOSPkt, LENGTH_802_3), pHeader802_3, LENGTH_802_3);
+}
 
 void announce_802_3_packet(
 	IN	PRTMP_ADAPTER	pAd,
@@ -680,13 +663,9 @@ void announce_802_3_packet(
 	pRxPkt = RTPKT_TO_OSPKT(pPacket);
 
     /* Push up the protocol stack */
-#ifdef IKANOS_VX_1X0
-	IKANOS_DataFrameRx(pAd, pRxPkt->dev, pRxPkt, pRxPkt->len);
-#else
 	pRxPkt->protocol = eth_type_trans(pRxPkt, pRxPkt->dev);
 
 	netif_rx(pRxPkt);
-#endif // IKANOS_VX_1X0 //
 }
 
 
@@ -746,7 +725,6 @@ VOID RTMPSendWirelessEvent(
 	IN	UCHAR			BssIdx,
 	IN	CHAR			Rssi)
 {
-#if WIRELESS_EXT >= 15
 
 	union 	iwreq_data      wrqu;
 	PUCHAR 	pBuf = NULL, pBufPtr = NULL;
@@ -794,7 +772,7 @@ VOID RTMPSendWirelessEvent(
 		if (pAddr)
 			pBufPtr += sprintf(pBufPtr, "(RT2860) STA(%02x:%02x:%02x:%02x:%02x:%02x) ", PRINT_MAC(pAddr));
 		else if (BssIdx < MAX_MBSSID_NUM)
-			pBufPtr += sprintf(pBufPtr, "(RT2860) BSS(ra%d) ", BssIdx);
+			pBufPtr += sprintf(pBufPtr, "(RT2860) BSS(wlan%d) ", BssIdx);
 		else
 			pBufPtr += sprintf(pBufPtr, "(RT2860) ");
 
@@ -823,13 +801,8 @@ VOID RTMPSendWirelessEvent(
 	}
 	else
 		DBGPRINT(RT_DEBUG_ERROR, ("%s : Can't allocate memory for wireless event.\n", __func__));
-#else
-	DBGPRINT(RT_DEBUG_ERROR, ("%s : The Wireless Extension MUST be v15 or newer.\n", __func__));
-#endif  /* WIRELESS_EXT >= 15 */
 }
 
-
-#ifdef CONFIG_STA_SUPPORT
 void send_monitor_packets(
 	IN	PRTMP_ADAPTER	pAd,
 	IN	RX_BLK			*pRxBlk)
@@ -854,7 +827,7 @@ void send_monitor_packets(
 
     if (pRxBlk->DataSize + sizeof(wlan_ng_prism2_header) > RX_BUFFER_AGGRESIZE)
     {
-        DBGPRINT(RT_DEBUG_ERROR, ("%s : Size is too large! (%d)\n", __func__, pRxBlk->DataSize + sizeof(wlan_ng_prism2_header)));
+        DBGPRINT(RT_DEBUG_ERROR, ("%s : Size is too large! (%zu)\n", __func__, pRxBlk->DataSize + sizeof(wlan_ng_prism2_header)));
 		goto err_free_sk_buff;
     }
 
@@ -961,13 +934,11 @@ void send_monitor_packets(
 	ph->noise.len = 4;
 	ph->noise.data = 0;
 
-#ifdef DOT11_N_SUPPORT
     if (pRxBlk->pRxWI->PHYMODE >= MODE_HTMIX)
     {
     	rate_index = 16 + ((UCHAR)pRxBlk->pRxWI->BW *16) + ((UCHAR)pRxBlk->pRxWI->ShortGI *32) + ((UCHAR)pRxBlk->pRxWI->MCS);
     }
     else
-#endif // DOT11_N_SUPPORT //
 	if (pRxBlk->pRxWI->PHYMODE == MODE_OFDM)
     	rate_index = (UCHAR)(pRxBlk->pRxWI->MCS) + 4;
     else
@@ -1000,40 +971,17 @@ err_free_sk_buff:
 	return;
 
 }
-#endif // CONFIG_STA_SUPPORT //
-
 
 void rtmp_os_thread_init(PUCHAR pThreadName, PVOID pNotify)
 {
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,5,0)
 	daemonize(pThreadName /*"%s",pAd->net_dev->name*/);
 
 	allow_signal(SIGTERM);
 	allow_signal(SIGKILL);
 	current->flags |= PF_NOFREEZE;
-#else
-	unsigned long flags;
 
-	daemonize();
-	reparent_to_init();
-	strcpy(current->comm, pThreadName);
-
-	siginitsetinv(&current->blocked, sigmask(SIGTERM) | sigmask(SIGKILL));
-
-	/* Allow interception of SIGKILL only
-	 * Don't allow other signals to interrupt the transmission */
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,4,22)
-	spin_lock_irqsave(&current->sigmask_lock, flags);
-	flush_signals(current);
-	recalc_sigpending(current);
-	spin_unlock_irqrestore(&current->sigmask_lock, flags);
-#endif
-#endif
-
-    /* signal that we've started the thread */
+	/* signal that we've started the thread */
 	complete(pNotify);
-
 }
 
 void RTMP_IndicateMediaState(

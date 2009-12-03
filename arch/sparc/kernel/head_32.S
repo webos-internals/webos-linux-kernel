@@ -72,7 +72,7 @@ sun4e_notsup:
 	.align 4
 
 	/* The Sparc trap table, bootloader gives us control at _start. */
-	.section .text.head,"ax"
+	__HEAD
 	.globl	start, _stext, _start, __stext
 	.globl  trapbase
 _start:   /* danger danger */
@@ -735,7 +735,7 @@ go_to_highmem:
 		 nop
 
 /* The code above should be at beginning and we have to take care about
- * short jumps, as branching to .text.init section from .text is usually
+ * short jumps, as branching to .init.text section from .text is usually
  * impossible */
 		__INIT
 /* Acquire boot time privileged register values, this will help debugging.
@@ -809,6 +809,11 @@ found_version:
 		 nop
 
 got_prop:
+#ifdef CONFIG_SPARC_LEON
+	        /* no cpu-type check is needed, it is a SPARC-LEON */
+		ba sun4c_continue_boot
+		 nop
+#endif
 		set	cputypval, %o2
 		ldub	[%o2 + 0x4], %l1
 

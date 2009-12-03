@@ -14,16 +14,11 @@
 #include <linux/kernel.h>
 #include <linux/param.h>
 #include <linux/init.h>
-#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <asm/machdep.h>
 #include <asm/coldfire.h>
 #include <asm/mcfsim.h>
 #include <asm/mcfuart.h>
-
-/***************************************************************************/
-
-void coldfire_reset(void);
 
 /***************************************************************************/
 
@@ -49,25 +44,47 @@ static struct platform_device m520x_uart = {
 	.dev.platform_data	= m520x_uart_platform,
 };
 
+static struct resource m520x_fec_resources[] = {
+	{
+		.start		= MCF_MBAR + 0x30000,
+		.end		= MCF_MBAR + 0x30000 + 0x7ff,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= 64 + 36,
+		.end		= 64 + 36,
+		.flags		= IORESOURCE_IRQ,
+	},
+	{
+		.start		= 64 + 40,
+		.end		= 64 + 40,
+		.flags		= IORESOURCE_IRQ,
+	},
+	{
+		.start		= 64 + 42,
+		.end		= 64 + 42,
+		.flags		= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device m520x_fec = {
+	.name			= "fec",
+	.id			= 0,
+	.num_resources		= ARRAY_SIZE(m520x_fec_resources),
+	.resource		= m520x_fec_resources,
+};
+
 static struct platform_device *m520x_devices[] __initdata = {
 	&m520x_uart,
+	&m520x_fec,
 };
 
 /***************************************************************************/
 
-#define	INTC0	(MCF_MBAR + MCFICM_INTC0)
-
 static void __init m520x_uart_init_line(int line, int irq)
 {
-	u32 imr;
 	u16 par;
 	u8 par2;
-
-	writeb(0x03, INTC0 + MCFINTC_ICR0 + MCFINT_UART0 + line);
-
-	imr = readl(INTC0 + MCFINTC_IMRL);
-	imr &= ~((1 << (irq - MCFINT_VECBASE)) | 1);
-	writel(imr, INTC0 + MCFINTC_IMRL);
 
 	switch (line) {
 	case 0:
@@ -103,21 +120,33 @@ static void __init m520x_uarts_init(void)
 
 /***************************************************************************/
 
-/*
- *  Program the vector to be an auto-vectored.
- */
-
-void mcf_autovector(unsigned int vec)
+static void __init m520x_fec_init(void)
 {
-    /* Everything is auto-vectored on the 520x devices */
+	u8 v;
+
+	/* Set multi-function pins to ethernet mode */
+	v = readb(MCF_IPSBAR + MCF_GPIO_PAR_FEC);
+	writeb(v | 0xf0, MCF_IPSBAR + MCF_GPIO_PAR_FEC);
+
+	v = readb(MCF_IPSBAR + MCF_GPIO_PAR_FECI2C);
+	writeb(v | 0x0f, MCF_IPSBAR + MCF_GPIO_PAR_FECI2C);
+}
+
+/***************************************************************************/
+
+static void m520x_cpu_reset(void)
+{
+	local_irq_disable();
+	__raw_writeb(MCF_RCR_SWRESET, MCF_RCR);
 }
 
 /***************************************************************************/
 
 void __init config_BSP(char *commandp, int size)
 {
-	mach_reset = coldfire_reset;
+	mach_reset = m520x_cpu_reset;
 	m520x_uarts_init();
+	m520x_fec_init();
 }
 
 /***************************************************************************/

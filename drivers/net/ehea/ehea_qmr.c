@@ -751,7 +751,7 @@ int ehea_create_busmap(void)
 
 	mutex_lock(&ehea_busmap_mutex);
 	ehea_mr_len = 0;
-	ret = walk_memory_resource(0, 1ULL << MAX_PHYSMEM_BITS, NULL,
+	ret = walk_system_ram_range(0, 1ULL << MAX_PHYSMEM_BITS, NULL,
 				   ehea_create_busmap_callback);
 	mutex_unlock(&ehea_busmap_mutex);
 	return ret;
@@ -1005,7 +1005,7 @@ void ehea_error_data(struct ehea_adapter *adapter, u64 res_handle)
 	unsigned long ret;
 	u64 *rblock;
 
-	rblock = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	rblock = (void *)get_zeroed_page(GFP_KERNEL);
 	if (!rblock) {
 		ehea_error("Cannot allocate rblock memory.");
 		return;
@@ -1022,5 +1022,5 @@ void ehea_error_data(struct ehea_adapter *adapter, u64 res_handle)
 	else
 		ehea_error("Error data could not be fetched: %llX", res_handle);
 
-	kfree(rblock);
+	free_page((unsigned long)rblock);
 }

@@ -51,6 +51,12 @@ static int writebuf_from_LL(int driverID, int channel, int ack,
 		return -ENODEV;
 	}
 	bcs = &cs->bcs[channel];
+
+	/* can only handle linear sk_buffs */
+	if (skb_linearize(skb) < 0) {
+		dev_err(cs->dev, "%s: skb_linearize failed\n", __func__);
+		return -ENOMEM;
+	}
 	len = skb->len;
 
 	gig_dbg(DEBUG_LLDATA,
@@ -79,6 +85,14 @@ static int writebuf_from_LL(int driverID, int channel, int ack,
 	return cs->ops->send_skb(bcs, skb);
 }
 
+/**
+ * gigaset_skb_sent() - acknowledge sending an skb
+ * @bcs:	B channel descriptor structure.
+ * @skb:	sent data.
+ *
+ * Called by hardware module {bas,ser,usb}_gigaset when the data in a
+ * skb has been successfully sent, for signalling completion to the LL.
+ */
 void gigaset_skb_sent(struct bc_state *bcs, struct sk_buff *skb)
 {
 	unsigned len;
@@ -455,6 +469,15 @@ int gigaset_isdn_setup_accept(struct at_state_t *at_state)
 	return 0;
 }
 
+/**
+ * gigaset_isdn_icall() - signal incoming call
+ * @at_state:	connection state structure.
+ *
+ * Called by main module to notify the LL that an incoming call has been
+ * received. @at_state contains the parameters of the call.
+ *
+ * Return value: call disposition (ICALL_*)
+ */
 int gigaset_isdn_icall(struct at_state_t *at_state)
 {
 	struct cardstate *cs = at_state->cs;
@@ -544,11 +567,11 @@ int gigaset_register_to_LL(struct cardstate *cs, const char *isdnid)
 
 	gig_dbg(DEBUG_ANY, "Register driver capabilities to LL");
 
-	//iif->id[sizeof(iif->id) - 1]=0;
-	//strncpy(iif->id, isdnid, sizeof(iif->id) - 1);
 	if (snprintf(iif->id, sizeof iif->id, "%s_%u", isdnid, cs->minor_index)
-	    >= sizeof iif->id)
-		return -ENOMEM; //FIXME EINVAL/...??
+	    >= sizeof iif->id) {
+		pr_err("ID too long: %s\n", isdnid);
+		return 0;
+	}
 
 	iif->owner = THIS_MODULE;
 	iif->channels = cs->channels;
@@ -568,8 +591,10 @@ int gigaset_register_to_LL(struct cardstate *cs, const char *isdnid)
 	iif->rcvcallb_skb = NULL;		/* Will be set by LL */
 	iif->statcallb = NULL;			/* Will be set by LL */
 
-	if (!register_isdn(iif))
+	if (!register_isdn(iif)) {
+		pr_err("register_isdn failed\n");
 		return 0;
+	}
 
 	cs->myid = iif->channels;		/* Set my device id */
 	return 1;

@@ -48,7 +48,7 @@
 #ifdef CONFIG_ISA
 #include <linux/platform_device.h>
 #include <linux/ioport.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #endif
 
 #include "lm75.h"
@@ -1462,7 +1462,8 @@ static struct w83781d_data *w83781d_update_device(struct device *dev)
 				data->pwm[i] =
 				    w83781d_read_value(data,
 						       W83781D_REG_PWM[i]);
-				if ((data->type != w83782d || !client->driver)
+				/* Only W83782D on SMBus has PWM3 and PWM4 */
+				if ((data->type != w83782d || !client)
 				    && i == 1)
 					break;
 			}

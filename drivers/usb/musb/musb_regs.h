@@ -323,6 +323,7 @@ static inline void  musb_write_rxfifoadd(void __iomem *mbase, u16 c_off)
 
 static inline u8 musb_read_configdata(void __iomem *mbase)
 {
+	musb_writeb(mbase, MUSB_INDEX, 0);
 	return musb_readb(mbase, 0x10 + MUSB_CONFIGDATA);
 }
 
@@ -437,15 +438,6 @@ static inline void  musb_write_txhubport(void __iomem *mbase, u8 epnum,
 
 /* Not implemented - HW has seperate Tx/Rx FIFO */
 #define MUSB_TXCSR_MODE			0x0000
-
-/*
- * Dummy stub for clk framework, it will be removed
- * until Blackfin supports clk framework
- */
-#define clk_get(dev, id)	NULL
-#define clk_put(clock)		do {} while (0)
-#define clk_enable(clock)	do {} while (0)
-#define clk_disable(clock)	do {} while (0)
 
 static inline void musb_write_txfifosz(void __iomem *mbase, u8 c_size)
 {

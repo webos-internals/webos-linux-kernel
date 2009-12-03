@@ -58,6 +58,10 @@
 #define ACPI_INIT_GLOBAL(a,b) a
 #endif
 
+#ifdef DEFINE_ACPI_GLOBALS
+
+/* Public globals, available from outside ACPICA subsystem */
+
 /*****************************************************************************
  *
  * Runtime configuration (static defaults that can be overriden at runtime)
@@ -78,7 +82,7 @@
  * 5) Allow unresolved references (invalid target name) in package objects
  * 6) Enable warning messages for behavior that is not ACPI spec compliant
  */
-ACPI_EXTERN u8 ACPI_INIT_GLOBAL(acpi_gbl_enable_interpreter_slack, FALSE);
+u8 ACPI_INIT_GLOBAL(acpi_gbl_enable_interpreter_slack, FALSE);
 
 /*
  * Automatically serialize ALL control methods? Default is FALSE, meaning
@@ -86,38 +90,42 @@ ACPI_EXTERN u8 ACPI_INIT_GLOBAL(acpi_gbl_enable_interpreter_slack, FALSE);
  * Only change this if the ASL code is poorly written and cannot handle
  * reentrancy even though methods are marked "NotSerialized".
  */
-ACPI_EXTERN u8 ACPI_INIT_GLOBAL(acpi_gbl_all_methods_serialized, FALSE);
+u8 ACPI_INIT_GLOBAL(acpi_gbl_all_methods_serialized, FALSE);
 
 /*
  * Create the predefined _OSI method in the namespace? Default is TRUE
  * because ACPI CA is fully compatible with other ACPI implementations.
  * Changing this will revert ACPI CA (and machine ASL) to pre-OSI behavior.
  */
-ACPI_EXTERN u8 ACPI_INIT_GLOBAL(acpi_gbl_create_osi_method, TRUE);
+u8 ACPI_INIT_GLOBAL(acpi_gbl_create_osi_method, TRUE);
 
 /*
  * Disable wakeup GPEs during runtime? Default is TRUE because WAKE and
  * RUNTIME GPEs should never be shared, and WAKE GPEs should typically only
  * be enabled just before going to sleep.
  */
-ACPI_EXTERN u8 ACPI_INIT_GLOBAL(acpi_gbl_leave_wake_gpes_disabled, TRUE);
+u8 ACPI_INIT_GLOBAL(acpi_gbl_leave_wake_gpes_disabled, TRUE);
 
 /*
  * Optionally use default values for the ACPI register widths. Set this to
  * TRUE to use the defaults, if an FADT contains incorrect widths/lengths.
  */
-ACPI_EXTERN u8 ACPI_INIT_GLOBAL(acpi_gbl_use_default_register_widths, TRUE);
+u8 ACPI_INIT_GLOBAL(acpi_gbl_use_default_register_widths, TRUE);
+
+/* acpi_gbl_FADT is a local copy of the FADT, converted to a common format. */
+
+struct acpi_table_fadt acpi_gbl_FADT;
+u32 acpi_current_gpe_count;
+u32 acpi_gbl_trace_flags;
+acpi_name acpi_gbl_trace_method_name;
+
+#endif
 
 /*****************************************************************************
  *
  * Debug support
  *
  ****************************************************************************/
-
-/* Runtime configuration of debug print levels */
-
-extern u32 acpi_dbg_level;
-extern u32 acpi_dbg_layer;
 
 /* Procedure nesting level for debug output */
 
@@ -127,10 +135,8 @@ extern u32 acpi_gbl_nesting_level;
 
 ACPI_EXTERN u32 acpi_gbl_original_dbg_level;
 ACPI_EXTERN u32 acpi_gbl_original_dbg_layer;
-ACPI_EXTERN acpi_name acpi_gbl_trace_method_name;
 ACPI_EXTERN u32 acpi_gbl_trace_dbg_level;
 ACPI_EXTERN u32 acpi_gbl_trace_dbg_layer;
-ACPI_EXTERN u32 acpi_gbl_trace_flags;
 
 /*****************************************************************************
  *
@@ -142,15 +148,16 @@ ACPI_EXTERN u32 acpi_gbl_trace_flags;
  * acpi_gbl_root_table_list is the master list of ACPI tables found in the
  * RSDT/XSDT.
  *
- * acpi_gbl_FADT is a local copy of the FADT, converted to a common format.
  */
 ACPI_EXTERN struct acpi_internal_rsdt acpi_gbl_root_table_list;
-ACPI_EXTERN struct acpi_table_fadt acpi_gbl_FADT;
 ACPI_EXTERN struct acpi_table_facs *acpi_gbl_FACS;
 
-/* These addresses are calculated from FADT address values */
+/* These addresses are calculated from the FADT Event Block addresses */
 
+ACPI_EXTERN struct acpi_generic_address acpi_gbl_xpm1a_status;
 ACPI_EXTERN struct acpi_generic_address acpi_gbl_xpm1a_enable;
+
+ACPI_EXTERN struct acpi_generic_address acpi_gbl_xpm1b_status;
 ACPI_EXTERN struct acpi_generic_address acpi_gbl_xpm1b_enable;
 
 /*
@@ -161,6 +168,10 @@ ACPI_EXTERN struct acpi_generic_address acpi_gbl_xpm1b_enable;
 ACPI_EXTERN u8 acpi_gbl_integer_bit_width;
 ACPI_EXTERN u8 acpi_gbl_integer_byte_width;
 ACPI_EXTERN u8 acpi_gbl_integer_nybble_width;
+
+/* Reader/Writer lock is used for namespace walk and dynamic table unload */
+
+ACPI_EXTERN struct acpi_rw_lock acpi_gbl_namespace_rw_lock;
 
 /*****************************************************************************
  *
@@ -245,6 +256,7 @@ ACPI_EXTERN u8 acpi_gbl_step_to_next_call;
 ACPI_EXTERN u8 acpi_gbl_acpi_hardware_present;
 ACPI_EXTERN u8 acpi_gbl_events_initialized;
 ACPI_EXTERN u8 acpi_gbl_system_awake_and_running;
+ACPI_EXTERN u8 acpi_gbl_osi_data;
 
 #ifndef DEFINE_ACPI_GLOBALS
 
@@ -253,7 +265,8 @@ ACPI_EXTERN u8 acpi_gbl_system_awake_and_running;
 extern u8 acpi_gbl_shutdown;
 extern u32 acpi_gbl_startup_flags;
 extern const char *acpi_gbl_sleep_state_names[ACPI_S_STATE_COUNT];
-extern const char *acpi_gbl_highest_dstate_names[4];
+extern const char *acpi_gbl_lowest_dstate_names[ACPI_NUM_sx_w_METHODS];
+extern const char *acpi_gbl_highest_dstate_names[ACPI_NUM_sx_d_METHODS];
 extern const struct acpi_opcode_info acpi_gbl_aml_op_info[AML_NUM_OPCODES];
 extern const char *acpi_gbl_region_types[ACPI_NUM_PREDEFINED_REGIONS];
 
@@ -282,6 +295,7 @@ extern char const *acpi_gbl_exception_names_ctrl[];
 ACPI_EXTERN struct acpi_namespace_node acpi_gbl_root_node_struct;
 ACPI_EXTERN struct acpi_namespace_node *acpi_gbl_root_node;
 ACPI_EXTERN struct acpi_namespace_node *acpi_gbl_fadt_gpe_device;
+ACPI_EXTERN union acpi_operand_object *acpi_gbl_module_code_list;
 
 extern const u8 acpi_gbl_ns_properties[ACPI_NUM_NS_TYPES];
 extern const struct acpi_predefined_names
@@ -332,7 +346,6 @@ ACPI_EXTERN struct acpi_fixed_event_handler
 ACPI_EXTERN struct acpi_gpe_xrupt_info *acpi_gbl_gpe_xrupt_list_head;
 ACPI_EXTERN struct acpi_gpe_block_info
 *acpi_gbl_gpe_fadt_blocks[ACPI_MAX_GPE_BLOCKS];
-ACPI_EXTERN u32 acpi_current_gpe_count;
 
 /*****************************************************************************
  *
@@ -354,9 +367,6 @@ extern u8 acpi_gbl_method_executing;
 extern u8 acpi_gbl_abort_method;
 extern u8 acpi_gbl_db_terminate_threads;
 
-ACPI_EXTERN int optind;
-ACPI_EXTERN char *optarg;
-
 ACPI_EXTERN u8 acpi_gbl_db_opt_tables;
 ACPI_EXTERN u8 acpi_gbl_db_opt_stats;
 ACPI_EXTERN u8 acpi_gbl_db_opt_ini_methods;
@@ -371,7 +381,6 @@ ACPI_EXTERN char *acpi_gbl_db_buffer;
 ACPI_EXTERN char *acpi_gbl_db_filename;
 ACPI_EXTERN u32 acpi_gbl_db_debug_level;
 ACPI_EXTERN u32 acpi_gbl_db_console_debug_level;
-ACPI_EXTERN struct acpi_table_header *acpi_gbl_db_table_ptr;
 ACPI_EXTERN struct acpi_namespace_node *acpi_gbl_db_scope_node;
 
 /*

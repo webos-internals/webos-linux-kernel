@@ -176,7 +176,7 @@ struct t3_send_wr {
 	struct t3_sge sgl[T3_MAX_SGE];	/* 4+ */
 };
 
-#define T3_MAX_FASTREG_DEPTH 24
+#define T3_MAX_FASTREG_DEPTH 10
 #define T3_MAX_FASTREG_FRAG 10
 
 struct t3_fastreg_wr {
@@ -327,6 +327,11 @@ enum rdma_init_rtr_types {
 #define V_RTR_TYPE(x)	((x) << S_RTR_TYPE)
 #define G_RTR_TYPE(x)	((((x) >> S_RTR_TYPE)) & M_RTR_TYPE)
 
+#define S_CHAN		4
+#define M_CHAN		0x3
+#define V_CHAN(x)	((x) << S_CHAN)
+#define G_CHAN(x)	((((x) >> S_CHAN)) & M_CHAN)
+
 struct t3_rdma_init_attr {
 	u32 tid;
 	u32 qpid;
@@ -346,6 +351,7 @@ struct t3_rdma_init_attr {
 	u16 flags;
 	u16 rqe_count;
 	u32 irs;
+	u32 chan;
 };
 
 struct t3_rdma_init_wr {
@@ -603,6 +609,12 @@ struct t3_cqe {
 #define RQ_TYPE(x)	  (!CQE_TYPE((x)))
 #define CQE_STATUS(x)     (G_CQE_STATUS(be32_to_cpu((x).header)))
 #define CQE_OPCODE(x)     (G_CQE_OPCODE(be32_to_cpu((x).header)))
+
+#define CQE_SEND_OPCODE(x)( \
+	(G_CQE_OPCODE(be32_to_cpu((x).header)) == T3_SEND) || \
+	(G_CQE_OPCODE(be32_to_cpu((x).header)) == T3_SEND_WITH_SE) || \
+	(G_CQE_OPCODE(be32_to_cpu((x).header)) == T3_SEND_WITH_INV) || \
+	(G_CQE_OPCODE(be32_to_cpu((x).header)) == T3_SEND_WITH_SE_INV))
 
 #define CQE_LEN(x)        (be32_to_cpu((x).len))
 

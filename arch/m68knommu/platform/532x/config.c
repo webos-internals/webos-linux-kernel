@@ -20,7 +20,6 @@
 #include <linux/kernel.h>
 #include <linux/param.h>
 #include <linux/init.h>
-#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <asm/machdep.h>
 #include <asm/coldfire.h>
@@ -28,14 +27,6 @@
 #include <asm/mcfuart.h>
 #include <asm/mcfdma.h>
 #include <asm/mcfwdebug.h>
-
-/***************************************************************************/
-
-void coldfire_reset(void);
-
-extern unsigned int mcf_timervector;
-extern unsigned int mcf_profilevector;
-extern unsigned int mcf_timerlevel;
 
 /***************************************************************************/
 
@@ -61,8 +52,39 @@ static struct platform_device m532x_uart = {
 	.dev.platform_data	= m532x_uart_platform,
 };
 
+static struct resource m532x_fec_resources[] = {
+	{
+		.start		= 0xfc030000,
+		.end		= 0xfc0307ff,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= 64 + 36,
+		.end		= 64 + 36,
+		.flags		= IORESOURCE_IRQ,
+	},
+	{
+		.start		= 64 + 40,
+		.end		= 64 + 40,
+		.flags		= IORESOURCE_IRQ,
+	},
+	{
+		.start		= 64 + 42,
+		.end		= 64 + 42,
+		.flags		= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device m532x_fec = {
+	.name			= "fec",
+	.id			= 0,
+	.num_resources		= ARRAY_SIZE(m532x_fec_resources),
+	.resource		= m532x_fec_resources,
+};
+
 static struct platform_device *m532x_devices[] __initdata = {
 	&m532x_uart,
+	&m532x_fec,
 };
 
 /***************************************************************************/
@@ -70,18 +92,11 @@ static struct platform_device *m532x_devices[] __initdata = {
 static void __init m532x_uart_init_line(int line, int irq)
 {
 	if (line == 0) {
-		MCF_INTC0_ICR26 = 0x3;
-		MCF_INTC0_CIMR = 26;
 		/* GPIO initialization */
 		MCF_GPIO_PAR_UART |= 0x000F;
 	} else if (line == 1) {
-		MCF_INTC0_ICR27 = 0x3;
-		MCF_INTC0_CIMR = 27;
 		/* GPIO initialization */
 		MCF_GPIO_PAR_UART |= 0x0FF0;
-	} else if (line == 2) {
-		MCF_INTC0_ICR28 = 0x3;
-		MCF_INTC0_CIMR = 28;
 	}
 }
 
@@ -93,33 +108,29 @@ static void __init m532x_uarts_init(void)
 	for (line = 0; (line < nrlines); line++)
 		m532x_uart_init_line(line, m532x_uart_platform[line].irq);
 }
+/***************************************************************************/
+
+static void __init m532x_fec_init(void)
+{
+	/* Set multi-function pins to ethernet mode for fec0 */
+	MCF_GPIO_PAR_FECI2C |= (MCF_GPIO_PAR_FECI2C_PAR_MDC_EMDC |
+		MCF_GPIO_PAR_FECI2C_PAR_MDIO_EMDIO);
+	MCF_GPIO_PAR_FEC = (MCF_GPIO_PAR_FEC_PAR_FEC_7W_FEC |
+		MCF_GPIO_PAR_FEC_PAR_FEC_MII_FEC);
+}
 
 /***************************************************************************/
 
-void mcf_settimericr(unsigned int timer, unsigned int level)
+static void m532x_cpu_reset(void)
 {
-	volatile unsigned char *icrp;
-	unsigned int icr;
-	unsigned char irq;
-
-	if (timer <= 2) {
-		switch (timer) {
-		case 2:  irq = 33; icr = MCFSIM_ICR_TIMER2; break;
-		default: irq = 32; icr = MCFSIM_ICR_TIMER1; break;
-		}
-		
-		icrp = (volatile unsigned char *) (icr);
-		*icrp = level;
-		mcf_enable_irq0(irq);
-	}
+	local_irq_disable();
+	__raw_writeb(MCF_RCR_SWRESET, MCF_RCR);
 }
 
 /***************************************************************************/
 
 void __init config_BSP(char *commandp, int size)
 {
-	mcf_setimr(MCFSIM_IMR_MASKALL);
-
 #if !defined(CONFIG_BOOTPARAM)
 	/* Copy command line from FLASH to local buffer... */
 	memcpy(commandp, (char *) 0x4000, 4);
@@ -130,10 +141,6 @@ void __init config_BSP(char *commandp, int size)
 		memset(commandp, 0, size);
 	}
 #endif
-
-	mcf_timervector = 64+32;
-	mcf_profilevector = 64+33;
-	mach_reset = coldfire_reset;
 
 #ifdef CONFIG_BDM_DISABLE
 	/*
@@ -150,6 +157,7 @@ void __init config_BSP(char *commandp, int size)
 static int __init init_BSP(void)
 {
 	m532x_uarts_init();
+	m532x_fec_init();
 	platform_add_devices(m532x_devices, ARRAY_SIZE(m532x_devices));
 	return 0;
 }
@@ -383,8 +391,8 @@ void gpio_init(void)
 	/* Initialize TIN3 as a GPIO output to enable the write
 	   half of the latch */
 	MCF_GPIO_PAR_TIMER = 0x00;
-	MCF_GPIO_PDDR_TIMER = 0x08;
-	MCF_GPIO_PCLRR_TIMER = 0x0;
+	__raw_writeb(0x08, MCFGPIO_PDDR_TIMER);
+	__raw_writeb(0x00, MCFGPIO_PCLRR_TIMER);
 
 }
 

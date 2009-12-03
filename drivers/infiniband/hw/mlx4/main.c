@@ -342,6 +342,9 @@ static struct ib_ucontext *mlx4_ib_alloc_ucontext(struct ib_device *ibdev,
 	struct mlx4_ib_alloc_ucontext_resp resp;
 	int err;
 
+	if (!dev->ib_active)
+		return ERR_PTR(-EAGAIN);
+
 	resp.qp_tab_size      = dev->dev->caps.num_qps;
 	resp.bf_reg_size      = dev->dev->caps.bf_reg_size;
 	resp.bf_regs_per_page = dev->dev->caps.bf_regs_per_page;
@@ -394,8 +397,7 @@ static int mlx4_ib_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 				       PAGE_SIZE, vma->vm_page_prot))
 			return -EAGAIN;
 	} else if (vma->vm_pgoff == 1 && dev->dev->caps.bf_reg_size != 0) {
-		/* FIXME want pgprot_writecombine() for BlueFlame pages */
-		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 
 		if (io_remap_pfn_range(vma, vma->vm_start,
 				       to_mucontext(context)->uar.pfn +
@@ -541,15 +543,11 @@ static struct device_attribute *mlx4_class_attributes[] = {
 
 static void *mlx4_ib_add(struct mlx4_dev *dev)
 {
-	static int mlx4_ib_version_printed;
 	struct mlx4_ib_dev *ibdev;
 	int num_ports = 0;
 	int i;
 
-	if (!mlx4_ib_version_printed) {
-		printk(KERN_INFO "%s", mlx4_ib_version);
-		++mlx4_ib_version_printed;
-	}
+	printk_once(KERN_INFO "%s", mlx4_ib_version);
 
 	mlx4_foreach_port(i, dev, MLX4_PORT_TYPE_IB)
 		num_ports++;
@@ -674,6 +672,8 @@ static void *mlx4_ib_add(struct mlx4_dev *dev)
 			goto err_reg;
 	}
 
+	ibdev->ib_active = true;
+
 	return ibdev;
 
 err_reg:
@@ -699,11 +699,12 @@ static void mlx4_ib_remove(struct mlx4_dev *dev, void *ibdev_ptr)
 	struct mlx4_ib_dev *ibdev = ibdev_ptr;
 	int p;
 
+	mlx4_ib_mad_cleanup(ibdev);
+	ib_unregister_device(&ibdev->ib_dev);
+
 	for (p = 1; p <= ibdev->num_ports; ++p)
 		mlx4_CLOSE_PORT(dev, p);
 
-	mlx4_ib_mad_cleanup(ibdev);
-	ib_unregister_device(&ibdev->ib_dev);
 	iounmap(ibdev->uar_map);
 	mlx4_uar_free(dev, &ibdev->priv_uar);
 	mlx4_pd_free(dev, ibdev->priv_pdn);
@@ -729,6 +730,7 @@ static void mlx4_ib_event(struct mlx4_dev *dev, void *ibdev_ptr,
 		break;
 
 	case MLX4_DEV_EVENT_CATASTROPHIC_ERROR:
+		ibdev->ib_active = false;
 		ibev.event = IB_EVENT_DEVICE_FATAL;
 		break;
 

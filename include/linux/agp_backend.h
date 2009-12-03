@@ -53,7 +53,7 @@ struct agp_kern_info {
 	int current_memory;
 	bool cant_use_aperture;
 	unsigned long page_mask;
-	struct vm_operations_struct *vm_ops;
+	const struct vm_operations_struct *vm_ops;
 };
 
 /*
@@ -70,7 +70,7 @@ struct agp_memory {
 	struct agp_memory *next;
 	struct agp_memory *prev;
 	struct agp_bridge_data *bridge;
-	unsigned long *memory;
+	struct page **pages;
 	size_t page_count;
 	int key;
 	int num_scratch_pages;
@@ -79,9 +79,12 @@ struct agp_memory {
 	u32 physical;
 	bool is_bound;
 	bool is_flushed;
-        bool vmalloc_flag;
+	bool vmalloc_flag;
 	/* list of agp_memory mapped to the aperture */
 	struct list_head mapped_list;
+	/* DMA-mapped addresses */
+	struct scatterlist *sg_list;
+	int num_sg;
 };
 
 #define AGP_NORMAL_MEMORY 0

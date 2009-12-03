@@ -19,8 +19,12 @@
 #define MAX_ILO_DEV	1
 /* max number of files */
 #define MAX_OPEN	(MAX_CCB * MAX_ILO_DEV)
+/* total wait time in usec */
+#define MAX_WAIT_TIME	10000
+/* per spin wait time in usec */
+#define WAIT_TIME	10
 /* spin counter for open/close delay */
-#define MAX_WAIT	10000
+#define MAX_WAIT	(MAX_WAIT_TIME / WAIT_TIME)
 
 /*
  * Per device, used to track global memory allocations.
@@ -42,11 +46,14 @@ struct ilo_hwinfo {
 
 	spinlock_t alloc_lock;
 	spinlock_t fifo_lock;
+	spinlock_t open_lock;
 
 	struct cdev cdev;
 };
 
-/* offset from mmio_vaddr */
+/* offset from mmio_vaddr for enabling doorbell interrupts */
+#define DB_IRQ		0xB2
+/* offset from mmio_vaddr for outbound communications */
 #define DB_OUT		0xD4
 /* DB_OUT reset bit */
 #define DB_RESET	26
@@ -126,6 +133,9 @@ struct ccb_data {
 
 	/* pointer to hardware device info */
 	struct ilo_hwinfo *ilo_hw;
+
+	/* queue for this ccb to wait for recv data */
+	wait_queue_head_t ccb_waitq;
 
 	/* usage count, to allow for shared ccb's */
 	int	    ccb_cnt;

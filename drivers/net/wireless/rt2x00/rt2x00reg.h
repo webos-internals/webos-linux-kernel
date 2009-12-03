@@ -1,5 +1,5 @@
 /*
-	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 rt2x00 SourceForge Project
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -125,6 +125,26 @@ enum cipher {
 };
 
 /*
+ * Rate modulations
+ */
+enum rate_modulation {
+	RATE_MODE_CCK = 0,
+	RATE_MODE_OFDM = 1,
+	RATE_MODE_HT_MIX = 2,
+	RATE_MODE_HT_GREENFIELD = 3,
+};
+
+/*
+ * Firmware validation error codes
+ */
+enum firmware_errors {
+	FW_OK,
+	FW_BAD_CRC,
+	FW_BAD_LENGTH,
+	FW_BAD_VERSION,
+};
+
+/*
  * Register handlers.
  * We store the position of a register field inside a field structure,
  * This will simplify the process of setting and reading a certain field
@@ -156,8 +176,8 @@ struct rt2x00_field32 {
 #define is_valid_mask(x)	is_power_of_two(1LU + (x) + low_bit_mask(x))
 
 /*
- * Macro's to find first set bit in a variable.
- * These macro's behaves the same as the __ffs() function with
+ * Macros to find first set bit in a variable.
+ * These macros behave the same as the __ffs() functions but
  * the most important difference that this is done during
  * compile-time rather then run-time.
  */

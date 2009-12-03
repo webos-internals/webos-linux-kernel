@@ -20,8 +20,10 @@
 #include <linux/module.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
-#include <linux/bootmem.h>
 #include <linux/sh_intc.h>
+#include <linux/sysdev.h>
+#include <linux/list.h>
+#include <linux/topology.h>
 
 #define _INTC_MK(fn, mode, addr_e, addr_d, width, shift) \
 	((shift) | ((width) << 5) | ((fn) << 9) | ((mode) << 13) | \
@@ -40,6 +42,9 @@ struct intc_handle_int {
 };
 
 struct intc_desc_int {
+	struct list_head list;
+	struct sys_device sysdev;
+	pm_message_t state;
 	unsigned long *reg;
 #ifdef CONFIG_SMP
 	unsigned long *smp;
@@ -51,6 +56,8 @@ struct intc_desc_int {
 	unsigned int nr_sense;
 	struct irq_chip chip;
 };
+
+static LIST_HEAD(intc_list);
 
 #ifdef CONFIG_SMP
 #define IS_SMP(x) x.smp
@@ -70,7 +77,7 @@ static unsigned long ack_handle[NR_IRQS];
 static inline struct intc_desc_int *get_intc_desc(unsigned int irq)
 {
 	struct irq_chip *chip = get_irq_chip(irq);
-	return (void *)((char *)chip - offsetof(struct intc_desc_int, chip));
+	return container_of(chip, struct intc_desc_int, chip);
 }
 
 static inline unsigned int set_field(unsigned int value,
@@ -88,16 +95,19 @@ static inline unsigned int set_field(unsigned int value,
 static void write_8(unsigned long addr, unsigned long h, unsigned long data)
 {
 	__raw_writeb(set_field(0, data, h), addr);
+	(void)__raw_readb(addr);	/* Defeat write posting */
 }
 
 static void write_16(unsigned long addr, unsigned long h, unsigned long data)
 {
 	__raw_writew(set_field(0, data, h), addr);
+	(void)__raw_readw(addr);	/* Defeat write posting */
 }
 
 static void write_32(unsigned long addr, unsigned long h, unsigned long data)
 {
 	__raw_writel(set_field(0, data, h), addr);
+	(void)__raw_readl(addr);	/* Defeat write posting */
 }
 
 static void modify_8(unsigned long addr, unsigned long h, unsigned long data)
@@ -105,6 +115,7 @@ static void modify_8(unsigned long addr, unsigned long h, unsigned long data)
 	unsigned long flags;
 	local_irq_save(flags);
 	__raw_writeb(set_field(__raw_readb(addr), data, h), addr);
+	(void)__raw_readb(addr);	/* Defeat write posting */
 	local_irq_restore(flags);
 }
 
@@ -113,6 +124,7 @@ static void modify_16(unsigned long addr, unsigned long h, unsigned long data)
 	unsigned long flags;
 	local_irq_save(flags);
 	__raw_writew(set_field(__raw_readw(addr), data, h), addr);
+	(void)__raw_readw(addr);	/* Defeat write posting */
 	local_irq_restore(flags);
 }
 
@@ -121,6 +133,7 @@ static void modify_32(unsigned long addr, unsigned long h, unsigned long data)
 	unsigned long flags;
 	local_irq_save(flags);
 	__raw_writel(set_field(__raw_readl(addr), data, h), addr);
+	(void)__raw_readl(addr);	/* Defeat write posting */
 	local_irq_restore(flags);
 }
 
@@ -230,6 +243,11 @@ static void intc_disable(unsigned int irq)
 		intc_disable_fns[_INTC_MODE(handle)](addr, handle,intc_reg_fns\
 						     [_INTC_FN(handle)], irq);
 	}
+}
+
+static int intc_set_wake(unsigned int irq, unsigned int on)
+{
+	return 0; /* allow wakeup, but setup hardware in intc_suspend() */
 }
 
 #if defined(CONFIG_CPU_SH3) || defined(CONFIG_CPU_SH4A)
@@ -568,6 +586,10 @@ static void __init intc_register_irq(struct intc_desc *desc,
 	if (!data[0] && data[1])
 		primary = 1;
 
+	if (!data[0] && !data[1])
+		pr_warning("intc: missing unique irq mask for "
+			   "irq %d (vect 0x%04x)\n", irq, irq2evt(irq));
+
 	data[0] = data[0] ? data[0] : intc_mask_data(desc, d, enum_id, 1);
 	data[1] = data[1] ? data[1] : intc_prio_data(desc, d, enum_id, 1);
 
@@ -641,13 +663,20 @@ static unsigned int __init save_reg(struct intc_desc_int *d,
 	return 0;
 }
 
+static void intc_redirect_irq(unsigned int irq, struct irq_desc *desc)
+{
+	generic_handle_irq((unsigned int)get_irq_data(irq));
+}
 
 void __init register_intc_controller(struct intc_desc *desc)
 {
 	unsigned int i, k, smp;
 	struct intc_desc_int *d;
 
-	d = alloc_bootmem(sizeof(*d));
+	d = kzalloc(sizeof(*d), GFP_NOWAIT);
+
+	INIT_LIST_HEAD(&d->list);
+	list_add(&d->list, &intc_list);
 
 	d->nr_reg = desc->mask_regs ? desc->nr_mask_regs * 2 : 0;
 	d->nr_reg += desc->prio_regs ? desc->nr_prio_regs * 2 : 0;
@@ -656,9 +685,9 @@ void __init register_intc_controller(struct intc_desc *desc)
 #if defined(CONFIG_CPU_SH3) || defined(CONFIG_CPU_SH4A)
 	d->nr_reg += desc->ack_regs ? desc->nr_ack_regs : 0;
 #endif
-	d->reg = alloc_bootmem(d->nr_reg * sizeof(*d->reg));
+	d->reg = kzalloc(d->nr_reg * sizeof(*d->reg), GFP_NOWAIT);
 #ifdef CONFIG_SMP
-	d->smp = alloc_bootmem(d->nr_reg * sizeof(*d->smp));
+	d->smp = kzalloc(d->nr_reg * sizeof(*d->smp), GFP_NOWAIT);
 #endif
 	k = 0;
 
@@ -671,7 +700,7 @@ void __init register_intc_controller(struct intc_desc *desc)
 	}
 
 	if (desc->prio_regs) {
-		d->prio = alloc_bootmem(desc->nr_vectors * sizeof(*d->prio));
+		d->prio = kzalloc(desc->nr_vectors * sizeof(*d->prio), GFP_NOWAIT);
 
 		for (i = 0; i < desc->nr_prio_regs; i++) {
 			smp = IS_SMP(desc->prio_regs[i]);
@@ -681,7 +710,7 @@ void __init register_intc_controller(struct intc_desc *desc)
 	}
 
 	if (desc->sense_regs) {
-		d->sense = alloc_bootmem(desc->nr_vectors * sizeof(*d->sense));
+		d->sense = kzalloc(desc->nr_vectors * sizeof(*d->sense), GFP_NOWAIT);
 
 		for (i = 0; i < desc->nr_sense_regs; i++) {
 			k += save_reg(d, k, desc->sense_regs[i].reg, 0);
@@ -692,7 +721,11 @@ void __init register_intc_controller(struct intc_desc *desc)
 	d->chip.mask = intc_disable;
 	d->chip.unmask = intc_enable;
 	d->chip.mask_ack = intc_disable;
+	d->chip.enable = intc_enable;
+	d->chip.disable = intc_disable;
+	d->chip.shutdown = intc_disable;
 	d->chip.set_type = intc_set_sense;
+	d->chip.set_wake = intc_set_wake;
 
 #if defined(CONFIG_CPU_SH3) || defined(CONFIG_CPU_SH4A)
 	if (desc->ack_regs) {
@@ -705,9 +738,123 @@ void __init register_intc_controller(struct intc_desc *desc)
 
 	BUG_ON(k > 256); /* _INTC_ADDR_E() and _INTC_ADDR_D() are 8 bits */
 
+	/* register the vectors one by one */
 	for (i = 0; i < desc->nr_vectors; i++) {
 		struct intc_vect *vect = desc->vectors + i;
+		unsigned int irq = evt2irq(vect->vect);
+		struct irq_desc *irq_desc;
 
-		intc_register_irq(desc, d, vect->enum_id, evt2irq(vect->vect));
+		if (!vect->enum_id)
+			continue;
+
+		irq_desc = irq_to_desc_alloc_node(irq, numa_node_id());
+		if (unlikely(!irq_desc)) {
+			pr_info("can't get irq_desc for %d\n", irq);
+			continue;
+		}
+
+		intc_register_irq(desc, d, vect->enum_id, irq);
+
+		for (k = i + 1; k < desc->nr_vectors; k++) {
+			struct intc_vect *vect2 = desc->vectors + k;
+			unsigned int irq2 = evt2irq(vect2->vect);
+
+			if (vect->enum_id != vect2->enum_id)
+				continue;
+
+			/*
+			 * In the case of multi-evt handling and sparse
+			 * IRQ support, each vector still needs to have
+			 * its own backing irq_desc.
+			 */
+			irq_desc = irq_to_desc_alloc_node(irq2, numa_node_id());
+			if (unlikely(!irq_desc)) {
+				pr_info("can't get irq_desc for %d\n", irq2);
+				continue;
+			}
+
+			vect2->enum_id = 0;
+
+			/* redirect this interrupts to the first one */
+			set_irq_chip_and_handler_name(irq2, &d->chip,
+					intc_redirect_irq, "redirect");
+			set_irq_data(irq2, (void *)irq);
+		}
 	}
 }
+
+static int intc_suspend(struct sys_device *dev, pm_message_t state)
+{
+	struct intc_desc_int *d;
+	struct irq_desc *desc;
+	int irq;
+
+	/* get intc controller associated with this sysdev */
+	d = container_of(dev, struct intc_desc_int, sysdev);
+
+	switch (state.event) {
+	case PM_EVENT_ON:
+		if (d->state.event != PM_EVENT_FREEZE)
+			break;
+		for_each_irq_desc(irq, desc) {
+			if (desc->chip != &d->chip)
+				continue;
+			if (desc->status & IRQ_DISABLED)
+				intc_disable(irq);
+			else
+				intc_enable(irq);
+		}
+		break;
+	case PM_EVENT_FREEZE:
+		/* nothing has to be done */
+		break;
+	case PM_EVENT_SUSPEND:
+		/* enable wakeup irqs belonging to this intc controller */
+		for_each_irq_desc(irq, desc) {
+			if ((desc->status & IRQ_WAKEUP) && (desc->chip == &d->chip))
+				intc_enable(irq);
+		}
+		break;
+	}
+	d->state = state;
+
+	return 0;
+}
+
+static int intc_resume(struct sys_device *dev)
+{
+	return intc_suspend(dev, PMSG_ON);
+}
+
+static struct sysdev_class intc_sysdev_class = {
+	.name = "intc",
+	.suspend = intc_suspend,
+	.resume = intc_resume,
+};
+
+/* register this intc as sysdev to allow suspend/resume */
+static int __init register_intc_sysdevs(void)
+{
+	struct intc_desc_int *d;
+	int error;
+	int id = 0;
+
+	error = sysdev_class_register(&intc_sysdev_class);
+	if (!error) {
+		list_for_each_entry(d, &intc_list, list) {
+			d->sysdev.id = id;
+			d->sysdev.cls = &intc_sysdev_class;
+			error = sysdev_register(&d->sysdev);
+			if (error)
+				break;
+			id++;
+		}
+	}
+
+	if (error)
+		pr_warning("intc: sysdev registration error\n");
+
+	return error;
+}
+
+device_initcall(register_intc_sysdevs);

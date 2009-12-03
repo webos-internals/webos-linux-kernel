@@ -50,38 +50,8 @@ extern void machine_power_off_smp(void);
  
 #define PROC_CHANGE_PENALTY	20		/* Schedule penalty */
 
-#define raw_smp_processor_id()	(S390_lowcore.cpu_data.cpu_nr)
-
-static inline __u16 hard_smp_processor_id(void)
-{
-	return stap();
-}
-
-/*
- * returns 1 if cpu is in stopped/check stopped state or not operational
- * returns 0 otherwise
- */
-static inline int
-smp_cpu_not_running(int cpu)
-{
-	__u32 status;
-
-	switch (signal_processor_ps(&status, 0, cpu, sigp_sense)) {
-	case sigp_order_code_accepted:
-	case sigp_status_stored:
-		/* Check for stopped and check stop state */
-		if (status & 0x50)
-			return 1;
-		break;
-	case sigp_not_operational:
-		return 1;
-	default:
-		break;
-	}
-	return 0;
-}
-
-#define cpu_logical_map(cpu) (cpu)
+#define raw_smp_processor_id()	(S390_lowcore.cpu_nr)
+#define cpu_logical_map(cpu)	(cpu)
 
 extern int __cpu_disable (void);
 extern void __cpu_die (unsigned int cpu);
@@ -92,19 +62,8 @@ extern struct mutex smp_cpu_state_mutex;
 extern int smp_cpu_polarization[];
 
 extern void arch_send_call_function_single_ipi(int cpu);
-extern void arch_send_call_function_ipi(cpumask_t mask);
+extern void arch_send_call_function_ipi_mask(const struct cpumask *mask);
 
-#endif
-
-#ifndef CONFIG_SMP
-static inline void smp_send_stop(void)
-{
-	/* Disable all interrupts/machine checks */
-	__load_psw_mask(psw_kernel_bits & ~PSW_MASK_MCHECK);
-}
-
-#define hard_smp_processor_id()		0
-#define smp_cpu_not_running(cpu)	1
 #endif
 
 #ifdef CONFIG_HOTPLUG_CPU

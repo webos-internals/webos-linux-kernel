@@ -116,7 +116,7 @@ int tcp_set_default_congestion_control(const char *name)
 	spin_lock(&tcp_cong_list_lock);
 	ca = tcp_ca_find(name);
 #ifdef CONFIG_MODULES
-	if (!ca && capable(CAP_SYS_MODULE)) {
+	if (!ca && capable(CAP_NET_ADMIN)) {
 		spin_unlock(&tcp_cong_list_lock);
 
 		request_module("tcp_%s", name);
@@ -246,7 +246,7 @@ int tcp_set_congestion_control(struct sock *sk, const char *name)
 
 #ifdef CONFIG_MODULES
 	/* not found attempt to autoload module */
-	if (!ca && capable(CAP_SYS_MODULE)) {
+	if (!ca && capable(CAP_NET_ADMIN)) {
 		rcu_read_unlock();
 		request_module("tcp_%s", name);
 		rcu_read_lock();
@@ -336,6 +336,19 @@ void tcp_slow_start(struct tcp_sock *tp)
 }
 EXPORT_SYMBOL_GPL(tcp_slow_start);
 
+/* In theory this is tp->snd_cwnd += 1 / tp->snd_cwnd (or alternative w) */
+void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w)
+{
+	if (tp->snd_cwnd_cnt >= w) {
+		if (tp->snd_cwnd < tp->snd_cwnd_clamp)
+			tp->snd_cwnd++;
+		tp->snd_cwnd_cnt = 0;
+	} else {
+		tp->snd_cwnd_cnt++;
+	}
+}
+EXPORT_SYMBOL_GPL(tcp_cong_avoid_ai);
+
 /*
  * TCP Reno congestion control
  * This is special case used for fallback as well.
@@ -365,13 +378,7 @@ void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 				tp->snd_cwnd++;
 		}
 	} else {
-		/* In theory this is tp->snd_cwnd += 1 / tp->snd_cwnd */
-		if (tp->snd_cwnd_cnt >= tp->snd_cwnd) {
-			if (tp->snd_cwnd < tp->snd_cwnd_clamp)
-				tp->snd_cwnd++;
-			tp->snd_cwnd_cnt = 0;
-		} else
-			tp->snd_cwnd_cnt++;
+		tcp_cong_avoid_ai(tp, tp->snd_cwnd);
 	}
 }
 EXPORT_SYMBOL_GPL(tcp_reno_cong_avoid);

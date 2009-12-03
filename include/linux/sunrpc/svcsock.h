@@ -28,6 +28,7 @@ struct svc_sock {
 	/* private TCP part */
 	u32			sk_reclen;	/* length of record */
 	u32			sk_tcplen;	/* current read length */
+	struct rpc_xprt		*sk_bc_xprt;	/* NFSv4.1 backchannel xprt */
 };
 
 /*
@@ -38,10 +39,15 @@ int		svc_recv(struct svc_rqst *, long);
 int		svc_send(struct svc_rqst *);
 void		svc_drop(struct svc_rqst *);
 void		svc_sock_update_bufs(struct svc_serv *serv);
-int		svc_sock_names(char *buf, struct svc_serv *serv, char *toclose);
-int		svc_addsock(struct svc_serv *serv, int fd, char *name_return);
+int		svc_sock_names(struct svc_serv *serv, char *buf,
+					const size_t buflen,
+					const char *toclose);
+int		svc_addsock(struct svc_serv *serv, const int fd,
+					char *name_return, const size_t len);
 void		svc_init_xprt_sock(void);
 void		svc_cleanup_xprt_sock(void);
+struct svc_xprt *svc_sock_create(struct svc_serv *serv, int prot);
+void		svc_sock_destroy(struct svc_xprt *);
 
 /*
  * svc_makesock socket characteristics

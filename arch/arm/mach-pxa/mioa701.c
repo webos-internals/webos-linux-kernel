@@ -36,18 +36,22 @@
 #include <linux/power_supply.h>
 #include <linux/wm97xx_batt.h>
 #include <linux/mtd/physmap.h>
+#include <linux/usb/gpio_vbus.h>
+#include <linux/regulator/max1586.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <mach/mfp-pxa27x.h>
+
+#include <mach/pxa27x.h>
+#include <mach/regs-rtc.h>
 #include <mach/pxa27x_keypad.h>
 #include <mach/pxafb.h>
-#include <mach/pxa2xx-regs.h>
 #include <mach/mmc.h>
 #include <mach/udc.h>
 #include <mach/pxa27x-udc.h>
-#include <mach/i2c.h>
+#include <plat/i2c.h>
 #include <mach/camera.h>
+#include <mach/audio.h>
 #include <media/soc_camera.h>
 
 #include <mach/mioa701.h>
@@ -411,21 +415,6 @@ static void gsm_exit(void)
 /*
  * USB UDC
  */
-static void udc_power_command(int cmd)
-{
-	switch (cmd) {
-	case PXA2XX_UDC_CMD_DISCONNECT:
-		gpio_set_value(GPIO22_USB_ENABLE, 0);
-		break;
-	case PXA2XX_UDC_CMD_CONNECT:
-		gpio_set_value(GPIO22_USB_ENABLE, 1);
-		break;
-	default:
-		printk(KERN_INFO "udc_control: unknown command (0x%x)!\n", cmd);
-		break;
-	}
-}
-
 static int is_usb_connected(void)
 {
 	return !gpio_get_value(GPIO13_nUSB_DETECT);
@@ -433,93 +422,27 @@ static int is_usb_connected(void)
 
 static struct pxa2xx_udc_mach_info mioa701_udc_info = {
 	.udc_is_connected = is_usb_connected,
-	.udc_command	  = udc_power_command,
+	.gpio_pullup	  = GPIO22_USB_ENABLE,
 };
 
-struct gpio_ress udc_gpios[] = {
-	MIO_GPIO_OUT(GPIO22_USB_ENABLE, 0, "USB Vbus enable")
+struct gpio_vbus_mach_info gpio_vbus_data = {
+	.gpio_vbus = GPIO13_nUSB_DETECT,
+	.gpio_vbus_inverted = 1,
+	.gpio_pullup = -1,
 };
-
-static int __init udc_init(void)
-{
-	pxa_set_udc_info(&mioa701_udc_info);
-	return mio_gpio_request(ARRAY_AND_SIZE(udc_gpios));
-}
-
-static void udc_exit(void)
-{
-	mio_gpio_free(ARRAY_AND_SIZE(udc_gpios));
-}
 
 /*
  * SDIO/MMC Card controller
  */
-static void mci_setpower(struct device *dev, unsigned int vdd)
-{
-	struct pxamci_platform_data *p_d = dev->platform_data;
-
-	if ((1 << vdd) & p_d->ocr_mask)
-		gpio_set_value(GPIO91_SDIO_EN, 1);	/* enable SDIO power */
-	else
-		gpio_set_value(GPIO91_SDIO_EN, 0);	/* disable SDIO power */
-}
-
-static int mci_get_ro(struct device *dev)
-{
-	return gpio_get_value(GPIO78_SDIO_RO);
-}
-
-struct gpio_ress mci_gpios[] = {
-	MIO_GPIO_IN(GPIO78_SDIO_RO, 	"SDIO readonly detect"),
-	MIO_GPIO_IN(GPIO15_SDIO_INSERT,	"SDIO insertion detect"),
-	MIO_GPIO_OUT(GPIO91_SDIO_EN, 0,	"SDIO power enable")
-};
-
-static void mci_exit(struct device *dev, void *data)
-{
-	mio_gpio_free(ARRAY_AND_SIZE(mci_gpios));
-	free_irq(gpio_to_irq(GPIO15_SDIO_INSERT), data);
-}
-
-static struct pxamci_platform_data mioa701_mci_info;
-
 /**
  * The card detect interrupt isn't debounced so we delay it by 250ms
  * to give the card a chance to fully insert/eject.
  */
-static int mci_init(struct device *dev, irq_handler_t detect_int, void *data)
-{
-	int rc;
-	int irq = gpio_to_irq(GPIO15_SDIO_INSERT);
-
-	rc = mio_gpio_request(ARRAY_AND_SIZE(mci_gpios));
-	if (rc)
-		goto err_gpio;
-	/* enable RE/FE interrupt on card insertion and removal */
-	rc = request_irq(irq, detect_int,
-			 IRQF_DISABLED | IRQF_TRIGGER_RISING |
-			 IRQF_TRIGGER_FALLING,
-			 "MMC card detect", data);
-	if (rc)
-		goto err_irq;
-
-	mioa701_mci_info.detect_delay = msecs_to_jiffies(250);
-	return 0;
-
-err_irq:
-	dev_err(dev, "mioa701_mci_init: MMC/SD:"
-		" can't request MMC card detect IRQ\n");
-	mio_gpio_free(ARRAY_AND_SIZE(mci_gpios));
-err_gpio:
-	return rc;
-}
-
 static struct pxamci_platform_data mioa701_mci_info = {
-	.ocr_mask = MMC_VDD_32_33 | MMC_VDD_33_34,
-	.init	  = mci_init,
-	.get_ro	  = mci_get_ro,
-	.setpower = mci_setpower,
-	.exit	  = mci_exit,
+	.ocr_mask 		= MMC_VDD_32_33 | MMC_VDD_33_34,
+	.gpio_card_detect	= GPIO15_SDIO_INSERT,
+	.gpio_card_ro		= GPIO78_SDIO_RO,
+	.gpio_power		= GPIO91_SDIO_EN,
 };
 
 /* FlashRAM */
@@ -738,6 +661,38 @@ static struct wm97xx_batt_info mioa701_battery_data = {
 };
 
 /*
+ * Voltage regulation
+ */
+static struct regulator_consumer_supply max1586_consumers[] = {
+	{
+		.supply = "vcc_core",
+	}
+};
+
+static struct regulator_init_data max1586_v3_info = {
+	.constraints = {
+		.name = "vcc_core range",
+		.min_uV = 1000000,
+		.max_uV = 1705000,
+		.always_on = 1,
+		.valid_ops_mask = REGULATOR_CHANGE_VOLTAGE,
+	},
+	.num_consumer_supplies = ARRAY_SIZE(max1586_consumers),
+	.consumer_supplies = max1586_consumers,
+};
+
+static struct max1586_subdev_data max1586_subdevs[] = {
+	{ .name = "vcc_core", .id = MAX1586_V3,
+	  .platform_data = &max1586_v3_info },
+};
+
+static struct max1586_platform_data max1586_info = {
+	.subdevs = max1586_subdevs,
+	.num_subdevs = ARRAY_SIZE(max1586_subdevs),
+	.v3_gain = MAX1586_GAIN_NO_R24, /* 700..1475 mV */
+};
+
+/*
  * Camera interface
  */
 struct pxacamera_platform_data mioa701_pxacamera_platform_data = {
@@ -746,21 +701,33 @@ struct pxacamera_platform_data mioa701_pxacamera_platform_data = {
 	.mclk_10khz = 5000,
 };
 
-static struct soc_camera_link iclink = {
-	.bus_id	= 0, /* Must match id in pxa27x_device_camera in device.c */
+static struct i2c_board_info __initdata mioa701_pi2c_devices[] = {
+	{
+		I2C_BOARD_INFO("max1586", 0x14),
+		.platform_data = &max1586_info,
+	},
 };
 
 /* Board I2C devices. */
 static struct i2c_board_info __initdata mioa701_i2c_devices[] = {
 	{
-		/* Must initialize before the camera(s) */
 		I2C_BOARD_INFO("mt9m111", 0x5d),
-		.platform_data = &iclink,
 	},
+};
+
+static struct soc_camera_link iclink = {
+	.bus_id		= 0, /* Match id in pxa27x_device_camera in device.c */
+	.board_info	= &mioa701_i2c_devices[0],
+	.i2c_adapter_id	= 0,
+	.module_name	= "mt9m111",
 };
 
 struct i2c_pxa_platform_data i2c_pdata = {
 	.fast_mode = 1,
+};
+
+static pxa2xx_audio_ops_t mioa701_ac97_info = {
+	.reset_gpio = 95,
 };
 
 /*
@@ -785,22 +752,22 @@ MIO_PARENT_DEV(mioa701_backlight, "pwm-backlight",  &pxa27x_device_pwm0.dev,
 		&mioa701_backlight_data);
 MIO_SIMPLE_DEV(mioa701_led,	  "leds-gpio",	    &gpio_led_info)
 MIO_SIMPLE_DEV(pxa2xx_pcm,	  "pxa2xx-pcm",	    NULL)
-MIO_SIMPLE_DEV(pxa2xx_ac97,	  "pxa2xx-ac97",    NULL)
-MIO_PARENT_DEV(mio_wm9713_codec,  "wm9713-codec",   &pxa2xx_ac97.dev, NULL)
 MIO_SIMPLE_DEV(mioa701_sound,	  "mioa701-wm9713", NULL)
 MIO_SIMPLE_DEV(mioa701_board,	  "mioa701-board",  NULL)
+MIO_SIMPLE_DEV(gpio_vbus,	  "gpio-vbus",      &gpio_vbus_data);
+MIO_SIMPLE_DEV(mioa701_camera,	  "soc-camera-pdrv",&iclink);
 
 static struct platform_device *devices[] __initdata = {
 	&mioa701_gpio_keys,
 	&mioa701_backlight,
 	&mioa701_led,
 	&pxa2xx_pcm,
-	&pxa2xx_ac97,
-	&mio_wm9713_codec,
 	&mioa701_sound,
 	&power_dev,
 	&strataflash,
-	&mioa701_board
+	&gpio_vbus,
+	&mioa701_camera,
+	&mioa701_board,
 };
 
 static void mioa701_machine_exit(void);
@@ -808,19 +775,19 @@ static void mioa701_machine_exit(void);
 static void mioa701_poweroff(void)
 {
 	mioa701_machine_exit();
-	arm_machine_restart('s');
+	arm_machine_restart('s', NULL);
 }
 
-static void mioa701_restart(char c)
+static void mioa701_restart(char c, const char *cmd)
 {
 	mioa701_machine_exit();
-	arm_machine_restart('s');
+	arm_machine_restart('s', cmd);
 }
 
-struct gpio_ress global_gpios[] = {
+static struct gpio_ress global_gpios[] = {
 	MIO_GPIO_OUT(GPIO9_CHARGE_EN, 1, "Charger enable"),
 	MIO_GPIO_OUT(GPIO18_POWEROFF, 0, "Power Off"),
-	MIO_GPIO_OUT(GPIO87_LCD_POWER, 0, "LCD Power")
+	MIO_GPIO_OUT(GPIO87_LCD_POWER, 0, "LCD Power"),
 };
 
 static void __init mioa701_machine_init(void)
@@ -834,23 +801,25 @@ static void __init mioa701_machine_init(void)
 	mio_gpio_request(ARRAY_AND_SIZE(global_gpios));
 	bootstrap_init();
 	set_pxa_fb_info(&mioa701_pxafb_info);
+	mioa701_mci_info.detect_delay = msecs_to_jiffies(250);
 	pxa_set_mci_info(&mioa701_mci_info);
 	pxa_set_keypad_info(&mioa701_keypad_info);
 	wm97xx_bat_set_pdata(&mioa701_battery_data);
-	udc_init();
+	pxa_set_udc_info(&mioa701_udc_info);
+	pxa_set_ac97_info(&mioa701_ac97_info);
 	pm_power_off = mioa701_poweroff;
 	arm_pm_restart = mioa701_restart;
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 	gsm_init();
 
+	i2c_register_board_info(1, ARRAY_AND_SIZE(mioa701_pi2c_devices));
 	pxa_set_i2c_info(&i2c_pdata);
+	pxa27x_set_i2c_power_info(NULL);
 	pxa_set_camera_info(&mioa701_pxacamera_platform_data);
-	i2c_register_board_info(0, ARRAY_AND_SIZE(mioa701_i2c_devices));
 }
 
 static void mioa701_machine_exit(void)
 {
-	udc_exit();
 	bootstrap_exit();
 	gsm_exit();
 }

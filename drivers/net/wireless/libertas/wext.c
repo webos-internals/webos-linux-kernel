@@ -712,7 +712,7 @@ static int lbs_set_power(struct net_device *dev, struct iw_request_info *info,
 
 	lbs_deb_enter(LBS_DEB_WEXT);
 
-	if (!priv->ps_supported) {
+	if (!(priv->fwcapinfo & FW_CAPINFO_PS)) {
 		if (vwrq->disabled)
 			return 0;
 		else
@@ -830,7 +830,7 @@ static struct iw_statistics *lbs_get_wireless_stats(struct net_device *dev)
 	quality = rssi_qual;
 
 	/* Quality by TX errors */
-	priv->wstats.discard.retries = priv->stats.tx_errors;
+	priv->wstats.discard.retries = dev->stats.tx_errors;
 
 	memset(&log, 0, sizeof(log));
 	log.hdr.size = cpu_to_le16(sizeof(log));
@@ -1728,6 +1728,8 @@ static int lbs_set_auth(struct net_device *dev,
 	}
 
 	switch (dwrq->flags & IW_AUTH_INDEX) {
+	case IW_AUTH_PRIVACY_INVOKED:
+	case IW_AUTH_RX_UNENCRYPTED_EAPOL:
 	case IW_AUTH_TKIP_COUNTERMEASURES:
 	case IW_AUTH_CIPHER_PAIRWISE:
 	case IW_AUTH_CIPHER_GROUP:

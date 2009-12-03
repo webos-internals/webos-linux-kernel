@@ -6,6 +6,9 @@
  * Copied from arch/arm/mach-sa1100/include/mach/io.h
  * Copyright (C) 1997-1999 Russell King
  *
+ * Copyright (C) 2009 Texas Instruments
+ * Added OMAP4 support - Santosh Shilimkar <santosh.shilimkar@ti.com>
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
  * Free Software Foundation; either version 2 of the License, or (at your
@@ -51,17 +54,33 @@
  * ----------------------------------------------------------------------------
  */
 
-#if defined(CONFIG_ARCH_OMAP1)
+#ifdef __ASSEMBLER__
+#define IOMEM(x)		(x)
+#else
+#define IOMEM(x)		((void __force __iomem *)(x))
+#endif
 
-#define IO_PHYS			0xFFFB0000
-#define IO_OFFSET		0x01000000	/* Virtual IO = 0xfefb0000 */
-#define IO_SIZE			0x40000
-#define IO_VIRT			(IO_PHYS - IO_OFFSET)
-#define __IO_ADDRESS(pa)	((pa) - IO_OFFSET)
-#define __OMAP1_IO_ADDRESS(pa)	((pa) - IO_OFFSET)
-#define io_v2p(va)		((va) + IO_OFFSET)
+#define OMAP1_IO_OFFSET		0x01000000	/* Virtual IO = 0xfefb0000 */
+#define OMAP1_IO_ADDRESS(pa)	IOMEM((pa) - OMAP1_IO_OFFSET)
 
-#elif defined(CONFIG_ARCH_OMAP2)
+#define OMAP2_IO_OFFSET		0x90000000
+#define OMAP2_IO_ADDRESS(pa)	IOMEM((pa) + OMAP2_IO_OFFSET) /* L3 and L4 */
+
+/*
+ * ----------------------------------------------------------------------------
+ * Omap1 specific IO mapping
+ * ----------------------------------------------------------------------------
+ */
+
+#define OMAP1_IO_PHYS		0xFFFB0000
+#define OMAP1_IO_SIZE		0x40000
+#define OMAP1_IO_VIRT		(OMAP1_IO_PHYS - OMAP1_IO_OFFSET)
+
+/*
+ * ----------------------------------------------------------------------------
+ * Omap2 specific IO mapping
+ * ----------------------------------------------------------------------------
+ */
 
 /* We map both L3 and L4 on OMAP2 */
 #define L3_24XX_PHYS	L3_24XX_BASE	/* 0x68000000 */
@@ -84,11 +103,6 @@
 #define OMAP243X_SMS_VIRT	0xFC000000
 #define OMAP243X_SMS_SIZE	SZ_1M
 
-#define IO_OFFSET		0x90000000
-#define __IO_ADDRESS(pa)	((pa) + IO_OFFSET)	/* Works for L3 and L4 */
-#define __OMAP2_IO_ADDRESS(pa)	((pa) + IO_OFFSET)	/* Works for L3 and L4 */
-#define io_v2p(va)		((va) - IO_OFFSET)	/* Works for L3 and L4 */
-
 /* DSP */
 #define DSP_MEM_24XX_PHYS	OMAP2420_DSP_MEM_BASE	/* 0x58000000 */
 #define DSP_MEM_24XX_VIRT	0xe0000000
@@ -100,7 +114,11 @@
 #define DSP_MMU_24XX_VIRT	0xe2000000
 #define DSP_MMU_24XX_SIZE	SZ_4K
 
-#elif defined(CONFIG_ARCH_OMAP3)
+/*
+ * ----------------------------------------------------------------------------
+ * Omap3 specific IO mapping
+ * ----------------------------------------------------------------------------
+ */
 
 /* We map both L3 and L4 on OMAP3 */
 #define L3_34XX_PHYS		L3_34XX_BASE	/* 0x68000000 */
@@ -140,12 +158,6 @@
 #define OMAP343X_SDRC_VIRT	0xFD000000
 #define OMAP343X_SDRC_SIZE	SZ_1M
 
-
-#define IO_OFFSET		0x90000000
-#define __IO_ADDRESS(pa)	((pa) + IO_OFFSET)/* Works for L3 and L4 */
-#define __OMAP2_IO_ADDRESS(pa)	((pa) + IO_OFFSET)/* Works for L3 and L4 */
-#define io_v2p(va)		((va) - IO_OFFSET)/* Works for L3 and L4 */
-
 /* DSP */
 #define DSP_MEM_34XX_PHYS	OMAP34XX_DSP_MEM_BASE	/* 0x58000000 */
 #define DSP_MEM_34XX_VIRT	0xe0000000
@@ -157,39 +169,66 @@
 #define DSP_MMU_34XX_VIRT	0xe2000000
 #define DSP_MMU_34XX_SIZE	SZ_4K
 
-#endif
+/*
+ * ----------------------------------------------------------------------------
+ * Omap4 specific IO mapping
+ * ----------------------------------------------------------------------------
+ */
 
-#define IO_ADDRESS(pa)		IOMEM(__IO_ADDRESS(pa))
-#define OMAP1_IO_ADDRESS(pa)	IOMEM(__OMAP1_IO_ADDRESS(pa))
-#define OMAP2_IO_ADDRESS(pa)	IOMEM(__OMAP2_IO_ADDRESS(pa))
+/* We map both L3 and L4 on OMAP4 */
+#define L3_44XX_PHYS		L3_44XX_BASE
+#define L3_44XX_VIRT		0xd4000000
+#define L3_44XX_SIZE		SZ_1M
 
-#ifdef __ASSEMBLER__
-#define IOMEM(x)		x
-#else
-#define IOMEM(x)		((void __force __iomem *)(x))
+#define L4_44XX_PHYS		L4_44XX_BASE
+#define L4_44XX_VIRT		0xda000000
+#define L4_44XX_SIZE		SZ_4M
+
+
+#define L4_WK_44XX_PHYS		L4_WK_44XX_BASE
+#define L4_WK_44XX_VIRT		0xda300000
+#define L4_WK_44XX_SIZE		SZ_1M
+
+#define L4_PER_44XX_PHYS	L4_PER_44XX_BASE
+#define L4_PER_44XX_VIRT	0xd8000000
+#define L4_PER_44XX_SIZE	SZ_4M
+
+#define L4_EMU_44XX_PHYS	L4_EMU_44XX_BASE
+#define L4_EMU_44XX_VIRT	0xe4000000
+#define L4_EMU_44XX_SIZE	SZ_64M
+
+#define OMAP44XX_GPMC_PHYS	OMAP44XX_GPMC_BASE
+#define OMAP44XX_GPMC_VIRT	0xe0000000
+#define OMAP44XX_GPMC_SIZE	SZ_1M
+
 
 /*
- * Functions to access the OMAP IO region
- *
- * NOTE: - Use omap_read/write[bwl] for physical register addresses
- *	 - Use __raw_read/write[bwl]() for virtual register addresses
- *	 - Use IO_ADDRESS(phys_addr) to convert registers to virtual addresses
- *	 - DO NOT use hardcoded virtual addresses to allow changing the
- *	   IO address space again if needed
+ * ----------------------------------------------------------------------------
+ * Omap specific register access
+ * ----------------------------------------------------------------------------
  */
-#define omap_readb(a)		__raw_readb(IO_ADDRESS(a))
-#define omap_readw(a)		__raw_readw(IO_ADDRESS(a))
-#define omap_readl(a)		__raw_readl(IO_ADDRESS(a))
 
-#define omap_writeb(v,a)	__raw_writeb(v, IO_ADDRESS(a))
-#define omap_writew(v,a)	__raw_writew(v, IO_ADDRESS(a))
-#define omap_writel(v,a)	__raw_writel(v, IO_ADDRESS(a))
+#ifndef __ASSEMBLER__
+
+/*
+ * NOTE: Please use ioremap + __raw_read/write where possible instead of these
+ */
+
+extern u8 omap_readb(u32 pa);
+extern u16 omap_readw(u32 pa);
+extern u32 omap_readl(u32 pa);
+extern void omap_writeb(u8 v, u32 pa);
+extern void omap_writew(u16 v, u32 pa);
+extern void omap_writel(u32 v, u32 pa);
+
+struct omap_sdrc_params;
 
 extern void omap1_map_common_io(void);
 extern void omap1_init_common_hw(void);
 
 extern void omap2_map_common_io(void);
-extern void omap2_init_common_hw(void);
+extern void omap2_init_common_hw(struct omap_sdrc_params *sdrc_cs0,
+				 struct omap_sdrc_params *sdrc_cs1);
 
 #define __arch_ioremap(p,s,t)	omap_ioremap(p,s,t)
 #define __arch_iounmap(v)	omap_iounmap(v)

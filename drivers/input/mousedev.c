@@ -13,6 +13,7 @@
 #define MOUSEDEV_MINORS		32
 #define MOUSEDEV_MIX		31
 
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/smp_lock.h>
 #include <linux/poll.h>
@@ -60,7 +61,6 @@ struct mousedev {
 	int exist;
 	int open;
 	int minor;
-	char name[16];
 	struct input_handle handle;
 	wait_queue_head_t wait;
 	struct list_head client_list;
@@ -403,12 +403,9 @@ static void mousedev_event(struct input_handle *handle,
 
 static int mousedev_fasync(int fd, struct file *file, int on)
 {
-	int retval;
 	struct mousedev_client *client = file->private_data;
 
-	retval = fasync_helper(fd, file, on, &client->fasync);
-
-	return retval < 0 ? retval : 0;
+	return fasync_helper(fd, file, on, &client->fasync);
 }
 
 static void mousedev_free(struct device *dev)
@@ -866,19 +863,17 @@ static struct mousedev *mousedev_create(struct input_dev *dev,
 	init_waitqueue_head(&mousedev->wait);
 
 	if (minor == MOUSEDEV_MIX)
-		strlcpy(mousedev->name, "mice", sizeof(mousedev->name));
+		dev_set_name(&mousedev->dev, "mice");
 	else
-		snprintf(mousedev->name, sizeof(mousedev->name),
-			 "mouse%d", minor);
+		dev_set_name(&mousedev->dev, "mouse%d", minor);
 
 	mousedev->minor = minor;
 	mousedev->exist = 1;
 	mousedev->handle.dev = input_get_device(dev);
-	mousedev->handle.name = mousedev->name;
+	mousedev->handle.name = dev_name(&mousedev->dev);
 	mousedev->handle.handler = handler;
 	mousedev->handle.private = mousedev;
 
-	dev_set_name(&mousedev->dev, mousedev->name);
 	mousedev->dev.class = &input_class;
 	if (dev)
 		mousedev->dev.parent = &dev->dev;

@@ -91,9 +91,6 @@ struct acpiphp_bridge {
 	/* PCI-to-PCI bridge device */
 	struct pci_dev *pci_dev;
 
-	/* ACPI 2.0 _HPP parameters */
-	struct hotplug_params hpp;
-
 	spinlock_t res_lock;
 };
 
@@ -129,7 +126,6 @@ struct acpiphp_func {
 	struct acpiphp_bridge *bridge;	/* Ejectable PCI-to-PCI bridge */
 
 	struct list_head sibling;
-	struct pci_dev *pci_dev;
 	struct notifier_block nb;
 	acpi_handle	handle;
 

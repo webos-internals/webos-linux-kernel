@@ -23,6 +23,7 @@
 #include <linux/tick.h>
 #include <linux/reboot.h>
 #include <linux/fs.h>
+#include <linux/ftrace.h>
 #include <linux/preempt.h>
 #include <asm/uaccess.h>
 #include <asm/mmu_context.h>
@@ -31,15 +32,35 @@
 #include <asm/ubc.h>
 #include <asm/fpu.h>
 #include <asm/syscalls.h>
+#include <asm/watchdog.h>
 
 int ubc_usercnt = 0;
 
+#ifdef CONFIG_32BIT
+static void watchdog_trigger_immediate(void)
+{
+	sh_wdt_write_cnt(0xFF);
+	sh_wdt_write_csr(0xC2);
+}
+
+void machine_restart(char * __unused)
+{
+	local_irq_disable();
+
+	/* Use watchdog timer to trigger reset */
+	watchdog_trigger_immediate();
+
+	while (1)
+		cpu_sleep();
+}
+#else
 void machine_restart(char * __unused)
 {
 	/* SR.BL=1 and invoke address error to let CPU reset (manual reset) */
 	asm volatile("ldc %0, sr\n\t"
 		     "mov.l @%1, %0" : : "r" (0x10000000), "r" (0x80000001));
 }
+#endif
 
 void machine_halt(void)
 {
@@ -119,8 +140,6 @@ int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 	pid = do_fork(flags | CLONE_VM | CLONE_UNTRACED, 0,
 		      &regs, 0, NULL, NULL);
 
-	trace_mark(kernel_arch_kthread_create, "pid %d fn %p", pid, fn);
-
 	return pid;
 }
 
@@ -170,18 +189,30 @@ int dump_fpu(struct pt_regs *regs, elf_fpregset_t *fpu)
 
 asmlinkage void ret_from_fork(void);
 
-int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
+int copy_thread(unsigned long clone_flags, unsigned long usp,
 		unsigned long unused,
 		struct task_struct *p, struct pt_regs *regs)
 {
 	struct thread_info *ti = task_thread_info(p);
 	struct pt_regs *childregs;
-#if defined(CONFIG_SH_FPU)
+#if defined(CONFIG_SH_FPU) || defined(CONFIG_SH_DSP)
 	struct task_struct *tsk = current;
+#endif
 
+#if defined(CONFIG_SH_FPU)
 	unlazy_fpu(tsk, regs);
 	p->thread.fpu = tsk->thread.fpu;
 	copy_to_stopped_child_used_math(p);
+#endif
+
+#if defined(CONFIG_SH_DSP)
+	if (is_dsp_enabled(tsk)) {
+		/* We can use the __save_dsp or just copy the struct:
+		 * __save_dsp(p);
+		 * p->thread.dsp_status.status |= SR_DSP
+		 */
+		p->thread.dsp_status = tsk->thread.dsp_status;
+	}
 #endif
 
 	childregs = task_pt_regs(p);
@@ -239,7 +270,8 @@ static void ubc_set_tracing(int asid, unsigned long pc)
 
 	if (current_cpu_data.type == CPU_SH7729 ||
 	    current_cpu_data.type == CPU_SH7710 ||
-	    current_cpu_data.type == CPU_SH7712) {
+	    current_cpu_data.type == CPU_SH7712 ||
+	    current_cpu_data.type == CPU_SH7203){
 		ctrl_outw(BBR_INST | BBR_READ | BBR_CPU, UBC_BBRA);
 		ctrl_outl(BRCR_PCBA | BRCR_PCTE, UBC_BRCR);
 	} else {
@@ -253,8 +285,8 @@ static void ubc_set_tracing(int asid, unsigned long pc)
  *	switch_to(x,y) should switch tasks from x to y.
  *
  */
-struct task_struct *__switch_to(struct task_struct *prev,
-				struct task_struct *next)
+__notrace_funcgraph struct task_struct *
+__switch_to(struct task_struct *prev, struct task_struct *next)
 {
 #if defined(CONFIG_SH_FPU)
 	unlazy_fpu(prev, task_pt_regs(prev));
@@ -354,11 +386,6 @@ asmlinkage int sys_execve(char __user *ufilename, char __user * __user *uargv,
 		goto out;
 
 	error = do_execve(filename, uargv, uenvp, regs);
-	if (error == 0) {
-		task_lock(current);
-		current->ptrace &= ~PT_DTRACE;
-		task_unlock(current);
-	}
 	putname(filename);
 out:
 	return error;
@@ -395,6 +422,7 @@ asmlinkage void break_point_trap(void)
 #else
 	ctrl_outw(0, UBC_BBRA);
 	ctrl_outw(0, UBC_BBRB);
+	ctrl_outl(0, UBC_BRCR);
 #endif
 	current->thread.ubc_pc = 0;
 	ubc_usercnt -= 1;

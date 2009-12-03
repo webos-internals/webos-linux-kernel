@@ -1,47 +1,9 @@
-/************************************************************************
- *
- * This file is subject to the terms and conditions of the GNU Public
- * License. See the file "COPYING" in the main directory of this archive
- * for more details.
- *
- * Non-GPL License also available as part of VisualDSP++
- * http://www.analog.com/processors/resources/crosscore/visualDspDevSoftware.html
- *
- * (c) Copyright 2001-2005 Analog Devices, Inc. All rights reserved
- *
- * This file under source code control, please send bugs or changes to:
- * dsptools.support@analog.com
- *
- ************************************************************************/
 /*
- * File:         include/asm-blackfin/mach-bf538/defBF539.h
- * Based on:
- * Author:
+ * Copyright 2008-2009 Analog Devices Inc.
  *
- * Created:
- * Description:
- *
- * Rev:
- *
- * Modified:
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; see the file COPYING.
- * If not, write to the Free Software Foundation,
- * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Licensed under the ADI BSD license or the GPL-2 (or later)
  */
+
 /* SYSTEM & MM REGISTER BIT & ADDRESS DEFINITIONS FOR ADSP-BF538/9 */
 
 #ifndef _DEF_BF539_H
@@ -411,6 +373,62 @@
 #define	MDMA0_S1_PERIPHERAL_MAP	0xFFC00EEC	/* MemDMA0 Stream 1 Source Peripheral Map Register */
 #define	MDMA0_S1_CURR_X_COUNT	0xFFC00EF0	/* MemDMA0 Stream 1 Source Current X Count Register */
 #define	MDMA0_S1_CURR_Y_COUNT	0xFFC00EF8	/* MemDMA0 Stream 1 Source Current Y Count Register */
+
+#define MDMA_D0_NEXT_DESC_PTR MDMA0_D0_NEXT_DESC_PTR
+#define MDMA_D0_START_ADDR MDMA0_D0_START_ADDR
+#define MDMA_D0_CONFIG MDMA0_D0_CONFIG
+#define MDMA_D0_X_COUNT MDMA0_D0_X_COUNT
+#define MDMA_D0_X_MODIFY MDMA0_D0_X_MODIFY
+#define MDMA_D0_Y_COUNT MDMA0_D0_Y_COUNT
+#define MDMA_D0_Y_MODIFY MDMA0_D0_Y_MODIFY
+#define MDMA_D0_CURR_DESC_PTR MDMA0_D0_CURR_DESC_PTR
+#define MDMA_D0_CURR_ADDR MDMA0_D0_CURR_ADDR
+#define MDMA_D0_IRQ_STATUS MDMA0_D0_IRQ_STATUS
+#define MDMA_D0_PERIPHERAL_MAP MDMA0_D0_PERIPHERAL_MAP
+#define MDMA_D0_CURR_X_COUNT MDMA0_D0_CURR_X_COUNT
+#define MDMA_D0_CURR_Y_COUNT MDMA0_D0_CURR_Y_COUNT
+
+#define MDMA_S0_NEXT_DESC_PTR MDMA0_S0_NEXT_DESC_PTR
+#define MDMA_S0_START_ADDR MDMA0_S0_START_ADDR
+#define MDMA_S0_CONFIG MDMA0_S0_CONFIG
+#define MDMA_S0_X_COUNT MDMA0_S0_X_COUNT
+#define MDMA_S0_X_MODIFY MDMA0_S0_X_MODIFY
+#define MDMA_S0_Y_COUNT MDMA0_S0_Y_COUNT
+#define MDMA_S0_Y_MODIFY MDMA0_S0_Y_MODIFY
+#define MDMA_S0_CURR_DESC_PTR MDMA0_S0_CURR_DESC_PTR
+#define MDMA_S0_CURR_ADDR MDMA0_S0_CURR_ADDR
+#define MDMA_S0_IRQ_STATUS MDMA0_S0_IRQ_STATUS
+#define MDMA_S0_PERIPHERAL_MAP MDMA0_S0_PERIPHERAL_MAP
+#define MDMA_S0_CURR_X_COUNT MDMA0_S0_CURR_X_COUNT
+#define MDMA_S0_CURR_Y_COUNT MDMA0_S0_CURR_Y_COUNT
+
+#define MDMA_D1_NEXT_DESC_PTR MDMA0_D1_NEXT_DESC_PTR
+#define MDMA_D1_START_ADDR MDMA0_D1_START_ADDR
+#define MDMA_D1_CONFIG MDMA0_D1_CONFIG
+#define MDMA_D1_X_COUNT MDMA0_D1_X_COUNT
+#define MDMA_D1_X_MODIFY MDMA0_D1_X_MODIFY
+#define MDMA_D1_Y_COUNT MDMA0_D1_Y_COUNT
+#define MDMA_D1_Y_MODIFY MDMA0_D1_Y_MODIFY
+#define MDMA_D1_CURR_DESC_PTR MDMA0_D1_CURR_DESC_PTR
+#define MDMA_D1_CURR_ADDR MDMA0_D1_CURR_ADDR
+#define MDMA_D1_IRQ_STATUS MDMA0_D1_IRQ_STATUS
+#define MDMA_D1_PERIPHERAL_MAP MDMA0_D1_PERIPHERAL_MAP
+#define MDMA_D1_CURR_X_COUNT MDMA0_D1_CURR_X_COUNT
+#define MDMA_D1_CURR_Y_COUNT MDMA0_D1_CURR_Y_COUNT
+
+#define MDMA_S1_NEXT_DESC_PTR MDMA0_S1_NEXT_DESC_PTR
+#define MDMA_S1_START_ADDR MDMA0_S1_START_ADDR
+#define MDMA_S1_CONFIG MDMA0_S1_CONFIG
+#define MDMA_S1_X_COUNT MDMA0_S1_X_COUNT
+#define MDMA_S1_X_MODIFY MDMA0_S1_X_MODIFY
+#define MDMA_S1_Y_COUNT MDMA0_S1_Y_COUNT
+#define MDMA_S1_Y_MODIFY MDMA0_S1_Y_MODIFY
+#define MDMA_S1_CURR_DESC_PTR MDMA0_S1_CURR_DESC_PTR
+#define MDMA_S1_CURR_ADDR MDMA0_S1_CURR_ADDR
+#define MDMA_S1_IRQ_STATUS MDMA0_S1_IRQ_STATUS
+#define MDMA_S1_PERIPHERAL_MAP MDMA0_S1_PERIPHERAL_MAP
+#define MDMA_S1_CURR_X_COUNT MDMA0_S1_CURR_X_COUNT
+#define MDMA_S1_CURR_Y_COUNT MDMA0_S1_CURR_Y_COUNT
 
 
 /* Parallel Peripheral Interface (PPI) (0xFFC01000 - 0xFFC010FF) */
@@ -2269,7 +2287,7 @@
 #define	AMBEN_B0_B1	0x0004	/* Enable Asynchronous Memory Banks 0 &	1 only */
 #define	AMBEN_B0_B1_B2	0x0006	/* Enable Asynchronous Memory Banks 0, 1, and 2 */
 #define	AMBEN_ALL	0x0008	/* Enable Asynchronous Memory Banks (all) 0, 1,	2, and 3 */
-#define	CDPRIO		0x0100	/* DMA has priority over core for for external accesses */
+#define	CDPRIO		0x0100	/* DMA has priority over core for external accesses */
 
 /* EBIU_AMGCTL Bit Positions */
 #define	AMCKEN_P		0x0000	/* Enable CLKOUT */

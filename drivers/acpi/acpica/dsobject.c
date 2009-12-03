@@ -482,14 +482,27 @@ acpi_ds_build_internal_package_obj(struct acpi_walk_state *walk_state,
 	if (arg) {
 		/*
 		 * num_elements was exhausted, but there are remaining elements in the
-		 * package_list.
+		 * package_list. Truncate the package to num_elements.
 		 *
 		 * Note: technically, this is an error, from ACPI spec: "It is an error
 		 * for NumElements to be less than the number of elements in the
-		 * PackageList". However, for now, we just print an error message and
-		 * no exception is returned.
+		 * PackageList". However, we just print an error message and
+		 * no exception is returned. This provides Windows compatibility. Some
+		 * BIOSs will alter the num_elements on the fly, creating this type
+		 * of ill-formed package object.
 		 */
 		while (arg) {
+			/*
+			 * We must delete any package elements that were created earlier
+			 * and are not going to be used because of the package truncation.
+			 */
+			if (arg->common.node) {
+				acpi_ut_remove_reference(ACPI_CAST_PTR
+							 (union
+							  acpi_operand_object,
+							  arg->common.node));
+				arg->common.node = NULL;
+			}
 
 			/* Find out how many elements there really are */
 
@@ -498,7 +511,7 @@ acpi_ds_build_internal_package_obj(struct acpi_walk_state *walk_state,
 		}
 
 		ACPI_WARNING((AE_INFO,
-			    "Package List length (%X) larger than NumElements count (%X), truncated\n",
+			    "Package List length (0x%X) larger than NumElements count (0x%X), truncated\n",
 			    i, element_count));
 	} else if (i < element_count) {
 		/*
@@ -506,7 +519,7 @@ acpi_ds_build_internal_package_obj(struct acpi_walk_state *walk_state,
 		 * Note: this is not an error, the package is padded out with NULLs.
 		 */
 		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-				  "Package List length (%X) smaller than NumElements count (%X), padded with null elements\n",
+				  "Package List length (0x%X) smaller than NumElements count (0x%X), padded with null elements\n",
 				  i, element_count));
 	}
 
@@ -565,7 +578,7 @@ acpi_ds_create_node(struct acpi_walk_state *walk_state,
 
 	/* Re-type the object according to its argument */
 
-	node->type = ACPI_GET_OBJECT_TYPE(obj_desc);
+	node->type = obj_desc->common.type;
 
 	/* Attach obj to node */
 
@@ -619,7 +632,7 @@ acpi_ds_init_object_from_op(struct acpi_walk_state *walk_state,
 
 	/* Perform per-object initialization */
 
-	switch (ACPI_GET_OBJECT_TYPE(obj_desc)) {
+	switch (obj_desc->common.type) {
 	case ACPI_TYPE_BUFFER:
 
 		/*
@@ -734,7 +747,8 @@ acpi_ds_init_object_from_op(struct acpi_walk_state *walk_state,
 
 			/* Local ID (0-7) is (AML opcode - base AML_LOCAL_OP) */
 
-			obj_desc->reference.value = opcode - AML_LOCAL_OP;
+			obj_desc->reference.value =
+			    ((u32)opcode) - AML_LOCAL_OP;
 			obj_desc->reference.class = ACPI_REFCLASS_LOCAL;
 
 #ifndef ACPI_NO_METHOD_EXECUTION
@@ -754,7 +768,7 @@ acpi_ds_init_object_from_op(struct acpi_walk_state *walk_state,
 
 			/* Arg ID (0-6) is (AML opcode - base AML_ARG_OP) */
 
-			obj_desc->reference.value = opcode - AML_ARG_OP;
+			obj_desc->reference.value = ((u32)opcode) - AML_ARG_OP;
 			obj_desc->reference.class = ACPI_REFCLASS_ARG;
 
 #ifndef ACPI_NO_METHOD_EXECUTION
@@ -803,7 +817,7 @@ acpi_ds_init_object_from_op(struct acpi_walk_state *walk_state,
 	default:
 
 		ACPI_ERROR((AE_INFO, "Unimplemented data type: %X",
-			    ACPI_GET_OBJECT_TYPE(obj_desc)));
+			    obj_desc->common.type));
 
 		status = AE_AML_OPERAND_TYPE;
 		break;

@@ -499,10 +499,7 @@ static void ds1305_work(struct work_struct *work)
 	if (!test_bit(FLAG_EXITING, &ds1305->flags))
 		enable_irq(spi->irq);
 
-	/* rtc_update_irq() requires an IRQ-disabled context */
-	local_irq_disable();
 	rtc_update_irq(ds1305->rtc, 1, RTC_AF | RTC_IRQF);
-	local_irq_enable();
 }
 
 /*
@@ -844,3 +841,4 @@ module_exit(ds1305_exit);
 
 MODULE_DESCRIPTION("RTC driver for DS1305 and DS1306 chips");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("spi:rtc-ds1305");

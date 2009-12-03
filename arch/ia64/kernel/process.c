@@ -161,6 +161,13 @@ show_regs (struct pt_regs *regs)
 		show_stack(NULL, NULL);
 }
 
+/* local support for deprecated console_print */
+void
+console_print(const char *s)
+{
+	printk(KERN_EMERG "%s", s);
+}
+
 void
 do_notify_resume_user(sigset_t *unused, struct sigscratch *scr, long in_syscall)
 {
@@ -192,6 +199,8 @@ do_notify_resume_user(sigset_t *unused, struct sigscratch *scr, long in_syscall)
 	if (test_thread_flag(TIF_NOTIFY_RESUME)) {
 		clear_thread_flag(TIF_NOTIFY_RESUME);
 		tracehook_notify_resume(&scr->pt);
+		if (current->replacement_session_keyring)
+			key_replace_session_keyring();
 	}
 
 	/* copy user rbs to kernel rbs */
@@ -413,7 +422,7 @@ ia64_load_extra (struct task_struct *task)
  * so there is nothing to worry about.
  */
 int
-copy_thread (int nr, unsigned long clone_flags,
+copy_thread(unsigned long clone_flags,
 	     unsigned long user_stack_base, unsigned long user_stack_size,
 	     struct task_struct *p, struct pt_regs *regs)
 {

@@ -327,7 +327,7 @@ static int qe_uart_tx_pump(struct uart_qe_port *qe_port)
 	unsigned char *p;
 	unsigned int count;
 	struct uart_port *port = &qe_port->port;
-	struct circ_buf *xmit = &port->info->xmit;
+	struct circ_buf *xmit = &port->state->xmit;
 
 	bdp = qe_port->rx_cur;
 
@@ -466,7 +466,7 @@ static void qe_uart_int_rx(struct uart_qe_port *qe_port)
 	int i;
 	unsigned char ch, *cp;
 	struct uart_port *port = &qe_port->port;
-	struct tty_struct *tty = port->info->port.tty;
+	struct tty_struct *tty = port->state->port.tty;
 	struct qe_bd *bdp;
 	u16 status;
 	unsigned int flg;
@@ -681,22 +681,27 @@ static void qe_uart_init_ucc(struct uart_qe_port *qe_port)
 	out_be16(&uccup->rccm, 0xc0ff);
 
 	/* Configure the GUMR registers for UART */
-	if (soft_uart)
+	if (soft_uart) {
 		/* Soft-UART requires a 1X multiplier for TX */
 		clrsetbits_be32(&uccp->gumr_l,
 			UCC_SLOW_GUMR_L_MODE_MASK | UCC_SLOW_GUMR_L_TDCR_MASK |
 			UCC_SLOW_GUMR_L_RDCR_MASK,
 			UCC_SLOW_GUMR_L_MODE_UART | UCC_SLOW_GUMR_L_TDCR_1 |
 			UCC_SLOW_GUMR_L_RDCR_16);
-	else
+
+		clrsetbits_be32(&uccp->gumr_h, UCC_SLOW_GUMR_H_RFW,
+			UCC_SLOW_GUMR_H_TRX | UCC_SLOW_GUMR_H_TTX);
+	} else {
 		clrsetbits_be32(&uccp->gumr_l,
 			UCC_SLOW_GUMR_L_MODE_MASK | UCC_SLOW_GUMR_L_TDCR_MASK |
 			UCC_SLOW_GUMR_L_RDCR_MASK,
 			UCC_SLOW_GUMR_L_MODE_UART | UCC_SLOW_GUMR_L_TDCR_16 |
 			UCC_SLOW_GUMR_L_RDCR_16);
 
-	clrsetbits_be32(&uccp->gumr_h, UCC_SLOW_GUMR_H_RFW,
-		UCC_SLOW_GUMR_H_TRX | UCC_SLOW_GUMR_H_TTX);
+		clrsetbits_be32(&uccp->gumr_h,
+			UCC_SLOW_GUMR_H_TRX | UCC_SLOW_GUMR_H_TTX,
+			UCC_SLOW_GUMR_H_RFW);
+	}
 
 #ifdef LOOPBACK
 	clrsetbits_be32(&uccp->gumr_l, UCC_SLOW_GUMR_L_DIAG_MASK,
@@ -706,7 +711,7 @@ static void qe_uart_init_ucc(struct uart_qe_port *qe_port)
 		UCC_SLOW_GUMR_H_CDS);
 #endif
 
-	/* Enable rx interrupts  and clear all pending events.  */
+	/* Disable rx interrupts  and clear all pending events.  */
 	out_be16(&uccp->uccm, 0);
 	out_be16(&uccp->ucce, 0xffff);
 	out_be16(&uccp->udsr, 0x7e7e);
@@ -765,6 +770,10 @@ static void qe_uart_init_ucc(struct uart_qe_port *qe_port)
 		cecr_subblock = ucc_slow_get_qe_cr_subblock(qe_port->ucc_num);
 		qe_issue_cmd(QE_INIT_TX_RX, cecr_subblock,
 			QE_CR_PROTOCOL_UNSPECIFIED, 0);
+	} else {
+		cecr_subblock = ucc_slow_get_qe_cr_subblock(qe_port->ucc_num);
+		qe_issue_cmd(QE_INIT_TX_RX, cecr_subblock,
+			QE_CR_PROTOCOL_UART, 0);
 	}
 }
 
@@ -1274,6 +1283,7 @@ static int ucc_uart_probe(struct of_device *ofdev,
 	if (!iprop) {
 		iprop = of_get_property(np, "device-id", NULL);
 		if (!iprop) {
+			kfree(qe_port);
 			dev_err(&ofdev->dev, "UCC is unspecified in "
 				"device tree\n");
 			return -EINVAL;

@@ -169,8 +169,8 @@ marvel_irq_noop_return(unsigned int irq)
 	return 0; 
 }
 
-static struct hw_interrupt_type marvel_legacy_irq_type = {
-	.typename	= "LEGACY",
+static struct irq_chip marvel_legacy_irq_type = {
+	.name		= "LEGACY",
 	.startup	= marvel_irq_noop_return,
 	.shutdown	= marvel_irq_noop,
 	.enable		= marvel_irq_noop,
@@ -179,8 +179,8 @@ static struct hw_interrupt_type marvel_legacy_irq_type = {
 	.end		= marvel_irq_noop,
 };
 
-static struct hw_interrupt_type io7_lsi_irq_type = {
-	.typename	= "LSI",
+static struct irq_chip io7_lsi_irq_type = {
+	.name		= "LSI",
 	.startup	= io7_startup_irq,
 	.shutdown	= io7_disable_irq,
 	.enable		= io7_enable_irq,
@@ -189,8 +189,8 @@ static struct hw_interrupt_type io7_lsi_irq_type = {
 	.end		= io7_end_irq,
 };
 
-static struct hw_interrupt_type io7_msi_irq_type = {
-	.typename	= "MSI",
+static struct irq_chip io7_msi_irq_type = {
+	.name		= "MSI",
 	.startup	= io7_startup_irq,
 	.shutdown	= io7_disable_irq,
 	.enable		= io7_enable_irq,
@@ -273,8 +273,8 @@ init_one_io7_msi(struct io7 *io7, unsigned int which, unsigned int where)
 
 static void __init
 init_io7_irqs(struct io7 *io7, 
-	      struct hw_interrupt_type *lsi_ops,
-	      struct hw_interrupt_type *msi_ops)
+	      struct irq_chip *lsi_ops,
+	      struct irq_chip *msi_ops)
 {
 	long base = (io7->pe << MARVEL_IRQ_VEC_PE_SHIFT) + 16;
 	long i;

@@ -31,6 +31,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
+#include <linux/smp_lock.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-ioctl.h>
 #include <media/cx2341x.h>
@@ -57,7 +58,8 @@ MODULE_PARM_DESC(v4l_debug, "enable V4L debug messages");
 
 #define dprintk(level, fmt, arg...)\
 	do { if (v4l_debug >= level) \
-		printk(KERN_DEBUG "%s: " fmt, dev->name , ## arg);\
+		printk(KERN_DEBUG "%s: " fmt, \
+		(dev) ? dev->name : "cx23885[?]", ## arg); \
 	} while (0)
 
 static struct cx23885_tvnorm cx23885_tvnorms[] = {
@@ -628,6 +630,39 @@ int mc417_memory_read(struct cx23885_dev *dev, u32 address, u32 *value)
 	return retval;
 }
 
+void mc417_gpio_set(struct cx23885_dev *dev, u32 mask)
+{
+	u32 val;
+
+	/* Set the gpio value */
+	mc417_register_read(dev, 0x900C, &val);
+	val |= (mask & 0x000ffff);
+	mc417_register_write(dev, 0x900C, val);
+}
+
+void mc417_gpio_clear(struct cx23885_dev *dev, u32 mask)
+{
+	u32 val;
+
+	/* Clear the gpio value */
+	mc417_register_read(dev, 0x900C, &val);
+	val &= ~(mask & 0x0000ffff);
+	mc417_register_write(dev, 0x900C, val);
+}
+
+void mc417_gpio_enable(struct cx23885_dev *dev, u32 mask, int asoutput)
+{
+	u32 val;
+
+	/* Enable GPIO direction bits */
+	mc417_register_read(dev, 0x9020, &val);
+	if (asoutput)
+		val |= (mask & 0x0000ffff);
+	else
+		val &= ~(mask & 0x0000ffff);
+
+	mc417_register_write(dev, 0x9020, val);
+}
 /* ------------------------------------------------------------------ */
 
 /* MPEG encoder API */
@@ -896,7 +931,7 @@ static int cx23885_load_firmware(struct cx23885_dev *dev)
 	if (retval != 0) {
 		printk(KERN_ERR
 			"ERROR: Hotplug firmware request failed (%s).\n",
-			CX2341X_FIRM_ENC_FILENAME);
+			CX23885_FIRM_IMAGE_NAME);
 		printk(KERN_ERR "Please fix your hotplug setup, the board will "
 			"not work without firmware loaded!\n");
 		return -1;
@@ -953,25 +988,8 @@ static int cx23885_load_firmware(struct cx23885_dev *dev)
 	retval |= mc417_register_write(dev, IVTV_REG_HW_BLOCKS,
 		IVTV_CMD_HW_BLOCKS_RST);
 
-	/* Restore GPIO settings, make sure EIO14 is enabled as an output. */
-	dprintk(2, "%s: GPIO output EIO 0-15 was = 0x%x\n",
-		__func__, gpio_output);
-	/* Power-up seems to have GPIOs AFU. This was causing digital side
-	 * to fail at power-up. Seems GPIOs should be set to 0x10ff0411 at
-	 * power-up.
-	 * gpio_output |= (1<<14);
-	 */
-	/* Note: GPIO14 is specific to the HVR1800 here */
-	gpio_output = 0x10ff0411 | (1<<14);
-	retval |= mc417_register_write(dev, 0x9020, gpio_output | (1<<14));
-	dprintk(2, "%s: GPIO output EIO 0-15 now = 0x%x\n",
-		__func__, gpio_output);
-
-	dprintk(1, "%s: GPIO value  EIO 0-15 was = 0x%x\n",
-		__func__, value);
-	value |= (1<<14);
-	dprintk(1, "%s: GPIO value  EIO 0-15 now = 0x%x\n",
-		__func__, value);
+	/* F/W power up disturbs the GPIOs, restore state */
+	retval |= mc417_register_write(dev, 0x9020, gpio_output);
 	retval |= mc417_register_write(dev, 0x900C, value);
 
 	retval |= mc417_register_read(dev, IVTV_REG_VPU, &value);
@@ -1198,20 +1216,15 @@ static int vidioc_enum_input(struct file *file, void *priv,
 	struct cx23885_fh  *fh  = file->private_data;
 	struct cx23885_dev *dev = fh->dev;
 	struct cx23885_input *input;
-	unsigned int n;
+	int n;
 
-	n = i->index;
-
-	if (n >= 4)
+	if (i->index >= 4)
 		return -EINVAL;
 
-	input = &cx23885_boards[dev->board].input[n];
+	input = &cx23885_boards[dev->board].input[i->index];
 
 	if (input->type == 0)
 		return -EINVAL;
-
-	memset(i, 0, sizeof(*i));
-	i->index = n;
 
 	/* FIXME
 	 * strcpy(i->name, input->name); */
@@ -1255,10 +1268,8 @@ static int vidioc_g_tuner(struct file *file, void *priv,
 		return -EINVAL;
 	if (0 != t->index)
 		return -EINVAL;
-	memset(t, 0, sizeof(*t));
 	strcpy(t->name, "Television");
-	cx23885_call_i2c_clients(&dev->i2c_bus[2], VIDIOC_G_TUNER, t);
-	cx23885_call_i2c_clients(&dev->i2c_bus[1], VIDIOC_G_TUNER, t);
+	call_all(dev, tuner, g_tuner, t);
 
 	dprintk(1, "VIDIOC_G_TUNER: tuner type %d\n", t->type);
 
@@ -1275,7 +1286,7 @@ static int vidioc_s_tuner(struct file *file, void *priv,
 		return -EINVAL;
 
 	/* Update the A/V core */
-	cx23885_call_i2c_clients(&dev->i2c_bus[2], VIDIOC_S_TUNER, t);
+	call_all(dev, tuner, s_tuner, t);
 
 	return 0;
 }
@@ -1286,14 +1297,12 @@ static int vidioc_g_frequency(struct file *file, void *priv,
 	struct cx23885_fh  *fh  = file->private_data;
 	struct cx23885_dev *dev = fh->dev;
 
-	memset(f, 0, sizeof(*f));
 	if (UNSET == dev->tuner_type)
 		return -EINVAL;
 	f->type = V4L2_TUNER_ANALOG_TV;
 	f->frequency = dev->freq;
 
-	/* Assumption that tuner is always on bus 1 */
-	cx23885_call_i2c_clients(&dev->i2c_bus[1], VIDIOC_G_FREQUENCY, f);
+	call_all(dev, tuner, g_frequency, f);
 
 	return 0;
 }
@@ -1320,8 +1329,7 @@ static int vidioc_s_frequency(struct file *file, void *priv,
 		return -EINVAL;
 	dev->freq = f->frequency;
 
-	/* Assumption that tuner is always on bus 1 */
-	cx23885_call_i2c_clients(&dev->i2c_bus[1], VIDIOC_S_FREQUENCY, f);
+	call_all(dev, tuner, s_frequency, f);
 
 	cx23885_initialize_codec(dev);
 
@@ -1335,7 +1343,7 @@ static int vidioc_s_ctrl(struct file *file, void *priv,
 	struct cx23885_dev *dev = fh->dev;
 
 	/* Update the A/V core */
-	cx23885_call_i2c_clients(&dev->i2c_bus[2], VIDIOC_S_CTRL, ctl);
+	call_all(dev, core, s_ctrl, ctl);
 	return 0;
 }
 
@@ -1346,7 +1354,6 @@ static int vidioc_querycap(struct file *file, void  *priv,
 	struct cx23885_dev *dev = fh->dev;
 	struct cx23885_tsport  *tsport = &dev->ts1;
 
-	memset(cap, 0, sizeof(*cap));
 	strcpy(cap->driver, dev->name);
 	strlcpy(cap->card, cx23885_boards[tsport->dev->board].name,
 		sizeof(cap->card));
@@ -1366,16 +1373,10 @@ static int vidioc_querycap(struct file *file, void  *priv,
 static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
 					struct v4l2_fmtdesc *f)
 {
-	int index;
-
-	index = f->index;
-	if (index != 0)
+	if (f->index != 0)
 		return -EINVAL;
 
-	memset(f, 0, sizeof(*f));
-	f->index = index;
 	strlcpy(f->description, "MPEG", sizeof(f->description));
-	f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	f->pixelformat = V4L2_PIX_FMT_MPEG;
 
 	return 0;
@@ -1387,8 +1388,6 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 	struct cx23885_fh  *fh  = file->private_data;
 	struct cx23885_dev *dev = fh->dev;
 
-	memset(f, 0, sizeof(*f));
-	f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	f->fmt.pix.pixelformat  = V4L2_PIX_FMT_MPEG;
 	f->fmt.pix.bytesperline = 0;
 	f->fmt.pix.sizeimage    =
@@ -1408,12 +1407,10 @@ static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 	struct cx23885_fh  *fh  = file->private_data;
 	struct cx23885_dev *dev = fh->dev;
 
-	f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	f->fmt.pix.pixelformat  = V4L2_PIX_FMT_MPEG;
 	f->fmt.pix.bytesperline = 0;
 	f->fmt.pix.sizeimage    =
 		dev->ts1.ts_packet_size * dev->ts1.ts_packet_count;
-	f->fmt.pix.sizeimage    =
 	f->fmt.pix.colorspace   = 0;
 	dprintk(1, "VIDIOC_TRY_FMT: w: %d, h: %d, f: %d\n",
 		dev->ts1.width, dev->ts1.height, fh->mpegq.field);
@@ -1426,7 +1423,6 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	struct cx23885_fh  *fh  = file->private_data;
 	struct cx23885_dev *dev = fh->dev;
 
-	f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	f->fmt.pix.pixelformat  = V4L2_PIX_FMT_MPEG;
 	f->fmt.pix.bytesperline = 0;
 	f->fmt.pix.sizeimage    =
@@ -1543,12 +1539,7 @@ static int vidioc_log_status(struct file *file, void *priv)
 	printk(KERN_INFO
 		"%s/2: ============  START LOG STATUS  ============\n",
 	       dev->name);
-	cx23885_call_i2c_clients(&dev->i2c_bus[0], VIDIOC_LOG_STATUS,
-		NULL);
-	cx23885_call_i2c_clients(&dev->i2c_bus[1], VIDIOC_LOG_STATUS,
-		NULL);
-	cx23885_call_i2c_clients(&dev->i2c_bus[2], VIDIOC_LOG_STATUS,
-		NULL);
+	call_all(dev, core, log_status);
 	cx2341x_log_status(&dev->mpeg_params, name);
 	printk(KERN_INFO
 		"%s/2: =============  END LOG STATUS  =============\n",
@@ -1703,6 +1694,7 @@ static struct v4l2_file_operations mpeg_fops = {
 	.read	       = mpeg_read,
 	.poll          = mpeg_poll,
 	.mmap	       = mpeg_mmap,
+	.ioctl	       = video_ioctl2,
 };
 
 static const struct v4l2_ioctl_ops mpeg_ioctl_ops = {
@@ -1739,6 +1731,8 @@ static struct video_device cx23885_mpeg_template = {
 	.fops          = &mpeg_fops,
 	.ioctl_ops     = &mpeg_ioctl_ops,
 	.minor         = -1,
+	.tvnorms       = CX23885_NORMS,
+	.current_norm  = V4L2_STD_NTSC_M,
 };
 
 void cx23885_417_unregister(struct cx23885_dev *dev)
@@ -1769,7 +1763,6 @@ static struct video_device *cx23885_video_dev_alloc(
 	if (NULL == vfd)
 		return NULL;
 	*vfd = *template;
-	vfd->minor   = -1;
 	snprintf(vfd->name, sizeof(vfd->name), "%s %s (%s)", dev->name,
 		type, cx23885_boards[tsport->dev->board].name);
 	vfd->parent  = &pci->dev;
@@ -1810,9 +1803,6 @@ int cx23885_417_register(struct cx23885_dev *dev)
 		printk(KERN_INFO "%s: can't register mpeg device\n", dev->name);
 		return err;
 	}
-
-	/* Initialize MC417 registers */
-	cx23885_mc417_init(dev);
 
 	printk(KERN_INFO "%s: registered device video%d [mpeg]\n",
 	       dev->name, dev->v4l_device->num);

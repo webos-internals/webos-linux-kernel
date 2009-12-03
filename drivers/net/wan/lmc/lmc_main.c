@@ -89,7 +89,8 @@ MODULE_DEVICE_TABLE(pci, lmc_pci_tbl);
 MODULE_LICENSE("GPL v2");
 
 
-static int lmc_start_xmit(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t lmc_start_xmit(struct sk_buff *skb,
+					struct net_device *dev);
 static int lmc_rx (struct net_device *dev);
 static int lmc_open(struct net_device *dev);
 static int lmc_close(struct net_device *dev);
@@ -806,6 +807,16 @@ static int lmc_attach(struct net_device *dev, unsigned short encoding,
 	return -EINVAL;
 }
 
+static const struct net_device_ops lmc_ops = {
+	.ndo_open       = lmc_open,
+	.ndo_stop       = lmc_close,
+	.ndo_change_mtu = hdlc_change_mtu,
+	.ndo_start_xmit = hdlc_start_xmit,
+	.ndo_do_ioctl   = lmc_ioctl,
+	.ndo_tx_timeout = lmc_driver_timeout,
+	.ndo_get_stats  = lmc_get_stats,
+};
+
 static int __devinit lmc_init_one(struct pci_dev *pdev,
 				  const struct pci_device_id *ent)
 {
@@ -849,11 +860,7 @@ static int __devinit lmc_init_one(struct pci_dev *pdev,
 	dev->type = ARPHRD_HDLC;
 	dev_to_hdlc(dev)->xmit = lmc_start_xmit;
 	dev_to_hdlc(dev)->attach = lmc_attach;
-	dev->open = lmc_open;
-	dev->stop = lmc_close;
-	dev->get_stats = lmc_get_stats;
-	dev->do_ioctl = lmc_ioctl;
-	dev->tx_timeout = lmc_driver_timeout;
+	dev->netdev_ops = &lmc_ops;
 	dev->watchdog_timeo = HZ; /* 1 second */
 	dev->tx_queue_len = 100;
 	sc->lmc_device = dev;
@@ -1058,9 +1065,6 @@ static int lmc_open(struct net_device *dev)
 
     if ((err = lmc_proto_open(sc)) != 0)
 	    return err;
-
-    dev->do_ioctl = lmc_ioctl;
-
 
     netif_start_queue(dev);
     sc->extra_stats.tx_tbusy0++;
@@ -1420,12 +1424,12 @@ lmc_int_fail_out:
     return IRQ_RETVAL(handled);
 }
 
-static int lmc_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t lmc_start_xmit(struct sk_buff *skb,
+					struct net_device *dev)
 {
     lmc_softc_t *sc = dev_to_sc(dev);
     u32 flag;
     int entry;
-    int ret = 0;
     unsigned long flags;
 
     lmc_trace(dev, "lmc_start_xmit in");
@@ -1507,7 +1511,7 @@ static int lmc_start_xmit(struct sk_buff *skb, struct net_device *dev)
     spin_unlock_irqrestore(&sc->lmc_lock, flags);
 
     lmc_trace(dev, "lmc_start_xmit_out");
-    return ret;
+    return NETDEV_TX_OK;
 }
 
 
@@ -1654,7 +1658,7 @@ static int lmc_rx(struct net_device *dev)
             }
             skb_copy_from_linear_data(skb, skb_put(nsb, len), len);
             
-            nsb->protocol = lmc_proto_type(sc, skb);
+            nsb->protocol = lmc_proto_type(sc, nsb);
             skb_reset_mac_header(nsb);
             /* skb_reset_network_header(nsb); */
             nsb->dev = dev;
@@ -1894,10 +1898,11 @@ static void lmc_softreset (lmc_softc_t * const sc) /*fold00*/
     /*
      * Sets end of ring
      */
-    sc->lmc_rxring[i - 1].length |= 0x02000000; /* Set end of buffers flag */
-    sc->lmc_rxring[i - 1].buffer2 = virt_to_bus (&sc->lmc_rxring[0]); /* Point back to the start */
+    if (i != 0) {
+        sc->lmc_rxring[i - 1].length |= 0x02000000; /* Set end of buffers flag */
+        sc->lmc_rxring[i - 1].buffer2 = virt_to_bus(&sc->lmc_rxring[0]); /* Point back to the start */
+    }
     LMC_CSR_WRITE (sc, csr_rxlist, virt_to_bus (sc->lmc_rxring)); /* write base address */
-
 
     /* Initialize the transmit rings and buffers */
     for (i = 0; i < LMC_TXDESCS; i++)

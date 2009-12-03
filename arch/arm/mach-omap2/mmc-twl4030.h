@@ -9,12 +9,19 @@
 struct twl4030_hsmmc_info {
 	u8	mmc;		/* controller 1/2/3 */
 	u8	wires;		/* 1/4/8 wires */
+	bool	transceiver;	/* MMC-2 option */
+	bool	ext_clock;	/* use external pin for input clock */
+	bool	cover_only;	/* No card detect - just cover switch */
+	bool	nonremovable;	/* Nonremovable e.g. eMMC */
+	bool	power_saving;	/* Try to sleep or power off when possible */
 	int	gpio_cd;	/* or -EINVAL */
 	int	gpio_wp;	/* or -EINVAL */
-	int	ext_clock:1;	/* use external pin for input clock */
+	char	*name;		/* or NULL for default */
+	struct device *dev;	/* returned: pointer to mmc adapter */
+	int	ocr_mask;	/* temporary HACK */
 };
 
-#if	defined(CONFIG_TWL4030_CORE) && \
+#if defined(CONFIG_REGULATOR) && \
 	(defined(CONFIG_MMC_OMAP) || defined(CONFIG_MMC_OMAP_MODULE) || \
 	 defined(CONFIG_MMC_OMAP_HS) || defined(CONFIG_MMC_OMAP_HS_MODULE))
 

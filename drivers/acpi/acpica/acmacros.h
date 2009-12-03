@@ -292,10 +292,6 @@
 #define ACPI_GET_DESCRIPTOR_TYPE(d)     (((union acpi_descriptor *)(void *)(d))->common.descriptor_type)
 #define ACPI_SET_DESCRIPTOR_TYPE(d, t)  (((union acpi_descriptor *)(void *)(d))->common.descriptor_type = t)
 
-/* Macro to test the object type */
-
-#define ACPI_GET_OBJECT_TYPE(d)         (((union acpi_operand_object *)(void *)(d))->common.type)
-
 /*
  * Macros for the master AML opcode table
  */
@@ -344,6 +340,7 @@
  */
 #define ACPI_ERROR_NAMESPACE(s, e)      acpi_ns_report_error (AE_INFO, s, e);
 #define ACPI_ERROR_METHOD(s, n, p, e)   acpi_ns_report_method_error (AE_INFO, s, n, p, e);
+#define ACPI_WARN_PREDEFINED(plist)     acpi_ut_predefined_warning plist
 
 #else
 
@@ -351,6 +348,7 @@
 
 #define ACPI_ERROR_NAMESPACE(s, e)
 #define ACPI_ERROR_METHOD(s, n, p, e)
+#define ACPI_WARN_PREDEFINED(plist)
 #endif		/* ACPI_NO_ERROR_MESSAGES */
 
 /*

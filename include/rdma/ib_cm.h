@@ -314,12 +314,12 @@ struct ib_cm_id *ib_create_cm_id(struct ib_device *device,
  */
 void ib_destroy_cm_id(struct ib_cm_id *cm_id);
 
-#define IB_SERVICE_ID_AGN_MASK	__constant_cpu_to_be64(0xFF00000000000000ULL)
-#define IB_CM_ASSIGN_SERVICE_ID __constant_cpu_to_be64(0x0200000000000000ULL)
-#define IB_CMA_SERVICE_ID	__constant_cpu_to_be64(0x0000000001000000ULL)
-#define IB_CMA_SERVICE_ID_MASK	__constant_cpu_to_be64(0xFFFFFFFFFF000000ULL)
-#define IB_SDP_SERVICE_ID	__constant_cpu_to_be64(0x0000000000010000ULL)
-#define IB_SDP_SERVICE_ID_MASK	__constant_cpu_to_be64(0xFFFFFFFFFFFF0000ULL)
+#define IB_SERVICE_ID_AGN_MASK	cpu_to_be64(0xFF00000000000000ULL)
+#define IB_CM_ASSIGN_SERVICE_ID	cpu_to_be64(0x0200000000000000ULL)
+#define IB_CMA_SERVICE_ID	cpu_to_be64(0x0000000001000000ULL)
+#define IB_CMA_SERVICE_ID_MASK	cpu_to_be64(0xFFFFFFFFFF000000ULL)
+#define IB_SDP_SERVICE_ID	cpu_to_be64(0x0000000000010000ULL)
+#define IB_SDP_SERVICE_ID_MASK	cpu_to_be64(0xFFFFFFFFFFFF0000ULL)
 
 struct ib_cm_compare_data {
 	u8  data[IB_CM_COMPARE_SIZE];
@@ -482,7 +482,7 @@ int ib_send_cm_rej(struct ib_cm_id *cm_id,
  *   message.
  * @cm_id: Connection identifier associated with the connection message.
  * @service_timeout: The lower 5-bits specify the maximum time required for
- *   the sender to reply to to the connection message.  The upper 3-bits
+ *   the sender to reply to the connection message.  The upper 3-bits
  *   specify additional control flags.
  * @private_data: Optional user-defined private data sent with the
  *   message receipt acknowledgement.

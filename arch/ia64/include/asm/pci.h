@@ -17,7 +17,6 @@
  * loader.
  */
 #define pcibios_assign_all_busses()     0
-#define pcibios_scan_all_fns(a, b)	0
 
 #define PCIBIOS_MIN_IO		0x1000
 #define PCIBIOS_MIN_MEM		0x10000000
@@ -147,8 +146,6 @@ pcibios_select_root(struct pci_dev *pdev, struct resource *res)
 
 	return root;
 }
-
-#define pcibios_scan_all_fns(a, b)	0
 
 #define HAVE_ARCH_PCI_GET_LEGACY_IDE_IRQ
 static inline int pci_get_legacy_ide_irq(struct pci_dev *dev, int channel)

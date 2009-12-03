@@ -1,32 +1,7 @@
 /*
- * File:         include/asm-blackfin/mach-bf538/blackfin.h
- * Based on:
- * Author:
+ * Copyright 2008-2009 Analog Devices Inc.
  *
- * Created:
- * Description:
- *
- * Rev:
- *
- * Modified:
- *
- *
- * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; see the file COPYING.
- * If not, write to the Free Software Foundation,
- * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _MACH_BLACKFIN_H_
@@ -35,7 +10,6 @@
 #define BF538_FAMILY
 
 #include "bf538.h"
-#include "mem_map.h"
 #include "defBF539.h"
 #include "anomaly.h"
 
@@ -47,11 +21,6 @@
 #include "cdefBF539.h"
 #endif
 #endif
-
-/* UART_IIR Register */
-#define STATUS(x)	((x << 1) & 0x06)
-#define STATUS_P1	0x02
-#define STATUS_P0	0x01
 
 #define BFIN_UART_NR_PORTS	3
 
@@ -67,30 +36,6 @@
 #define OFFSET_MSR              0x18	/* Modem Status Register                */
 #define OFFSET_SCR              0x1C	/* SCR Scratch Register                 */
 #define OFFSET_GCTL             0x24	/* Global Control Register              */
-
-
-#define bfin_write_MDMA_D0_IRQ_STATUS	bfin_write_MDMA0_D0_IRQ_STATUS
-#define bfin_write_MDMA_D0_START_ADDR   bfin_write_MDMA0_D0_START_ADDR
-#define bfin_write_MDMA_S0_START_ADDR   bfin_write_MDMA0_S0_START_ADDR
-#define bfin_write_MDMA_D0_X_COUNT      bfin_write_MDMA0_D0_X_COUNT
-#define bfin_write_MDMA_S0_X_COUNT      bfin_write_MDMA0_S0_X_COUNT
-#define bfin_write_MDMA_D0_Y_COUNT      bfin_write_MDMA0_D0_Y_COUNT
-#define bfin_write_MDMA_S0_Y_COUNT      bfin_write_MDMA0_S0_Y_COUNT
-#define bfin_write_MDMA_D0_X_MODIFY     bfin_write_MDMA0_D0_X_MODIFY
-#define bfin_write_MDMA_S0_X_MODIFY     bfin_write_MDMA0_S0_X_MODIFY
-#define bfin_write_MDMA_D0_Y_MODIFY     bfin_write_MDMA0_D0_Y_MODIFY
-#define bfin_write_MDMA_S0_Y_MODIFY     bfin_write_MDMA0_S0_Y_MODIFY
-#define bfin_write_MDMA_S0_CONFIG       bfin_write_MDMA0_S0_CONFIG
-#define bfin_write_MDMA_D0_CONFIG       bfin_write_MDMA0_D0_CONFIG
-#define bfin_read_MDMA_S0_CONFIG        bfin_read_MDMA0_S0_CONFIG
-#define bfin_read_MDMA_D0_IRQ_STATUS    bfin_read_MDMA0_D0_IRQ_STATUS
-#define bfin_write_MDMA_S0_IRQ_STATUS   bfin_write_MDMA0_S0_IRQ_STATUS
-
-
-/* DPMC*/
-#define bfin_read_STOPCK_OFF() bfin_read_STOPCK()
-#define bfin_write_STOPCK_OFF(val) bfin_write_STOPCK(val)
-#define STOPCK_OFF STOPCK
 
 /* PLL_DIV Masks													*/
 #define CCLK_DIV1 CSEL_DIV1	/*          CCLK = VCO / 1                                  */

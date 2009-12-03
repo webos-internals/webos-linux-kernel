@@ -120,8 +120,8 @@ xfs_btree_check_sblock(
 			XFS_RANDOM_BTREE_CHECK_SBLOCK))) {
 		if (bp)
 			xfs_buftrace("SBTREE ERROR", bp);
-		XFS_ERROR_REPORT("xfs_btree_check_sblock", XFS_ERRLEVEL_LOW,
-				 cur->bc_mp);
+		XFS_CORRUPTION_ERROR("xfs_btree_check_sblock",
+			XFS_ERRLEVEL_LOW, cur->bc_mp, block);
 		return XFS_ERROR(EFSCORRUPTED);
 	}
 	return 0;
@@ -640,46 +640,6 @@ xfs_btree_read_bufl(
 	ASSERT(!bp || !XFS_BUF_GETERROR(bp));
 	if (bp != NULL) {
 		XFS_BUF_SET_VTYPE_REF(bp, B_FS_MAP, refval);
-	}
-	*bpp = bp;
-	return 0;
-}
-
-/*
- * Get a buffer for the block, return it read in.
- * Short-form addressing.
- */
-int					/* error */
-xfs_btree_read_bufs(
-	xfs_mount_t	*mp,		/* file system mount point */
-	xfs_trans_t	*tp,		/* transaction pointer */
-	xfs_agnumber_t	agno,		/* allocation group number */
-	xfs_agblock_t	agbno,		/* allocation group block number */
-	uint		lock,		/* lock flags for read_buf */
-	xfs_buf_t	**bpp,		/* buffer for agno/agbno */
-	int		refval)		/* ref count value for buffer */
-{
-	xfs_buf_t	*bp;		/* return value */
-	xfs_daddr_t	d;		/* real disk block address */
-	int		error;
-
-	ASSERT(agno != NULLAGNUMBER);
-	ASSERT(agbno != NULLAGBLOCK);
-	d = XFS_AGB_TO_DADDR(mp, agno, agbno);
-	if ((error = xfs_trans_read_buf(mp, tp, mp->m_ddev_targp, d,
-					mp->m_bsize, lock, &bp))) {
-		return error;
-	}
-	ASSERT(!bp || !XFS_BUF_GETERROR(bp));
-	if (bp != NULL) {
-		switch (refval) {
-		case XFS_ALLOC_BTREE_REF:
-			XFS_BUF_SET_VTYPE_REF(bp, B_FS_MAP, refval);
-			break;
-		case XFS_INO_BTREE_REF:
-			XFS_BUF_SET_VTYPE_REF(bp, B_FS_INOMAP, refval);
-			break;
-		}
 	}
 	*bpp = bp;
 	return 0;
@@ -1883,7 +1843,7 @@ xfs_btree_lshift(
 
 	/*
 	 * We add one entry to the left side and remove one for the right side.
-	 * Accout for it here, the changes will be updated on disk and logged
+	 * Account for it here, the changes will be updated on disk and logged
 	 * later.
 	 */
 	lrecs++;
@@ -2951,7 +2911,7 @@ error0:
  * inode we have to copy the single block it was pointing to into the
  * inode.
  */
-int
+STATIC int
 xfs_btree_kill_iroot(
 	struct xfs_btree_cur	*cur)
 {
@@ -3535,7 +3495,7 @@ xfs_btree_delrec(
 	XFS_BTREE_STATS_INC(cur, join);
 
 	/*
-	 * Fix up the the number of records and right block pointer in the
+	 * Fix up the number of records and right block pointer in the
 	 * surviving block, and log it.
 	 */
 	xfs_btree_set_numrecs(left, lrecs + rrecs);

@@ -30,12 +30,14 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/init.h>
+#include <linux/sched.h>
 #include <linux/serial.h>
 #include <linux/delay.h>
 #include <linux/ctype.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/slab.h>
+#include <linux/smp_lock.h>
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/uaccess.h>
@@ -745,7 +747,7 @@ static int epca_carrier_raised(struct tty_port *port)
 	return 0;
 }
 
-static void epca_raise_dtr_rts(struct tty_port *port)
+static void epca_dtr_rts(struct tty_port *port, int onoff)
 {
 }
 
@@ -925,7 +927,7 @@ static const struct tty_operations pc_ops = {
 
 static const struct tty_port_operations epca_port_ops = {
 	.carrier_raised = epca_carrier_raised,
-	.raise_dtr_rts = epca_raise_dtr_rts,
+	.dtr_rts = epca_dtr_rts,
 };
 
 static int info_open(struct tty_struct *tty, struct file *filp)
@@ -1518,7 +1520,7 @@ static void doevent(int crd)
 		if (event & MODEMCHG_IND) {
 			/* A modem signal change has been indicated */
 			ch->imodem = mstat;
-			if (test_bit(ASYNC_CHECK_CD, &ch->port.flags)) {
+			if (test_bit(ASYNCB_CHECK_CD, &ch->port.flags)) {
 				/* We are now receiving dcd */
 				if (mstat & ch->dcd)
 					wake_up_interruptible(&ch->port.open_wait);
@@ -1765,9 +1767,9 @@ static void epcaparam(struct tty_struct *tty, struct channel *ch)
 		 * that the driver will wait on carrier detect.
 		 */
 		if (ts->c_cflag & CLOCAL)
-			clear_bit(ASYNC_CHECK_CD, &ch->port.flags);
+			clear_bit(ASYNCB_CHECK_CD, &ch->port.flags);
 		else
-			set_bit(ASYNC_CHECK_CD, &ch->port.flags);
+			set_bit(ASYNCB_CHECK_CD, &ch->port.flags);
 		mval = ch->m_dtr | ch->m_rts;
 	} /* End CBAUD not detected */
 	iflag = termios2digi_i(ch, ts->c_iflag);
@@ -2114,8 +2116,8 @@ static int pc_ioctl(struct tty_struct *tty, struct file *file,
 			tty_wait_until_sent(tty, 0);
 		} else {
 			/* ldisc lock already held in ioctl */
-			if (tty->ldisc.ops->flush_buffer)
-				tty->ldisc.ops->flush_buffer(tty);
+			if (tty->ldisc->ops->flush_buffer)
+				tty->ldisc->ops->flush_buffer(tty);
 		}
 		unlock_kernel();
 		/* Fall Thru */
@@ -2238,13 +2240,14 @@ static void do_softint(struct work_struct *work)
 	struct channel *ch = container_of(work, struct channel, tqueue);
 	/* Called in response to a modem change event */
 	if (ch && ch->magic == EPCA_MAGIC) {
-		struct tty_struct *tty = tty_port_tty_get(&ch->port);;
+		struct tty_struct *tty = tty_port_tty_get(&ch->port);
 
 		if (tty && tty->driver_data) {
 			if (test_and_clear_bit(EPCA_EVENT_HANGUP, &ch->event)) {
 				tty_hangup(tty);
 				wake_up_interruptible(&ch->port.open_wait);
-				clear_bit(ASYNC_NORMAL_ACTIVE, &ch->port.flags);
+				clear_bit(ASYNCB_NORMAL_ACTIVE,
+						&ch->port.flags);
 			}
 		}
 		tty_kref_put(tty);

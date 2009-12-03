@@ -53,6 +53,7 @@
 #include "super.h"
 #include "uptodate.h"
 #include "quota.h"
+#include "refcounttree.h"
 
 #include "buffer_head_io.h"
 
@@ -92,6 +93,9 @@ struct ocfs2_unblock_ctl {
 	enum ocfs2_unblock_action unblock_action;
 };
 
+/* Lockdep class keys */
+struct lock_class_key lockdep_keys[OCFS2_NUM_LOCK_TYPES];
+
 static int ocfs2_check_meta_downconvert(struct ocfs2_lock_res *lockres,
 					int new_level);
 static void ocfs2_set_meta_lvb(struct ocfs2_lock_res *lockres);
@@ -106,6 +110,11 @@ static void ocfs2_dentry_post_unlock(struct ocfs2_super *osb,
 				     struct ocfs2_lock_res *lockres);
 
 static void ocfs2_set_qinfo_lvb(struct ocfs2_lock_res *lockres);
+
+static int ocfs2_check_refcount_downconvert(struct ocfs2_lock_res *lockres,
+					    int new_level);
+static int ocfs2_refcount_convert_worker(struct ocfs2_lock_res *lockres,
+					 int blocking);
 
 #define mlog_meta_lvb(__level, __lockres) ocfs2_dump_meta_lvb_info(__level, __PRETTY_FUNCTION__, __LINE__, __lockres)
 
@@ -244,6 +253,14 @@ static struct ocfs2_lock_res_ops ocfs2_rename_lops = {
 	.flags		= 0,
 };
 
+static struct ocfs2_lock_res_ops ocfs2_nfs_sync_lops = {
+	.flags		= 0,
+};
+
+static struct ocfs2_lock_res_ops ocfs2_orphan_scan_lops = {
+	.flags		= LOCK_TYPE_REQUIRES_REFRESH|LOCK_TYPE_USES_LVB,
+};
+
 static struct ocfs2_lock_res_ops ocfs2_dentry_lops = {
 	.get_osb	= ocfs2_get_dentry_osb,
 	.post_unlock	= ocfs2_dentry_post_unlock,
@@ -265,6 +282,12 @@ static struct ocfs2_lock_res_ops ocfs2_qinfo_lops = {
 	.set_lvb	= ocfs2_set_qinfo_lvb,
 	.get_osb	= ocfs2_get_qinfo_osb,
 	.flags		= LOCK_TYPE_REQUIRES_REFRESH | LOCK_TYPE_USES_LVB,
+};
+
+static struct ocfs2_lock_res_ops ocfs2_refcount_block_lops = {
+	.check_downconvert = ocfs2_check_refcount_downconvert,
+	.downconvert_worker = ocfs2_refcount_convert_worker,
+	.flags		= 0,
 };
 
 static inline int ocfs2_is_inode_lock(struct ocfs2_lock_res *lockres)
@@ -295,6 +318,12 @@ static inline struct ocfs2_mem_dqinfo *ocfs2_lock_res_qinfo(struct ocfs2_lock_re
 	return (struct ocfs2_mem_dqinfo *)lockres->l_priv;
 }
 
+static inline struct ocfs2_refcount_tree *
+ocfs2_lock_res_refcount_tree(struct ocfs2_lock_res *res)
+{
+	return container_of(res, struct ocfs2_refcount_tree, rf_lockres);
+}
+
 static inline struct ocfs2_super *ocfs2_get_lockres_osb(struct ocfs2_lock_res *lockres)
 {
 	if (lockres->l_ops->get_osb)
@@ -309,9 +338,16 @@ static int ocfs2_lock_create(struct ocfs2_super *osb,
 			     u32 dlm_flags);
 static inline int ocfs2_may_continue_on_blocked_lock(struct ocfs2_lock_res *lockres,
 						     int wanted);
-static void ocfs2_cluster_unlock(struct ocfs2_super *osb,
-				 struct ocfs2_lock_res *lockres,
-				 int level);
+static void __ocfs2_cluster_unlock(struct ocfs2_super *osb,
+				   struct ocfs2_lock_res *lockres,
+				   int level, unsigned long caller_ip);
+static inline void ocfs2_cluster_unlock(struct ocfs2_super *osb,
+					struct ocfs2_lock_res *lockres,
+					int level)
+{
+	__ocfs2_cluster_unlock(osb, lockres, level, _RET_IP_);
+}
+
 static inline void ocfs2_generic_handle_downconvert_action(struct ocfs2_lock_res *lockres);
 static inline void ocfs2_generic_handle_convert_action(struct ocfs2_lock_res *lockres);
 static inline void ocfs2_generic_handle_attach_action(struct ocfs2_lock_res *lockres);
@@ -481,6 +517,13 @@ static void ocfs2_lock_res_init_common(struct ocfs2_super *osb,
 	ocfs2_add_lockres_tracking(res, osb->osb_dlm_debug);
 
 	ocfs2_init_lock_stats(res);
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	if (type != OCFS2_LOCK_TYPE_OPEN)
+		lockdep_init_map(&res->l_lockdep_map, ocfs2_lock_type_strings[type],
+				 &lockdep_keys[type], 0);
+	else
+		res->l_lockdep_map.key = NULL;
+#endif
 }
 
 void ocfs2_lock_res_init_once(struct ocfs2_lock_res *res)
@@ -622,6 +665,26 @@ static void ocfs2_rename_lock_res_init(struct ocfs2_lock_res *res,
 				   &ocfs2_rename_lops, osb);
 }
 
+static void ocfs2_nfs_sync_lock_res_init(struct ocfs2_lock_res *res,
+					 struct ocfs2_super *osb)
+{
+	/* nfs_sync lockres doesn't come from a slab so we call init
+	 * once on it manually.  */
+	ocfs2_lock_res_init_once(res);
+	ocfs2_build_lock_name(OCFS2_LOCK_TYPE_NFS_SYNC, 0, 0, res->l_name);
+	ocfs2_lock_res_init_common(osb, res, OCFS2_LOCK_TYPE_NFS_SYNC,
+				   &ocfs2_nfs_sync_lops, osb);
+}
+
+static void ocfs2_orphan_scan_lock_res_init(struct ocfs2_lock_res *res,
+					    struct ocfs2_super *osb)
+{
+	ocfs2_lock_res_init_once(res);
+	ocfs2_build_lock_name(OCFS2_LOCK_TYPE_ORPHAN_SCAN, 0, 0, res->l_name);
+	ocfs2_lock_res_init_common(osb, res, OCFS2_LOCK_TYPE_ORPHAN_SCAN,
+				   &ocfs2_orphan_scan_lops, osb);
+}
+
 void ocfs2_file_lock_res_init(struct ocfs2_lock_res *lockres,
 			      struct ocfs2_file_private *fp)
 {
@@ -646,6 +709,17 @@ void ocfs2_qinfo_lock_res_init(struct ocfs2_lock_res *lockres,
 	ocfs2_lock_res_init_common(OCFS2_SB(info->dqi_gi.dqi_sb), lockres,
 				   OCFS2_LOCK_TYPE_QINFO, &ocfs2_qinfo_lops,
 				   info);
+}
+
+void ocfs2_refcount_lock_res_init(struct ocfs2_lock_res *lockres,
+				  struct ocfs2_super *osb, u64 ref_blkno,
+				  unsigned int generation)
+{
+	ocfs2_lock_res_init_once(lockres);
+	ocfs2_build_lock_name(OCFS2_LOCK_TYPE_REFCOUNT, ref_blkno,
+			      generation, lockres->l_name);
+	ocfs2_lock_res_init_common(osb, lockres, OCFS2_LOCK_TYPE_REFCOUNT,
+				   &ocfs2_refcount_block_lops, osb);
 }
 
 void ocfs2_lock_res_free(struct ocfs2_lock_res *res)
@@ -1224,11 +1298,13 @@ static int ocfs2_wait_for_mask_interruptible(struct ocfs2_mask_waiter *mw,
 	return ret;
 }
 
-static int ocfs2_cluster_lock(struct ocfs2_super *osb,
-			      struct ocfs2_lock_res *lockres,
-			      int level,
-			      u32 lkm_flags,
-			      int arg_flags)
+static int __ocfs2_cluster_lock(struct ocfs2_super *osb,
+				struct ocfs2_lock_res *lockres,
+				int level,
+				u32 lkm_flags,
+				int arg_flags,
+				int l_subclass,
+				unsigned long caller_ip)
 {
 	struct ocfs2_mask_waiter mw;
 	int wait, catch_signals = !(osb->s_mount_opt & OCFS2_MOUNT_NOINTR);
@@ -1371,13 +1447,37 @@ out:
 	}
 	ocfs2_update_lock_stats(lockres, level, &mw, ret);
 
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	if (!ret && lockres->l_lockdep_map.key != NULL) {
+		if (level == DLM_LOCK_PR)
+			rwsem_acquire_read(&lockres->l_lockdep_map, l_subclass,
+				!!(arg_flags & OCFS2_META_LOCK_NOQUEUE),
+				caller_ip);
+		else
+			rwsem_acquire(&lockres->l_lockdep_map, l_subclass,
+				!!(arg_flags & OCFS2_META_LOCK_NOQUEUE),
+				caller_ip);
+	}
+#endif
 	mlog_exit(ret);
 	return ret;
 }
 
-static void ocfs2_cluster_unlock(struct ocfs2_super *osb,
-				 struct ocfs2_lock_res *lockres,
-				 int level)
+static inline int ocfs2_cluster_lock(struct ocfs2_super *osb,
+				     struct ocfs2_lock_res *lockres,
+				     int level,
+				     u32 lkm_flags,
+				     int arg_flags)
+{
+	return __ocfs2_cluster_lock(osb, lockres, level, lkm_flags, arg_flags,
+				    0, _RET_IP_);
+}
+
+
+static void __ocfs2_cluster_unlock(struct ocfs2_super *osb,
+				   struct ocfs2_lock_res *lockres,
+				   int level,
+				   unsigned long caller_ip)
 {
 	unsigned long flags;
 
@@ -1386,6 +1486,10 @@ static void ocfs2_cluster_unlock(struct ocfs2_super *osb,
 	ocfs2_dec_holders(lockres, level);
 	ocfs2_downconvert_on_unlock(osb, lockres);
 	spin_unlock_irqrestore(&lockres->l_lock, flags);
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	if (lockres->l_lockdep_map.key != NULL)
+		rwsem_release(&lockres->l_lockdep_map, 1, caller_ip);
+#endif
 	mlog_exit_void();
 }
 
@@ -1473,8 +1577,10 @@ int ocfs2_rw_lock(struct inode *inode, int write)
 	     (unsigned long long)OCFS2_I(inode)->ip_blkno,
 	     write ? "EXMODE" : "PRMODE");
 
-	if (ocfs2_mount_local(osb))
+	if (ocfs2_mount_local(osb)) {
+		mlog_exit(0);
 		return 0;
+	}
 
 	lockres = &OCFS2_I(inode)->ip_rw_lockres;
 
@@ -1957,7 +2063,8 @@ static inline int ocfs2_meta_lvb_is_trustable(struct inode *inode,
 {
 	struct ocfs2_meta_lvb *lvb = ocfs2_dlm_lvb(&lockres->l_lksb);
 
-	if (lvb->lvb_version == OCFS2_LVB_VERSION
+	if (ocfs2_dlm_lvb_valid(&lockres->l_lksb)
+	    && lvb->lvb_version == OCFS2_LVB_VERSION
 	    && be32_to_cpu(lvb->lvb_igeneration) == inode->i_generation)
 		return 1;
 	return 0;
@@ -2051,7 +2158,7 @@ static int ocfs2_inode_lock_update(struct inode *inode,
 
 	/* This will discard any caching information we might have had
 	 * for the inode metadata. */
-	ocfs2_metadata_cache_purge(inode);
+	ocfs2_metadata_cache_purge(INODE_CACHE(inode));
 
 	ocfs2_extent_map_trunc(inode, 0);
 
@@ -2130,10 +2237,11 @@ static int ocfs2_assign_bh(struct inode *inode,
  * returns < 0 error if the callback will never be called, otherwise
  * the result of the lock will be communicated via the callback.
  */
-int ocfs2_inode_lock_full(struct inode *inode,
-			 struct buffer_head **ret_bh,
-			 int ex,
-			 int arg_flags)
+int ocfs2_inode_lock_full_nested(struct inode *inode,
+				 struct buffer_head **ret_bh,
+				 int ex,
+				 int arg_flags,
+				 int subclass)
 {
 	int status, level, acquired;
 	u32 dlm_flags;
@@ -2171,7 +2279,8 @@ int ocfs2_inode_lock_full(struct inode *inode,
 	if (arg_flags & OCFS2_META_LOCK_NOQUEUE)
 		dlm_flags |= DLM_LKF_NOQUEUE;
 
-	status = ocfs2_cluster_lock(osb, lockres, level, dlm_flags, arg_flags);
+	status = __ocfs2_cluster_lock(osb, lockres, level, dlm_flags,
+				      arg_flags, subclass, _RET_IP_);
 	if (status < 0) {
 		if (status != -EAGAIN && status != -EIOCBRETRY)
 			mlog_errno(status);
@@ -2337,6 +2446,47 @@ void ocfs2_inode_unlock(struct inode *inode,
 	mlog_exit_void();
 }
 
+int ocfs2_orphan_scan_lock(struct ocfs2_super *osb, u32 *seqno)
+{
+	struct ocfs2_lock_res *lockres;
+	struct ocfs2_orphan_scan_lvb *lvb;
+	int status = 0;
+
+	if (ocfs2_is_hard_readonly(osb))
+		return -EROFS;
+
+	if (ocfs2_mount_local(osb))
+		return 0;
+
+	lockres = &osb->osb_orphan_scan.os_lockres;
+	status = ocfs2_cluster_lock(osb, lockres, DLM_LOCK_EX, 0, 0);
+	if (status < 0)
+		return status;
+
+	lvb = ocfs2_dlm_lvb(&lockres->l_lksb);
+	if (ocfs2_dlm_lvb_valid(&lockres->l_lksb) &&
+	    lvb->lvb_version == OCFS2_ORPHAN_LVB_VERSION)
+		*seqno = be32_to_cpu(lvb->lvb_os_seqno);
+	else
+		*seqno = osb->osb_orphan_scan.os_seqno + 1;
+
+	return status;
+}
+
+void ocfs2_orphan_scan_unlock(struct ocfs2_super *osb, u32 seqno)
+{
+	struct ocfs2_lock_res *lockres;
+	struct ocfs2_orphan_scan_lvb *lvb;
+
+	if (!ocfs2_is_hard_readonly(osb) && !ocfs2_mount_local(osb)) {
+		lockres = &osb->osb_orphan_scan.os_lockres;
+		lvb = ocfs2_dlm_lvb(&lockres->l_lksb);
+		lvb->lvb_version = OCFS2_ORPHAN_LVB_VERSION;
+		lvb->lvb_os_seqno = cpu_to_be32(seqno);
+		ocfs2_cluster_unlock(osb, lockres, DLM_LOCK_EX);
+	}
+}
+
 int ocfs2_super_lock(struct ocfs2_super *osb,
 		     int ex)
 {
@@ -2415,6 +2565,34 @@ void ocfs2_rename_unlock(struct ocfs2_super *osb)
 
 	if (!ocfs2_mount_local(osb))
 		ocfs2_cluster_unlock(osb, lockres, DLM_LOCK_EX);
+}
+
+int ocfs2_nfs_sync_lock(struct ocfs2_super *osb, int ex)
+{
+	int status;
+	struct ocfs2_lock_res *lockres = &osb->osb_nfs_sync_lockres;
+
+	if (ocfs2_is_hard_readonly(osb))
+		return -EROFS;
+
+	if (ocfs2_mount_local(osb))
+		return 0;
+
+	status = ocfs2_cluster_lock(osb, lockres, ex ? LKM_EXMODE : LKM_PRMODE,
+				    0, 0);
+	if (status < 0)
+		mlog(ML_ERROR, "lock on nfs sync lock failed %d\n", status);
+
+	return status;
+}
+
+void ocfs2_nfs_sync_unlock(struct ocfs2_super *osb, int ex)
+{
+	struct ocfs2_lock_res *lockres = &osb->osb_nfs_sync_lockres;
+
+	if (!ocfs2_mount_local(osb))
+		ocfs2_cluster_unlock(osb, lockres,
+				     ex ? LKM_EXMODE : LKM_PRMODE);
 }
 
 int ocfs2_dentry_lock(struct dentry *dentry, int ex)
@@ -2798,6 +2976,8 @@ int ocfs2_dlm_init(struct ocfs2_super *osb)
 local:
 	ocfs2_super_lock_res_init(&osb->osb_super_lockres, osb);
 	ocfs2_rename_lock_res_init(&osb->osb_rename_lockres, osb);
+	ocfs2_nfs_sync_lock_res_init(&osb->osb_nfs_sync_lockres, osb);
+	ocfs2_orphan_scan_lock_res_init(&osb->osb_orphan_scan.os_lockres, osb);
 
 	osb->cconn = conn;
 
@@ -2833,6 +3013,8 @@ void ocfs2_dlm_shutdown(struct ocfs2_super *osb,
 
 	ocfs2_lock_res_free(&osb->osb_super_lockres);
 	ocfs2_lock_res_free(&osb->osb_rename_lockres);
+	ocfs2_lock_res_free(&osb->osb_nfs_sync_lockres);
+	ocfs2_lock_res_free(&osb->osb_orphan_scan.os_lockres);
 
 	ocfs2_cluster_disconnect(osb->cconn, hangup_pending);
 	osb->cconn = NULL;
@@ -2858,6 +3040,7 @@ static void ocfs2_unlock_ast(void *opaque, int error)
 		     "unlock_action %d\n", error, lockres->l_name,
 		     lockres->l_unlock_action);
 		spin_unlock_irqrestore(&lockres->l_lock, flags);
+		mlog_exit_void();
 		return;
 	}
 
@@ -3015,6 +3198,8 @@ static void ocfs2_drop_osb_locks(struct ocfs2_super *osb)
 {
 	ocfs2_simple_drop_lockres(osb, &osb->osb_super_lockres);
 	ocfs2_simple_drop_lockres(osb, &osb->osb_rename_lockres);
+	ocfs2_simple_drop_lockres(osb, &osb->osb_nfs_sync_lockres);
+	ocfs2_simple_drop_lockres(osb, &osb->osb_orphan_scan.os_lockres);
 }
 
 int ocfs2_drop_inode_locks(struct inode *inode)
@@ -3342,11 +3527,11 @@ out:
 	return UNBLOCK_CONTINUE;
 }
 
-static int ocfs2_check_meta_downconvert(struct ocfs2_lock_res *lockres,
-					int new_level)
+static int ocfs2_ci_checkpointed(struct ocfs2_caching_info *ci,
+				 struct ocfs2_lock_res *lockres,
+				 int new_level)
 {
-	struct inode *inode = ocfs2_lock_res_inode(lockres);
-	int checkpointed = ocfs2_inode_fully_checkpointed(inode);
+	int checkpointed = ocfs2_ci_fully_checkpointed(ci);
 
 	BUG_ON(new_level != DLM_LOCK_NL && new_level != DLM_LOCK_PR);
 	BUG_ON(lockres->l_level != DLM_LOCK_EX && !checkpointed);
@@ -3354,8 +3539,16 @@ static int ocfs2_check_meta_downconvert(struct ocfs2_lock_res *lockres,
 	if (checkpointed)
 		return 1;
 
-	ocfs2_start_checkpoint(OCFS2_SB(inode->i_sb));
+	ocfs2_start_checkpoint(OCFS2_SB(ocfs2_metadata_cache_get_super(ci)));
 	return 0;
+}
+
+static int ocfs2_check_meta_downconvert(struct ocfs2_lock_res *lockres,
+					int new_level)
+{
+	struct inode *inode = ocfs2_lock_res_inode(lockres);
+
+	return ocfs2_ci_checkpointed(INODE_CACHE(inode), lockres, new_level);
 }
 
 static void ocfs2_set_meta_lvb(struct ocfs2_lock_res *lockres)
@@ -3487,6 +3680,26 @@ static int ocfs2_dentry_convert_worker(struct ocfs2_lock_res *lockres,
 	return UNBLOCK_CONTINUE_POST;
 }
 
+static int ocfs2_check_refcount_downconvert(struct ocfs2_lock_res *lockres,
+					    int new_level)
+{
+	struct ocfs2_refcount_tree *tree =
+				ocfs2_lock_res_refcount_tree(lockres);
+
+	return ocfs2_ci_checkpointed(&tree->rf_ci, lockres, new_level);
+}
+
+static int ocfs2_refcount_convert_worker(struct ocfs2_lock_res *lockres,
+					 int blocking)
+{
+	struct ocfs2_refcount_tree *tree =
+				ocfs2_lock_res_refcount_tree(lockres);
+
+	ocfs2_metadata_cache_purge(&tree->rf_ci);
+
+	return UNBLOCK_CONTINUE;
+}
+
 static void ocfs2_set_qinfo_lvb(struct ocfs2_lock_res *lockres)
 {
 	struct ocfs2_qinfo_lvb *lvb;
@@ -3530,7 +3743,8 @@ static int ocfs2_refresh_qinfo(struct ocfs2_mem_dqinfo *oinfo)
 	struct ocfs2_global_disk_dqinfo *gdinfo;
 	int status = 0;
 
-	if (lvb->lvb_version == OCFS2_QINFO_LVB_VERSION) {
+	if (ocfs2_dlm_lvb_valid(&lockres->l_lksb) &&
+	    lvb->lvb_version == OCFS2_QINFO_LVB_VERSION) {
 		info->dqi_bgrace = be32_to_cpu(lvb->lvb_bgrace);
 		info->dqi_igrace = be32_to_cpu(lvb->lvb_igrace);
 		oinfo->dqi_syncms = be32_to_cpu(lvb->lvb_syncms);
@@ -3596,6 +3810,37 @@ int ocfs2_qinfo_lock(struct ocfs2_mem_dqinfo *oinfo, int ex)
 bail:
 	mlog_exit(status);
 	return status;
+}
+
+int ocfs2_refcount_lock(struct ocfs2_refcount_tree *ref_tree, int ex)
+{
+	int status;
+	int level = ex ? DLM_LOCK_EX : DLM_LOCK_PR;
+	struct ocfs2_lock_res *lockres = &ref_tree->rf_lockres;
+	struct ocfs2_super *osb = lockres->l_priv;
+
+
+	if (ocfs2_is_hard_readonly(osb))
+		return -EROFS;
+
+	if (ocfs2_mount_local(osb))
+		return 0;
+
+	status = ocfs2_cluster_lock(osb, lockres, level, 0, 0);
+	if (status < 0)
+		mlog_errno(status);
+
+	return status;
+}
+
+void ocfs2_refcount_unlock(struct ocfs2_refcount_tree *ref_tree, int ex)
+{
+	int level = ex ? DLM_LOCK_EX : DLM_LOCK_PR;
+	struct ocfs2_lock_res *lockres = &ref_tree->rf_lockres;
+	struct ocfs2_super *osb = lockres->l_priv;
+
+	if (!ocfs2_mount_local(osb))
+		ocfs2_cluster_unlock(osb, lockres, level);
 }
 
 /*

@@ -39,6 +39,8 @@
 #include <acpi/acpi_drivers.h>
 #include <acpi/processor.h>
 
+#define PREFIX "ACPI: "
+
 #define ACPI_PROCESSOR_CLASS		"processor"
 #define ACPI_PROCESSOR_FILE_PERFORMANCE	"performance"
 #define _COMPONENT		ACPI_PROCESSOR_COMPONENT
@@ -309,9 +311,15 @@ static int acpi_processor_get_performance_states(struct acpi_processor *pr)
 				  (u32) px->bus_master_latency,
 				  (u32) px->control, (u32) px->status));
 
-		if (!px->core_frequency) {
-			printk(KERN_ERR PREFIX
-				    "Invalid _PSS data: freq is zero\n");
+		/*
+ 		 * Check that ACPI's u64 MHz will be valid as u32 KHz in cpufreq
+		 */
+		if (!px->core_frequency ||
+		    ((u32)(px->core_frequency * 1000) !=
+		     (px->core_frequency * 1000))) {
+			printk(KERN_ERR FW_BUG PREFIX
+			       "Invalid BIOS _PSS frequency: 0x%llx MHz\n",
+			       px->core_frequency);
 			result = -EFAULT;
 			kfree(pr->performance->states);
 			goto end;
@@ -479,6 +487,13 @@ static int acpi_processor_get_psd(struct acpi_processor	*pr)
 		goto end;
 	}
 
+	if (pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ALL &&
+	    pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ANY &&
+	    pdomain->coord_type != DOMAIN_COORD_TYPE_HW_ALL) {
+		printk(KERN_ERR PREFIX "Invalid _PSD:coord_type\n");
+		result = -EFAULT;
+		goto end;
+	}
 end:
 	kfree(buffer.pointer);
 	return result;
@@ -496,14 +511,15 @@ int acpi_processor_preregister_performance(
 	struct acpi_processor *match_pr;
 	struct acpi_psd_package *match_pdomain;
 
-	if (!alloc_cpumask_var(&covered_cpus, GFP_KERNEL))
+	if (!zalloc_cpumask_var(&covered_cpus, GFP_KERNEL))
 		return -ENOMEM;
 
 	mutex_lock(&performance_mutex);
 
-	retval = 0;
-
-	/* Call _PSD for all CPUs */
+	/*
+	 * Check if another driver has already registered, and abort before
+	 * changing pr->performance if it has. Check input data as well.
+	 */
 	for_each_possible_cpu(i) {
 		pr = per_cpu(processors, i);
 		if (!pr) {
@@ -513,15 +529,22 @@ int acpi_processor_preregister_performance(
 
 		if (pr->performance) {
 			retval = -EBUSY;
-			continue;
+			goto err_out;
 		}
 
-		if (!performance || !percpu_ptr(performance, i)) {
+		if (!performance || !per_cpu_ptr(performance, i)) {
 			retval = -EINVAL;
-			continue;
+			goto err_out;
 		}
+	}
 
-		pr->performance = percpu_ptr(performance, i);
+	/* Call _PSD for all CPUs */
+	for_each_possible_cpu(i) {
+		pr = per_cpu(processors, i);
+		if (!pr)
+			continue;
+
+		pr->performance = per_cpu_ptr(performance, i);
 		cpumask_set_cpu(i, pr->performance->shared_cpu_map);
 		if (acpi_processor_get_psd(pr)) {
 			retval = -EINVAL;
@@ -535,27 +558,6 @@ int acpi_processor_preregister_performance(
 	 * Now that we have _PSD data from all CPUs, lets setup P-state 
 	 * domain info.
 	 */
-	for_each_possible_cpu(i) {
-		pr = per_cpu(processors, i);
-		if (!pr)
-			continue;
-
-		/* Basic validity check for domain info */
-		pdomain = &(pr->performance->domain_info);
-		if ((pdomain->revision != ACPI_PSD_REV0_REVISION) ||
-		    (pdomain->num_entries != ACPI_PSD_REV0_ENTRIES)) {
-			retval = -EINVAL;
-			goto err_ret;
-		}
-		if (pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ALL &&
-		    pdomain->coord_type != DOMAIN_COORD_TYPE_SW_ANY &&
-		    pdomain->coord_type != DOMAIN_COORD_TYPE_HW_ALL) {
-			retval = -EINVAL;
-			goto err_ret;
-		}
-	}
-
-	cpumask_clear(covered_cpus);
 	for_each_possible_cpu(i) {
 		pr = per_cpu(processors, i);
 		if (!pr)
@@ -643,6 +645,7 @@ err_ret:
 		pr->performance = NULL; /* Will be set for real in register */
 	}
 
+err_out:
 	mutex_unlock(&performance_mutex);
 	free_cpumask_var(covered_cpus);
 	return retval;

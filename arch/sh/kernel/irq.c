@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/kernel_stat.h>
 #include <linux/seq_file.h>
+#include <linux/ftrace.h>
 #include <asm/processor.h>
 #include <asm/machvec.h>
 #include <asm/uaccess.h>
@@ -31,39 +32,64 @@ void ack_bad_irq(unsigned int irq)
 }
 
 #if defined(CONFIG_PROC_FS)
+/*
+ * /proc/interrupts printing:
+ */
+static int show_other_interrupts(struct seq_file *p, int prec)
+{
+	seq_printf(p, "%*s: %10u\n", prec, "ERR", atomic_read(&irq_err_count));
+	return 0;
+}
+
 int show_interrupts(struct seq_file *p, void *v)
 {
-	int i = *(loff_t *) v, j;
-	struct irqaction * action;
-	unsigned long flags;
+	unsigned long flags, any_count = 0;
+	int i = *(loff_t *)v, j, prec;
+	struct irqaction *action;
+	struct irq_desc *desc;
+
+	if (i > nr_irqs)
+		return 0;
+
+	for (prec = 3, j = 1000; prec < 10 && j <= nr_irqs; ++prec)
+		j *= 10;
+
+	if (i == nr_irqs)
+		return show_other_interrupts(p, prec);
 
 	if (i == 0) {
-		seq_puts(p, "           ");
+		seq_printf(p, "%*s", prec + 8, "");
 		for_each_online_cpu(j)
-			seq_printf(p, "CPU%d       ",j);
+			seq_printf(p, "CPU%-8d", j);
 		seq_putc(p, '\n');
 	}
 
-	if (i < sh_mv.mv_nr_irqs) {
-		spin_lock_irqsave(&irq_desc[i].lock, flags);
-		action = irq_desc[i].action;
-		if (!action)
-			goto unlock;
-		seq_printf(p, "%3d: ",i);
-		for_each_online_cpu(j)
-			seq_printf(p, "%10u ", kstat_cpu(j).irqs[i]);
-		seq_printf(p, " %14s", irq_desc[i].chip->name);
-		seq_printf(p, "-%-8s", irq_desc[i].name);
+	desc = irq_to_desc(i);
+	if (!desc)
+		return 0;
+
+	spin_lock_irqsave(&desc->lock, flags);
+	for_each_online_cpu(j)
+		any_count |= kstat_irqs_cpu(i, j);
+	action = desc->action;
+	if (!action && !any_count)
+		goto out;
+
+	seq_printf(p, "%*d: ", prec, i);
+	for_each_online_cpu(j)
+		seq_printf(p, "%10u ", kstat_irqs_cpu(i, j));
+	seq_printf(p, " %14s", desc->chip->name);
+	seq_printf(p, "-%-8s", desc->name);
+
+	if (action) {
 		seq_printf(p, "  %s", action->name);
-
-		for (action=action->next; action; action = action->next)
+		while ((action = action->next) != NULL)
 			seq_printf(p, ", %s", action->name);
-		seq_putc(p, '\n');
-unlock:
-		spin_unlock_irqrestore(&irq_desc[i].lock, flags);
-	} else if (i == sh_mv.mv_nr_irqs)
-		seq_printf(p, "Err: %10u\n", atomic_read(&irq_err_count));
+	}
 
+	seq_putc(p, '\n');
+out:
+	spin_unlock_irqrestore(&desc->lock, flags);
 	return 0;
 }
 #endif
@@ -81,7 +107,7 @@ static union irq_ctx *hardirq_ctx[NR_CPUS] __read_mostly;
 static union irq_ctx *softirq_ctx[NR_CPUS] __read_mostly;
 #endif
 
-asmlinkage int do_IRQ(unsigned int irq, struct pt_regs *regs)
+asmlinkage __irq_entry int do_IRQ(unsigned int irq, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
 #ifdef CONFIG_IRQSTACKS
@@ -89,24 +115,7 @@ asmlinkage int do_IRQ(unsigned int irq, struct pt_regs *regs)
 #endif
 
 	irq_enter();
-
-#ifdef CONFIG_DEBUG_STACKOVERFLOW
-	/* Debugging check for stack overflow: is there less than 1KB free? */
-	{
-		long sp;
-
-		__asm__ __volatile__ ("and r15, %0" :
-					"=r" (sp) : "0" (THREAD_SIZE - 1));
-
-		if (unlikely(sp < (sizeof(struct thread_info) + STACK_WARN))) {
-			printk("do_IRQ: stack overflow: %ld\n",
-			       sp - sizeof(struct thread_info));
-			dump_stack();
-		}
-	}
-#endif
-
-	irq = irq_demux(evt2irq(irq));
+	irq = irq_demux(irq);
 
 #ifdef CONFIG_IRQSTACKS
 	curctx = (union irq_ctx *)current_thread_info();
@@ -157,11 +166,9 @@ asmlinkage int do_IRQ(unsigned int irq, struct pt_regs *regs)
 }
 
 #ifdef CONFIG_IRQSTACKS
-static char softirq_stack[NR_CPUS * THREAD_SIZE]
-		__attribute__((__section__(".bss.page_aligned")));
+static char softirq_stack[NR_CPUS * THREAD_SIZE] __page_aligned_bss;
 
-static char hardirq_stack[NR_CPUS * THREAD_SIZE]
-		__attribute__((__section__(".bss.page_aligned")));
+static char hardirq_stack[NR_CPUS * THREAD_SIZE] __page_aligned_bss;
 
 /*
  * allocate per-cpu stacks for hardirq and for softirq processing
@@ -254,3 +261,11 @@ void __init init_IRQ(void)
 
 	irq_ctx_init(smp_processor_id());
 }
+
+#ifdef CONFIG_SPARSE_IRQ
+int __init arch_probe_nr_irqs(void)
+{
+	nr_irqs = sh_mv.mv_nr_irqs;
+	return 0;
+}
+#endif

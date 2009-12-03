@@ -163,9 +163,9 @@ struct slave {
 	u32    original_flags;
 	u32    original_mtu;
 	u32    link_failure_count;
+	u8     perm_hwaddr[ETH_ALEN];
 	u16    speed;
 	u8     duplex;
-	u8     perm_hwaddr[ETH_ALEN];
 	struct ad_slave_info ad_info; /* HUGE - better to dynamically alloc */
 	struct tlb_slave_info tlb_info;
 };
@@ -286,8 +286,7 @@ static inline unsigned long slave_last_rx(struct bonding *bond,
 static inline void bond_set_slave_inactive_flags(struct slave *slave)
 {
 	struct bonding *bond = netdev_priv(slave->dev->master);
-	if (bond->params.mode != BOND_MODE_TLB &&
-	    bond->params.mode != BOND_MODE_ALB)
+	if (!bond_is_lb(bond))
 		slave->state = BOND_STATE_BACKUP;
 	slave->dev->priv_flags |= IFF_SLAVE_INACTIVE;
 	if (slave_do_arp_validate(bond, slave))
@@ -322,8 +321,7 @@ static inline void bond_unset_master_alb_flags(struct bonding *bond)
 
 struct vlan_entry *bond_next_vlan(struct bonding *bond, struct vlan_entry *curr);
 int bond_dev_queue_xmit(struct bonding *bond, struct sk_buff *skb, struct net_device *slave_dev);
-int bond_create(char *name, struct bond_params *params);
-void bond_destroy(struct bonding *bond);
+int bond_create(const char *name);
 int  bond_release_and_destroy(struct net_device *bond_dev, struct net_device *slave_dev);
 int bond_create_sysfs(void);
 void bond_destroy_sysfs(void);
@@ -350,11 +348,7 @@ extern const struct bond_parm_tbl bond_mode_tbl[];
 extern const struct bond_parm_tbl xmit_hashtype_tbl[];
 extern const struct bond_parm_tbl arp_validate_tbl[];
 extern const struct bond_parm_tbl fail_over_mac_tbl[];
-extern struct bond_params bonding_defaults;
 extern struct bond_parm_tbl ad_select_tbl[];
-
-/* exported from bond_sysfs.c */
-extern struct rw_semaphore bonding_rwsem;
 
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 void bond_send_unsolicited_na(struct bonding *bond);

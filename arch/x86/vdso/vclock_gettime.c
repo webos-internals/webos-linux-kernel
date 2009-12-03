@@ -86,14 +86,47 @@ notrace static noinline int do_monotonic(struct timespec *ts)
 	return 0;
 }
 
+notrace static noinline int do_realtime_coarse(struct timespec *ts)
+{
+	unsigned long seq;
+	do {
+		seq = read_seqbegin(&gtod->lock);
+		ts->tv_sec = gtod->wall_time_coarse.tv_sec;
+		ts->tv_nsec = gtod->wall_time_coarse.tv_nsec;
+	} while (unlikely(read_seqretry(&gtod->lock, seq)));
+	return 0;
+}
+
+notrace static noinline int do_monotonic_coarse(struct timespec *ts)
+{
+	unsigned long seq, ns, secs;
+	do {
+		seq = read_seqbegin(&gtod->lock);
+		secs = gtod->wall_time_coarse.tv_sec;
+		ns = gtod->wall_time_coarse.tv_nsec;
+		secs += gtod->wall_to_monotonic.tv_sec;
+		ns += gtod->wall_to_monotonic.tv_nsec;
+	} while (unlikely(read_seqretry(&gtod->lock, seq)));
+	vset_normalized_timespec(ts, secs, ns);
+	return 0;
+}
+
 notrace int __vdso_clock_gettime(clockid_t clock, struct timespec *ts)
 {
-	if (likely(gtod->sysctl_enabled && gtod->clock.vread))
+	if (likely(gtod->sysctl_enabled))
 		switch (clock) {
 		case CLOCK_REALTIME:
-			return do_realtime(ts);
+			if (likely(gtod->clock.vread))
+				return do_realtime(ts);
+			break;
 		case CLOCK_MONOTONIC:
-			return do_monotonic(ts);
+			if (likely(gtod->clock.vread))
+				return do_monotonic(ts);
+			break;
+		case CLOCK_REALTIME_COARSE:
+			return do_realtime_coarse(ts);
+		case CLOCK_MONOTONIC_COARSE:
+			return do_monotonic_coarse(ts);
 		}
 	return vdso_fallback_gettime(clock, ts);
 }
@@ -104,11 +137,13 @@ notrace int __vdso_gettimeofday(struct timeval *tv, struct timezone *tz)
 {
 	long ret;
 	if (likely(gtod->sysctl_enabled && gtod->clock.vread)) {
-		BUILD_BUG_ON(offsetof(struct timeval, tv_usec) !=
-			     offsetof(struct timespec, tv_nsec) ||
-			     sizeof(*tv) != sizeof(struct timespec));
-		do_realtime((struct timespec *)tv);
-		tv->tv_usec /= 1000;
+		if (likely(tv != NULL)) {
+			BUILD_BUG_ON(offsetof(struct timeval, tv_usec) !=
+				     offsetof(struct timespec, tv_nsec) ||
+				     sizeof(*tv) != sizeof(struct timespec));
+			do_realtime((struct timespec *)tv);
+			tv->tv_usec /= 1000;
+		}
 		if (unlikely(tz != NULL)) {
 			/* Avoid memcpy. Some old compilers fail to inline it */
 			tz->tz_minuteswest = gtod->sys_tz.tz_minuteswest;

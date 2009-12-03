@@ -55,6 +55,7 @@ struct compat_timeval;
 struct robust_list_head;
 struct getcpu_cache;
 struct old_linux_dirent;
+struct perf_event_attr;
 
 #include <linux/types.h>
 #include <linux/aio_abi.h>
@@ -63,8 +64,10 @@ struct old_linux_dirent;
 #include <linux/sem.h>
 #include <asm/siginfo.h>
 #include <asm/signal.h>
+#include <linux/unistd.h>
 #include <linux/quota.h>
 #include <linux/key.h>
+#include <trace/syscall.h>
 
 #define __SC_DECL1(t1, a1)	t1 a1
 #define __SC_DECL2(t2, a2, ...) t2 a2, __SC_DECL1(__VA_ARGS__)
@@ -95,7 +98,164 @@ struct old_linux_dirent;
 #define __SC_TEST5(t5, a5, ...)	__SC_TEST(t5); __SC_TEST4(__VA_ARGS__)
 #define __SC_TEST6(t6, a6, ...)	__SC_TEST(t6); __SC_TEST5(__VA_ARGS__)
 
+#ifdef CONFIG_EVENT_PROFILE
+#define TRACE_SYS_ENTER_PROFILE(sname)					       \
+static int prof_sysenter_enable_##sname(void)				       \
+{									       \
+	return reg_prof_syscall_enter("sys"#sname);			       \
+}									       \
+									       \
+static void prof_sysenter_disable_##sname(void)				       \
+{									       \
+	unreg_prof_syscall_enter("sys"#sname);				       \
+}
+
+#define TRACE_SYS_EXIT_PROFILE(sname)					       \
+static int prof_sysexit_enable_##sname(void)				       \
+{									       \
+	return reg_prof_syscall_exit("sys"#sname);			       \
+}									       \
+									       \
+static void prof_sysexit_disable_##sname(void)				       \
+{                                                                              \
+	unreg_prof_syscall_exit("sys"#sname);				       \
+}
+
+#define TRACE_SYS_ENTER_PROFILE_INIT(sname)				       \
+	.profile_count = ATOMIC_INIT(-1),				       \
+	.profile_enable = prof_sysenter_enable_##sname,			       \
+	.profile_disable = prof_sysenter_disable_##sname,
+
+#define TRACE_SYS_EXIT_PROFILE_INIT(sname)				       \
+	.profile_count = ATOMIC_INIT(-1),				       \
+	.profile_enable = prof_sysexit_enable_##sname,			       \
+	.profile_disable = prof_sysexit_disable_##sname,
+#else
+#define TRACE_SYS_ENTER_PROFILE(sname)
+#define TRACE_SYS_ENTER_PROFILE_INIT(sname)
+#define TRACE_SYS_EXIT_PROFILE(sname)
+#define TRACE_SYS_EXIT_PROFILE_INIT(sname)
+#endif
+
+#ifdef CONFIG_FTRACE_SYSCALLS
+#define __SC_STR_ADECL1(t, a)		#a
+#define __SC_STR_ADECL2(t, a, ...)	#a, __SC_STR_ADECL1(__VA_ARGS__)
+#define __SC_STR_ADECL3(t, a, ...)	#a, __SC_STR_ADECL2(__VA_ARGS__)
+#define __SC_STR_ADECL4(t, a, ...)	#a, __SC_STR_ADECL3(__VA_ARGS__)
+#define __SC_STR_ADECL5(t, a, ...)	#a, __SC_STR_ADECL4(__VA_ARGS__)
+#define __SC_STR_ADECL6(t, a, ...)	#a, __SC_STR_ADECL5(__VA_ARGS__)
+
+#define __SC_STR_TDECL1(t, a)		#t
+#define __SC_STR_TDECL2(t, a, ...)	#t, __SC_STR_TDECL1(__VA_ARGS__)
+#define __SC_STR_TDECL3(t, a, ...)	#t, __SC_STR_TDECL2(__VA_ARGS__)
+#define __SC_STR_TDECL4(t, a, ...)	#t, __SC_STR_TDECL3(__VA_ARGS__)
+#define __SC_STR_TDECL5(t, a, ...)	#t, __SC_STR_TDECL4(__VA_ARGS__)
+#define __SC_STR_TDECL6(t, a, ...)	#t, __SC_STR_TDECL5(__VA_ARGS__)
+
+#define SYSCALL_TRACE_ENTER_EVENT(sname)				\
+	static struct ftrace_event_call event_enter_##sname;		\
+	struct trace_event enter_syscall_print_##sname = {		\
+		.trace                  = print_syscall_enter,		\
+	};								\
+	static int init_enter_##sname(void)				\
+	{								\
+		int num, id;						\
+		num = syscall_name_to_nr("sys"#sname);			\
+		if (num < 0)						\
+			return -ENOSYS;					\
+		id = register_ftrace_event(&enter_syscall_print_##sname);\
+		if (!id)						\
+			return -ENODEV;					\
+		event_enter_##sname.id = id;				\
+		set_syscall_enter_id(num, id);				\
+		INIT_LIST_HEAD(&event_enter_##sname.fields);		\
+		return 0;						\
+	}								\
+	TRACE_SYS_ENTER_PROFILE(sname);					\
+	static struct ftrace_event_call __used				\
+	  __attribute__((__aligned__(4)))				\
+	  __attribute__((section("_ftrace_events")))			\
+	  event_enter_##sname = {					\
+		.name                   = "sys_enter"#sname,		\
+		.system                 = "syscalls",			\
+		.event                  = &event_syscall_enter,		\
+		.raw_init		= init_enter_##sname,		\
+		.show_format		= syscall_enter_format,		\
+		.define_fields		= syscall_enter_define_fields,	\
+		.regfunc		= reg_event_syscall_enter,	\
+		.unregfunc		= unreg_event_syscall_enter,	\
+		.data			= "sys"#sname,			\
+		TRACE_SYS_ENTER_PROFILE_INIT(sname)			\
+	}
+
+#define SYSCALL_TRACE_EXIT_EVENT(sname)					\
+	static struct ftrace_event_call event_exit_##sname;		\
+	struct trace_event exit_syscall_print_##sname = {		\
+		.trace                  = print_syscall_exit,		\
+	};								\
+	static int init_exit_##sname(void)				\
+	{								\
+		int num, id;						\
+		num = syscall_name_to_nr("sys"#sname);			\
+		if (num < 0)						\
+			return -ENOSYS;					\
+		id = register_ftrace_event(&exit_syscall_print_##sname);\
+		if (!id)						\
+			return -ENODEV;					\
+		event_exit_##sname.id = id;				\
+		set_syscall_exit_id(num, id);				\
+		INIT_LIST_HEAD(&event_exit_##sname.fields);		\
+		return 0;						\
+	}								\
+	TRACE_SYS_EXIT_PROFILE(sname);					\
+	static struct ftrace_event_call __used				\
+	  __attribute__((__aligned__(4)))				\
+	  __attribute__((section("_ftrace_events")))			\
+	  event_exit_##sname = {					\
+		.name                   = "sys_exit"#sname,		\
+		.system                 = "syscalls",			\
+		.event                  = &event_syscall_exit,		\
+		.raw_init		= init_exit_##sname,		\
+		.show_format		= syscall_exit_format,		\
+		.define_fields		= syscall_exit_define_fields,	\
+		.regfunc		= reg_event_syscall_exit,	\
+		.unregfunc		= unreg_event_syscall_exit,	\
+		.data			= "sys"#sname,			\
+		TRACE_SYS_EXIT_PROFILE_INIT(sname)			\
+	}
+
+#define SYSCALL_METADATA(sname, nb)				\
+	SYSCALL_TRACE_ENTER_EVENT(sname);			\
+	SYSCALL_TRACE_EXIT_EVENT(sname);			\
+	static const struct syscall_metadata __used		\
+	  __attribute__((__aligned__(4)))			\
+	  __attribute__((section("__syscalls_metadata")))	\
+	  __syscall_meta_##sname = {				\
+		.name 		= "sys"#sname,			\
+		.nb_args 	= nb,				\
+		.types		= types_##sname,		\
+		.args		= args_##sname,			\
+		.enter_event	= &event_enter_##sname,		\
+		.exit_event	= &event_exit_##sname,		\
+	};
+
+#define SYSCALL_DEFINE0(sname)					\
+	SYSCALL_TRACE_ENTER_EVENT(_##sname);			\
+	SYSCALL_TRACE_EXIT_EVENT(_##sname);			\
+	static const struct syscall_metadata __used		\
+	  __attribute__((__aligned__(4)))			\
+	  __attribute__((section("__syscalls_metadata")))	\
+	  __syscall_meta_##sname = {				\
+		.name 		= "sys_"#sname,			\
+		.nb_args 	= 0,				\
+		.enter_event	= &event_enter__##sname,	\
+		.exit_event	= &event_exit__##sname,		\
+	};							\
+	asmlinkage long sys_##sname(void)
+#else
 #define SYSCALL_DEFINE0(name)	   asmlinkage long sys_##name(void)
+#endif
+
 #define SYSCALL_DEFINE1(name, ...) SYSCALL_DEFINEx(1, _##name, __VA_ARGS__)
 #define SYSCALL_DEFINE2(name, ...) SYSCALL_DEFINEx(2, _##name, __VA_ARGS__)
 #define SYSCALL_DEFINE3(name, ...) SYSCALL_DEFINEx(3, _##name, __VA_ARGS__)
@@ -108,7 +268,7 @@ struct old_linux_dirent;
 	asm ("\t.globl " #alias "\n\t.set " #alias ", " #name "\n"	\
 	     "\t.globl ." #alias "\n\t.set ." #alias ", ." #name)
 #else
-#ifdef CONFIG_ALPHA
+#if defined(CONFIG_ALPHA) || defined(CONFIG_MIPS)
 #define SYSCALL_ALIAS(alias, name)					\
 	asm ( #alias " = " #name "\n\t.globl " #alias)
 #else
@@ -117,10 +277,26 @@ struct old_linux_dirent;
 #endif
 #endif
 
+#ifdef CONFIG_FTRACE_SYSCALLS
+#define SYSCALL_DEFINEx(x, sname, ...)				\
+	static const char *types_##sname[] = {			\
+		__SC_STR_TDECL##x(__VA_ARGS__)			\
+	};							\
+	static const char *args_##sname[] = {			\
+		__SC_STR_ADECL##x(__VA_ARGS__)			\
+	};							\
+	SYSCALL_METADATA(sname, x);				\
+	__SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
+#else
+#define SYSCALL_DEFINEx(x, sname, ...)				\
+	__SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
+#endif
+
 #ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
 
 #define SYSCALL_DEFINE(name) static inline long SYSC_##name
-#define SYSCALL_DEFINEx(x, name, ...)					\
+
+#define __SYSCALL_DEFINEx(x, name, ...)					\
 	asmlinkage long sys##name(__SC_DECL##x(__VA_ARGS__));		\
 	static inline long SYSC##name(__SC_DECL##x(__VA_ARGS__));	\
 	asmlinkage long SyS##name(__SC_LONG##x(__VA_ARGS__))		\
@@ -134,7 +310,7 @@ struct old_linux_dirent;
 #else /* CONFIG_HAVE_SYSCALL_WRAPPERS */
 
 #define SYSCALL_DEFINE(name) asmlinkage long sys_##name
-#define SYSCALL_DEFINEx(x, name, ...)					\
+#define __SYSCALL_DEFINEx(x, name, ...)					\
 	asmlinkage long sys##name(__SC_DECL##x(__VA_ARGS__))
 
 #endif /* CONFIG_HAVE_SYSCALL_WRAPPERS */
@@ -264,6 +440,8 @@ asmlinkage long sys_rt_sigtimedwait(const sigset_t __user *uthese,
 				siginfo_t __user *uinfo,
 				const struct timespec __user *uts,
 				size_t sigsetsize);
+asmlinkage long sys_rt_tgsigqueueinfo(pid_t tgid, pid_t  pid, int sig,
+		siginfo_t __user *uinfo);
 asmlinkage long sys_kill(int pid, int sig);
 asmlinkage long sys_tgkill(int tgid, int pid, int sig);
 asmlinkage long sys_tkill(int pid, int sig);
@@ -282,8 +460,7 @@ asmlinkage long sys_mount(char __user *dev_name, char __user *dir_name,
 				void __user *data);
 asmlinkage long sys_umount(char __user *name, int flags);
 asmlinkage long sys_oldumount(char __user *name);
-asmlinkage long sys_truncate(const char __user *path,
-				unsigned long length);
+asmlinkage long sys_truncate(const char __user *path, long length);
 asmlinkage long sys_ftruncate(unsigned int fd, unsigned long length);
 asmlinkage long sys_stat(char __user *filename,
 			struct __old_kernel_stat __user *statbuf);
@@ -377,6 +554,8 @@ asmlinkage long sys_fcntl(unsigned int fd, unsigned int cmd, unsigned long arg);
 asmlinkage long sys_fcntl64(unsigned int fd,
 				unsigned int cmd, unsigned long arg);
 #endif
+asmlinkage long sys_pipe(int __user *fildes);
+asmlinkage long sys_pipe2(int __user *fildes, int flags);
 asmlinkage long sys_dup(unsigned int fildes);
 asmlinkage long sys_dup2(unsigned int oldfd, unsigned int newfd);
 asmlinkage long sys_dup3(unsigned int oldfd, unsigned int newfd, int flags);
@@ -461,6 +640,10 @@ asmlinkage long sys_pread64(unsigned int fd, char __user *buf,
 			    size_t count, loff_t pos);
 asmlinkage long sys_pwrite64(unsigned int fd, const char __user *buf,
 			     size_t count, loff_t pos);
+asmlinkage long sys_preadv(unsigned long fd, const struct iovec __user *vec,
+			   unsigned long vlen, unsigned long pos_l, unsigned long pos_h);
+asmlinkage long sys_pwritev(unsigned long fd, const struct iovec __user *vec,
+			    unsigned long vlen, unsigned long pos_l, unsigned long pos_h);
 asmlinkage long sys_getcwd(char __user *buf, unsigned long size);
 asmlinkage long sys_mkdir(const char __user *pathname, int mode);
 asmlinkage long sys_chdir(const char __user *filename);
@@ -689,9 +872,11 @@ asmlinkage long sys_pselect6(int, fd_set __user *, fd_set __user *,
 asmlinkage long sys_ppoll(struct pollfd __user *, unsigned int,
 			  struct timespec __user *, const sigset_t __user *,
 			  size_t);
-asmlinkage long sys_pipe2(int __user *, int);
-asmlinkage long sys_pipe(int __user *);
 
 int kernel_execve(const char *filename, char *const argv[], char *const envp[]);
 
+
+asmlinkage long sys_perf_event_open(
+		struct perf_event_attr __user *attr_uptr,
+		pid_t pid, int cpu, int group_fd, unsigned long flags);
 #endif

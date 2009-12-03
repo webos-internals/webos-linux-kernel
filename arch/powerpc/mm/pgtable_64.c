@@ -33,6 +33,8 @@
 #include <linux/stddef.h>
 #include <linux/vmalloc.h>
 #include <linux/init.h>
+#include <linux/bootmem.h>
+#include <linux/lmb.h>
 
 #include <asm/pgalloc.h>
 #include <asm/page.h>
@@ -55,19 +57,36 @@
 
 unsigned long ioremap_bot = IOREMAP_BASE;
 
+
+#ifdef CONFIG_PPC_MMU_NOHASH
+static void *early_alloc_pgtable(unsigned long size)
+{
+	void *pt;
+
+	if (init_bootmem_done)
+		pt = __alloc_bootmem(size, size, __pa(MAX_DMA_ADDRESS));
+	else
+		pt = __va(lmb_alloc_base(size, size,
+					 __pa(MAX_DMA_ADDRESS)));
+	memset(pt, 0, size);
+
+	return pt;
+}
+#endif /* CONFIG_PPC_MMU_NOHASH */
+
 /*
- * map_io_page currently only called by __ioremap
- * map_io_page adds an entry to the ioremap page table
+ * map_kernel_page currently only called by __ioremap
+ * map_kernel_page adds an entry to the ioremap page table
  * and adds an entry to the HPT, possibly bolting it
  */
-static int map_io_page(unsigned long ea, unsigned long pa, int flags)
+int map_kernel_page(unsigned long ea, unsigned long pa, int flags)
 {
 	pgd_t *pgdp;
 	pud_t *pudp;
 	pmd_t *pmdp;
 	pte_t *ptep;
 
-	if (mem_init_done) {
+	if (slab_is_available()) {
 		pgdp = pgd_offset_k(ea);
 		pudp = pud_alloc(&init_mm, pgdp, ea);
 		if (!pudp)
@@ -81,6 +100,35 @@ static int map_io_page(unsigned long ea, unsigned long pa, int flags)
 		set_pte_at(&init_mm, ea, ptep, pfn_pte(pa >> PAGE_SHIFT,
 							  __pgprot(flags)));
 	} else {
+#ifdef CONFIG_PPC_MMU_NOHASH
+		/* Warning ! This will blow up if bootmem is not initialized
+		 * which our ppc64 code is keen to do that, we'll need to
+		 * fix it and/or be more careful
+		 */
+		pgdp = pgd_offset_k(ea);
+#ifdef PUD_TABLE_SIZE
+		if (pgd_none(*pgdp)) {
+			pudp = early_alloc_pgtable(PUD_TABLE_SIZE);
+			BUG_ON(pudp == NULL);
+			pgd_populate(&init_mm, pgdp, pudp);
+		}
+#endif /* PUD_TABLE_SIZE */
+		pudp = pud_offset(pgdp, ea);
+		if (pud_none(*pudp)) {
+			pmdp = early_alloc_pgtable(PMD_TABLE_SIZE);
+			BUG_ON(pmdp == NULL);
+			pud_populate(&init_mm, pudp, pmdp);
+		}
+		pmdp = pmd_offset(pudp, ea);
+		if (!pmd_present(*pmdp)) {
+			ptep = early_alloc_pgtable(PAGE_SIZE);
+			BUG_ON(ptep == NULL);
+			pmd_populate_kernel(&init_mm, pmdp, ptep);
+		}
+		ptep = pte_offset_kernel(pmdp, ea);
+		set_pte_at(&init_mm, ea, ptep, pfn_pte(pa >> PAGE_SHIFT,
+							  __pgprot(flags)));
+#else /* CONFIG_PPC_MMU_NOHASH */
 		/*
 		 * If the mm subsystem is not fully up, we cannot create a
 		 * linux page table entry for this mapping.  Simply bolt an
@@ -93,6 +141,7 @@ static int map_io_page(unsigned long ea, unsigned long pa, int flags)
 			       "memory at %016lx !\n", pa);
 			return -ENOMEM;
 		}
+#endif /* !CONFIG_PPC_MMU_NOHASH */
 	}
 	return 0;
 }
@@ -124,7 +173,7 @@ void __iomem * __ioremap_at(phys_addr_t pa, void *ea, unsigned long size,
 	WARN_ON(size & ~PAGE_MASK);
 
 	for (i = 0; i < size; i += PAGE_SIZE)
-		if (map_io_page((unsigned long)ea+i, pa+i, flags))
+		if (map_kernel_page((unsigned long)ea+i, pa+i, flags))
 			return NULL;
 
 	return (void __iomem *)ea;
@@ -144,8 +193,8 @@ void __iounmap_at(void *ea, unsigned long size)
 	unmap_kernel_range((unsigned long)ea, size);
 }
 
-void __iomem * __ioremap(phys_addr_t addr, unsigned long size,
-			 unsigned long flags)
+void __iomem * __ioremap_caller(phys_addr_t addr, unsigned long size,
+				unsigned long flags, void *caller)
 {
 	phys_addr_t paligned;
 	void __iomem *ret;
@@ -168,8 +217,9 @@ void __iomem * __ioremap(phys_addr_t addr, unsigned long size,
 	if (mem_init_done) {
 		struct vm_struct *area;
 
-		area = __get_vm_area(size, VM_IOREMAP,
-				     ioremap_bot, IOREMAP_END);
+		area = __get_vm_area_caller(size, VM_IOREMAP,
+					    ioremap_bot, IOREMAP_END,
+					    caller);
 		if (area == NULL)
 			return NULL;
 		ret = __ioremap_at(paligned, area->addr, size, flags);
@@ -186,19 +236,27 @@ void __iomem * __ioremap(phys_addr_t addr, unsigned long size,
 	return ret;
 }
 
+void __iomem * __ioremap(phys_addr_t addr, unsigned long size,
+			 unsigned long flags)
+{
+	return __ioremap_caller(addr, size, flags, __builtin_return_address(0));
+}
 
 void __iomem * ioremap(phys_addr_t addr, unsigned long size)
 {
 	unsigned long flags = _PAGE_NO_CACHE | _PAGE_GUARDED;
+	void *caller = __builtin_return_address(0);
 
 	if (ppc_md.ioremap)
-		return ppc_md.ioremap(addr, size, flags);
-	return __ioremap(addr, size, flags);
+		return ppc_md.ioremap(addr, size, flags, caller);
+	return __ioremap_caller(addr, size, flags, caller);
 }
 
 void __iomem * ioremap_flags(phys_addr_t addr, unsigned long size,
 			     unsigned long flags)
 {
+	void *caller = __builtin_return_address(0);
+
 	/* writeable implies dirty for kernel addresses */
 	if (flags & _PAGE_RW)
 		flags |= _PAGE_DIRTY;
@@ -207,8 +265,8 @@ void __iomem * ioremap_flags(phys_addr_t addr, unsigned long size,
 	flags &= ~(_PAGE_USER | _PAGE_EXEC);
 
 	if (ppc_md.ioremap)
-		return ppc_md.ioremap(addr, size, flags);
-	return __ioremap(addr, size, flags);
+		return ppc_md.ioremap(addr, size, flags, caller);
+	return __ioremap_caller(addr, size, flags, caller);
 }
 
 

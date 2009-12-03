@@ -44,7 +44,7 @@ static void slc90e66_set_pio_mode(ide_drive_t *drive, const u8 pio)
 		control |= 1;	/* Programmable timing on */
 	if (drive->media == ide_disk)
 		control |= 4;	/* Prefetch, post write */
-	if (pio > 2)
+	if (ide_pio_need_iordy(drive, pio))
 		control |= 2;	/* IORDY */
 	if (is_slave) {
 		master_data |=  0x4000;
@@ -136,7 +136,6 @@ static const struct ide_port_info slc90e66_chipset __devinitdata = {
 	.name		= DRV_NAME,
 	.enablebits	= { {0x41, 0x80, 0x80}, {0x43, 0x80, 0x80} },
 	.port_ops	= &slc90e66_port_ops,
-	.host_flags	= IDE_HFLAG_LEGACY_IRQS,
 	.pio_mask	= ATA_PIO4,
 	.swdma_mask	= ATA_SWDMA2_ONLY,
 	.mwdma_mask	= ATA_MWDMA12_ONLY,

@@ -46,6 +46,7 @@ CROSS=
 # directory for object and other files used by this script
 object=arch/powerpc/boot
 objbin=$object
+dtc=scripts/dtc/dtc
 
 # directory for working files
 tmpdir=.
@@ -124,7 +125,7 @@ if [ -n "$dts" ]; then
     if [ -z "$dtb" ]; then
 	dtb="$platform.dtb"
     fi
-    $object/dtc -O dtb -o "$dtb" -b 0 "$dts"
+    $dtc -O dtb -o "$dtb" -b 0 "$dts"
 fi
 
 if [ -z "$kernel" ]; then
@@ -186,6 +187,9 @@ cuboot*)
     *-mpc85*|*-tqm85*|*-sbc85*)
         platformo=$object/cuboot-85xx.o
         ;;
+    *-amigaone)
+        link_address='0x800000'
+        ;;
     esac
     ;;
 ps3)
@@ -211,16 +215,20 @@ simpleboot-virtex405-*)
     binary=y
     ;;
 simpleboot-virtex440-*)
-    platformo="$object/simpleboot.o $object/virtex.o"
+    platformo="$object/fixed-head.o $object/simpleboot.o $object/virtex.o"
     binary=y
     ;;
 simpleboot-*)
-    platformo="$object/simpleboot.o"
+    platformo="$object/fixed-head.o $object/simpleboot.o"
     binary=y
     ;;
 asp834x-redboot)
     platformo="$object/fixed-head.o $object/redboot-83xx.o"
     binary=y
+    ;;
+xpedite52*)
+    link_address='0x1400000'
+    platformo=$object/cuboot-85xx.o
     ;;
 esac
 

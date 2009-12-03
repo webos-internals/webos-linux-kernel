@@ -26,8 +26,7 @@
 #include <asm/irq.h>
 #include <asm/mach-types.h>
 
-#include <mach/hardware.h>
-#include <mach/pxa-regs.h>
+#include <mach/pxa2xx-regs.h>
 
 #define GPIO_NAND_CS	(11)
 #define GPIO_NAND_RB	(89)
@@ -148,7 +147,7 @@ static int cmx270_device_ready(struct mtd_info *mtd)
 /*
  * Main initialization routine
  */
-static int cmx270_init(void)
+static int __init cmx270_init(void)
 {
 	struct nand_chip *this;
 	const char *part_type;
@@ -262,7 +261,7 @@ module_init(cmx270_init);
 /*
  * Clean up routine
  */
-static void cmx270_cleanup(void)
+static void __exit cmx270_cleanup(void)
 {
 	/* Release resources, unregister device */
 	nand_release(cmx270_nand_mtd);

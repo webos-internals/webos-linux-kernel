@@ -64,7 +64,7 @@ do_entInt(unsigned long type, unsigned long vector,
 		smp_percpu_timer_interrupt(regs);
 		cpu = smp_processor_id();
 		if (cpu != boot_cpuid) {
-		        kstat_cpu(cpu).irqs[RTC_IRQ]++;
+		        kstat_incr_irqs_this_cpu(RTC_IRQ, irq_to_desc(RTC_IRQ));
 		} else {
 			handle_irq(RTC_IRQ);
 		}
@@ -227,8 +227,8 @@ struct irqaction timer_irqaction = {
 	.name		= "timer",
 };
 
-static struct hw_interrupt_type rtc_irq_type = {
-	.typename	= "RTC",
+static struct irq_chip rtc_irq_type = {
+	.name		= "RTC",
 	.startup	= rtc_startup,
 	.shutdown	= rtc_enable_disable,
 	.enable		= rtc_enable_disable,

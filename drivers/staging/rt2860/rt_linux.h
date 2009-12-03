@@ -42,7 +42,6 @@
 
 #include "rtmp_type.h"
 #include <linux/module.h>
-#include <linux/version.h>
 #include <linux/kernel.h>
 
 #include <linux/spinlock.h>
@@ -64,8 +63,6 @@
 #include <linux/ctype.h>
 #include <linux/vmalloc.h>
 
-
-#include <linux/wireless.h>
 #include <net/iw_handler.h>
 
 // load firmware
@@ -89,19 +86,24 @@ typedef int (*HARD_START_XMIT_FUNC)(struct sk_buff *skb, struct net_device *net_
 
 // add by kathy
 
-#ifdef CONFIG_STA_SUPPORT
-#ifdef RT2860
-#define STA_PROFILE_PATH			"/etc/Wireless/RT2860STA/RT2860STA.dat"
-#define STA_RTMP_FIRMWARE_FILE_NAME "/etc/Wireless/RT2860STA/RT2860STA.bin"
-#define STA_NIC_DEVICE_NAME			"RT2860STA"
-#define STA_DRIVER_VERSION			"1.8.0.0"
-#ifdef MULTIPLE_CARD_SUPPORT
-#define CARD_INFO_PATH			"/etc/Wireless/RT2860STA/RT2860STACard.dat"
-#endif // MULTIPLE_CARD_SUPPORT //
-#endif // RT2860 //
-
-
-#endif // CONFIG_STA_SUPPORT //
+/* order of "if defined()" is important, because for 3070 driver
+   both RT2870 and RT3070 are defined */
+#if defined(RT2860)
+ #define STA_PROFILE_PATH			"/etc/Wireless/RT2860STA/RT2860STA.dat"
+ #define STA_RTMP_FIRMWARE_FILE_NAME "/etc/Wireless/RT2860STA/RT2860STA.bin"
+ #define STA_NIC_DEVICE_NAME			"RT2860STA"
+ #define STA_DRIVER_VERSION			"1.8.1.1"
+#elif defined(RT3070)
+ #define STA_PROFILE_PATH			"/etc/Wireless/RT3070STA/RT3070STA.dat"
+ #define STA_RT2870_IMAGE_FILE_NAME  "/etc/Wireless/RT3070STA/rt2870.bin"
+ #define STA_NIC_DEVICE_NAME			"RT3070STA"
+ #define STA_DRIVER_VERSION			"2.0.1.0"
+#elif defined(RT2870)
+ #define STA_PROFILE_PATH			"/etc/Wireless/RT2870STA/RT2870STA.dat"
+ #define STA_RT2870_IMAGE_FILE_NAME  "/etc/Wireless/RT2870STA/rt2870.bin"
+ #define STA_NIC_DEVICE_NAME			"RT2870STA"
+ #define STA_DRIVER_VERSION			"1.4.0.0"
+#endif
 
 #ifdef RT2860
 #ifndef PCI_DEVICE
@@ -109,9 +111,7 @@ typedef int (*HARD_START_XMIT_FUNC)(struct sk_buff *skb, struct net_device *net_
 	.vendor = (vend), .device = (dev), \
 	.subvendor = PCI_ANY_ID, .subdevice = PCI_ANY_ID
 #endif // PCI_DEVICE //
-#endif // RT2860 //
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,5,0)
+#endif
 
 #define RTMP_TIME_AFTER(a,b)		\
 	(typecheck(unsigned long, (unsigned long)a) && \
@@ -123,11 +123,7 @@ typedef int (*HARD_START_XMIT_FUNC)(struct sk_buff *skb, struct net_device *net_
 	 typecheck(unsigned long, (unsigned long)b) && \
 	 ((long)(a) - (long)(b) >= 0))
 #define RTMP_TIME_BEFORE(a,b)	RTMP_TIME_AFTER_EQ(b,a)
-#else
-#define RTMP_TIME_AFTER(a,b) time_after(a, b)
-#endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,5,0)
 #define RT_MOD_INC_USE_COUNT() \
 	if (!try_module_get(THIS_MODULE)) \
 	{ \
@@ -136,10 +132,6 @@ typedef int (*HARD_START_XMIT_FUNC)(struct sk_buff *skb, struct net_device *net_
 	}
 
 #define RT_MOD_DEC_USE_COUNT() module_put(THIS_MODULE);
-#else
-#define RT_MOD_INC_USE_COUNT()	MOD_INC_USE_COUNT;
-#define RT_MOD_DEC_USE_COUNT() MOD_DEC_USE_COUNT;
-#endif
 
 #define OS_HZ			HZ
 
@@ -159,33 +151,12 @@ typedef int (*HARD_START_XMIT_FUNC)(struct sk_buff *skb, struct net_device *net_
 #define MIN_NET_DEVICE_FOR_WDS			0x10		//0x40,0x50,0x60,0x70
 #define MIN_NET_DEVICE_FOR_APCLI		0x20
 #define MIN_NET_DEVICE_FOR_MESH			0x30
-#ifdef CONFIG_STA_SUPPORT
 #define MIN_NET_DEVICE_FOR_DLS			0x40
-#endif // CONFIG_STA_SUPPORT //
 
-
-#ifdef CONFIG_STA_SUPPORT
 #define NDIS_PACKET_TYPE_DIRECTED		0
 #define NDIS_PACKET_TYPE_MULTICAST		1
 #define NDIS_PACKET_TYPE_BROADCAST		2
 #define NDIS_PACKET_TYPE_ALL_MULTICAST	3
-#endif // CONFIG_STA_SUPPORT //
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
-typedef	struct pid *	THREAD_PID;
-#define	THREAD_PID_INIT_VALUE	NULL
-#define	GET_PID(_v)	find_get_pid(_v)
-#define	GET_PID_NUMBER(_v)	pid_nr(_v)
-#define CHECK_PID_LEGALITY(_pid)	if (pid_nr(_pid) >= 0)
-#define KILL_THREAD_PID(_A, _B, _C)	kill_pid(_A, _B, _C)
-#else
-typedef	pid_t	THREAD_PID;
-#define	THREAD_PID_INIT_VALUE	-1
-#define	GET_PID(_v)	_v
-#define	GET_PID_NUMBER(_v)	_v
-#define CHECK_PID_LEGALITY(_pid)	if (_pid >= 0)
-#define KILL_THREAD_PID(_A, _B, _C)	kill_proc(_A, _B, _C)
-#endif
 
 struct os_lock  {
 	spinlock_t		lock;
@@ -198,8 +169,14 @@ struct os_cookie {
 	struct pci_dev 			*pci_dev;
 	struct pci_dev 			*parent_pci_dev;
 	dma_addr_t		  		pAd_pa;
-#endif // RT2860 //
+#endif
+#ifdef RT2870
+	struct usb_device		*pUsb_Dev;
 
+	struct pid	*MLMEThr_pid;
+	struct pid	*RTUSBCmdThr_pid;
+	struct pid	*TimerQThr_pid;
+#endif // RT2870 //
 
 	struct tasklet_struct 	rx_done_task;
 	struct tasklet_struct 	mgmt_dma_done_task;
@@ -211,28 +188,20 @@ struct os_cookie {
 	struct tasklet_struct	tbtt_task;
 #ifdef RT2860
 	struct tasklet_struct	fifo_statistic_full_task;
-#endif // RT2860 //
-
+#endif
+#ifdef RT2870
+	struct tasklet_struct	null_frame_complete_task;
+	struct tasklet_struct	rts_frame_complete_task;
+	struct tasklet_struct	pspoll_frame_complete_task;
+#endif // RT2870 //
 
 	unsigned long			apd_pid; //802.1x daemon pid
 	INT						ioctl_if_type;
 	INT 					ioctl_if;
 };
 
-typedef struct _VIRTUAL_ADAPTER
-{
-	struct net_device		*RtmpDev;
-	struct net_device		*VirtualDev;
-} VIRTUAL_ADAPTER, PVIRTUAL_ADAPTER;
-
 #undef  ASSERT
-#define ASSERT(x)                                                               \
-{                                                                               \
-    if (!(x))                                                                   \
-    {                                                                           \
-        printk(KERN_WARNING __FILE__ ":%d assert " #x "failed\n", __LINE__);    \
-    }                                                                           \
-}
+#define ASSERT(x)
 
 typedef struct os_cookie	* POS_COOKIE;
 typedef struct pci_dev 		* PPCI_DEV;
@@ -281,8 +250,12 @@ void linux_pci_unmap_single(void *handle, dma_addr_t dma_addr, size_t size, int 
 
 #define DEV_ALLOC_SKB(_length) \
 	dev_alloc_skb(_length)
-#endif // RT2860 //
+#endif
+#ifdef RT2870
+#define PCI_MAP_SINGLE(_handle, _ptr, _size, _dir) (ULONG)0
 
+#define PCI_UNMAP_SINGLE(_handle, _ptr, _size, _dir)
+#endif // RT2870 //
 
 
 #define BEACON_FRAME_DMA_CACHE_WBACK(_ptr, _size)	\
@@ -296,9 +269,20 @@ void linux_pci_unmap_single(void *handle, dma_addr_t dma_addr, size_t size, int 
 
 #define NdisMIndicateStatus(_w, _x, _y, _z)
 
-
 typedef struct timer_list	RTMP_OS_TIMER;
 
+#ifdef RT2870
+/* ----------------- Timer Related MARCO ---------------*/
+// In RT2870, we have a lot of timer functions and will read/write register, it's
+//	not allowed in Linux USB sub-system to do it ( because of sleep issue when submit
+//  to ctrl pipe). So we need a wrapper function to take care it.
+
+typedef VOID (*RT2870_TIMER_HANDLE)(
+	IN  PVOID   SystemSpecific1,
+	IN  PVOID   FunctionContext,
+	IN  PVOID   SystemSpecific2,
+	IN  PVOID   SystemSpecific3);
+#endif // RT2870 //
 
 
 typedef struct  _RALINK_TIMER_STRUCT    {
@@ -309,9 +293,42 @@ typedef struct  _RALINK_TIMER_STRUCT    {
     BOOLEAN             Repeat;         // True if periodic timer
     ULONG               TimerValue;     // Timer value in milliseconds
 	ULONG				cookie;			// os specific object
+#ifdef RT2870
+	RT2870_TIMER_HANDLE	handle;
+	void				*pAd;
+#endif // RT2870 //
 }   RALINK_TIMER_STRUCT, *PRALINK_TIMER_STRUCT;
 
 
+#ifdef RT2870
+
+typedef enum _RT2870_KERNEL_THREAD_STATUS_
+{
+	RT2870_THREAD_UNKNOWN = 0,
+	RT2870_THREAD_INITED = 1,
+	RT2870_THREAD_RUNNING = 2,
+	RT2870_THREAD_STOPED = 4,
+}RT2870_KERNEL_THREAD_STATUS;
+
+#define RT2870_THREAD_CAN_DO_INSERT		(RT2870_THREAD_INITED |RT2870_THREAD_RUNNING)
+
+typedef struct _RT2870_TIMER_ENTRY_
+{
+	RALINK_TIMER_STRUCT 			*pRaTimer;
+	struct _RT2870_TIMER_ENTRY_ 	*pNext;
+}RT2870_TIMER_ENTRY;
+
+
+#define TIMER_QUEUE_SIZE_MAX	128
+typedef struct _RT2870_TIMER_QUEUE_
+{
+	unsigned int		status;
+	UCHAR				*pTimerQPoll;
+	RT2870_TIMER_ENTRY	*pQPollFreeList;
+	RT2870_TIMER_ENTRY 	*pQHead;
+	RT2870_TIMER_ENTRY 	*pQTail;
+}RT2870_TIMER_QUEUE;
+#endif // RT2870 //
 
 
 //#define DBG	1
@@ -402,45 +419,6 @@ extern ULONG    RTDebugLevel;
 }
 
 #ifdef RT2860
-#if defined(INF_TWINPASS) || defined(INF_DANUBE) || defined(IKANOS_VX_1X0)
-//Patch for ASIC turst read/write bug, needs to remove after metel fix
-#define RTMP_IO_READ32(_A, _R, _pV)									\
-{																	\
-    if ((_A)->bPCIclkOff == FALSE)                                      \
-    {                                                                   \
-	(*_pV = readl((void *)((_A)->CSRBaseAddress + MAC_CSR0)));		\
-	(*_pV = readl((void *)((_A)->CSRBaseAddress + (_R))));			\
-	(*_pV = SWAP32(*((UINT32 *)(_pV))));                           \
-    }                                                                   \
-}
-#define RTMP_IO_READ8(_A, _R, _pV)									\
-{																	\
-	(*_pV = readl((void *)((_A)->CSRBaseAddress + MAC_CSR0)));		\
-	(*_pV = readb((void *)((_A)->CSRBaseAddress + (_R))));			\
-}
-#define RTMP_IO_WRITE32(_A, _R, _V)									\
-{																	\
-    if ((_A)->bPCIclkOff == FALSE)                                      \
-    {                                                                   \
-	UINT32	_Val;													\
-	_Val = readl((void *)((_A)->CSRBaseAddress + MAC_CSR0));		\
-	_Val = SWAP32(_V);												\
-	writel(_Val, (void *)((_A)->CSRBaseAddress + (_R)));			\
-    }                                                                   \
-}
-#define RTMP_IO_WRITE8(_A, _R, _V)									\
-{																	\
-	UINT	Val;													\
-	Val = readl((void *)((_A)->CSRBaseAddress + MAC_CSR0));		\
-	writeb((_V), (PUCHAR)((_A)->CSRBaseAddress + (_R)));			\
-}
-#define RTMP_IO_WRITE16(_A, _R, _V)									\
-{																	\
-	UINT	Val;													\
-	Val = readl((void *)((_A)->CSRBaseAddress + MAC_CSR0));		\
-	writew(SWAP16((_V)), (PUSHORT)((_A)->CSRBaseAddress + (_R)));	\
-}
-#else
 //Patch for ASIC turst read/write bug, needs to remove after metel fix
 #define RTMP_IO_READ32(_A, _R, _pV)								\
 {																\
@@ -451,6 +429,11 @@ extern ULONG    RTDebugLevel;
     }                                                               \
     else															\
 		*_pV = 0;													\
+}
+#define RTMP_IO_FORCE_READ32(_A, _R, _pV)							\
+{																	\
+	(*_pV = readl((void *)((_A)->CSRBaseAddress + MAC_CSR0)));		\
+	(*_pV = readl((void *)((_A)->CSRBaseAddress + (_R))));			\
 }
 #define RTMP_IO_READ8(_A, _R, _pV)								\
 {																\
@@ -466,34 +449,44 @@ extern ULONG    RTDebugLevel;
 	writel(_V, (void *)((_A)->CSRBaseAddress + (_R)));								\
     }                                                               \
 }
-#if defined(BRCM_6358)
-#define RTMP_IO_WRITE8(_A, _R, _V)            \
-{                    \
-	ULONG Val;                \
-	UCHAR _i;                \
-	_i = (_R & 0x3);             \
-	Val = readl((void *)((_A)->CSRBaseAddress + (_R - _i)));   \
-	Val = Val & (~(0x000000ff << ((_i)*8)));         \
-	Val = Val | ((ULONG)_V << ((_i)*8));         \
-	writel((Val), (void *)((_A)->CSRBaseAddress + (_R - _i)));    \
-}
-#else
 #define RTMP_IO_WRITE8(_A, _R, _V)												\
 {																				\
 	UINT	Val;																\
 	Val = readl((void *)((_A)->CSRBaseAddress + MAC_CSR0));			\
 	writeb((_V), (PUCHAR)((_A)->CSRBaseAddress + (_R)));		\
 }
-#endif
 #define RTMP_IO_WRITE16(_A, _R, _V)												\
 {																				\
 	UINT	Val;																\
 	Val = readl((void *)((_A)->CSRBaseAddress + MAC_CSR0));			\
 	writew((_V), (PUSHORT)((_A)->CSRBaseAddress + (_R)));	\
 }
-#endif
-#endif // RT2860 //
+#endif /* RT2860 */
+#ifdef RT2870
+//Patch for ASIC turst read/write bug, needs to remove after metel fix
+#define RTMP_IO_READ32(_A, _R, _pV)								\
+	RTUSBReadMACRegister(_A, _R, _pV)
 
+#define RTMP_IO_READ8(_A, _R, _pV)								\
+{																\
+}
+
+#define RTMP_IO_WRITE32(_A, _R, _V)								\
+	RTUSBWriteMACRegister(_A, _R, _V)
+
+
+#define RTMP_IO_WRITE8(_A, _R, _V)								\
+{																\
+	USHORT	_Val = _V;											\
+	RTUSBSingleWrite(_A, _R, _Val);								\
+}
+
+
+#define RTMP_IO_WRITE16(_A, _R, _V)								\
+{																\
+	RTUSBSingleWrite(_A, _R, _V);								\
+}
+#endif // RT2870 //
 
 #ifndef wait_event_interruptible_timeout
 #define __wait_event_interruptible_timeout(wq, condition, ret) \
@@ -536,7 +529,6 @@ do { \
 		wait_event_interruptible_timeout(_wait, 0, ONE_TICK); }
 
 
-/* Modified by Wu Xi-Kun 4/21/2006 */
 typedef void (*TIMER_FUNCTION)(unsigned long);
 
 #define COPY_MAC_ADDR(Addr1, Addr2)             memcpy((Addr1), (Addr2), MAC_ADDR_LEN)
@@ -554,8 +546,22 @@ void linux_##_func(unsigned long data)											\
 	if (pTimer->Repeat)															\
 		RTMP_OS_Add_Timer(&pTimer->TimerObj, pTimer->TimerValue);				\
 }
-#endif // RT2860 //
-
+#endif
+#ifdef RT2870
+#define BUILD_TIMER_FUNCTION(_func)													\
+void linux_##_func(unsigned long data)												\
+{																					\
+	PRALINK_TIMER_STRUCT	_pTimer = (PRALINK_TIMER_STRUCT)data;					\
+	RT2870_TIMER_ENTRY		*_pQNode;												\
+	RTMP_ADAPTER			*_pAd;													\
+																				\
+	_pTimer->handle = _func;															\
+	_pAd = (RTMP_ADAPTER *)_pTimer->pAd;												\
+	_pQNode = RT2870_TimerQ_Insert(_pAd, _pTimer); 									\
+	if ((_pQNode == NULL) && (_pAd->TimerQ.status & RT2870_THREAD_CAN_DO_INSERT))	\
+		RTMP_OS_Add_Timer(&_pTimer->TimerObj, HZ);               					\
+}
+#endif // RT2870 //
 
 
 #define DECLARE_TIMER_FUNCTION(_func)			\
@@ -569,9 +575,10 @@ DECLARE_TIMER_FUNCTION(MlmeRssiReportExec);
 DECLARE_TIMER_FUNCTION(AsicRxAntEvalTimeout);
 DECLARE_TIMER_FUNCTION(APSDPeriodicExec);
 DECLARE_TIMER_FUNCTION(AsicRfTuningExec);
+#ifdef RT2870
+DECLARE_TIMER_FUNCTION(BeaconUpdateExec);
+#endif // RT2870 //
 
-
-#ifdef CONFIG_STA_SUPPORT
 DECLARE_TIMER_FUNCTION(BeaconTimeout);
 DECLARE_TIMER_FUNCTION(ScanTimeout);
 DECLARE_TIMER_FUNCTION(AuthTimeout);
@@ -579,18 +586,10 @@ DECLARE_TIMER_FUNCTION(AssocTimeout);
 DECLARE_TIMER_FUNCTION(ReassocTimeout);
 DECLARE_TIMER_FUNCTION(DisassocTimeout);
 DECLARE_TIMER_FUNCTION(LinkDownExec);
-#ifdef LEAP_SUPPORT
-DECLARE_TIMER_FUNCTION(LeapAuthTimeout);
-#endif
 DECLARE_TIMER_FUNCTION(StaQuickResponeForRateUpExec);
 DECLARE_TIMER_FUNCTION(WpaDisassocApAndBlockAssoc);
 DECLARE_TIMER_FUNCTION(PsPollWakeExec);
 DECLARE_TIMER_FUNCTION(RadioOnExec);
-
-#ifdef QOS_DLS_SUPPORT
-DECLARE_TIMER_FUNCTION(DlsTimeoutAction);
-#endif // QOS_DLS_SUPPORT //
-#endif // CONFIG_STA_SUPPORT //
 
 void RTMP_GetCurrentSystemTime(LARGE_INTEGER *time);
 
@@ -699,10 +698,6 @@ void RTMP_GetCurrentSystemTime(LARGE_INTEGER *time);
 #define RTMP_GET_PACKET_MOREDATA(_p)				(RTPKT_TO_OSPKT(_p)->cb[CB_OFF+7])
 
 
-#if 0
-//#define RTMP_SET_PACKET_DHCP(_p, _flg)   	(RTPKT_TO_OSPKT(_p)->cb[CB_OFF+11] = _flg)
-//#define RTMP_GET_PACKET_DHCP(_p)         	(RTPKT_TO_OSPKT(_p)->cb[CB_OFF+11])
-#else
 //
 //	Sepcific Pakcet Type definition
 //
@@ -781,8 +776,6 @@ void RTMP_GetCurrentSystemTime(LARGE_INTEGER *time);
 			}while(0)
 
 #define RTMP_GET_PACKET_IPV4(_p)		(RTPKT_TO_OSPKT(_p)->cb[CB_OFF+11] & RTMP_PACKET_SPECIFIC_IPV4)
-
-#endif
 
 
 // If this flag is set, it indicates that this EAPoL frame MUST be clear.
@@ -921,6 +914,5 @@ void rtmp_os_thread_init(PUCHAR pThreadName, PVOID pNotify);
 #endif
 
 #define PCIBUS_INTEL_VENDOR         0x8086
-#endif // RT2860 //
-
+#endif
 

@@ -29,8 +29,8 @@
 
 #include <asm/idle.h>
 
-#include "../dma/ioatdma_hw.h"
-#include "../dma/ioatdma_registers.h"
+#include "../dma/ioat/hw.h"
+#include "../dma/ioat/registers.h"
 
 #define I7300_IDLE_DRIVER_VERSION	"1.55"
 #define I7300_PRINT			"i7300_idle:"
@@ -40,6 +40,10 @@
 static int debug;
 module_param_named(debug, debug, uint, 0644);
 MODULE_PARM_DESC(debug, "Enable debug printks in this driver");
+
+static int forceload;
+module_param_named(forceload, forceload, uint, 0644);
+MODULE_PARM_DESC(debug, "Enable driver testing on unvalidated i5000");
 
 #define dprintk(fmt, arg...) \
 	do { if (debug) printk(KERN_INFO I7300_PRINT fmt, ##arg); } while (0)
@@ -122,9 +126,9 @@ static void i7300_idle_ioat_stop(void)
 		udelay(10);
 
 		sts = readq(ioat_chanbase + IOAT1_CHANSTS_OFFSET) &
-			IOAT_CHANSTS_DMA_TRANSFER_STATUS;
+			IOAT_CHANSTS_STATUS;
 
-		if (sts != IOAT_CHANSTS_DMA_TRANSFER_STATUS_ACTIVE)
+		if (sts != IOAT_CHANSTS_ACTIVE)
 			break;
 
 	}
@@ -156,9 +160,9 @@ static int __init i7300_idle_ioat_selftest(u8 *ctl,
 	udelay(1000);
 
 	chan_sts = readq(ioat_chanbase + IOAT1_CHANSTS_OFFSET) &
-			IOAT_CHANSTS_DMA_TRANSFER_STATUS;
+			IOAT_CHANSTS_STATUS;
 
-	if (chan_sts != IOAT_CHANSTS_DMA_TRANSFER_STATUS_DONE) {
+	if (chan_sts != IOAT_CHANSTS_DONE) {
 		/* Not complete, reset the channel */
 		writeb(IOAT_CHANCMD_RESET,
 		       ioat_chanbase + IOAT1_CHANCMD_OFFSET);
@@ -178,7 +182,7 @@ static int __init i7300_idle_ioat_selftest(u8 *ctl,
 
 static struct device dummy_dma_dev = {
 	.init_name = "fallback device",
-	.coherent_dma_mask = DMA_64BIT_MASK,
+	.coherent_dma_mask = DMA_BIT_MASK(64),
 	.dma_mask = &dummy_dma_dev.coherent_dma_mask,
 };
 
@@ -284,9 +288,9 @@ static void __exit i7300_idle_ioat_exit(void)
 		       ioat_chanbase + IOAT1_CHANCMD_OFFSET);
 
 		chan_sts = readq(ioat_chanbase + IOAT1_CHANSTS_OFFSET) &
-			IOAT_CHANSTS_DMA_TRANSFER_STATUS;
+			IOAT_CHANSTS_STATUS;
 
-		if (chan_sts != IOAT_CHANSTS_DMA_TRANSFER_STATUS_ACTIVE) {
+		if (chan_sts != IOAT_CHANSTS_ACTIVE) {
 			writew(0, ioat_chanbase + IOAT_CHANCTRL_OFFSET);
 			break;
 		}
@@ -294,14 +298,14 @@ static void __exit i7300_idle_ioat_exit(void)
 	}
 
 	chan_sts = readq(ioat_chanbase + IOAT1_CHANSTS_OFFSET) &
-			IOAT_CHANSTS_DMA_TRANSFER_STATUS;
+			IOAT_CHANSTS_STATUS;
 
 	/*
 	 * We tried to reset multiple times. If IO A/T channel is still active
 	 * flag an error and return without cleanup. Memory leak is better
 	 * than random corruption in that extreme error situation.
 	 */
-	if (chan_sts == IOAT_CHANSTS_DMA_TRANSFER_STATUS_ACTIVE) {
+	if (chan_sts == IOAT_CHANSTS_ACTIVE) {
 		printk(KERN_ERR I7300_PRINT "Unable to stop IO A/T channels."
 			" Not freeing resources\n");
 		return;
@@ -552,7 +556,7 @@ static int __init i7300_idle_init(void)
 	cpus_clear(idle_cpumask);
 	total_us = 0;
 
-	if (i7300_idle_platform_probe(&fbd_dev, &ioat_dev))
+	if (i7300_idle_platform_probe(&fbd_dev, &ioat_dev, forceload))
 		return -ENODEV;
 
 	if (i7300_idle_thrt_save())

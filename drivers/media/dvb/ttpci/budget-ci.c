@@ -225,7 +225,7 @@ static int msp430_ir_init(struct budget_ci *budget_ci)
 	case 0x1012:
 		/* The hauppauge keymap is a superset of these remotes */
 		ir_input_init(input_dev, &budget_ci->ir.state,
-			      IR_TYPE_RC5, ir_codes_hauppauge_new);
+			      IR_TYPE_RC5, &ir_codes_hauppauge_new_table);
 
 		if (rc5_device < 0)
 			budget_ci->ir.rc5_device = 0x1f;
@@ -237,7 +237,7 @@ static int msp430_ir_init(struct budget_ci *budget_ci)
 	case 0x101a:
 		/* for the Technotrend 1500 bundled remote */
 		ir_input_init(input_dev, &budget_ci->ir.state,
-			      IR_TYPE_RC5, ir_codes_tt_1500);
+			      IR_TYPE_RC5, &ir_codes_tt_1500_table);
 
 		if (rc5_device < 0)
 			budget_ci->ir.rc5_device = IR_DEVICE_ANY;
@@ -247,7 +247,7 @@ static int msp430_ir_init(struct budget_ci *budget_ci)
 	default:
 		/* unknown remote */
 		ir_input_init(input_dev, &budget_ci->ir.state,
-			      IR_TYPE_RC5, ir_codes_budget_ci_old);
+			      IR_TYPE_RC5, &ir_codes_budget_ci_old_table);
 
 		if (rc5_device < 0)
 			budget_ci->ir.rc5_device = IR_DEVICE_ANY;
@@ -1076,6 +1076,10 @@ static struct tda10023_config tda10023_config = {
 	.deltaf = 0xa511,
 };
 
+static struct tda827x_config tda827x_config = {
+	.config = 0,
+};
+
 /* TT S2-3200 DVB-S (STB0899) Inittab */
 static const struct stb0899_s1_reg tt3200_stb0899_s1_init_1[] = {
 
@@ -1414,7 +1418,7 @@ static void frontend_init(struct budget_ci *budget_ci)
 	case 0x101a: /* TT Budget-C-1501 (philips tda10023/philips tda8274A) */
 		budget_ci->budget.dvb_frontend = dvb_attach(tda10023_attach, &tda10023_config, &budget_ci->budget.i2c_adap, 0x48);
 		if (budget_ci->budget.dvb_frontend) {
-			if (dvb_attach(tda827x_attach, budget_ci->budget.dvb_frontend, 0x61, &budget_ci->budget.i2c_adap, NULL) == NULL) {
+			if (dvb_attach(tda827x_attach, budget_ci->budget.dvb_frontend, 0x61, &budget_ci->budget.i2c_adap, &tda827x_config) == NULL) {
 				printk(KERN_ERR "%s: No tda827x found!\n", __func__);
 				dvb_frontend_detach(budget_ci->budget.dvb_frontend);
 				budget_ci->budget.dvb_frontend = NULL;

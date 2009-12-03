@@ -49,8 +49,9 @@ static int zero = 0;
 static int one = 1;
 static int timer_max = 86400000; /* ms in one day */
 static int int_max = INT_MAX;
-static long sack_timer_min = 1;
-static long sack_timer_max = 500;
+static int sack_timer_min = 1;
+static int sack_timer_max = 500;
+static int addr_scope_max = 3; /* check sctp_scope_policy_t in include/net/sctp/constants.h for max entries */
 
 extern int sysctl_sctp_mem[3];
 extern int sysctl_sctp_rmem[3];
@@ -223,7 +224,7 @@ static ctl_table sctp_table[] = {
 		.ctl_name	= NET_SCTP_SACK_TIMEOUT,
 		.procname	= "sack_timeout",
 		.data		= &sctp_sack_timeout,
-		.maxlen		= sizeof(long),
+		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.strategy	= sysctl_intvec,
@@ -271,6 +272,17 @@ static ctl_table sctp_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 		.strategy	= sysctl_intvec
+	},
+	{
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "addr_scope_policy",
+		.data		= &sctp_scope_policy,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+		.extra2		= &addr_scope_max,
 	},
 	{ .ctl_name = 0 }
 };

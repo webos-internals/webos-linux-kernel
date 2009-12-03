@@ -89,14 +89,14 @@ static int contrstats_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static struct seq_operations seq_controller_ops = {
+static const struct seq_operations seq_controller_ops = {
 	.start	= controller_start,
 	.next	= controller_next,
 	.stop	= controller_stop,
 	.show	= controller_show,
 };
 
-static struct seq_operations seq_contrstats_ops = {
+static const struct seq_operations seq_contrstats_ops = {
 	.start	= controller_start,
 	.next	= controller_next,
 	.stop	= controller_stop,
@@ -194,14 +194,14 @@ applstats_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static struct seq_operations seq_applications_ops = {
+static const struct seq_operations seq_applications_ops = {
 	.start	= applications_start,
 	.next	= applications_next,
 	.stop	= applications_stop,
 	.show	= applications_show,
 };
 
-static struct seq_operations seq_applstats_ops = {
+static const struct seq_operations seq_applstats_ops = {
 	.start	= applications_start,
 	.next	= applications_next,
 	.stop	= applications_stop,
@@ -239,6 +239,7 @@ static const struct file_operations proc_applstats_ops = {
 // ---------------------------------------------------------------------------
 
 static void *capi_driver_start(struct seq_file *seq, loff_t *pos)
+	__acquires(&capi_drivers_list_lock)
 {
 	read_lock(&capi_drivers_list_lock);
 	return seq_list_start(&capi_drivers, *pos);
@@ -250,6 +251,7 @@ static void *capi_driver_next(struct seq_file *seq, void *v, loff_t *pos)
 }
 
 static void capi_driver_stop(struct seq_file *seq, void *v)
+	__releases(&capi_drivers_list_lock)
 {
 	read_unlock(&capi_drivers_list_lock);
 }
@@ -262,7 +264,7 @@ static int capi_driver_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static struct seq_operations seq_capi_driver_ops = {
+static const struct seq_operations seq_capi_driver_ops = {
 	.start	= capi_driver_start,
 	.next	= capi_driver_next,
 	.stop	= capi_driver_stop,

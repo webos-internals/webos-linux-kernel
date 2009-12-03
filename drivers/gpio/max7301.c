@@ -287,7 +287,7 @@ exit_destroy:
 	return ret;
 }
 
-static int max7301_remove(struct spi_device *spi)
+static int __devexit max7301_remove(struct spi_device *spi)
 {
 	struct max7301 *ts;
 	int ret;
@@ -339,3 +339,4 @@ module_exit(max7301_exit);
 MODULE_AUTHOR("Juergen Beisert");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MAX7301 SPI based GPIO-Expander");
+MODULE_ALIAS("spi:" DRIVER_NAME);

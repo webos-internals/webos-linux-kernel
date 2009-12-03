@@ -850,7 +850,7 @@ EXPORT_SYMBOL(ia64_unreg_MCA_extension);
 
 
 static inline void
-copy_reg(const u64 *fr, u64 fnat, u64 *tr, u64 *tnat)
+copy_reg(const u64 *fr, u64 fnat, unsigned long *tr, unsigned long *tnat)
 {
 	u64 fslot, tslot, nat;
 	*tr = *fr;
@@ -887,6 +887,60 @@ ia64_mca_modify_comm(const struct task_struct *previous_current)
 	memcpy(current->comm, comm, sizeof(current->comm));
 }
 
+static void
+finish_pt_regs(struct pt_regs *regs, const pal_min_state_area_t *ms,
+		unsigned long *nat)
+{
+	const u64 *bank;
+
+	/* If ipsr.ic then use pmsa_{iip,ipsr,ifs}, else use
+	 * pmsa_{xip,xpsr,xfs}
+	 */
+	if (ia64_psr(regs)->ic) {
+		regs->cr_iip = ms->pmsa_iip;
+		regs->cr_ipsr = ms->pmsa_ipsr;
+		regs->cr_ifs = ms->pmsa_ifs;
+	} else {
+		regs->cr_iip = ms->pmsa_xip;
+		regs->cr_ipsr = ms->pmsa_xpsr;
+		regs->cr_ifs = ms->pmsa_xfs;
+	}
+	regs->pr = ms->pmsa_pr;
+	regs->b0 = ms->pmsa_br0;
+	regs->ar_rsc = ms->pmsa_rsc;
+	copy_reg(&ms->pmsa_gr[1-1], ms->pmsa_nat_bits, &regs->r1, nat);
+	copy_reg(&ms->pmsa_gr[2-1], ms->pmsa_nat_bits, &regs->r2, nat);
+	copy_reg(&ms->pmsa_gr[3-1], ms->pmsa_nat_bits, &regs->r3, nat);
+	copy_reg(&ms->pmsa_gr[8-1], ms->pmsa_nat_bits, &regs->r8, nat);
+	copy_reg(&ms->pmsa_gr[9-1], ms->pmsa_nat_bits, &regs->r9, nat);
+	copy_reg(&ms->pmsa_gr[10-1], ms->pmsa_nat_bits, &regs->r10, nat);
+	copy_reg(&ms->pmsa_gr[11-1], ms->pmsa_nat_bits, &regs->r11, nat);
+	copy_reg(&ms->pmsa_gr[12-1], ms->pmsa_nat_bits, &regs->r12, nat);
+	copy_reg(&ms->pmsa_gr[13-1], ms->pmsa_nat_bits, &regs->r13, nat);
+	copy_reg(&ms->pmsa_gr[14-1], ms->pmsa_nat_bits, &regs->r14, nat);
+	copy_reg(&ms->pmsa_gr[15-1], ms->pmsa_nat_bits, &regs->r15, nat);
+	if (ia64_psr(regs)->bn)
+		bank = ms->pmsa_bank1_gr;
+	else
+		bank = ms->pmsa_bank0_gr;
+	copy_reg(&bank[16-16], ms->pmsa_nat_bits, &regs->r16, nat);
+	copy_reg(&bank[17-16], ms->pmsa_nat_bits, &regs->r17, nat);
+	copy_reg(&bank[18-16], ms->pmsa_nat_bits, &regs->r18, nat);
+	copy_reg(&bank[19-16], ms->pmsa_nat_bits, &regs->r19, nat);
+	copy_reg(&bank[20-16], ms->pmsa_nat_bits, &regs->r20, nat);
+	copy_reg(&bank[21-16], ms->pmsa_nat_bits, &regs->r21, nat);
+	copy_reg(&bank[22-16], ms->pmsa_nat_bits, &regs->r22, nat);
+	copy_reg(&bank[23-16], ms->pmsa_nat_bits, &regs->r23, nat);
+	copy_reg(&bank[24-16], ms->pmsa_nat_bits, &regs->r24, nat);
+	copy_reg(&bank[25-16], ms->pmsa_nat_bits, &regs->r25, nat);
+	copy_reg(&bank[26-16], ms->pmsa_nat_bits, &regs->r26, nat);
+	copy_reg(&bank[27-16], ms->pmsa_nat_bits, &regs->r27, nat);
+	copy_reg(&bank[28-16], ms->pmsa_nat_bits, &regs->r28, nat);
+	copy_reg(&bank[29-16], ms->pmsa_nat_bits, &regs->r29, nat);
+	copy_reg(&bank[30-16], ms->pmsa_nat_bits, &regs->r30, nat);
+	copy_reg(&bank[31-16], ms->pmsa_nat_bits, &regs->r31, nat);
+}
+
 /* On entry to this routine, we are running on the per cpu stack, see
  * mca_asm.h.  The original stack has not been touched by this event.  Some of
  * the original stack's registers will be in the RBS on this stack.  This stack
@@ -914,14 +968,13 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 	struct switch_stack *old_sw;
 	unsigned size = sizeof(struct pt_regs) +
 			sizeof(struct switch_stack) + 16;
-	u64 *old_bspstore, *old_bsp;
-	u64 *new_bspstore, *new_bsp;
-	u64 old_unat, old_rnat, new_rnat, nat;
+	unsigned long *old_bspstore, *old_bsp;
+	unsigned long *new_bspstore, *new_bsp;
+	unsigned long old_unat, old_rnat, new_rnat, nat;
 	u64 slots, loadrs = regs->loadrs;
 	u64 r12 = ms->pmsa_gr[12-1], r13 = ms->pmsa_gr[13-1];
 	u64 ar_bspstore = regs->ar_bspstore;
 	u64 ar_bsp = regs->ar_bspstore + (loadrs >> 16);
-	const u64 *bank;
 	const char *msg;
 	int cpu = smp_processor_id();
 
@@ -968,10 +1021,10 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 	 * loadrs for the new stack and save it in the new pt_regs, where
 	 * ia64_old_stack() can get it.
 	 */
-	old_bspstore = (u64 *)ar_bspstore;
-	old_bsp = (u64 *)ar_bsp;
+	old_bspstore = (unsigned long *)ar_bspstore;
+	old_bsp = (unsigned long *)ar_bsp;
 	slots = ia64_rse_num_regs(old_bspstore, old_bsp);
-	new_bspstore = (u64 *)((u64)current + IA64_RBS_OFFSET);
+	new_bspstore = (unsigned long *)((u64)current + IA64_RBS_OFFSET);
 	new_bsp = ia64_rse_skip_regs(new_bspstore, slots);
 	regs->loadrs = (new_bsp - new_bspstore) * 8 << 16;
 
@@ -1024,54 +1077,9 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 	p = (char *)r12 - sizeof(*regs);
 	old_regs = (struct pt_regs *)p;
 	memcpy(old_regs, regs, sizeof(*regs));
-	/* If ipsr.ic then use pmsa_{iip,ipsr,ifs}, else use
-	 * pmsa_{xip,xpsr,xfs}
-	 */
-	if (ia64_psr(regs)->ic) {
-		old_regs->cr_iip = ms->pmsa_iip;
-		old_regs->cr_ipsr = ms->pmsa_ipsr;
-		old_regs->cr_ifs = ms->pmsa_ifs;
-	} else {
-		old_regs->cr_iip = ms->pmsa_xip;
-		old_regs->cr_ipsr = ms->pmsa_xpsr;
-		old_regs->cr_ifs = ms->pmsa_xfs;
-	}
-	old_regs->pr = ms->pmsa_pr;
-	old_regs->b0 = ms->pmsa_br0;
 	old_regs->loadrs = loadrs;
-	old_regs->ar_rsc = ms->pmsa_rsc;
 	old_unat = old_regs->ar_unat;
-	copy_reg(&ms->pmsa_gr[1-1], ms->pmsa_nat_bits, &old_regs->r1, &old_unat);
-	copy_reg(&ms->pmsa_gr[2-1], ms->pmsa_nat_bits, &old_regs->r2, &old_unat);
-	copy_reg(&ms->pmsa_gr[3-1], ms->pmsa_nat_bits, &old_regs->r3, &old_unat);
-	copy_reg(&ms->pmsa_gr[8-1], ms->pmsa_nat_bits, &old_regs->r8, &old_unat);
-	copy_reg(&ms->pmsa_gr[9-1], ms->pmsa_nat_bits, &old_regs->r9, &old_unat);
-	copy_reg(&ms->pmsa_gr[10-1], ms->pmsa_nat_bits, &old_regs->r10, &old_unat);
-	copy_reg(&ms->pmsa_gr[11-1], ms->pmsa_nat_bits, &old_regs->r11, &old_unat);
-	copy_reg(&ms->pmsa_gr[12-1], ms->pmsa_nat_bits, &old_regs->r12, &old_unat);
-	copy_reg(&ms->pmsa_gr[13-1], ms->pmsa_nat_bits, &old_regs->r13, &old_unat);
-	copy_reg(&ms->pmsa_gr[14-1], ms->pmsa_nat_bits, &old_regs->r14, &old_unat);
-	copy_reg(&ms->pmsa_gr[15-1], ms->pmsa_nat_bits, &old_regs->r15, &old_unat);
-	if (ia64_psr(old_regs)->bn)
-		bank = ms->pmsa_bank1_gr;
-	else
-		bank = ms->pmsa_bank0_gr;
-	copy_reg(&bank[16-16], ms->pmsa_nat_bits, &old_regs->r16, &old_unat);
-	copy_reg(&bank[17-16], ms->pmsa_nat_bits, &old_regs->r17, &old_unat);
-	copy_reg(&bank[18-16], ms->pmsa_nat_bits, &old_regs->r18, &old_unat);
-	copy_reg(&bank[19-16], ms->pmsa_nat_bits, &old_regs->r19, &old_unat);
-	copy_reg(&bank[20-16], ms->pmsa_nat_bits, &old_regs->r20, &old_unat);
-	copy_reg(&bank[21-16], ms->pmsa_nat_bits, &old_regs->r21, &old_unat);
-	copy_reg(&bank[22-16], ms->pmsa_nat_bits, &old_regs->r22, &old_unat);
-	copy_reg(&bank[23-16], ms->pmsa_nat_bits, &old_regs->r23, &old_unat);
-	copy_reg(&bank[24-16], ms->pmsa_nat_bits, &old_regs->r24, &old_unat);
-	copy_reg(&bank[25-16], ms->pmsa_nat_bits, &old_regs->r25, &old_unat);
-	copy_reg(&bank[26-16], ms->pmsa_nat_bits, &old_regs->r26, &old_unat);
-	copy_reg(&bank[27-16], ms->pmsa_nat_bits, &old_regs->r27, &old_unat);
-	copy_reg(&bank[28-16], ms->pmsa_nat_bits, &old_regs->r28, &old_unat);
-	copy_reg(&bank[29-16], ms->pmsa_nat_bits, &old_regs->r29, &old_unat);
-	copy_reg(&bank[30-16], ms->pmsa_nat_bits, &old_regs->r30, &old_unat);
-	copy_reg(&bank[31-16], ms->pmsa_nat_bits, &old_regs->r31, &old_unat);
+	finish_pt_regs(old_regs, ms, &old_unat);
 
 	/* Next stack a struct switch_stack.  mca_asm.S built a partial
 	 * switch_stack, copy it and fill in the blanks using pt_regs and
@@ -1141,6 +1149,8 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 no_mod:
 	mprintk(KERN_INFO "cpu %d, %s %s, original stack not modified\n",
 			smp_processor_id(), type, msg);
+	old_unat = regs->ar_unat;
+	finish_pt_regs(regs, ms, &old_unat);
 	return previous_current;
 }
 
@@ -1456,9 +1466,9 @@ ia64_mca_cmc_int_caller(int cmc_irq, void *arg)
 
 	ia64_mca_cmc_int_handler(cmc_irq, arg);
 
-	for (++cpuid ; cpuid < NR_CPUS && !cpu_online(cpuid) ; cpuid++);
+	cpuid = cpumask_next(cpuid+1, cpu_online_mask);
 
-	if (cpuid < NR_CPUS) {
+	if (cpuid < nr_cpu_ids) {
 		platform_send_ipi(cpuid, IA64_CMCP_VECTOR, IA64_IPI_DM_INT, 0);
 	} else {
 		/* If no log record, switch out of polling mode */
@@ -1525,7 +1535,7 @@ ia64_mca_cpe_int_caller(int cpe_irq, void *arg)
 
 	ia64_mca_cpe_int_handler(cpe_irq, arg);
 
-	for (++cpuid ; cpuid < NR_CPUS && !cpu_online(cpuid) ; cpuid++);
+	cpuid = cpumask_next(cpuid+1, cpu_online_mask);
 
 	if (cpuid < NR_CPUS) {
 		platform_send_ipi(cpuid, IA64_CPEP_VECTOR, IA64_IPI_DM_INT, 0);
@@ -1682,14 +1692,25 @@ ia64_init_handler(struct pt_regs *regs, struct switch_stack *sw,
 
 	if (!sos->monarch) {
 		ia64_mc_info.imi_rendez_checkin[cpu] = IA64_MCA_RENDEZ_CHECKIN_INIT;
+
+#ifdef CONFIG_KEXEC
+		while (monarch_cpu == -1 && !atomic_read(&kdump_in_progress))
+			udelay(1000);
+#else
 		while (monarch_cpu == -1)
-		       cpu_relax();	/* spin until monarch enters */
+			cpu_relax();	/* spin until monarch enters */
+#endif
 
 		NOTIFY_INIT(DIE_INIT_SLAVE_ENTER, regs, (long)&nd, 1);
 		NOTIFY_INIT(DIE_INIT_SLAVE_PROCESS, regs, (long)&nd, 1);
 
+#ifdef CONFIG_KEXEC
+		while (monarch_cpu != -1 && !atomic_read(&kdump_in_progress))
+			udelay(1000);
+#else
 		while (monarch_cpu != -1)
-		       cpu_relax();	/* spin until monarch leaves */
+			cpu_relax();	/* spin until monarch leaves */
+#endif
 
 		NOTIFY_INIT(DIE_INIT_SLAVE_LEAVE, regs, (long)&nd, 1);
 
@@ -1829,8 +1850,7 @@ ia64_mca_cpu_init(void *cpu_data)
 			data = mca_bootmem();
 			first_time = 0;
 		} else
-			data = page_address(alloc_pages_node(numa_node_id(),
-					GFP_KERNEL, get_order(sz)));
+			data = __get_free_pages(GFP_KERNEL, get_order(sz));
 		if (!data)
 			panic("Could not allocate MCA memory for cpu %d\n",
 					cpu);
@@ -1918,9 +1938,9 @@ ia64_mca_init(void)
 	ia64_fptr_t *init_hldlr_ptr_slave = (ia64_fptr_t *)ia64_os_init_dispatch_slave;
 	ia64_fptr_t *mca_hldlr_ptr = (ia64_fptr_t *)ia64_os_mca_dispatch;
 	int i;
-	s64 rc;
+	long rc;
 	struct ia64_sal_retval isrv;
-	u64 timeout = IA64_MCA_RENDEZ_TIMEOUT;	/* platform specific */
+	unsigned long timeout = IA64_MCA_RENDEZ_TIMEOUT; /* platform specific */
 	static struct notifier_block default_init_monarch_nb = {
 		.notifier_call = default_monarch_init_process,
 		.priority = 0/* we need to notified last */
@@ -2093,7 +2113,7 @@ ia64_mca_late_init(void)
 	cpe_poll_timer.function = ia64_mca_cpe_poll;
 
 	{
-		irq_desc_t *desc;
+		struct irq_desc *desc;
 		unsigned int irq;
 
 		if (cpe_vector >= 0) {

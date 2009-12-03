@@ -20,8 +20,6 @@
 #include <sound/initval.h>
 #include <sound/pxa2xx-lib.h>
 
-#include <mach/hardware.h>
-#include <mach/pxa-regs.h>
 #include <mach/regs-ac97.h>
 #include <mach/audio.h>
 
@@ -139,9 +137,9 @@ static int pxa2xx_ac97_do_resume(struct snd_card *card)
 	return 0;
 }
 
-static int pxa2xx_ac97_suspend(struct platform_device *dev, pm_message_t state)
+static int pxa2xx_ac97_suspend(struct device *dev)
 {
-	struct snd_card *card = platform_get_drvdata(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	int ret = 0;
 
 	if (card)
@@ -150,9 +148,9 @@ static int pxa2xx_ac97_suspend(struct platform_device *dev, pm_message_t state)
 	return ret;
 }
 
-static int pxa2xx_ac97_resume(struct platform_device *dev)
+static int pxa2xx_ac97_resume(struct device *dev)
 {
-	struct snd_card *card = platform_get_drvdata(dev);
+	struct snd_card *card = dev_get_drvdata(dev);
 	int ret = 0;
 
 	if (card)
@@ -161,9 +159,10 @@ static int pxa2xx_ac97_resume(struct platform_device *dev)
 	return ret;
 }
 
-#else
-#define pxa2xx_ac97_suspend	NULL
-#define pxa2xx_ac97_resume	NULL
+static struct dev_pm_ops pxa2xx_ac97_pm_ops = {
+	.suspend	= pxa2xx_ac97_suspend,
+	.resume		= pxa2xx_ac97_resume,
+};
 #endif
 
 static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
@@ -172,11 +171,17 @@ static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
 	struct snd_ac97_bus *ac97_bus;
 	struct snd_ac97_template ac97_template;
 	int ret;
+	pxa2xx_audio_ops_t *pdata = dev->dev.platform_data;
 
-	ret = -ENOMEM;
-	card = snd_card_new(SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1,
-			    THIS_MODULE, 0);
-	if (!card)
+	if (dev->id >= 0) {
+		dev_err(&dev->dev, "PXA2xx has only one AC97 port.\n");
+		ret = -ENXIO;
+		goto err_dev;
+	}
+
+	ret = snd_card_create(SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1,
+			      THIS_MODULE, 0, &card);
+	if (ret < 0)
 		goto err;
 
 	card->dev = &dev->dev;
@@ -203,6 +208,8 @@ static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
 	snprintf(card->longname, sizeof(card->longname),
 		 "%s (%s)", dev->dev.driver->name, card->mixername);
 
+	if (pdata && pdata->codec_pdata[0])
+		snd_ac97_dev_add_pdata(ac97_bus->codec[0], pdata->codec_pdata[0]);
 	snd_card_set_dev(card, &dev->dev);
 	ret = snd_card_register(card);
 	if (ret == 0) {
@@ -215,6 +222,7 @@ err_remove:
 err:
 	if (card)
 		snd_card_free(card);
+err_dev:
 	return ret;
 }
 
@@ -234,11 +242,12 @@ static int __devexit pxa2xx_ac97_remove(struct platform_device *dev)
 static struct platform_driver pxa2xx_ac97_driver = {
 	.probe		= pxa2xx_ac97_probe,
 	.remove		= __devexit_p(pxa2xx_ac97_remove),
-	.suspend	= pxa2xx_ac97_suspend,
-	.resume		= pxa2xx_ac97_resume,
 	.driver		= {
 		.name	= "pxa2xx-ac97",
 		.owner	= THIS_MODULE,
+#ifdef CONFIG_PM
+		.pm	= &pxa2xx_ac97_pm_ops,
+#endif
 	},
 };
 

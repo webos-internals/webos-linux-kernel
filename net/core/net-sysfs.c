@@ -16,7 +16,7 @@
 #include <net/sock.h>
 #include <linux/rtnetlink.h>
 #include <linux/wireless.h>
-#include <net/iw_handler.h>
+#include <net/wext.h>
 
 #include "net-sysfs.h"
 
@@ -78,7 +78,7 @@ static ssize_t netdev_store(struct device *dev, struct device_attribute *attr,
 		goto err;
 
 	if (!rtnl_trylock())
-		return -ERESTARTSYS;
+		return restart_syscall();
 
 	if (dev_isalive(net)) {
 		if ((ret = (*set)(net, new)) == 0)
@@ -141,7 +141,7 @@ static ssize_t show_dormant(struct device *dev,
 	return -EINVAL;
 }
 
-static const char *operstates[] = {
+static const char *const operstates[] = {
 	"unknown",
 	"notpresent", /* currently unused */
 	"down",
@@ -225,7 +225,8 @@ static ssize_t store_ifalias(struct device *dev, struct device_attribute *attr,
 	if (len >  0 && buf[len - 1] == '\n')
 		--count;
 
-	rtnl_lock();
+	if (!rtnl_trylock())
+		return restart_syscall();
 	ret = dev_set_alias(netdev, buf, count);
 	rtnl_unlock();
 
@@ -238,7 +239,8 @@ static ssize_t show_ifalias(struct device *dev,
 	const struct net_device *netdev = to_net_dev(dev);
 	ssize_t ret = 0;
 
-	rtnl_lock();
+	if (!rtnl_trylock())
+		return restart_syscall();
 	if (netdev->ifalias)
 		ret = sprintf(buf, "%s\n", netdev->ifalias);
 	rtnl_unlock();
@@ -361,18 +363,16 @@ static ssize_t wireless_show(struct device *d, char *buf,
 					       char *))
 {
 	struct net_device *dev = to_net_dev(d);
-	const struct iw_statistics *iw = NULL;
+	const struct iw_statistics *iw;
 	ssize_t ret = -EINVAL;
 
-	read_lock(&dev_base_lock);
+	rtnl_lock();
 	if (dev_isalive(dev)) {
-		if (dev->wireless_handlers &&
-		    dev->wireless_handlers->get_wireless_stats)
-			iw = dev->wireless_handlers->get_wireless_stats(dev);
-		if (iw != NULL)
+		iw = get_wireless_stats(dev);
+		if (iw)
 			ret = (*format)(iw, buf);
 	}
-	read_unlock(&dev_base_lock);
+	rtnl_unlock();
 
 	return ret;
 }
@@ -491,20 +491,19 @@ void netdev_unregister_kobject(struct net_device * net)
 int netdev_register_kobject(struct net_device *net)
 {
 	struct device *dev = &(net->dev);
-	struct attribute_group **groups = net->sysfs_groups;
+	const struct attribute_group **groups = net->sysfs_groups;
 
 	dev->class = &net_class;
 	dev->platform_data = net;
 	dev->groups = groups;
 
-	BUILD_BUG_ON(BUS_ID_SIZE < IFNAMSIZ);
-	dev_set_name(dev, net->name);
+	dev_set_name(dev, "%s", net->name);
 
 #ifdef CONFIG_SYSFS
 	*groups++ = &netstat_group;
 
 #ifdef CONFIG_WIRELESS_EXT_SYSFS
-	if (net->wireless_handlers && net->wireless_handlers->get_wireless_stats)
+	if (net->wireless_handlers || net->ieee80211_ptr)
 		*groups++ = &wireless_group;
 #endif
 #endif /* CONFIG_SYSFS */

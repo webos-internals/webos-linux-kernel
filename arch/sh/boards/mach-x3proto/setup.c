@@ -15,6 +15,9 @@
 #include <linux/io.h>
 #include <linux/smc91x.h>
 #include <linux/irq.h>
+#include <linux/interrupt.h>
+#include <linux/usb/r8a66597.h>
+#include <linux/usb/m66592.h>
 #include <asm/ilsel.h>
 
 static struct resource heartbeat_resources[] = {
@@ -58,17 +61,20 @@ static struct platform_device smc91x_device = {
 	},
 };
 
+static struct r8a66597_platdata r8a66597_data = {
+	.xtal = R8A66597_PLATDATA_XTAL_12MHZ,
+	.vif = 1,
+};
+
 static struct resource r8a66597_usb_host_resources[] = {
 	[0] = {
-		.name	= "r8a66597_hcd",
 		.start	= 0x18040000,
 		.end	= 0x18080000 - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.name	= "r8a66597_hcd",
 		/* Filled in by ilsel */
-		.flags	= IORESOURCE_IRQ,
+		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_LOW,
 	},
 };
 
@@ -78,9 +84,15 @@ static struct platform_device r8a66597_usb_host_device = {
 	.dev = {
 		.dma_mask		= NULL,		/* don't use dma */
 		.coherent_dma_mask	= 0xffffffff,
+		.platform_data		= &r8a66597_data,
 	},
 	.num_resources	= ARRAY_SIZE(r8a66597_usb_host_resources),
 	.resource	= r8a66597_usb_host_resources,
+};
+
+static struct m66592_platdata usbf_platdata = {
+	.xtal = M66592_PLATDATA_XTAL_24MHZ,
+	.vif = 1,
 };
 
 static struct resource m66592_usb_peripheral_resources[] = {
@@ -103,6 +115,7 @@ static struct platform_device m66592_usb_peripheral_device = {
 	.dev = {
 		.dma_mask		= NULL,		/* don't use dma */
 		.coherent_dma_mask	= 0xffffffff,
+		.platform_data		= &usbf_platdata,
 	},
 	.num_resources	= ARRAY_SIZE(m66592_usb_peripheral_resources),
 	.resource	= m66592_usb_peripheral_resources,

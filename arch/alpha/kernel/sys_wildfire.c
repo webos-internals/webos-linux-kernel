@@ -157,8 +157,8 @@ wildfire_end_irq(unsigned int irq)
 		wildfire_enable_irq(irq);
 }
 
-static struct hw_interrupt_type wildfire_irq_type = {
-	.typename	= "WILDFIRE",
+static struct irq_chip wildfire_irq_type = {
+	.name		= "WILDFIRE",
 	.startup	= wildfire_startup_irq,
 	.shutdown	= wildfire_disable_irq,
 	.enable		= wildfire_enable_irq,

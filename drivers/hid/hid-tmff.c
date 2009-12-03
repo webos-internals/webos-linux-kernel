@@ -33,11 +33,6 @@
 
 #include "hid-ids.h"
 
-#include "usbhid/usbhid.h"
-
-/* Usages for thrustmaster devices I know about */
-#define THRUSTMASTER_USAGE_FF	(HID_UP_GENDESK | 0xbb)
-
 static const signed short ff_rumble[] = {
 	FF_RUMBLE,
 	-1
@@ -47,6 +42,12 @@ static const signed short ff_joystick[] = {
 	FF_CONSTANT,
 	-1
 };
+
+#ifdef CONFIG_THRUSTMASTER_FF
+#include "usbhid/usbhid.h"
+
+/* Usages for thrustmaster devices I know about */
+#define THRUSTMASTER_USAGE_FF	(HID_UP_GENDESK | 0xbb)
 
 struct tmff_device {
 	struct hid_report *report;
@@ -209,6 +210,12 @@ fail:
 	kfree(tmff);
 	return error;
 }
+#else
+static inline int tmff_init(struct hid_device *hid, const signed short *ff_bits)
+{
+	return 0;
+}
+#endif
 
 static int tm_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
@@ -236,7 +243,11 @@ err:
 static const struct hid_device_id tm_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb300),
 		.driver_data = (unsigned long)ff_rumble },
-	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb304),
+	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb304),   /* FireStorm Dual Power 2 (and 3) */
+		.driver_data = (unsigned long)ff_rumble },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb323),   /* Dual Trigger 3-in-1 (PC Mode) */
+		.driver_data = (unsigned long)ff_rumble },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb324),   /* Dual Trigger 3-in-1 (PS3 Mode) */
 		.driver_data = (unsigned long)ff_rumble },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb651),	/* FGT Rumble Force Wheel */
 		.driver_data = (unsigned long)ff_rumble },
@@ -252,12 +263,12 @@ static struct hid_driver tm_driver = {
 	.probe = tm_probe,
 };
 
-static int tm_init(void)
+static int __init tm_init(void)
 {
 	return hid_register_driver(&tm_driver);
 }
 
-static void tm_exit(void)
+static void __exit tm_exit(void)
 {
 	hid_unregister_driver(&tm_driver);
 }
@@ -265,5 +276,3 @@ static void tm_exit(void)
 module_init(tm_init);
 module_exit(tm_exit);
 MODULE_LICENSE("GPL");
-
-HID_COMPAT_LOAD_DRIVER(thrustmaster);

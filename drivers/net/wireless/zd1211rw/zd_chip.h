@@ -897,9 +897,9 @@ int zd_chip_lock_phy_regs(struct zd_chip *chip);
 int zd_chip_unlock_phy_regs(struct zd_chip *chip);
 
 enum led_status {
-	LED_OFF = 0,
-	LED_SCANNING = 1,
-	LED_ASSOCIATED = 2,
+	ZD_LED_OFF = 0,
+	ZD_LED_SCANNING = 1,
+	ZD_LED_ASSOCIATED = 2,
 };
 
 int zd_chip_control_leds(struct zd_chip *chip, enum led_status status);
@@ -949,5 +949,7 @@ static inline void zd_mc_add_addr(struct zd_mc_hash *hash, u8 *addr)
 
 int zd_chip_set_multicast_hash(struct zd_chip *chip,
 	                       struct zd_mc_hash *hash);
+
+u64 zd_chip_get_tsf(struct zd_chip *chip);
 
 #endif /* _ZD_CHIP_H */

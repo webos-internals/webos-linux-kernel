@@ -1,7 +1,5 @@
 /*
- *  arch/s390/mm/pgtable.c
- *
- *    Copyright IBM Corp. 2007
+ *    Copyright IBM Corp. 2007,2009
  *    Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
@@ -53,6 +51,18 @@ void clear_table_pgstes(unsigned long *table)
 
 #endif
 
+unsigned long VMALLOC_START = VMALLOC_END - VMALLOC_SIZE;
+EXPORT_SYMBOL(VMALLOC_START);
+
+static int __init parse_vmalloc(char *arg)
+{
+	if (!arg)
+		return -EINVAL;
+	VMALLOC_START = (VMALLOC_END - memparse(arg, &arg)) & PAGE_MASK;
+	return 0;
+}
+early_param("vmalloc", parse_vmalloc);
+
 unsigned long *crst_table_alloc(struct mm_struct *mm, int noexec)
 {
 	struct page *page = alloc_pages(GFP_KERNEL, ALLOC_ORDER);
@@ -68,9 +78,9 @@ unsigned long *crst_table_alloc(struct mm_struct *mm, int noexec)
 		}
 		page->index = page_to_phys(shadow);
 	}
-	spin_lock(&mm->page_table_lock);
+	spin_lock(&mm->context.list_lock);
 	list_add(&page->lru, &mm->context.crst_list);
-	spin_unlock(&mm->page_table_lock);
+	spin_unlock(&mm->context.list_lock);
 	return (unsigned long *) page_to_phys(page);
 }
 
@@ -79,9 +89,9 @@ void crst_table_free(struct mm_struct *mm, unsigned long *table)
 	unsigned long *shadow = get_shadow_table(table);
 	struct page *page = virt_to_page(table);
 
-	spin_lock(&mm->page_table_lock);
+	spin_lock(&mm->context.list_lock);
 	list_del(&page->lru);
-	spin_unlock(&mm->page_table_lock);
+	spin_unlock(&mm->context.list_lock);
 	if (shadow)
 		free_pages((unsigned long) shadow, ALLOC_ORDER);
 	free_pages((unsigned long) table, ALLOC_ORDER);
@@ -172,7 +182,7 @@ unsigned long *page_table_alloc(struct mm_struct *mm)
 	unsigned long bits;
 
 	bits = (mm->context.noexec || mm->context.has_pgste) ? 3UL : 1UL;
-	spin_lock(&mm->page_table_lock);
+	spin_lock(&mm->context.list_lock);
 	page = NULL;
 	if (!list_empty(&mm->context.pgtable_list)) {
 		page = list_first_entry(&mm->context.pgtable_list,
@@ -181,7 +191,7 @@ unsigned long *page_table_alloc(struct mm_struct *mm)
 			page = NULL;
 	}
 	if (!page) {
-		spin_unlock(&mm->page_table_lock);
+		spin_unlock(&mm->context.list_lock);
 		page = alloc_page(GFP_KERNEL|__GFP_REPEAT);
 		if (!page)
 			return NULL;
@@ -192,7 +202,7 @@ unsigned long *page_table_alloc(struct mm_struct *mm)
 			clear_table_pgstes(table);
 		else
 			clear_table(table, _PAGE_TYPE_EMPTY, PAGE_SIZE);
-		spin_lock(&mm->page_table_lock);
+		spin_lock(&mm->context.list_lock);
 		list_add(&page->lru, &mm->context.pgtable_list);
 	}
 	table = (unsigned long *) page_to_phys(page);
@@ -203,7 +213,7 @@ unsigned long *page_table_alloc(struct mm_struct *mm)
 	page->flags |= bits;
 	if ((page->flags & FRAG_MASK) == ((1UL << TABLES_PER_PAGE) - 1))
 		list_move_tail(&page->lru, &mm->context.pgtable_list);
-	spin_unlock(&mm->page_table_lock);
+	spin_unlock(&mm->context.list_lock);
 	return table;
 }
 
@@ -215,7 +225,7 @@ void page_table_free(struct mm_struct *mm, unsigned long *table)
 	bits = (mm->context.noexec || mm->context.has_pgste) ? 3UL : 1UL;
 	bits <<= (__pa(table) & (PAGE_SIZE - 1)) / 256 / sizeof(unsigned long);
 	page = pfn_to_page(__pa(table) >> PAGE_SHIFT);
-	spin_lock(&mm->page_table_lock);
+	spin_lock(&mm->context.list_lock);
 	page->flags ^= bits;
 	if (page->flags & FRAG_MASK) {
 		/* Page now has some free pgtable fragments. */
@@ -224,7 +234,7 @@ void page_table_free(struct mm_struct *mm, unsigned long *table)
 	} else
 		/* All fragments of the 4K page have been freed. */
 		list_del(&page->lru);
-	spin_unlock(&mm->page_table_lock);
+	spin_unlock(&mm->context.list_lock);
 	if (page) {
 		pgtable_page_dtor(page);
 		__free_page(page);
@@ -235,7 +245,7 @@ void disable_noexec(struct mm_struct *mm, struct task_struct *tsk)
 {
 	struct page *page;
 
-	spin_lock(&mm->page_table_lock);
+	spin_lock(&mm->context.list_lock);
 	/* Free shadow region and segment tables. */
 	list_for_each_entry(page, &mm->context.crst_list, lru)
 		if (page->index) {
@@ -245,7 +255,7 @@ void disable_noexec(struct mm_struct *mm, struct task_struct *tsk)
 	/* "Free" second halves of page tables. */
 	list_for_each_entry(page, &mm->context.pgtable_list, lru)
 		page->flags &= ~SECOND_HALVES;
-	spin_unlock(&mm->page_table_lock);
+	spin_unlock(&mm->context.list_lock);
 	mm->context.noexec = 0;
 	update_mm(mm, tsk);
 }
@@ -258,6 +268,10 @@ int s390_enable_sie(void)
 	struct task_struct *tsk = current;
 	struct mm_struct *mm, *old_mm;
 
+	/* Do we have switched amode? If no, we cannot do sie */
+	if (!switch_amode)
+		return -EINVAL;
+
 	/* Do we have pgstes? if yes, we are done */
 	if (tsk->mm->context.has_pgste)
 		return 0;
@@ -265,7 +279,10 @@ int s390_enable_sie(void)
 	/* lets check if we are allowed to replace the mm */
 	task_lock(tsk);
 	if (!tsk->mm || atomic_read(&tsk->mm->mm_users) > 1 ||
-	    tsk->mm != tsk->active_mm || !hlist_empty(&tsk->mm->ioctx_list)) {
+#ifdef CONFIG_AIO
+	    !hlist_empty(&tsk->mm->ioctx_list) ||
+#endif
+	    tsk->mm != tsk->active_mm) {
 		task_unlock(tsk);
 		return -EINVAL;
 	}
@@ -281,7 +298,10 @@ int s390_enable_sie(void)
 	/* Now lets check again if something happened */
 	task_lock(tsk);
 	if (!tsk->mm || atomic_read(&tsk->mm->mm_users) > 1 ||
-	    tsk->mm != tsk->active_mm || !hlist_empty(&tsk->mm->ioctx_list)) {
+#ifdef CONFIG_AIO
+	    !hlist_empty(&tsk->mm->ioctx_list) ||
+#endif
+	    tsk->mm != tsk->active_mm) {
 		mmput(mm);
 		task_unlock(tsk);
 		return -EINVAL;
@@ -292,10 +312,26 @@ int s390_enable_sie(void)
 	tsk->mm = tsk->active_mm = mm;
 	preempt_disable();
 	update_mm(mm, tsk);
-	cpu_set(smp_processor_id(), mm->cpu_vm_mask);
+	cpumask_set_cpu(smp_processor_id(), mm_cpumask(mm));
 	preempt_enable();
 	task_unlock(tsk);
 	mmput(old_mm);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(s390_enable_sie);
+
+#if defined(CONFIG_DEBUG_PAGEALLOC) && defined(CONFIG_HIBERNATION)
+bool kernel_page_present(struct page *page)
+{
+	unsigned long addr;
+	int cc;
+
+	addr = page_to_phys(page);
+	asm volatile(
+		"	lra	%1,0(%1)\n"
+		"	ipm	%0\n"
+		"	srl	%0,28"
+		: "=d" (cc), "+a" (addr) : : "cc");
+	return cc == 0;
+}
+#endif /* CONFIG_HIBERNATION && CONFIG_DEBUG_PAGEALLOC */

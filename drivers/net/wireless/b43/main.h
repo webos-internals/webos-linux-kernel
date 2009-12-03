@@ -39,7 +39,24 @@
 #define PAD_BYTES(nr_bytes)		P4D_BYTES( __LINE__ , (nr_bytes))
 
 
-extern int b43_modparam_qos;
+extern int b43_modparam_verbose;
+
+/* Logmessage verbosity levels. Update the b43_modparam_verbose helptext, if
+ * you add or remove levels. */
+enum b43_verbosity {
+	B43_VERBOSITY_ERROR,
+	B43_VERBOSITY_WARN,
+	B43_VERBOSITY_INFO,
+	B43_VERBOSITY_DEBUG,
+	__B43_VERBOSITY_AFTERLAST, /* keep last */
+
+	B43_VERBOSITY_MAX = __B43_VERBOSITY_AFTERLAST - 1,
+#if B43_DEBUG
+	B43_VERBOSITY_DEFAULT = B43_VERBOSITY_DEBUG,
+#else
+	B43_VERBOSITY_DEFAULT = B43_VERBOSITY_INFO,
+#endif
+};
 
 
 /* Lightweight function to convert a frequency (in Mhz) to a channel number. */
@@ -95,18 +112,14 @@ void b43_tsf_read(struct b43_wldev *dev, u64 * tsf);
 void b43_tsf_write(struct b43_wldev *dev, u64 tsf);
 
 u32 b43_shm_read32(struct b43_wldev *dev, u16 routing, u16 offset);
-u32 __b43_shm_read32(struct b43_wldev *dev, u16 routing, u16 offset);
 u16 b43_shm_read16(struct b43_wldev *dev, u16 routing, u16 offset);
-u16 __b43_shm_read16(struct b43_wldev *dev, u16 routing, u16 offset);
 void b43_shm_write32(struct b43_wldev *dev, u16 routing, u16 offset, u32 value);
-void __b43_shm_write32(struct b43_wldev *dev, u16 routing, u16 offset, u32 value);
 void b43_shm_write16(struct b43_wldev *dev, u16 routing, u16 offset, u16 value);
-void __b43_shm_write16(struct b43_wldev *dev, u16 routing, u16 offset, u16 value);
 
 u64 b43_hf_read(struct b43_wldev *dev);
 void b43_hf_write(struct b43_wldev *dev, u64 value);
 
-void b43_dummy_transmission(struct b43_wldev *dev);
+void b43_dummy_transmission(struct b43_wldev *dev, bool ofdm, bool pa_on);
 
 void b43_wireless_core_reset(struct b43_wldev *dev, u32 flags);
 
@@ -120,5 +133,12 @@ void b43_power_saving_ctl_bits(struct b43_wldev *dev, unsigned int ps_flags);
 
 void b43_mac_suspend(struct b43_wldev *dev);
 void b43_mac_enable(struct b43_wldev *dev);
+
+
+struct b43_request_fw_context;
+int b43_do_request_fw(struct b43_request_fw_context *ctx,
+		      const char *name,
+		      struct b43_firmware_file *fw);
+void b43_do_release_fw(struct b43_firmware_file *fw);
 
 #endif /* B43_MAIN_H_ */

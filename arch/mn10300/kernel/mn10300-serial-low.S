@@ -18,8 +18,8 @@
 #include <asm/cpu-regs.h>
 #include <asm/frame.inc>
 #include <asm/timer-regs.h>
-#include <asm/proc/cache.h>
-#include <asm/unit/timex.h>
+#include <proc/cache.h>
+#include <unit/timex.h>
 #include "mn10300-serial.h"
 
 #define	SCxCTR	0x00
@@ -130,7 +130,7 @@ ENTRY(mn10300_serial_vdma_tx_handler)
 	or	d2,d2
 	bne	mnsc_vdma_tx_xchar
 
-	mov	(__tx_info_buffer,a3),a2 # get the uart_info struct for Tx
+	mov	(__uart_state,a3),a2	# see if the TTY Tx queue has anything in it
 	mov	(__xmit_tail,a2),d3
 	mov	(__xmit_head,a2),d2
 	cmp	d3,d2

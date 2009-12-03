@@ -12,14 +12,19 @@
 #include "fat.h"
 
 /*
- * fat_fs_panic reports a severe file system problem and sets the file system
- * read-only. The file system can be made writable again by remounting it.
+ * fat_fs_error reports a file system problem that might indicate fa data
+ * corruption/inconsistency. Depending on 'errors' mount option the
+ * panic() is called, or error message is printed FAT and nothing is done,
+ * or filesystem is remounted read-only (default behavior).
+ * In case the file system is remounted read-only, it can be made writable
+ * again by remounting it.
  */
-void fat_fs_panic(struct super_block *s, const char *fmt, ...)
+void fat_fs_error(struct super_block *s, const char *fmt, ...)
 {
+	struct fat_mount_options *opts = &MSDOS_SB(s)->options;
 	va_list args;
 
-	printk(KERN_ERR "FAT: Filesystem panic (dev %s)\n", s->s_id);
+	printk(KERN_ERR "FAT: Filesystem error (dev %s)\n", s->s_id);
 
 	printk(KERN_ERR "    ");
 	va_start(args, fmt);
@@ -27,29 +32,30 @@ void fat_fs_panic(struct super_block *s, const char *fmt, ...)
 	va_end(args);
 	printk("\n");
 
-	if (!(s->s_flags & MS_RDONLY)) {
+	if (opts->errors == FAT_ERRORS_PANIC)
+		panic("    FAT fs panic from previous error\n");
+	else if (opts->errors == FAT_ERRORS_RO && !(s->s_flags & MS_RDONLY)) {
 		s->s_flags |= MS_RDONLY;
 		printk(KERN_ERR "    File system has been set read-only\n");
 	}
 }
-
-EXPORT_SYMBOL_GPL(fat_fs_panic);
+EXPORT_SYMBOL_GPL(fat_fs_error);
 
 /* Flushes the number of free clusters on FAT32 */
 /* XXX: Need to write one per FSINFO block.  Currently only writes 1 */
-void fat_clusters_flush(struct super_block *sb)
+int fat_clusters_flush(struct super_block *sb)
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 	struct buffer_head *bh;
 	struct fat_boot_fsinfo *fsinfo;
 
 	if (sbi->fat_bits != 32)
-		return;
+		return 0;
 
 	bh = sb_bread(sb, sbi->fsinfo_sector);
 	if (bh == NULL) {
 		printk(KERN_ERR "FAT: bread failed in fat_clusters_flush\n");
-		return;
+		return -EIO;
 	}
 
 	fsinfo = (struct fat_boot_fsinfo *)bh->b_data;
@@ -68,6 +74,8 @@ void fat_clusters_flush(struct super_block *sb)
 		mark_buffer_dirty(bh);
 	}
 	brelse(bh);
+
+	return 0;
 }
 
 /*
@@ -113,8 +121,8 @@ int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster)
 		MSDOS_I(inode)->i_start = new_dclus;
 		MSDOS_I(inode)->i_logstart = new_dclus;
 		/*
-		 * Since generic_osync_inode() synchronize later if
-		 * this is not directory, we don't here.
+		 * Since generic_write_sync() synchronizes regular files later,
+		 * we sync here only directories.
 		 */
 		if (S_ISDIR(inode->i_mode) && IS_DIRSYNC(inode)) {
 			ret = fat_sync_inode(inode);
@@ -124,7 +132,7 @@ int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster)
 			mark_inode_dirty(inode);
 	}
 	if (new_fclus != (inode->i_blocks >> (sbi->cluster_bits - 9))) {
-		fat_fs_panic(sb, "clusters badly computed (%d != %llu)",
+		fat_fs_error(sb, "clusters badly computed (%d != %llu)",
 			     new_fclus,
 			     (llu)(inode->i_blocks >> (sbi->cluster_bits - 9)));
 		fat_cache_inval_inode(inode);

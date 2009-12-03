@@ -18,6 +18,7 @@
 #include <linux/workqueue.h>
 #include <linux/random.h>
 #include <linux/err.h>
+#include <linux/user_namespace.h>
 #include "internal.h"
 
 static struct kmem_cache	*key_jar;
@@ -60,7 +61,7 @@ void __key_check(const struct key *key)
  * get the key quota record for a user, allocating a new record if one doesn't
  * already exist
  */
-struct key_user *key_user_lookup(uid_t uid)
+struct key_user *key_user_lookup(uid_t uid, struct user_namespace *user_ns)
 {
 	struct key_user *candidate = NULL, *user;
 	struct rb_node *parent = NULL;
@@ -78,6 +79,10 @@ struct key_user *key_user_lookup(uid_t uid)
 		if (uid < user->uid)
 			p = &(*p)->rb_left;
 		else if (uid > user->uid)
+			p = &(*p)->rb_right;
+		else if (user_ns < user->user_ns)
+			p = &(*p)->rb_left;
+		else if (user_ns > user->user_ns)
 			p = &(*p)->rb_right;
 		else
 			goto found;
@@ -106,6 +111,7 @@ struct key_user *key_user_lookup(uid_t uid)
 	atomic_set(&candidate->nkeys, 0);
 	atomic_set(&candidate->nikeys, 0);
 	candidate->uid = uid;
+	candidate->user_ns = get_user_ns(user_ns);
 	candidate->qnkeys = 0;
 	candidate->qnbytes = 0;
 	spin_lock_init(&candidate->lock);
@@ -136,6 +142,7 @@ void key_user_put(struct key_user *user)
 	if (atomic_dec_and_lock(&user->usage, &key_user_lock)) {
 		rb_erase(&user->node, &key_user_tree);
 		spin_unlock(&key_user_lock);
+		put_user_ns(user->user_ns);
 
 		kfree(user);
 	}
@@ -234,7 +241,7 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 	quotalen = desclen + type->def_datalen;
 
 	/* get hold of the key tracking for this user */
-	user = key_user_lookup(uid);
+	user = key_user_lookup(uid, cred->user->user_ns);
 	if (!user)
 		goto no_memory_1;
 
@@ -493,6 +500,7 @@ int key_negate_and_link(struct key *key,
 		set_bit(KEY_FLAG_INSTANTIATED, &key->flags);
 		now = current_kernel_time();
 		key->expiry = now.tv_sec + timeout;
+		key_schedule_gc(key->expiry + key_gc_delay);
 
 		if (test_and_clear_bit(KEY_FLAG_USER_CONSTRUCT, &key->flags))
 			awaken = 1;
@@ -635,10 +643,8 @@ struct key *key_lookup(key_serial_t id)
 	goto error;
 
  found:
-	/* pretend it doesn't exist if it's dead */
-	if (atomic_read(&key->usage) == 0 ||
-	    test_bit(KEY_FLAG_DEAD, &key->flags) ||
-	    key->type == &key_type_dead)
+	/* pretend it doesn't exist if it is awaiting deletion */
+	if (atomic_read(&key->usage) == 0)
 		goto not_found;
 
 	/* this races with key_put(), but that doesn't matter since key_put()
@@ -883,6 +889,9 @@ EXPORT_SYMBOL(key_update);
  */
 void key_revoke(struct key *key)
 {
+	struct timespec now;
+	time_t time;
+
 	key_check(key);
 
 	/* make sure no one's trying to change or use the key when we mark it
@@ -894,6 +903,14 @@ void key_revoke(struct key *key)
 	if (!test_and_set_bit(KEY_FLAG_REVOKED, &key->flags) &&
 	    key->type->revoke)
 		key->type->revoke(key);
+
+	/* set the death time to no more than the expiry time */
+	now = current_kernel_time();
+	time = now.tv_sec;
+	if (key->revoked_at == 0 || key->revoked_at > time) {
+		key->revoked_at = time;
+		key_schedule_gc(key->revoked_at + key_gc_delay);
+	}
 
 	up_write(&key->sem);
 
@@ -951,8 +968,10 @@ void unregister_key_type(struct key_type *ktype)
 	for (_n = rb_first(&key_serial_tree); _n; _n = rb_next(_n)) {
 		key = rb_entry(_n, struct key, serial_node);
 
-		if (key->type == ktype)
+		if (key->type == ktype) {
 			key->type = &key_type_dead;
+			set_bit(KEY_FLAG_DEAD, &key->flags);
+		}
 	}
 
 	spin_unlock(&key_serial_lock);
@@ -976,6 +995,8 @@ void unregister_key_type(struct key_type *ktype)
 
 	spin_unlock(&key_serial_lock);
 	up_write(&key_types_sem);
+
+	key_schedule_gc(0);
 
 } /* end unregister_key_type() */
 

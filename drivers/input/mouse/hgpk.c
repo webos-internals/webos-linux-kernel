@@ -367,7 +367,36 @@ static ssize_t hgpk_set_powered(struct psmouse *psmouse, void *data,
 }
 
 __PSMOUSE_DEFINE_ATTR(powered, S_IWUSR | S_IRUGO, NULL,
-		      hgpk_show_powered, hgpk_set_powered, 0);
+		      hgpk_show_powered, hgpk_set_powered, false);
+
+static ssize_t hgpk_trigger_recal_show(struct psmouse *psmouse,
+		void *data, char *buf)
+{
+	return -EINVAL;
+}
+
+static ssize_t hgpk_trigger_recal(struct psmouse *psmouse, void *data,
+				const char *buf, size_t count)
+{
+	struct hgpk_data *priv = psmouse->private;
+	unsigned long value;
+	int err;
+
+	err = strict_strtoul(buf, 10, &value);
+	if (err || value != 1)
+		return -EINVAL;
+
+	/*
+	 * We queue work instead of doing recalibration right here
+	 * to avoid adding locking to to hgpk_force_recalibrate()
+	 * since workqueue provides serialization.
+	 */
+	psmouse_queue_work(psmouse, &priv->recalib_wq, 0);
+	return count;
+}
+
+__PSMOUSE_DEFINE_ATTR(recalibrate, S_IWUSR | S_IRUGO, NULL,
+		      hgpk_trigger_recal_show, hgpk_trigger_recal, false);
 
 static void hgpk_disconnect(struct psmouse *psmouse)
 {
@@ -375,13 +404,18 @@ static void hgpk_disconnect(struct psmouse *psmouse)
 
 	device_remove_file(&psmouse->ps2dev.serio->dev,
 			   &psmouse_attr_powered.dattr);
+
+	if (psmouse->model >= HGPK_MODEL_C)
+		device_remove_file(&psmouse->ps2dev.serio->dev,
+				   &psmouse_attr_recalibrate.dattr);
+
 	psmouse_reset(psmouse);
 	kfree(priv);
 }
 
 static void hgpk_recalib_work(struct work_struct *work)
 {
-	struct delayed_work *w = container_of(work, struct delayed_work, work);
+	struct delayed_work *w = to_delayed_work(work);
 	struct hgpk_data *priv = container_of(w, struct hgpk_data, recalib_wq);
 	struct psmouse *psmouse = priv->psmouse;
 
@@ -423,10 +457,25 @@ static int hgpk_register(struct psmouse *psmouse)
 
 	err = device_create_file(&psmouse->ps2dev.serio->dev,
 				 &psmouse_attr_powered.dattr);
-	if (err)
-		hgpk_err(psmouse, "Failed to create sysfs attribute\n");
+	if (err) {
+		hgpk_err(psmouse, "Failed creating 'powered' sysfs node\n");
+		return err;
+	}
 
-	return err;
+	/* C-series touchpads added the recalibrate command */
+	if (psmouse->model >= HGPK_MODEL_C) {
+		err = device_create_file(&psmouse->ps2dev.serio->dev,
+					 &psmouse_attr_recalibrate.dattr);
+		if (err) {
+			hgpk_err(psmouse,
+				"Failed creating 'recalibrate' sysfs node\n");
+			device_remove_file(&psmouse->ps2dev.serio->dev,
+					&psmouse_attr_powered.dattr);
+			return err;
+		}
+	}
+
+	return 0;
 }
 
 int hgpk_init(struct psmouse *psmouse)
@@ -440,7 +489,7 @@ int hgpk_init(struct psmouse *psmouse)
 
 	psmouse->private = priv;
 	priv->psmouse = psmouse;
-	priv->powered = 1;
+	priv->powered = true;
 	INIT_DELAYED_WORK(&priv->recalib_wq, hgpk_recalib_work);
 
 	err = psmouse_reset(psmouse);
@@ -472,7 +521,7 @@ static enum hgpk_model_t hgpk_get_model(struct psmouse *psmouse)
 		return -EIO;
 	}
 
-	hgpk_dbg(psmouse, "ID: %02x %02x %02x", param[0], param[1], param[2]);
+	hgpk_dbg(psmouse, "ID: %02x %02x %02x\n", param[0], param[1], param[2]);
 
 	/* HGPK signature: 0x67, 0x00, 0x<model> */
 	if (param[0] != 0x67 || param[1] != 0x00)
@@ -483,7 +532,7 @@ static enum hgpk_model_t hgpk_get_model(struct psmouse *psmouse)
 	return param[2];
 }
 
-int hgpk_detect(struct psmouse *psmouse, int set_properties)
+int hgpk_detect(struct psmouse *psmouse, bool set_properties)
 {
 	int version;
 

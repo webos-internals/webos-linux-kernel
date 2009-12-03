@@ -17,8 +17,8 @@
 #include <linux/errno.h>
 #include <asm/chpid.h>
 #include <asm/sclp.h>
+#include <asm/crw.h>
 
-#include "../s390mach.h"
 #include "cio.h"
 #include "css.h"
 #include "ioasm.h"
@@ -393,7 +393,6 @@ int chp_new(struct chp_id chpid)
 	chp->state = 1;
 	chp->dev.parent = &channel_subsystems[chpid.cssid]->device;
 	chp->dev.release = chp_release;
-	dev_set_name(&chp->dev, "chp%x.%02x", chpid.cssid, chpid.id);
 
 	/* Obtain channel path description and fill it in. */
 	ret = chsc_determine_base_channel_path_desc(chpid, &chp->desc);
@@ -411,13 +410,15 @@ int chp_new(struct chp_id chpid)
 	} else {
 		chp->cmg = -1;
 	}
+	dev_set_name(&chp->dev, "chp%x.%02x", chpid.cssid, chpid.id);
 
 	/* make it known to the system */
 	ret = device_register(&chp->dev);
 	if (ret) {
 		CIO_MSG_EVENT(0, "Could not register chp%x.%02x: %d\n",
 			      chpid.cssid, chpid.id, ret);
-		goto out_free;
+		put_device(&chp->dev);
+		goto out;
 	}
 	ret = sysfs_create_group(&chp->dev.kobj, &chp_attr_group);
 	if (ret) {
@@ -706,12 +707,12 @@ static int __init chp_init(void)
 	struct chp_id chpid;
 	int ret;
 
-	ret = s390_register_crw_handler(CRW_RSC_CPATH, chp_process_crw);
+	ret = crw_register_handler(CRW_RSC_CPATH, chp_process_crw);
 	if (ret)
 		return ret;
 	chp_wq = create_singlethread_workqueue("cio_chp");
 	if (!chp_wq) {
-		s390_unregister_crw_handler(CRW_RSC_CPATH);
+		crw_unregister_handler(CRW_RSC_CPATH);
 		return -ENOMEM;
 	}
 	INIT_WORK(&cfg_work, cfg_func);

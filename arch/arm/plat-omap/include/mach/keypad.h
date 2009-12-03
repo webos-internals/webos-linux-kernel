@@ -10,6 +10,8 @@
 #ifndef ASMARM_ARCH_KEYPAD_H
 #define ASMARM_ARCH_KEYPAD_H
 
+#warning: Please update the board to use matrix_keypad.h instead
+
 struct omap_kp_platform_data {
 	int rows;
 	int cols;
@@ -33,7 +35,11 @@ struct omap_kp_platform_data {
 #define GROUP_3		(3 << 16)
 #define GROUP_MASK	GROUP_3
 
+#define KEY_PERSISTENT		0x00800000
+#define KEYNUM_MASK		0x00EFFFFF
 #define KEY(col, row, val) (((col) << 28) | ((row) << 24) | (val))
+#define PERSISTENT_KEY(col, row) (((col) << 28) | ((row) << 24) | \
+						KEY_PERSISTENT)
 
 #endif
 

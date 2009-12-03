@@ -48,7 +48,7 @@
 
 inline int ip6_rcv_finish( struct sk_buff *skb)
 {
-	if (skb->dst == NULL)
+	if (skb_dst(skb) == NULL)
 		ip6_route_input(skb);
 
 	return dst_input(skb);
@@ -63,20 +63,19 @@ int ipv6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt
 
 	if (skb->pkt_type == PACKET_OTHERHOST) {
 		kfree_skb(skb);
-		return 0;
+		return NET_RX_DROP;
 	}
 
 	rcu_read_lock();
 
 	idev = __in6_dev_get(skb->dev);
 
-	IP6_INC_STATS_BH(net, idev, IPSTATS_MIB_INRECEIVES);
+	IP6_UPD_PO_STATS_BH(net, idev, IPSTATS_MIB_IN, skb->len);
 
 	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL ||
 	    !idev || unlikely(idev->cnf.disable_ipv6)) {
 		IP6_INC_STATS_BH(net, idev, IPSTATS_MIB_INDISCARDS);
-		rcu_read_unlock();
-		goto out;
+		goto drop;
 	}
 
 	memset(IP6CB(skb), 0, sizeof(struct inet6_skb_parm));
@@ -92,7 +91,7 @@ int ipv6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt
 	 * arrived via the sending interface (ethX), because of the
 	 * nature of scoping architecture. --yoshfuji
 	 */
-	IP6CB(skb)->iif = skb->dst ? ip6_dst_idev(skb->dst)->dev->ifindex : dev->ifindex;
+	IP6CB(skb)->iif = skb_dst(skb) ? ip6_dst_idev(skb_dst(skb))->dev->ifindex : dev->ifindex;
 
 	if (unlikely(!pskb_may_pull(skb, sizeof(*hdr))))
 		goto err;
@@ -134,11 +133,14 @@ int ipv6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt
 		if (ipv6_parse_hopopts(skb) < 0) {
 			IP6_INC_STATS_BH(net, idev, IPSTATS_MIB_INHDRERRORS);
 			rcu_read_unlock();
-			return 0;
+			return NET_RX_DROP;
 		}
 	}
 
 	rcu_read_unlock();
+
+	/* Must drop socket now because of tproxy. */
+	skb_orphan(skb);
 
 	return NF_HOOK(PF_INET6, NF_INET_PRE_ROUTING, skb, dev, NULL,
 		       ip6_rcv_finish);
@@ -147,8 +149,7 @@ err:
 drop:
 	rcu_read_unlock();
 	kfree_skb(skb);
-out:
-	return 0;
+	return NET_RX_DROP;
 }
 
 /*
@@ -158,12 +159,12 @@ out:
 
 static int ip6_input_finish(struct sk_buff *skb)
 {
-	struct inet6_protocol *ipprot;
+	const struct inet6_protocol *ipprot;
 	unsigned int nhoff;
 	int nexthdr, raw;
 	u8 hash;
 	struct inet6_dev *idev;
-	struct net *net = dev_net(skb->dst->dev);
+	struct net *net = dev_net(skb_dst(skb)->dev);
 
 	/*
 	 *	Parse extension headers
@@ -171,7 +172,7 @@ static int ip6_input_finish(struct sk_buff *skb)
 
 	rcu_read_lock();
 resubmit:
-	idev = ip6_dst_idev(skb->dst);
+	idev = ip6_dst_idev(skb_dst(skb));
 	if (!pskb_pull(skb, skb_transport_offset(skb)))
 		goto discard;
 	nhoff = IP6CB(skb)->nhoff;
@@ -244,8 +245,9 @@ int ip6_mc_input(struct sk_buff *skb)
 	struct ipv6hdr *hdr;
 	int deliver;
 
-	IP6_INC_STATS_BH(dev_net(skb->dst->dev),
-			 ip6_dst_idev(skb->dst), IPSTATS_MIB_INMCASTPKTS);
+	IP6_UPD_PO_STATS_BH(dev_net(skb_dst(skb)->dev),
+			 ip6_dst_idev(skb_dst(skb)), IPSTATS_MIB_INMCAST,
+			 skb->len);
 
 	hdr = ipv6_hdr(skb);
 	deliver = ipv6_chk_mcast_addr(skb->dev, &hdr->daddr, NULL);

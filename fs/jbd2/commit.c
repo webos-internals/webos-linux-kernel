@@ -16,7 +16,6 @@
 #include <linux/time.h>
 #include <linux/fs.h>
 #include <linux/jbd2.h>
-#include <linux/marker.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
@@ -26,6 +25,8 @@
 #include <linux/writeback.h>
 #include <linux/backing-dev.h>
 #include <linux/bio.h>
+#include <linux/blkdev.h>
+#include <trace/events/jbd2.h>
 
 /*
  * Default IO end handler for temporary BJ_IO buffer_heads.
@@ -133,12 +134,12 @@ static int journal_submit_commit_record(journal_t *journal,
 	bh->b_end_io = journal_end_buffer_io_sync;
 
 	if (journal->j_flags & JBD2_BARRIER &&
-		!JBD2_HAS_INCOMPAT_FEATURE(journal,
-					 JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT)) {
+	    !JBD2_HAS_INCOMPAT_FEATURE(journal,
+				       JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT)) {
 		set_buffer_ordered(bh);
 		barrier_done = 1;
 	}
-	ret = submit_bh(WRITE_SYNC, bh);
+	ret = submit_bh(WRITE_SYNC_PLUG, bh);
 	if (barrier_done)
 		clear_buffer_ordered(bh);
 
@@ -159,7 +160,7 @@ static int journal_submit_commit_record(journal_t *journal,
 		lock_buffer(bh);
 		set_buffer_uptodate(bh);
 		clear_buffer_dirty(bh);
-		ret = submit_bh(WRITE_SYNC, bh);
+		ret = submit_bh(WRITE_SYNC_PLUG, bh);
 	}
 	*cbh = bh;
 	return ret;
@@ -190,7 +191,7 @@ retry:
 		set_buffer_uptodate(bh);
 		bh->b_end_io = journal_end_buffer_io_sync;
 
-		ret = submit_bh(WRITE_SYNC, bh);
+		ret = submit_bh(WRITE_SYNC_PLUG, bh);
 		if (ret) {
 			unlock_buffer(bh);
 			return ret;
@@ -220,7 +221,6 @@ static int journal_submit_inode_data_buffers(struct address_space *mapping)
 		.nr_to_write = mapping->nrpages * 2,
 		.range_start = 0,
 		.range_end = i_size_read(mapping->host),
-		.for_writepages = 1,
 	};
 
 	ret = generic_writepages(mapping, &wbc);
@@ -253,6 +253,7 @@ static int journal_submit_data_buffers(journal_t *journal,
 		 * block allocation  with delalloc. We need to write
 		 * only allocated blocks here.
 		 */
+		trace_jbd2_submit_inode_data(jinode->i_vfs_inode);
 		err = journal_submit_inode_data_buffers(mapping);
 		if (!ret)
 			ret = err;
@@ -367,6 +368,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	int tag_bytes = journal_tag_bytes(journal);
 	struct buffer_head *cbh = NULL; /* For transactional checksums */
 	__u32 crc32_sum = ~0;
+	int write_op = WRITE;
 
 	/*
 	 * First job: lock down the current transaction and wait for
@@ -393,18 +395,25 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	commit_transaction = journal->j_running_transaction;
 	J_ASSERT(commit_transaction->t_state == T_RUNNING);
 
-	trace_mark(jbd2_start_commit, "dev %s transaction %d",
-		   journal->j_devname, commit_transaction->t_tid);
+	trace_jbd2_start_commit(journal, commit_transaction);
 	jbd_debug(1, "JBD: starting commit of transaction %d\n",
 			commit_transaction->t_tid);
 
 	spin_lock(&journal->j_state_lock);
 	commit_transaction->t_state = T_LOCKED;
 
-	stats.u.run.rs_wait = commit_transaction->t_max_wait;
-	stats.u.run.rs_locked = jiffies;
-	stats.u.run.rs_running = jbd2_time_diff(commit_transaction->t_start,
-						stats.u.run.rs_locked);
+	/*
+	 * Use plugged writes here, since we want to submit several before
+	 * we unplug the device. We don't do explicit unplugging in here,
+	 * instead we rely on sync_buffer() doing the unplug for us.
+	 */
+	if (commit_transaction->t_synchronous_commit)
+		write_op = WRITE_SYNC_PLUG;
+	trace_jbd2_commit_locking(journal, commit_transaction);
+	stats.run.rs_wait = commit_transaction->t_max_wait;
+	stats.run.rs_locked = jiffies;
+	stats.run.rs_running = jbd2_time_diff(commit_transaction->t_start,
+					      stats.run.rs_locked);
 
 	spin_lock(&commit_transaction->t_handle_lock);
 	while (commit_transaction->t_updates) {
@@ -476,9 +485,10 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	 */
 	jbd2_journal_switch_revoke_table(journal);
 
-	stats.u.run.rs_flushing = jiffies;
-	stats.u.run.rs_locked = jbd2_time_diff(stats.u.run.rs_locked,
-					       stats.u.run.rs_flushing);
+	trace_jbd2_commit_flushing(journal, commit_transaction);
+	stats.run.rs_flushing = jiffies;
+	stats.run.rs_locked = jbd2_time_diff(stats.run.rs_locked,
+					     stats.run.rs_flushing);
 
 	commit_transaction->t_state = T_FLUSH;
 	journal->j_committing_transaction = commit_transaction;
@@ -498,7 +508,8 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	if (err)
 		jbd2_journal_abort(journal, err);
 
-	jbd2_journal_write_revoke_records(journal, commit_transaction);
+	jbd2_journal_write_revoke_records(journal, commit_transaction,
+					  write_op);
 
 	jbd_debug(3, "JBD: commit phase 2\n");
 
@@ -511,11 +522,12 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	commit_transaction->t_state = T_COMMIT;
 	spin_unlock(&journal->j_state_lock);
 
-	stats.u.run.rs_logging = jiffies;
-	stats.u.run.rs_flushing = jbd2_time_diff(stats.u.run.rs_flushing,
-						 stats.u.run.rs_logging);
-	stats.u.run.rs_blocks = commit_transaction->t_outstanding_credits;
-	stats.u.run.rs_blocks_logged = 0;
+	trace_jbd2_commit_logging(journal, commit_transaction);
+	stats.run.rs_logging = jiffies;
+	stats.run.rs_flushing = jbd2_time_diff(stats.run.rs_flushing,
+					       stats.run.rs_logging);
+	stats.run.rs_blocks = commit_transaction->t_outstanding_credits;
+	stats.run.rs_blocks_logged = 0;
 
 	J_ASSERT(commit_transaction->t_nr_buffers <=
 		 commit_transaction->t_outstanding_credits);
@@ -680,10 +692,10 @@ start_journal_io:
 				clear_buffer_dirty(bh);
 				set_buffer_uptodate(bh);
 				bh->b_end_io = journal_end_buffer_io_sync;
-				submit_bh(WRITE, bh);
+				submit_bh(write_op, bh);
 			}
 			cond_resched();
-			stats.u.run.rs_blocks_logged += bufs;
+			stats.run.rs_blocks_logged += bufs;
 
 			/* Force a new descriptor to be generated next
                            time round the loop. */
@@ -695,11 +707,13 @@ start_journal_io:
 	/* Done it all: now write the commit record asynchronously. */
 
 	if (JBD2_HAS_INCOMPAT_FEATURE(journal,
-		JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT)) {
+				      JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT)) {
 		err = journal_submit_commit_record(journal, commit_transaction,
 						 &cbh, crc32_sum);
 		if (err)
 			__jbd2_journal_abort_hard(journal);
+		if (journal->j_flags & JBD2_BARRIER)
+			blkdev_issue_flush(journal->j_dev, NULL);
 	}
 
 	/*
@@ -822,7 +836,7 @@ wait_for_iobuf:
 	jbd_debug(3, "JBD: commit phase 5\n");
 
 	if (!JBD2_HAS_INCOMPAT_FEATURE(journal,
-		JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT)) {
+				       JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT)) {
 		err = journal_submit_commit_record(journal, commit_transaction,
 						&cbh, crc32_sum);
 		if (err)
@@ -974,33 +988,30 @@ restart_loop:
 	J_ASSERT(commit_transaction->t_state == T_COMMIT);
 
 	commit_transaction->t_start = jiffies;
-	stats.u.run.rs_logging = jbd2_time_diff(stats.u.run.rs_logging,
-						commit_transaction->t_start);
+	stats.run.rs_logging = jbd2_time_diff(stats.run.rs_logging,
+					      commit_transaction->t_start);
 
 	/*
-	 * File the transaction for history
+	 * File the transaction statistics
 	 */
-	stats.ts_type = JBD2_STATS_RUN;
 	stats.ts_tid = commit_transaction->t_tid;
-	stats.u.run.rs_handle_count = commit_transaction->t_handle_count;
-	spin_lock(&journal->j_history_lock);
-	memcpy(journal->j_history + journal->j_history_cur, &stats,
-			sizeof(stats));
-	if (++journal->j_history_cur == journal->j_history_max)
-		journal->j_history_cur = 0;
+	stats.run.rs_handle_count = commit_transaction->t_handle_count;
+	trace_jbd2_run_stats(journal->j_fs_dev->bd_dev,
+			     commit_transaction->t_tid, &stats.run);
 
 	/*
 	 * Calculate overall stats
 	 */
+	spin_lock(&journal->j_history_lock);
 	journal->j_stats.ts_tid++;
-	journal->j_stats.u.run.rs_wait += stats.u.run.rs_wait;
-	journal->j_stats.u.run.rs_running += stats.u.run.rs_running;
-	journal->j_stats.u.run.rs_locked += stats.u.run.rs_locked;
-	journal->j_stats.u.run.rs_flushing += stats.u.run.rs_flushing;
-	journal->j_stats.u.run.rs_logging += stats.u.run.rs_logging;
-	journal->j_stats.u.run.rs_handle_count += stats.u.run.rs_handle_count;
-	journal->j_stats.u.run.rs_blocks += stats.u.run.rs_blocks;
-	journal->j_stats.u.run.rs_blocks_logged += stats.u.run.rs_blocks_logged;
+	journal->j_stats.run.rs_wait += stats.run.rs_wait;
+	journal->j_stats.run.rs_running += stats.run.rs_running;
+	journal->j_stats.run.rs_locked += stats.run.rs_locked;
+	journal->j_stats.run.rs_flushing += stats.run.rs_flushing;
+	journal->j_stats.run.rs_logging += stats.run.rs_logging;
+	journal->j_stats.run.rs_handle_count += stats.run.rs_handle_count;
+	journal->j_stats.run.rs_blocks += stats.run.rs_blocks;
+	journal->j_stats.run.rs_blocks_logged += stats.run.rs_blocks_logged;
 	spin_unlock(&journal->j_history_lock);
 
 	commit_transaction->t_state = T_FINISHED;
@@ -1045,9 +1056,7 @@ restart_loop:
 	if (journal->j_commit_callback)
 		journal->j_commit_callback(journal, commit_transaction);
 
-	trace_mark(jbd2_end_commit, "dev %s transaction %d head %d",
-		   journal->j_devname, commit_transaction->t_tid,
-		   journal->j_tail_sequence);
+	trace_jbd2_end_commit(journal, commit_transaction);
 	jbd_debug(1, "JBD: commit %d complete, head %d\n",
 		  journal->j_commit_sequence, journal->j_tail_sequence);
 	if (to_free)

@@ -12,21 +12,12 @@
 #include <linux/kernel.h>
 #include <linux/param.h>
 #include <linux/init.h>
-#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <asm/machdep.h>
 #include <asm/coldfire.h>
 #include <asm/mcfsim.h>
 #include <asm/mcfuart.h>
 #include <asm/mcfwdebug.h>
-
-/***************************************************************************/
-
-void coldfire_reset(void);
-
-extern unsigned int mcf_timervector;
-extern unsigned int mcf_profilevector;
-extern unsigned int mcf_timerlevel;
 
 /***************************************************************************/
 
@@ -65,13 +56,13 @@ static struct platform_device *m5307_devices[] __initdata = {
 static void __init m5307_uart_init_line(int line, int irq)
 {
 	if (line == 0) {
-		writel(MCFSIM_ICR_LEVEL6 | MCFSIM_ICR_PRI1, MCF_MBAR + MCFSIM_UART1ICR);
-		writeb(irq, MCFUART_BASE1 + MCFUART_UIVR);
-		mcf_setimr(mcf_getimr() & ~MCFSIM_IMR_UART1);
+		writeb(MCFSIM_ICR_LEVEL6 | MCFSIM_ICR_PRI1, MCF_MBAR + MCFSIM_UART1ICR);
+		writeb(irq, MCF_MBAR + MCFUART_BASE1 + MCFUART_UIVR);
+		mcf_mapirq2imr(irq, MCFINTC_UART0);
 	} else if (line == 1) {
-		writel(MCFSIM_ICR_LEVEL6 | MCFSIM_ICR_PRI2, MCF_MBAR + MCFSIM_UART2ICR);
-		writeb(irq, MCFUART_BASE2 + MCFUART_UIVR);
-		mcf_setimr(mcf_getimr() & ~MCFSIM_IMR_UART2);
+		writeb(MCFSIM_ICR_LEVEL6 | MCFSIM_ICR_PRI2, MCF_MBAR + MCFSIM_UART2ICR);
+		writeb(irq, MCF_MBAR + MCFUART_BASE2 + MCFUART_UIVR);
+		mcf_mapirq2imr(irq, MCFINTC_UART1);
 	}
 }
 
@@ -86,55 +77,52 @@ static void __init m5307_uarts_init(void)
 
 /***************************************************************************/
 
-void mcf_autovector(unsigned int vec)
+static void __init m5307_timers_init(void)
 {
-	volatile unsigned char  *mbar;
+	/* Timer1 is always used as system timer */
+	writeb(MCFSIM_ICR_AUTOVEC | MCFSIM_ICR_LEVEL6 | MCFSIM_ICR_PRI3,
+		MCF_MBAR + MCFSIM_TIMER1ICR);
+	mcf_mapirq2imr(MCF_IRQ_TIMER, MCFINTC_TIMER1);
 
-	if ((vec >= 25) && (vec <= 31)) {
-		mbar = (volatile unsigned char *) MCF_MBAR;
-		vec = 0x1 << (vec - 24);
-		*(mbar + MCFSIM_AVR) |= vec;
-		mcf_setimr(mcf_getimr() & ~vec);
-	}
+#ifdef CONFIG_HIGHPROFILE
+	/* Timer2 is to be used as a high speed profile timer  */
+	writeb(MCFSIM_ICR_AUTOVEC | MCFSIM_ICR_LEVEL7 | MCFSIM_ICR_PRI3,
+		MCF_MBAR + MCFSIM_TIMER2ICR);
+	mcf_mapirq2imr(MCF_IRQ_PROFILER, MCFINTC_TIMER2);
+#endif
 }
 
 /***************************************************************************/
 
-void mcf_settimericr(unsigned int timer, unsigned int level)
+void m5307_cpu_reset(void)
 {
-	volatile unsigned char *icrp;
-	unsigned int icr, imr;
-
-	if (timer <= 2) {
-		switch (timer) {
-		case 2:  icr = MCFSIM_TIMER2ICR; imr = MCFSIM_IMR_TIMER2; break;
-		default: icr = MCFSIM_TIMER1ICR; imr = MCFSIM_IMR_TIMER1; break;
-		}
-
-		icrp = (volatile unsigned char *) (MCF_MBAR + icr);
-		*icrp = MCFSIM_ICR_AUTOVEC | (level << 2) | MCFSIM_ICR_PRI3;
-		mcf_setimr(mcf_getimr() & ~imr);
-	}
+	local_irq_disable();
+	/* Set watchdog to soft reset, and enabled */
+	__raw_writeb(0xc0, MCF_MBAR + MCFSIM_SYPCR);
+	for (;;)
+		/* wait for watchdog to timeout */;
 }
 
 /***************************************************************************/
 
 void __init config_BSP(char *commandp, int size)
 {
-	mcf_setimr(MCFSIM_IMR_MASKALL);
-
 #if defined(CONFIG_NETtel) || \
     defined(CONFIG_SECUREEDGEMP3) || defined(CONFIG_CLEOPATRA)
 	/* Copy command line from FLASH to local buffer... */
 	memcpy(commandp, (char *) 0xf0004000, size);
 	commandp[size-1] = 0;
-	/* Different timer setup - to prevent device clash */
-	mcf_timervector = 30;
-	mcf_profilevector = 31;
-	mcf_timerlevel = 6;
 #endif
 
-	mach_reset = coldfire_reset;
+	mach_reset = m5307_cpu_reset;
+	m5307_timers_init();
+	m5307_uarts_init();
+
+	/* Only support the external interrupts on their primary level */
+	mcf_mapirq2imr(25, MCFINTC_EINT1);
+	mcf_mapirq2imr(27, MCFINTC_EINT3);
+	mcf_mapirq2imr(29, MCFINTC_EINT5);
+	mcf_mapirq2imr(31, MCFINTC_EINT7);
 
 #ifdef CONFIG_BDM_DISABLE
 	/*
@@ -150,7 +138,6 @@ void __init config_BSP(char *commandp, int size)
 
 static int __init init_BSP(void)
 {
-	m5307_uarts_init();
 	platform_add_devices(m5307_devices, ARRAY_SIZE(m5307_devices));
 	return 0;
 }

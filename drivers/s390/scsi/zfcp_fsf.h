@@ -3,13 +3,14 @@
  *
  * Interface to the FSF support functions.
  *
- * Copyright IBM Corporation 2002, 2008
+ * Copyright IBM Corporation 2002, 2009
  */
 
 #ifndef FSF_H
 #define FSF_H
 
 #include <linux/pfn.h>
+#include <linux/scatterlist.h>
 
 #define FSF_QTCB_CURRENT_VERSION		0x00000001
 
@@ -126,10 +127,6 @@
 #define FSF_STATUS_READ_NOTIFICATION_LOST	0x00000009
 #define FSF_STATUS_READ_CFDC_UPDATED		0x0000000A
 #define FSF_STATUS_READ_FEATURE_UPDATE_ALERT	0x0000000C
-
-/* status subtypes in status read buffer */
-#define FSF_STATUS_READ_SUB_CLOSE_PHYS_PORT	0x00000001
-#define FSF_STATUS_READ_SUB_ERROR_PORT		0x00000002
 
 /* status subtypes for link down */
 #define FSF_STATUS_READ_SUB_NO_PHYSICAL_LINK	0x00000000

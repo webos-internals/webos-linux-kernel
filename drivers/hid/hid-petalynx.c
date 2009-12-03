@@ -105,12 +105,12 @@ static struct hid_driver pl_driver = {
 	.probe = pl_probe,
 };
 
-static int pl_init(void)
+static int __init pl_init(void)
 {
 	return hid_register_driver(&pl_driver);
 }
 
-static void pl_exit(void)
+static void __exit pl_exit(void)
 {
 	hid_unregister_driver(&pl_driver);
 }
@@ -118,5 +118,3 @@ static void pl_exit(void)
 module_init(pl_init);
 module_exit(pl_exit);
 MODULE_LICENSE("GPL");
-
-HID_COMPAT_LOAD_DRIVER(petalynx);

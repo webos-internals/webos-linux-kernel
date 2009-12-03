@@ -61,7 +61,8 @@
 
 #include "smctr.h"               /* Our Stuff */
 
-static char version[] __initdata = KERN_INFO "smctr.c: v1.4 7/12/00 by jschlst@samba.org\n";
+static const char version[] __initdata =
+	KERN_INFO "smctr.c: v1.4 7/12/00 by jschlst@samba.org\n";
 static const char cardname[] = "smctr";
 
 
@@ -123,7 +124,6 @@ static unsigned int smctr_get_num_rx_bdbs(struct net_device *dev);
 static int smctr_get_physical_drop_number(struct net_device *dev);
 static __u8 *smctr_get_rx_pointer(struct net_device *dev, short queue);
 static int smctr_get_station_id(struct net_device *dev);
-static struct net_device_stats *smctr_get_stats(struct net_device *dev);
 static FCBlock *smctr_get_tx_fcb(struct net_device *dev, __u16 queue,
         __u16 bytes_count);
 static int smctr_get_upstream_neighbor_addr(struct net_device *dev);
@@ -234,7 +234,8 @@ static int smctr_rx_frame(struct net_device *dev);
 
 /* S */
 static int smctr_send_dat(struct net_device *dev);
-static int smctr_send_packet(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t smctr_send_packet(struct sk_buff *skb,
+					   struct net_device *dev);
 static int smctr_send_lobe_media_test(struct net_device *dev);
 static int smctr_send_rpt_addr(struct net_device *dev, MAC_HEADER *rmf,
         __u16 correlator);
@@ -3091,11 +3092,7 @@ static int smctr_lobe_media_test(struct net_device *dev)
         /* Setup the lobe media test. */
         smctr_lobe_media_test_cmd(dev);
         if(smctr_wait_cmd(dev))
-        {
-                smctr_reset_adapter(dev);
-                tp->status = CLOSED;
-                return (LOBE_MEDIA_TEST_FAILED);
-        }
+		goto err;
 
         /* Tx lobe media test frames. */
         for(i = 0; i < 1500; ++i)
@@ -3103,20 +3100,12 @@ static int smctr_lobe_media_test(struct net_device *dev)
                 if(smctr_send_lobe_media_test(dev))
                 {
                         if(perror)
-                        {
-                                smctr_reset_adapter(dev);
-                                tp->state = CLOSED;
-                                return (LOBE_MEDIA_TEST_FAILED);
-                        }
+				goto err;
                         else
                         {
                                 perror = 1;
                                 if(smctr_lobe_media_test_cmd(dev))
-                                {
-                                        smctr_reset_adapter(dev);
-                                        tp->state = CLOSED;
-                                        return (LOBE_MEDIA_TEST_FAILED);
-                                }
+					goto err;
                         }
                 }
         }
@@ -3124,28 +3113,24 @@ static int smctr_lobe_media_test(struct net_device *dev)
         if(smctr_send_dat(dev))
         {
                 if(smctr_send_dat(dev))
-                {
-                        smctr_reset_adapter(dev);
-                        tp->state = CLOSED;
-                        return (LOBE_MEDIA_TEST_FAILED);
-                }
+			goto err;
         }
 
         /* Check if any frames received during test. */
         if((tp->rx_fcb_curr[MAC_QUEUE]->frame_status)
                 || (tp->rx_fcb_curr[NON_MAC_QUEUE]->frame_status))
-        {
-                smctr_reset_adapter(dev);
-                tp->state = CLOSED;
-                return (LOBE_MEDIA_TEST_FAILED);
-        }
+			goto err;
 
         /* Set receive mask to "Promisc" mode. */
         tp->receive_mask = saved_rcv_mask;
 
         smctr_chg_rx_mask(dev);
 
-        return (0);
+	 return 0;
+err:
+	smctr_reset_adapter(dev);
+	tp->status = CLOSED;
+	return LOBE_MEDIA_TEST_FAILED;
 }
 
 static int smctr_lobe_media_test_cmd(struct net_device *dev)
@@ -3632,6 +3617,14 @@ out:
 	return ERR_PTR(err);
 }
 
+static const struct net_device_ops smctr_netdev_ops = {
+	.ndo_open          = smctr_open,
+	.ndo_stop          = smctr_close,
+	.ndo_start_xmit    = smctr_send_packet,
+	.ndo_tx_timeout	   = smctr_timeout,
+	.ndo_get_stats     = smctr_get_stats,
+	.ndo_set_multicast_list = smctr_set_multicast_list,
+};
 
 static int __init smctr_probe1(struct net_device *dev, int ioaddr)
 {
@@ -3682,13 +3675,8 @@ static int __init smctr_probe1(struct net_device *dev, int ioaddr)
                 (unsigned int)dev->base_addr,
                 dev->irq, tp->rom_base, tp->ram_base);
 
-        dev->open               = smctr_open;
-        dev->stop               = smctr_close;
-        dev->hard_start_xmit    = smctr_send_packet;
-        dev->tx_timeout		= smctr_timeout;
+	dev->netdev_ops = &smctr_netdev_ops;
         dev->watchdog_timeo	= HZ;
-        dev->get_stats          = smctr_get_stats;
-        dev->set_multicast_list = &smctr_set_multicast_list;
         return (0);
 
 out:
@@ -4392,52 +4380,42 @@ static int smctr_ring_status_chg(struct net_device *dev)
         {
                 case RING_RECOVERY:
                         printk(KERN_INFO "%s: Ring Recovery\n", dev->name);
-                        tp->current_ring_status |= RING_RECOVERY;
                         break;
 
                 case SINGLE_STATION:
                         printk(KERN_INFO "%s: Single Statinon\n", dev->name);
-                        tp->current_ring_status |= SINGLE_STATION;
                         break;
 
                 case COUNTER_OVERFLOW:
                         printk(KERN_INFO "%s: Counter Overflow\n", dev->name);
-                        tp->current_ring_status |= COUNTER_OVERFLOW;
                         break;
 
                 case REMOVE_RECEIVED:
                         printk(KERN_INFO "%s: Remove Received\n", dev->name);
-                        tp->current_ring_status |= REMOVE_RECEIVED;
                         break;
 
                 case AUTO_REMOVAL_ERROR:
                         printk(KERN_INFO "%s: Auto Remove Error\n", dev->name);
-                        tp->current_ring_status |= AUTO_REMOVAL_ERROR;
                         break;
 
                 case LOBE_WIRE_FAULT:
                         printk(KERN_INFO "%s: Lobe Wire Fault\n", dev->name);
-                        tp->current_ring_status |= LOBE_WIRE_FAULT;
                         break;
 
                 case TRANSMIT_BEACON:
                         printk(KERN_INFO "%s: Transmit Beacon\n", dev->name);
-                        tp->current_ring_status |= TRANSMIT_BEACON;
                         break;
 
                 case SOFT_ERROR:
                         printk(KERN_INFO "%s: Soft Error\n", dev->name);
-                        tp->current_ring_status |= SOFT_ERROR;
                         break;
 
                 case HARD_ERROR:
                         printk(KERN_INFO "%s: Hard Error\n", dev->name);
-                        tp->current_ring_status |= HARD_ERROR;
                         break;
 
                 case SIGNAL_LOSS:
                         printk(KERN_INFO "%s: Signal Loss\n", dev->name);
-                        tp->current_ring_status |= SIGNAL_LOSS;
                         break;
 
                 default:
@@ -4594,7 +4572,8 @@ static void smctr_timeout(struct net_device *dev)
 /*
  * Gets skb from system, queues it and checks if it can be sent
  */
-static int smctr_send_packet(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t smctr_send_packet(struct sk_buff *skb,
+					   struct net_device *dev)
 {
         struct net_local *tp = netdev_priv(dev);
 
@@ -4608,7 +4587,7 @@ static int smctr_send_packet(struct sk_buff *skb, struct net_device *dev)
         netif_stop_queue(dev);
 
         if(tp->QueueSkb == 0)
-                return (1);     /* Return with tbusy set: queue full */
+                return NETDEV_TX_BUSY;     /* Return with tbusy set: queue full */
 
         tp->QueueSkb--;
         skb_queue_tail(&tp->SendSkbQueue, skb);
@@ -4616,7 +4595,7 @@ static int smctr_send_packet(struct sk_buff *skb, struct net_device *dev)
         if(tp->QueueSkb > 0)
 		netif_wake_queue(dev);
 		
-        return (0);
+        return NETDEV_TX_OK;
 }
 
 static int smctr_send_lobe_media_test(struct net_device *dev)

@@ -91,37 +91,94 @@ __initcall(key_proc_init);
  */
 #ifdef CONFIG_KEYS_DEBUG_PROC_KEYS
 
+static struct rb_node *key_serial_next(struct rb_node *n)
+{
+	struct user_namespace *user_ns = current_user_ns();
+
+	n = rb_next(n);
+	while (n) {
+		struct key *key = rb_entry(n, struct key, serial_node);
+		if (key->user->user_ns == user_ns)
+			break;
+		n = rb_next(n);
+	}
+	return n;
+}
+
 static int proc_keys_open(struct inode *inode, struct file *file)
 {
 	return seq_open(file, &proc_keys_ops);
+}
 
+static struct key *find_ge_key(key_serial_t id)
+{
+	struct user_namespace *user_ns = current_user_ns();
+	struct rb_node *n = key_serial_tree.rb_node;
+	struct key *minkey = NULL;
+
+	while (n) {
+		struct key *key = rb_entry(n, struct key, serial_node);
+		if (id < key->serial) {
+			if (!minkey || minkey->serial > key->serial)
+				minkey = key;
+			n = n->rb_left;
+		} else if (id > key->serial) {
+			n = n->rb_right;
+		} else {
+			minkey = key;
+			break;
+		}
+		key = NULL;
+	}
+
+	if (!minkey)
+		return NULL;
+
+	for (;;) {
+		if (minkey->user->user_ns == user_ns)
+			return minkey;
+		n = rb_next(&minkey->serial_node);
+		if (!n)
+			return NULL;
+		minkey = rb_entry(n, struct key, serial_node);
+	}
 }
 
 static void *proc_keys_start(struct seq_file *p, loff_t *_pos)
+	__acquires(key_serial_lock)
 {
-	struct rb_node *_p;
-	loff_t pos = *_pos;
+	key_serial_t pos = *_pos;
+	struct key *key;
 
 	spin_lock(&key_serial_lock);
 
-	_p = rb_first(&key_serial_tree);
-	while (pos > 0 && _p) {
-		pos--;
-		_p = rb_next(_p);
-	}
+	if (*_pos > INT_MAX)
+		return NULL;
+	key = find_ge_key(pos);
+	if (!key)
+		return NULL;
+	*_pos = key->serial;
+	return &key->serial_node;
+}
 
-	return _p;
-
+static inline key_serial_t key_node_serial(struct rb_node *n)
+{
+	struct key *key = rb_entry(n, struct key, serial_node);
+	return key->serial;
 }
 
 static void *proc_keys_next(struct seq_file *p, void *v, loff_t *_pos)
 {
-	(*_pos)++;
-	return rb_next((struct rb_node *) v);
+	struct rb_node *n;
 
+	n = key_serial_next(v);
+	if (n)
+		*_pos = key_node_serial(n);
+	return n;
 }
 
 static void proc_keys_stop(struct seq_file *p, void *v)
+	__releases(key_serial_lock)
 {
 	spin_unlock(&key_serial_lock);
 }
@@ -152,11 +209,9 @@ static int proc_keys_show(struct seq_file *m, void *v)
 	/* come up with a suitable timeout value */
 	if (key->expiry == 0) {
 		memcpy(xbuf, "perm", 5);
-	}
-	else if (now.tv_sec >= key->expiry) {
+	} else if (now.tv_sec >= key->expiry) {
 		memcpy(xbuf, "expd", 5);
-	}
-	else {
+	} else {
 		timo = key->expiry - now.tv_sec;
 
 		if (timo < 60)
@@ -196,12 +251,32 @@ static int proc_keys_show(struct seq_file *m, void *v)
 	seq_putc(m, '\n');
 
 	rcu_read_unlock();
-
 	return 0;
-
 }
 
 #endif /* CONFIG_KEYS_DEBUG_PROC_KEYS */
+
+static struct rb_node *__key_user_next(struct rb_node *n)
+{
+	while (n) {
+		struct key_user *user = rb_entry(n, struct key_user, node);
+		if (user->user_ns == current_user_ns())
+			break;
+		n = rb_next(n);
+	}
+	return n;
+}
+
+static struct rb_node *key_user_next(struct rb_node *n)
+{
+	return __key_user_next(rb_next(n));
+}
+
+static struct rb_node *key_user_first(struct rb_root *r)
+{
+	struct rb_node *n = rb_first(r);
+	return __key_user_next(n);
+}
 
 /*****************************************************************************/
 /*
@@ -210,34 +285,33 @@ static int proc_keys_show(struct seq_file *m, void *v)
 static int proc_key_users_open(struct inode *inode, struct file *file)
 {
 	return seq_open(file, &proc_key_users_ops);
-
 }
 
 static void *proc_key_users_start(struct seq_file *p, loff_t *_pos)
+	__acquires(key_user_lock)
 {
 	struct rb_node *_p;
 	loff_t pos = *_pos;
 
 	spin_lock(&key_user_lock);
 
-	_p = rb_first(&key_user_tree);
+	_p = key_user_first(&key_user_tree);
 	while (pos > 0 && _p) {
 		pos--;
-		_p = rb_next(_p);
+		_p = key_user_next(_p);
 	}
 
 	return _p;
-
 }
 
 static void *proc_key_users_next(struct seq_file *p, void *v, loff_t *_pos)
 {
 	(*_pos)++;
-	return rb_next((struct rb_node *) v);
-
+	return key_user_next((struct rb_node *) v);
 }
 
 static void proc_key_users_stop(struct seq_file *p, void *v)
+	__releases(key_user_lock)
 {
 	spin_unlock(&key_user_lock);
 }

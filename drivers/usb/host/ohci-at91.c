@@ -148,7 +148,7 @@ static int usb_hcd_at91_probe(const struct hc_driver *driver,
 	at91_start_hc(pdev);
 	ohci_hcd_init(hcd_to_ohci(hcd));
 
-	retval = usb_add_hcd(hcd, pdev->resource[1].start, IRQF_DISABLED);
+	retval = usb_add_hcd(hcd, pdev->resource[1].start, IRQF_SHARED);
 	if (retval == 0)
 		return retval;
 
@@ -280,7 +280,7 @@ static int ohci_hcd_at91_drv_probe(struct platform_device *pdev)
 		 * are always powered while this driver is active, and use
 		 * active-low power switches.
 		 */
-		for (i = 0; i < pdata->ports; i++) {
+		for (i = 0; i < ARRAY_SIZE(pdata->vbus_pin); i++) {
 			if (pdata->vbus_pin[i] <= 0)
 				continue;
 			gpio_request(pdata->vbus_pin[i], "ohci_vbus");
@@ -298,7 +298,7 @@ static int ohci_hcd_at91_drv_remove(struct platform_device *pdev)
 	int			i;
 
 	if (pdata) {
-		for (i = 0; i < pdata->ports; i++) {
+		for (i = 0; i < ARRAY_SIZE(pdata->vbus_pin); i++) {
 			if (pdata->vbus_pin[i] <= 0)
 				continue;
 			gpio_direction_output(pdata->vbus_pin[i], 1);

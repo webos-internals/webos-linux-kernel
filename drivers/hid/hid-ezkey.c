@@ -78,12 +78,12 @@ static struct hid_driver ez_driver = {
 	.event = ez_event,
 };
 
-static int ez_init(void)
+static int __init ez_init(void)
 {
 	return hid_register_driver(&ez_driver);
 }
 
-static void ez_exit(void)
+static void __exit ez_exit(void)
 {
 	hid_unregister_driver(&ez_driver);
 }
@@ -91,5 +91,3 @@ static void ez_exit(void)
 module_init(ez_init);
 module_exit(ez_exit);
 MODULE_LICENSE("GPL");
-
-HID_COMPAT_LOAD_DRIVER(ezkey);

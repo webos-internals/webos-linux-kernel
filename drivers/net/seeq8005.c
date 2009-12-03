@@ -81,7 +81,8 @@ struct net_local {
 static int seeq8005_probe1(struct net_device *dev, int ioaddr);
 static int seeq8005_open(struct net_device *dev);
 static void seeq8005_timeout(struct net_device *dev);
-static int seeq8005_send_packet(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t seeq8005_send_packet(struct sk_buff *skb,
+					struct net_device *dev);
 static irqreturn_t seeq8005_interrupt(int irq, void *dev_id);
 static void seeq8005_rx(struct net_device *dev);
 static int seeq8005_close(struct net_device *dev);
@@ -142,6 +143,17 @@ out:
 	free_netdev(dev);
 	return ERR_PTR(err);
 }
+
+static const struct net_device_ops seeq8005_netdev_ops = {
+	.ndo_open		= seeq8005_open,
+	.ndo_stop		= seeq8005_close,
+	.ndo_start_xmit 	= seeq8005_send_packet,
+	.ndo_tx_timeout		= seeq8005_timeout,
+	.ndo_set_multicast_list = set_multicast_list,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_validate_addr	= eth_validate_addr,
+};
 
 /* This is the real probe routine.  Linux has a history of friendly device
    probes on the ISA bus.  A good device probes avoids doing writes, and
@@ -332,12 +344,8 @@ static int __init seeq8005_probe1(struct net_device *dev, int ioaddr)
 		 }
 	}
 #endif
-	dev->open		= seeq8005_open;
-	dev->stop		= seeq8005_close;
-	dev->hard_start_xmit 	= seeq8005_send_packet;
-	dev->tx_timeout		= seeq8005_timeout;
+	dev->netdev_ops = &seeq8005_netdev_ops;
 	dev->watchdog_timeo	= HZ/20;
-	dev->set_multicast_list = set_multicast_list;
 	dev->flags &= ~IFF_MULTICAST;
 
 	return 0;
@@ -387,14 +395,15 @@ static void seeq8005_timeout(struct net_device *dev)
 	netif_wake_queue(dev);
 }
 
-static int seeq8005_send_packet(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t seeq8005_send_packet(struct sk_buff *skb,
+					struct net_device *dev)
 {
 	short length = skb->len;
 	unsigned char *buf;
 
 	if (length < ETH_ZLEN) {
 		if (skb_padto(skb, ETH_ZLEN))
-			return 0;
+			return NETDEV_TX_OK;
 		length = ETH_ZLEN;
 	}
 	buf = skb->data;
@@ -408,7 +417,7 @@ static int seeq8005_send_packet(struct sk_buff *skb, struct net_device *dev)
 	dev_kfree_skb (skb);
 	/* You might need to clean up and record Tx statistics here. */
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 /*

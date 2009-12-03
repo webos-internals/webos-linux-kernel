@@ -15,16 +15,11 @@
 #include <linux/kernel.h>
 #include <linux/param.h>
 #include <linux/init.h>
-#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <asm/machdep.h>
 #include <asm/coldfire.h>
 #include <asm/mcfsim.h>
 #include <asm/mcfuart.h>
-
-/***************************************************************************/
-
-void coldfire_reset(void);
 
 /***************************************************************************/
 
@@ -50,28 +45,83 @@ static struct platform_device m527x_uart = {
 	.dev.platform_data	= m527x_uart_platform,
 };
 
+static struct resource m527x_fec0_resources[] = {
+	{
+		.start		= MCF_MBAR + 0x1000,
+		.end		= MCF_MBAR + 0x1000 + 0x7ff,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= 64 + 23,
+		.end		= 64 + 23,
+		.flags		= IORESOURCE_IRQ,
+	},
+	{
+		.start		= 64 + 27,
+		.end		= 64 + 27,
+		.flags		= IORESOURCE_IRQ,
+	},
+	{
+		.start		= 64 + 29,
+		.end		= 64 + 29,
+		.flags		= IORESOURCE_IRQ,
+	},
+};
+
+static struct resource m527x_fec1_resources[] = {
+	{
+		.start		= MCF_MBAR + 0x1800,
+		.end		= MCF_MBAR + 0x1800 + 0x7ff,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= 128 + 23,
+		.end		= 128 + 23,
+		.flags		= IORESOURCE_IRQ,
+	},
+	{
+		.start		= 128 + 27,
+		.end		= 128 + 27,
+		.flags		= IORESOURCE_IRQ,
+	},
+	{
+		.start		= 128 + 29,
+		.end		= 128 + 29,
+		.flags		= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device m527x_fec[] = {
+	{
+		.name		= "fec",
+		.id		= 0,
+		.num_resources	= ARRAY_SIZE(m527x_fec0_resources),
+		.resource	= m527x_fec0_resources,
+	},
+	{
+		.name		= "fec",
+		.id		= 1,
+		.num_resources	= ARRAY_SIZE(m527x_fec1_resources),
+		.resource	= m527x_fec1_resources,
+	},
+};
+
 static struct platform_device *m527x_devices[] __initdata = {
 	&m527x_uart,
+	&m527x_fec[0],
+#ifdef CONFIG_FEC2
+	&m527x_fec[1],
+#endif
 };
 
 /***************************************************************************/
 
-#define	INTC0	(MCF_MBAR + MCFICM_INTC0)
-
 static void __init m527x_uart_init_line(int line, int irq)
 {
 	u16 sepmask;
-	u32 imr;
 
 	if ((line < 0) || (line > 2))
 		return;
-
-	/* level 6, line based priority */
-	writeb(0x30+line, INTC0 + MCFINTC_ICR0 + MCFINT_UART0 + line);
-
-	imr = readl(INTC0 + MCFINTC_IMRL);
-	imr &= ~((1 << (irq - MCFINT_VECBASE)) | 1);
-	writel(imr, INTC0 + MCFINTC_IMRL);
 
 	/*
 	 * External Pin Mask Setting & Enable External Pin for Interface
@@ -97,32 +147,52 @@ static void __init m527x_uarts_init(void)
 
 /***************************************************************************/
 
-void mcf_disableall(void)
+static void __init m527x_fec_init(void)
 {
-	*((volatile unsigned long *) (MCF_IPSBAR + MCFICM_INTC0 + MCFINTC_IMRH)) = 0xffffffff;
-	*((volatile unsigned long *) (MCF_IPSBAR + MCFICM_INTC0 + MCFINTC_IMRL)) = 0xffffffff;
+	u16 par;
+	u8 v;
+
+	/* Set multi-function pins to ethernet mode for fec0 */
+#if defined(CONFIG_M5271)
+	v = readb(MCF_IPSBAR + 0x100047);
+	writeb(v | 0xf0, MCF_IPSBAR + 0x100047);
+#else
+	par = readw(MCF_IPSBAR + 0x100082);
+	writew(par | 0xf00, MCF_IPSBAR + 0x100082);
+	v = readb(MCF_IPSBAR + 0x100078);
+	writeb(v | 0xc0, MCF_IPSBAR + 0x100078);
+#endif
+
+#ifdef CONFIG_FEC2
+	/* Set multi-function pins to ethernet mode for fec1 */
+	par = readw(MCF_IPSBAR + 0x100082);
+	writew(par | 0xa0, MCF_IPSBAR + 0x100082);
+	v = readb(MCF_IPSBAR + 0x100079);
+	writeb(v | 0xc0, MCF_IPSBAR + 0x100079);
+#endif
 }
 
 /***************************************************************************/
 
-void mcf_autovector(unsigned int vec)
+static void m527x_cpu_reset(void)
 {
-	/* Everything is auto-vectored on the 5272 */
+	local_irq_disable();
+	__raw_writeb(MCF_RCR_SWRESET, MCF_IPSBAR + MCF_RCR);
 }
 
 /***************************************************************************/
 
 void __init config_BSP(char *commandp, int size)
 {
-	mcf_disableall();
-	mach_reset = coldfire_reset;
+	mach_reset = m527x_cpu_reset;
+	m527x_uarts_init();
+	m527x_fec_init();
 }
 
 /***************************************************************************/
 
 static int __init init_BSP(void)
 {
-	m527x_uarts_init();
 	platform_add_devices(m527x_devices, ARRAY_SIZE(m527x_devices));
 	return 0;
 }

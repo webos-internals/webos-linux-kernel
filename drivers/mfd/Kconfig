@@ -30,6 +30,7 @@ config MFD_SM501_GPIO
 config MFD_ASIC3
 	bool "Support for Compaq ASIC3"
 	depends on GENERIC_HARDIRQS && GPIOLIB && ARM
+	select MFD_CORE
 	 ---help---
 	  This driver supports the ASIC3 multifunction chip found on many
 	  PDAs (mainly iPAQ and HTC based ones)
@@ -52,6 +53,7 @@ config HTC_EGPIO
 
 config HTC_PASIC3
 	tristate "HTC PASIC3 LED/DS1WM chip support"
+	select MFD_CORE
 	help
 	  This core driver provides register access for the LED/DS1WM
 	  chips labeled "AIC2" and "AIC3", found on HTC Blueangel and
@@ -88,7 +90,7 @@ config MENELAUS
 	help
 	  If you say yes here you get support for the Texas Instruments
 	  TWL92330/Menelaus Power Management chip. This include voltage
-	  regulators, Dual slot memory card tranceivers, real-time clock
+	  regulators, Dual slot memory card transceivers, real-time clock
 	  and other features that are often used in portable devices like
 	  cell phones and PDAs.
 
@@ -105,6 +107,19 @@ config TWL4030_CORE
 	  boards, providing power management, RTC, GPIO, keypad, a
 	  high speed USB OTG transceiver, an audio codec (on most
 	  versions) and many other features.
+
+config TWL4030_POWER
+	bool "Support power resources on TWL4030 family chips"
+	depends on TWL4030_CORE && ARM
+	help
+	  Say yes here if you want to use the power resources on the
+	  TWL4030 family chips.  Most of these resources are regulators,
+	  which have a separate driver; some are control signals, such
+	  as clock request handshaking.
+
+	  This driver uses board-specific data to initialize the resources
+	  and load scripts controling which resources are switched off/on
+	  or reset when a sleep, wakeup or warm reset event occurs.
 
 config MFD_TMIO
 	bool
@@ -151,9 +166,19 @@ config MFD_WM8400
 	depends on I2C
 	help
 	  Support for the Wolfson Microelecronics WM8400 PMIC and audio
-	  CODEC.  This driver adds provides common support for accessing
+	  CODEC.  This driver provides common support for accessing
 	  the device, additional drivers must be enabled in order to use
 	  the functionality of the device.
+
+config MFD_WM831X
+	tristate "Support Wolfson Microelectronics WM831x PMICs"
+	select MFD_CORE
+	depends on I2C
+	help
+	  Support for the Wolfson Microelecronics WM831x PMICs.  This
+	  driver provides common support for accessing the device,
+	  additional drivers must be enabled in order to use the
+	  functionality of the device.
 
 config MFD_WM8350
 	tristate
@@ -226,6 +251,16 @@ config MFD_PCF50633
 	  facilities, and registers devices for the various functions
 	  so that function-specific drivers can bind to them.
 
+config MFD_MC13783
+	tristate "Support Freescale MC13783"
+	depends on SPI_MASTER
+	select MFD_CORE
+	help
+	  Support for the Freescale (Atlas) MC13783 PMIC and audio CODEC.
+	  This driver provides common support for accessing  the device,
+	  additional drivers must be enabled in order to use the
+	  functionality of the device.
+
 config PCF50633_ADC
 	tristate "Support for NXP PCF50633 ADC"
 	depends on MFD_PCF50633
@@ -239,6 +274,36 @@ config PCF50633_GPIO
 	help
 	 Say yes here if you want to include support GPIO for pins on
 	 the PCF50633 chip.
+
+config AB3100_CORE
+	tristate "ST-Ericsson AB3100 Mixed Signal Circuit core functions"
+	depends on I2C
+	default y if ARCH_U300
+	help
+	  Select this to enable the AB3100 Mixed Signal IC core
+	  functionality. This connects to a AB3100 on the I2C bus
+	  and expose a number of symbols needed for dependent devices
+	  to read and write registers and subscribe to events from
+	  this multi-functional IC. This is needed to use other features
+	  of the AB3100 such as battery-backed RTC, charging control,
+	  LEDs, vibrator, system power and temperature, power management
+	  and ALSA sound.
+
+config AB3100_OTP
+	tristate "ST-Ericsson AB3100 OTP functions"
+	depends on AB3100_CORE
+	default y if AB3100_CORE
+	help
+	  Select this to enable the AB3100 Mixed Signal IC OTP (one-time
+	  programmable memory) support. This exposes a sysfs file to read
+	  out OTP values.
+
+config EZX_PCAP
+	bool "PCAP Support"
+	depends on GENERIC_HARDIRQS && SPI_MASTER
+	help
+	  This enables the PCAP ASIC present on EZX Phones. This is
+	  needed for MMC, TouchScreen, Sound, USB, etc..
 
 endmenu
 

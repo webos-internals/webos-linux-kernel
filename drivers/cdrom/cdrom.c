@@ -2101,8 +2101,8 @@ static int cdrom_read_cdda_bpc(struct cdrom_device_info *cdi, __u8 __user *ubuf,
 		nr = nframes;
 		if (cdi->cdda_method == CDDA_BPC_SINGLE)
 			nr = 1;
-		if (nr * CD_FRAMESIZE_RAW > (q->max_sectors << 9))
-			nr = (q->max_sectors << 9) / CD_FRAMESIZE_RAW;
+		if (nr * CD_FRAMESIZE_RAW > (queue_max_sectors(q) << 9))
+			nr = (queue_max_sectors(q) << 9) / CD_FRAMESIZE_RAW;
 
 		len = nr * CD_FRAMESIZE_RAW;
 
@@ -3412,7 +3412,7 @@ static int cdrom_print_info(const char *header, int val, char *info,
 	return 0;
 }
 
-static int cdrom_sysctl_info(ctl_table *ctl, int write, struct file * filp,
+static int cdrom_sysctl_info(ctl_table *ctl, int write,
                            void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	int pos;
@@ -3489,7 +3489,7 @@ static int cdrom_sysctl_info(ctl_table *ctl, int write, struct file * filp,
 		goto done;
 doit:
 	mutex_unlock(&cdrom_mutex);
-	return proc_dostring(ctl, write, filp, buffer, lenp, ppos);
+	return proc_dostring(ctl, write, buffer, lenp, ppos);
 done:
 	printk(KERN_INFO "cdrom: info buffer too small\n");
 	goto doit;
@@ -3525,12 +3525,12 @@ static void cdrom_update_settings(void)
 	mutex_unlock(&cdrom_mutex);
 }
 
-static int cdrom_sysctl_handler(ctl_table *ctl, int write, struct file * filp,
+static int cdrom_sysctl_handler(ctl_table *ctl, int write,
 				void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	int ret;
 	
-	ret = proc_dointvec(ctl, write, filp, buffer, lenp, ppos);
+	ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
 
 	if (write) {
 	

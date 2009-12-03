@@ -12,8 +12,10 @@
 
 /* We have 8k stacks on ppc32 and 16k on ppc64 */
 
-#ifdef CONFIG_PPC64
+#if defined(CONFIG_PPC64)
 #define THREAD_SHIFT		14
+#elif defined(CONFIG_PPC_256K_PAGES)
+#define THREAD_SHIFT		15
 #else
 #define THREAD_SHIFT		13
 #endif
@@ -44,15 +46,13 @@ struct thread_info {
 
 /*
  * macros/functions for gaining access to the thread information structure
- *
- * preempt_count needs to be 1 initially, until the scheduler is functional.
  */
 #define INIT_THREAD_INFO(tsk)			\
 {						\
 	.task =		&tsk,			\
 	.exec_domain =	&default_exec_domain,	\
 	.cpu =		0,			\
-	.preempt_count = 1,			\
+	.preempt_count = INIT_PREEMPT_COUNT,	\
 	.restart_block = {			\
 		.fn = do_no_restart_syscall,	\
 	},					\
@@ -154,6 +154,13 @@ static inline void set_restore_sigmask(void)
 	ti->local_flags |= _TLF_RESTORE_SIGMASK;
 	set_bit(TIF_SIGPENDING, &ti->flags);
 }
+
+#ifdef CONFIG_PPC64
+#define is_32bit_task()	(test_thread_flag(TIF_32BIT))
+#else
+#define is_32bit_task()	(1)
+#endif
+
 #endif	/* !__ASSEMBLY__ */
 
 #endif /* __KERNEL__ */

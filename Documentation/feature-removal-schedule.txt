@@ -6,20 +6,90 @@ be removed from this file.
 
 ---------------------------
 
-What:	old static regulatory information and ieee80211_regdom module parameter
-When:	2.6.29
+What:	PRISM54
+When:	2.6.34
+
+Why:	prism54 FullMAC PCI / Cardbus devices used to be supported only by the
+	prism54 wireless driver. After Intersil stopped selling these
+	devices in preference for the newer more flexible SoftMAC devices
+	a SoftMAC device driver was required and prism54 did not support
+	them. The p54pci driver now exists and has been present in the kernel for
+	a while. This driver supports both SoftMAC devices and FullMAC devices.
+	The main difference between these devices was the amount of memory which
+	could be used for the firmware. The SoftMAC devices support a smaller
+	amount of memory. Because of this the SoftMAC firmware fits into FullMAC
+	devices's memory. p54pci supports not only PCI / Cardbus but also USB
+	and SPI. Since p54pci supports all devices prism54 supports
+	you will have a conflict. I'm not quite sure how distributions are
+	handling this conflict right now. prism54 was kept around due to
+	claims users may experience issues when using the SoftMAC driver.
+	Time has passed users have not reported issues. If you use prism54
+	and for whatever reason you cannot use p54pci please let us know!
+	E-mail us at: linux-wireless@vger.kernel.org
+
+	For more information see the p54 wiki page:
+
+	http://wireless.kernel.org/en/users/Drivers/p54
+
+Who:	Luis R. Rodriguez <lrodriguez@atheros.com>
+
+---------------------------
+
+What:	IRQF_SAMPLE_RANDOM
+Check:	IRQF_SAMPLE_RANDOM
+When:	July 2009
+
+Why:	Many of IRQF_SAMPLE_RANDOM users are technically bogus as entropy
+	sources in the kernel's current entropy model. To resolve this, every
+	input point to the kernel's entropy pool needs to better document the
+	type of entropy source it actually is. This will be replaced with
+	additional add_*_randomness functions in drivers/char/random.c
+
+Who:	Robin Getz <rgetz@blackfin.uclinux.org> & Matt Mackall <mpm@selenic.com>
+
+---------------------------
+
+What:	The ieee80211_regdom module parameter
+When:	March 2010 / desktop catchup
+
+Why:	This was inherited by the CONFIG_WIRELESS_OLD_REGULATORY code,
+	and currently serves as an option for users to define an
+	ISO / IEC 3166 alpha2 code for the country they are currently
+	present in. Although there are userspace API replacements for this
+	through nl80211 distributions haven't yet caught up with implementing
+	decent alternatives through standard GUIs. Although available as an
+	option through iw or wpa_supplicant its just a matter of time before
+	distributions pick up good GUI options for this. The ideal solution
+	would actually consist of intelligent designs which would do this for
+	the user automatically even when travelling through different countries.
+	Until then we leave this module parameter as a compromise.
+
+	When userspace improves with reasonable widely-available alternatives for
+	this we will no longer need this module parameter. This entry hopes that
+	by the super-futuristically looking date of "March 2010" we will have
+	such replacements widely available.
+
+Who:	Luis R. Rodriguez <lrodriguez@atheros.com>
+
+---------------------------
+
+What:	CONFIG_WIRELESS_OLD_REGULATORY - old static regulatory information
+When:	March 2010 / desktop catchup
+
 Why:	The old regulatory infrastructure has been replaced with a new one
 	which does not require statically defined regulatory domains. We do
 	not want to keep static regulatory domains in the kernel due to the
 	the dynamic nature of regulatory law and localization. We kept around
 	the old static definitions for the regulatory domains of:
+
 		* US
 		* JP
 		* EU
+
 	and used by default the US when CONFIG_WIRELESS_OLD_REGULATORY was
-	set. We also kept around the ieee80211_regdom module parameter in case
-	some applications were relying on it. Changing regulatory domains
-	can now be done instead by using nl80211, as is done with iw.
+	set. We will remove this option once the standard Linux desktop catches
+	up with the new userspace APIs we have implemented.
+
 Who:	Luis R. Rodriguez <lrodriguez@atheros.com>
 
 ---------------------------
@@ -37,10 +107,10 @@ Who:	Pavel Machek <pavel@suse.cz>
 
 ---------------------------
 
-What:	Video4Linux API 1 ioctls and video_decoder.h from Video devices.
-When:	December 2008
-Files:	include/linux/video_decoder.h include/linux/videodev.h
-Check:	include/linux/video_decoder.h include/linux/videodev.h
+What:	Video4Linux API 1 ioctls and from Video devices.
+When:	July 2009
+Files:	include/linux/videodev.h
+Check:	include/linux/videodev.h
 Why:	V4L1 AP1 was replaced by V4L2 API during migration from 2.4 to 2.6
 	series. The old API have lots of drawbacks and don't provide enough
 	means to work with all video and audio standards. The newer API is
@@ -165,24 +235,6 @@ Who:	Len Brown <len.brown@intel.com>
 
 ---------------------------
 
-What: libata spindown skipping and warning
-When: Dec 2008
-Why:  Some halt(8) implementations synchronize caches for and spin
-      down libata disks because libata didn't use to spin down disk on
-      system halt (only synchronized caches).
-      Spin down on system halt is now implemented.  sysfs node
-      /sys/class/scsi_disk/h:c:i:l/manage_start_stop is present if
-      spin down support is available.
-      Because issuing spin down command to an already spun down disk
-      makes some disks spin up just to spin down again, libata tracks
-      device spindown status to skip the extra spindown command and
-      warn about it.
-      This is to give userspace tools the time to get updated and will
-      be removed after userspace is reasonably updated.
-Who:  Tejun Heo <htejun@gmail.com>
-
----------------------------
-
 What:	i386/x86_64 bzImage symlinks
 When:	April 2010
 
@@ -194,31 +246,6 @@ Who:	Thomas Gleixner <tglx@linutronix.de>
 ---------------------------
 
 What (Why):
-	- include/linux/netfilter_ipv4/ipt_TOS.h ipt_tos.h header files
-	  (superseded by xt_TOS/xt_tos target & match)
-
-	- "forwarding" header files like ipt_mac.h in
-	  include/linux/netfilter_ipv4/ and include/linux/netfilter_ipv6/
-
-	- xt_CONNMARK match revision 0
-	  (superseded by xt_CONNMARK match revision 1)
-
-	- xt_MARK target revisions 0 and 1
-	  (superseded by xt_MARK match revision 2)
-
-	- xt_connmark match revision 0
-	  (superseded by xt_connmark match revision 1)
-
-	- xt_conntrack match revision 0
-	  (superseded by xt_conntrack match revision 1)
-
-	- xt_iprange match revision 0,
-	  include/linux/netfilter_ipv4/ipt_iprange.h
-	  (superseded by xt_iprange match revision 1)
-
-	- xt_mark match revision 0
-	  (superseded by xt_mark match revision 1)
-
 	- xt_recent: the old ipt_recent proc dir
 	  (superseded by /proc/net/xt_recent)
 
@@ -228,8 +255,20 @@ Who:	Jan Engelhardt <jengelh@computergmbh.de>
 
 ---------------------------
 
+What:	GPIO autorequest on gpio_direction_{input,output}() in gpiolib
+When:	February 2010
+Why:	All callers should use explicit gpio_request()/gpio_free().
+	The autorequest mechanism in gpiolib was provided mostly as a
+	migration aid for legacy GPIO interfaces (for SOC based GPIOs).
+	Those users have now largely migrated.  Platforms implementing
+	the GPIO interfaces without using gpiolib will see no changes.
+Who:	David Brownell <dbrownell@users.sourceforge.net>
+---------------------------
+
 What:	b43 support for firmware revision < 410
-When:	July 2008
+When:	The schedule was July 2008, but it was decided that we are going to keep the
+        code as long as there are no major maintanance headaches.
+	So it _could_ be removed _any_ time now, if it conflicts with something new.
 Why:	The support code for the old firmware hurts code readability/maintainability
 	and slightly hurts runtime performance. Bugfixes for the old firmware
 	are not provided by Broadcom anymore.
@@ -241,13 +280,6 @@ What:	usedac i386 kernel parameter
 When:	2.6.27
 Why:	replaced by allowdac and no dac combination
 Who:	Glauber Costa <gcosta@redhat.com>
-
----------------------------
-
-What:	remove HID compat support
-When:	2.6.29
-Why:	needed only as a temporary solution until distros fix themselves up
-Who:	Jiri Slaby <jirislaby@gmail.com>
 
 ---------------------------
 
@@ -282,6 +314,18 @@ Who:	Vlad Yasevich <vladislav.yasevich@hp.com>
 
 ---------------------------
 
+What:	Ability for non root users to shm_get hugetlb pages based on mlock
+	resource limits
+When:	2.6.31
+Why:	Non root users need to be part of /proc/sys/vm/hugetlb_shm_group or
+	have CAP_IPC_LOCK to be able to allocate shm segments backed by
+	huge pages.  The mlock based rlimit check to allow shm hugetlb is
+	inconsistent with mmap based allocations.  Hence it is being
+	deprecated.
+Who:	Ravikiran Thirumalai <kiran@scalex86.org>
+
+---------------------------
+
 What:	CONFIG_THERMAL_HWMON
 When:	January 2009
 Why:	This option was introduced just to allow older lm-sensors userspace
@@ -310,33 +354,6 @@ Who:  Krzysztof Piotr Oledzki <ole@ans.pl>
 
 ---------------------------
 
-What:	i2c_attach_client(), i2c_detach_client(), i2c_driver->detach_client()
-When:	2.6.29 (ideally) or 2.6.30 (more likely)
-Why:	Deprecated by the new (standard) device driver binding model. Use
-	i2c_driver->probe() and ->remove() instead.
-Who:	Jean Delvare <khali@linux-fr.org>
-
----------------------------
-
-What:	fscher and fscpos drivers
-When:	June 2009
-Why:	Deprecated by the new fschmd driver.
-Who:	Hans de Goede <hdegoede@redhat.com>
-	Jean Delvare <khali@linux-fr.org>
-
----------------------------
-
-What:	SELinux "compat_net" functionality
-When:	2.6.30 at the earliest
-Why:	In 2.6.18 the Secmark concept was introduced to replace the "compat_net"
-	network access control functionality of SELinux.  Secmark offers both
-	better performance and greater flexibility than the "compat_net"
-	mechanism.  Now that the major Linux distributions have moved to
-	Secmark, it is time to deprecate the older mechanism and start the
-	process of removing the old code.
-Who:	Paul Moore <paul.moore@hp.com>
----------------------------
-
 What:	sysfs ui for changing p4-clockmod parameters
 When:	September 2009
 Why:	See commits 129f8ae9b1b5be94517da76009ea956e89104ce8 and
@@ -344,3 +361,131 @@ Why:	See commits 129f8ae9b1b5be94517da76009ea956e89104ce8 and
 	Removal is subject to fixing any remaining bugs in ACPI which may
 	cause the thermal throttling not to happen at the right time.
 Who:	Dave Jones <davej@redhat.com>, Matthew Garrett <mjg@redhat.com>
+
+-----------------------------
+
+What:	__do_IRQ all in one fits nothing interrupt handler
+When:	2.6.32
+Why:	__do_IRQ was kept for easy migration to the type flow handlers.
+	More than two years of migration time is enough.
+Who:	Thomas Gleixner <tglx@linutronix.de>
+
+-----------------------------
+
+What:	fakephp and associated sysfs files in /sys/bus/pci/slots/
+When:	2011
+Why:	In 2.6.27, the semantics of /sys/bus/pci/slots was redefined to
+	represent a machine's physical PCI slots. The change in semantics
+	had userspace implications, as the hotplug core no longer allowed
+	drivers to create multiple sysfs files per physical slot (required
+	for multi-function devices, e.g.). fakephp was seen as a developer's
+	tool only, and its interface changed. Too late, we learned that
+	there were some users of the fakephp interface.
+
+	In 2.6.30, the original fakephp interface was restored. At the same
+	time, the PCI core gained the ability that fakephp provided, namely
+	function-level hot-remove and hot-add.
+
+	Since the PCI core now provides the same functionality, exposed in:
+
+		/sys/bus/pci/rescan
+		/sys/bus/pci/devices/.../remove
+		/sys/bus/pci/devices/.../rescan
+
+	there is no functional reason to maintain fakephp as well.
+
+	We will keep the existing module so that 'modprobe fakephp' will
+	present the old /sys/bus/pci/slots/... interface for compatibility,
+	but users are urged to migrate their applications to the API above.
+
+	After a reasonable transition period, we will remove the legacy
+	fakephp interface.
+Who:	Alex Chiang <achiang@hp.com>
+
+---------------------------
+
+What:	i2c-voodoo3 driver
+When:	October 2009
+Why:	Superseded by tdfxfb. I2C/DDC support used to live in a separate
+	driver but this caused driver conflicts.
+Who:	Jean Delvare <khali@linux-fr.org>
+	Krzysztof Helt <krzysztof.h1@wp.pl>
+
+---------------------------
+
+What:	CONFIG_RFKILL_INPUT
+When:	2.6.33
+Why:	Should be implemented in userspace, policy daemon.
+Who:	Johannes Berg <johannes@sipsolutions.net>
+
+---------------------------
+
+What:	CONFIG_INOTIFY
+When:	2.6.33
+Why:	last user (audit) will be converted to the newer more generic
+	and more easily maintained fsnotify subsystem
+Who:	Eric Paris <eparis@redhat.com>
+
+----------------------------
+
+What:	lock_policy_rwsem_* and unlock_policy_rwsem_* will not be
+	exported interface anymore.
+When:	2.6.33
+Why:	cpu_policy_rwsem has a new cleaner definition making it local to
+	cpufreq core and contained inside cpufreq.c. Other dependent
+	drivers should not use it in order to safely avoid lockdep issues.
+Who:	Venkatesh Pallipadi <venkatesh.pallipadi@intel.com>
+
+----------------------------
+
+What:	sound-slot/service-* module aliases and related clutters in
+	sound/sound_core.c
+When:	August 2010
+Why:	OSS sound_core grabs all legacy minors (0-255) of SOUND_MAJOR
+	(14) and requests modules using custom sound-slot/service-*
+	module aliases.  The only benefit of doing this is allowing
+	use of custom module aliases which might as well be considered
+	a bug at this point.  This preemptive claiming prevents
+	alternative OSS implementations.
+
+	Till the feature is removed, the kernel will be requesting
+	both sound-slot/service-* and the standard char-major-* module
+	aliases and allow turning off the pre-claiming selectively via
+	CONFIG_SOUND_OSS_CORE_PRECLAIM and soundcore.preclaim_oss
+	kernel parameter.
+
+	After the transition phase is complete, both the custom module
+	aliases and switches to disable it will go away.  This removal
+	will also allow making ALSA OSS emulation independent of
+	sound_core.  The dependency will be broken then too.
+Who:	Tejun Heo <tj@kernel.org>
+
+----------------------------
+
+What:	Support for VMware's guest paravirtuliazation technique [VMI] will be
+	dropped.
+When:	2.6.37 or earlier.
+Why:	With the recent innovations in CPU hardware acceleration technologies
+	from Intel and AMD, VMware ran a few experiments to compare these
+	techniques to guest paravirtualization technique on VMware's platform.
+	These hardware assisted virtualization techniques have outperformed the
+	performance benefits provided by VMI in most of the workloads. VMware
+	expects that these hardware features will be ubiquitous in a couple of
+	years, as a result, VMware has started a phased retirement of this
+	feature from the hypervisor. We will be removing this feature from the
+	Kernel too. Right now we are targeting 2.6.37 but can retire earlier if
+	technical reasons (read opportunity to remove major chunk of pvops)
+	arise.
+
+	Please note that VMI has always been an optimization and non-VMI kernels
+	still work fine on VMware's platform.
+	Latest versions of VMware's product which support VMI are,
+	Workstation 7.0 and VSphere 4.0 on ESX side, future maintainence
+	releases for these products will continue supporting VMI.
+
+	For more details about VMI retirement take a look at this,
+	http://blogs.vmware.com/guestosguide/2009/09/vmi-retirement.html
+
+Who:	Alok N Kataria <akataria@vmware.com>
+
+----------------------------

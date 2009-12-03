@@ -22,9 +22,8 @@
 //============================================================================
 
 // LA20040210_DTO kevin
-#include "os_common.h"
+#include "sysdef.h"
 #include "sme_api.h"
-#include "gl_80211.h"
 #include "wbhal_f.h"
 
 // Declare SQ3 to rate and fragmentation threshold table
@@ -51,20 +50,14 @@ static int retryrate_rec[MTO_MAX_DATA_RATE_LEVELS];//this record the retry rate 
 static int PeriodTotalTxPkt = 0;
 static int PeriodTotalTxPktRetry = 0;
 
-typedef struct
-{
-	s32 RSSI;
-	u8  TxRate;
-}RSSI2RATE;
-
 static u8 boSparseTxTraffic = false;
 
-void MTO_Init(MTO_FUNC_INPUT);
-void TxRateReductionCtrl(MTO_FUNC_INPUT);
+void MTO_Init(struct wbsoft_priv *adapter);
+void TxRateReductionCtrl(struct wbsoft_priv *adapter);
 /** 1.1.31.1000 Turbo modify */
-void MTO_SetTxCount(MTO_FUNC_INPUT, u8 t0, u8 index);
-void MTO_TxFailed(MTO_FUNC_INPUT);
-void hal_get_dto_para(MTO_FUNC_INPUT, char *buffer);
+void MTO_SetTxCount(struct wbsoft_priv *adapter, u8 t0, u8 index);
+void MTO_TxFailed(struct wbsoft_priv *adapter);
+void hal_get_dto_para(struct wbsoft_priv *adapter, char *buffer);
 
 //===========================================================================
 //  MTO_Init --
@@ -80,27 +73,9 @@ void hal_get_dto_para(MTO_FUNC_INPUT, char *buffer);
 //  Return Value:
 //    None
 //============================================================================
-void MTO_Init(MTO_FUNC_INPUT)
+void MTO_Init(struct wbsoft_priv *adapter)
 {
     int i;
-	//WBDEBUG(("[MTO] -> MTO_Init()\n"));
-	//[WKCHEN]pMTOcore_data = pcore_data;
-// 20040510 Turbo add for global variable
-    MTO_TMR_CNT()       = 0;
-    MTO_TOGGLE_STATE()  = TOGGLE_STATE_IDLE;
-    MTO_TX_RATE_REDUCTION_STATE() = RATE_CHGSTATE_IDLE;
-    MTO_BACKOFF_TMR()   = 0;
-    MTO_LAST_RATE()     = 11;
-    MTO_CO_EFFICENT()   = 0;
-
-    //MTO_TH_FIXANT()     = MTO_DEFAULT_TH_FIXANT;
-    MTO_TH_CNT()        = MTO_DEFAULT_TH_CNT;
-    MTO_TH_SQ3()        = MTO_DEFAULT_TH_SQ3;
-    MTO_TH_IDLE_SLOT()  = MTO_DEFAULT_TH_IDLE_SLOT;
-    MTO_TH_PR_INTERF()  = MTO_DEFAULT_TH_PR_INTERF;
-
-    MTO_TMR_AGING()     = MTO_DEFAULT_TMR_AGING;
-    MTO_TMR_PERIODIC()  = MTO_DEFAULT_TMR_PERIODIC;
 
     //[WKCHEN]MTO_CCA_MODE_SETUP()= (u8) hal_get_cca_mode(MTO_HAL());
     //[WKCHEN]MTO_CCA_MODE()      = MTO_CCA_MODE_SETUP();
@@ -108,17 +83,12 @@ void MTO_Init(MTO_FUNC_INPUT)
     //MTO_PREAMBLE_TYPE() = MTO_PREAMBLE_LONG;
     MTO_PREAMBLE_TYPE() = MTO_PREAMBLE_SHORT;   // for test
 
-    MTO_ANT_SEL()       = hal_get_antenna_number(MTO_HAL());
-    MTO_ANT_MAC()       = MTO_ANT_SEL();
     MTO_CNT_ANT(0)      = 0;
     MTO_CNT_ANT(1)      = 0;
     MTO_SQ_ANT(0)       = 0;
     MTO_SQ_ANT(1)       = 0;
-    MTO_ANT_DIVERSITY() = MTO_ANTENNA_DIVERSITY_ON;
-    //CardSet_AntennaDiversity(adapter, MTO_ANT_DIVERSITY());
-    //PLMESetAntennaDiversity( adapter, MTO_ANT_DIVERSITY());
 
-    MTO_AGING_TIMEOUT() = 0;//MTO_TMR_AGING() / MTO_TMR_PERIODIC();
+    MTO_AGING_TIMEOUT() = 0;
 
     // The following parameters should be initialized to the values set by user
     //
@@ -136,9 +106,7 @@ void MTO_Init(MTO_FUNC_INPUT)
     MTO_FRAG_CHANGE_ENABLE()    = 0;          // 1.1.29.1000 Turbo add don't support frag
 	//The default valud of ANTDIV_DEFAULT_ON will be decided by EEPROM
 	//#ifdef ANTDIV_DEFAULT_ON
-    //MTO_ANT_DIVERSITY_ENABLE()  = 1;
 	//#else
-    //MTO_ANT_DIVERSITY_ENABLE()  = 0;
 	//#endif
     MTO_POWER_CHANGE_ENABLE()   = 1;
 	MTO_PREAMBLE_CHANGE_ENABLE()= 1;
@@ -183,7 +151,7 @@ void MTO_Init(MTO_FUNC_INPUT)
 	}
 	else	//follow the setting from EEPROM
 		MTOPARA_TXPOWER_INDEX() = MTO_TXPOWER_FROM_EEPROM;
-	hal_set_rf_power(MTO_HAL(), (u8)MTOPARA_TXPOWER_INDEX());
+	RFSynthesizer_SetPowerIndex(MTO_HAL(), (u8)MTOPARA_TXPOWER_INDEX());
 	//------------------------------------------------
 
 	// For RSSI turning 20060808.4 Cancel load from EEPROM
@@ -196,7 +164,7 @@ void MTO_Init(MTO_FUNC_INPUT)
 //      If we enable DTO, we will ignore the tx count with different tx rate from
 //      DTO rate. This is because when we adjust DTO tx rate, there could be some
 //      packets in the tx queue with previous tx rate
-void MTO_SetTxCount(MTO_FUNC_INPUT, u8 tx_rate, u8 index)
+void MTO_SetTxCount(struct wbsoft_priv *adapter, u8 tx_rate, u8 index)
 {
 	MTO_TXFLOWCOUNT()++;
 	if ((MTO_ENABLE==1) && (MTO_RATE_CHANGE_ENABLE()==1))

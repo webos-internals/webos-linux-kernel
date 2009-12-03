@@ -147,6 +147,8 @@ SECTIONS {
 		. = ALIGN(4);
 		_sdata = . ;
 		DATA_DATA
+		. = ALIGN(32);
+		*(.data.cacheline_aligned)
 		. = ALIGN(8192) ;
 		*(.data.init_task)
 		_edata = . ;
@@ -182,12 +184,6 @@ SECTIONS {
 		__init_end = .;
 	} > INIT
 
-	/DISCARD/ : {
-		EXIT_TEXT
-		EXIT_DATA
-		*(.exitcall.exit)
-	}
-
 	.bss : {
 		. = ALIGN(4);
 		_sbss = . ;
@@ -198,5 +194,6 @@ SECTIONS {
 	 	_end = . ;
 	} > BSS
 
+	DISCARDS
 }
 

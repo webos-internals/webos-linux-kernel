@@ -53,6 +53,7 @@
 
 struct at24_data {
 	struct at24_platform_data chip;
+	struct memory_accessor macc;
 	bool use_smbus;
 
 	/*
@@ -157,6 +158,7 @@ static ssize_t at24_eeprom_read(struct at24_data *at24, char *buf,
 	struct i2c_msg msg[2];
 	u8 msgbuf[2];
 	struct i2c_client *client;
+	unsigned long timeout, read_time;
 	int status, i;
 
 	memset(msg, 0, sizeof(msg));
@@ -182,56 +184,66 @@ static ssize_t at24_eeprom_read(struct at24_data *at24, char *buf,
 	if (count > io_limit)
 		count = io_limit;
 
-	/* Smaller eeproms can work given some SMBus extension calls */
 	if (at24->use_smbus) {
+		/* Smaller eeproms can work given some SMBus extension calls */
 		if (count > I2C_SMBUS_BLOCK_MAX)
 			count = I2C_SMBUS_BLOCK_MAX;
-		status = i2c_smbus_read_i2c_block_data(client, offset,
-				count, buf);
-		dev_dbg(&client->dev, "smbus read %zu@%d --> %d\n",
-				count, offset, status);
-		return (status < 0) ? -EIO : status;
+	} else {
+		/*
+		 * When we have a better choice than SMBus calls, use a
+		 * combined I2C message. Write address; then read up to
+		 * io_limit data bytes. Note that read page rollover helps us
+		 * here (unlike writes). msgbuf is u8 and will cast to our
+		 * needs.
+		 */
+		i = 0;
+		if (at24->chip.flags & AT24_FLAG_ADDR16)
+			msgbuf[i++] = offset >> 8;
+		msgbuf[i++] = offset;
+
+		msg[0].addr = client->addr;
+		msg[0].buf = msgbuf;
+		msg[0].len = i;
+
+		msg[1].addr = client->addr;
+		msg[1].flags = I2C_M_RD;
+		msg[1].buf = buf;
+		msg[1].len = count;
 	}
 
 	/*
-	 * When we have a better choice than SMBus calls, use a combined
-	 * I2C message. Write address; then read up to io_limit data bytes.
-	 * Note that read page rollover helps us here (unlike writes).
-	 * msgbuf is u8 and will cast to our needs.
+	 * Reads fail if the previous write didn't complete yet. We may
+	 * loop a few times until this one succeeds, waiting at least
+	 * long enough for one entire page write to work.
 	 */
-	i = 0;
-	if (at24->chip.flags & AT24_FLAG_ADDR16)
-		msgbuf[i++] = offset >> 8;
-	msgbuf[i++] = offset;
+	timeout = jiffies + msecs_to_jiffies(write_timeout);
+	do {
+		read_time = jiffies;
+		if (at24->use_smbus) {
+			status = i2c_smbus_read_i2c_block_data(client, offset,
+					count, buf);
+		} else {
+			status = i2c_transfer(client->adapter, msg, 2);
+			if (status == 2)
+				status = count;
+		}
+		dev_dbg(&client->dev, "read %zu@%d --> %d (%ld)\n",
+				count, offset, status, jiffies);
 
-	msg[0].addr = client->addr;
-	msg[0].buf = msgbuf;
-	msg[0].len = i;
+		if (status == count)
+			return count;
 
-	msg[1].addr = client->addr;
-	msg[1].flags = I2C_M_RD;
-	msg[1].buf = buf;
-	msg[1].len = count;
+		/* REVISIT: at HZ=100, this is sloooow */
+		msleep(1);
+	} while (time_before(read_time, timeout));
 
-	status = i2c_transfer(client->adapter, msg, 2);
-	dev_dbg(&client->dev, "i2c read %zu@%d --> %d\n",
-			count, offset, status);
-
-	if (status == 2)
-		return count;
-	else if (status >= 0)
-		return -EIO;
-	else
-		return status;
+	return -ETIMEDOUT;
 }
 
-static ssize_t at24_bin_read(struct kobject *kobj, struct bin_attribute *attr,
+static ssize_t at24_read(struct at24_data *at24,
 		char *buf, loff_t off, size_t count)
 {
-	struct at24_data *at24;
 	ssize_t retval = 0;
-
-	at24 = dev_get_drvdata(container_of(kobj, struct device, kobj));
 
 	if (unlikely(!count))
 		return count;
@@ -262,12 +274,14 @@ static ssize_t at24_bin_read(struct kobject *kobj, struct bin_attribute *attr,
 	return retval;
 }
 
+static ssize_t at24_bin_read(struct kobject *kobj, struct bin_attribute *attr,
+		char *buf, loff_t off, size_t count)
+{
+	struct at24_data *at24;
 
-/*
- * REVISIT: export at24_bin{read,write}() to let other kernel code use
- * eeprom data. For example, it might hold a board's Ethernet address, or
- * board-specific calibration data generated on the manufacturing floor.
- */
+	at24 = dev_get_drvdata(container_of(kobj, struct device, kobj));
+	return at24_read(at24, buf, off, count);
+}
 
 
 /*
@@ -278,7 +292,7 @@ static ssize_t at24_bin_read(struct kobject *kobj, struct bin_attribute *attr,
  * We only use page mode writes; the alternative is sloooow. This routine
  * writes at most one page.
  */
-static ssize_t at24_eeprom_write(struct at24_data *at24, char *buf,
+static ssize_t at24_eeprom_write(struct at24_data *at24, const char *buf,
 		unsigned offset, size_t count)
 {
 	struct i2c_client *client;
@@ -347,13 +361,10 @@ static ssize_t at24_eeprom_write(struct at24_data *at24, char *buf,
 	return -ETIMEDOUT;
 }
 
-static ssize_t at24_bin_write(struct kobject *kobj, struct bin_attribute *attr,
-		char *buf, loff_t off, size_t count)
+static ssize_t at24_write(struct at24_data *at24, const char *buf, loff_t off,
+			  size_t count)
 {
-	struct at24_data *at24;
 	ssize_t retval = 0;
-
-	at24 = dev_get_drvdata(container_of(kobj, struct device, kobj));
 
 	if (unlikely(!count))
 		return count;
@@ -382,6 +393,39 @@ static ssize_t at24_bin_write(struct kobject *kobj, struct bin_attribute *attr,
 	mutex_unlock(&at24->lock);
 
 	return retval;
+}
+
+static ssize_t at24_bin_write(struct kobject *kobj, struct bin_attribute *attr,
+		char *buf, loff_t off, size_t count)
+{
+	struct at24_data *at24;
+
+	at24 = dev_get_drvdata(container_of(kobj, struct device, kobj));
+	return at24_write(at24, buf, off, count);
+}
+
+/*-------------------------------------------------------------------------*/
+
+/*
+ * This lets other kernel code access the eeprom data. For example, it
+ * might hold a board's Ethernet address, or board-specific calibration
+ * data generated on the manufacturing floor.
+ */
+
+static ssize_t at24_macc_read(struct memory_accessor *macc, char *buf,
+			 off_t offset, size_t count)
+{
+	struct at24_data *at24 = container_of(macc, struct at24_data, macc);
+
+	return at24_read(at24, buf, offset, count);
+}
+
+static ssize_t at24_macc_write(struct memory_accessor *macc, const char *buf,
+			  off_t offset, size_t count)
+{
+	struct at24_data *at24 = container_of(macc, struct at24_data, macc);
+
+	return at24_write(at24, buf, offset, count);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -413,6 +457,9 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		 * is recommended anyhow.
 		 */
 		chip.page_size = 1;
+
+		chip.setup = NULL;
+		chip.context = NULL;
 	}
 
 	if (!is_power_of_2(chip.byte_len))
@@ -463,12 +510,16 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	at24->bin.read = at24_bin_read;
 	at24->bin.size = chip.byte_len;
 
+	at24->macc.read = at24_macc_read;
+
 	writable = !(chip.flags & AT24_FLAG_READONLY);
 	if (writable) {
 		if (!use_smbus || i2c_check_functionality(client->adapter,
 				I2C_FUNC_SMBUS_WRITE_I2C_BLOCK)) {
 
 			unsigned write_max = chip.page_size;
+
+			at24->macc.write = at24_macc_write;
 
 			at24->bin.write = at24_bin_write;
 			at24->bin.attr.mode |= S_IWUSR;
@@ -519,6 +570,10 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		chip.page_size, num_addresses,
 		at24->write_max,
 		use_smbus ? ", use_smbus" : "");
+
+	/* export data to kernel code */
+	if (chip.setup)
+		chip.setup(&at24->macc, chip.context);
 
 	return 0;
 

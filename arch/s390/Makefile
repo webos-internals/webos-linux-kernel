@@ -89,6 +89,7 @@ head-y		:= arch/s390/kernel/head.o arch/s390/kernel/init_task.o
 
 core-y		+= arch/s390/mm/ arch/s390/kernel/ arch/s390/crypto/ \
 		   arch/s390/appldata/ arch/s390/hypfs/ arch/s390/kvm/
+
 libs-y		+= arch/s390/lib/
 drivers-y	+= drivers/s390/
 drivers-$(CONFIG_MATHEMU) += arch/s390/math-emu/

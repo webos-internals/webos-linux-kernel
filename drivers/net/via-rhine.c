@@ -109,8 +109,9 @@ static const int multicast_filter_limit = 32;
 #include <linux/dmi.h>
 
 /* These identify the driver base version and may not be removed. */
-static char version[] __devinitdata =
-KERN_INFO DRV_NAME ".c:v1.10-LK" DRV_VERSION " " DRV_RELDATE " Written by Donald Becker\n";
+static const char version[] __devinitconst =
+	KERN_INFO DRV_NAME ".c:v1.10-LK" DRV_VERSION " " DRV_RELDATE
+	" Written by Donald Becker\n";
 
 /* This driver was written to use PCI memory space. Some early versions
    of the Rhine may only work correctly with I/O space accesses. */
@@ -387,7 +388,6 @@ struct rhine_private {
 	long pioaddr;
 	struct net_device *dev;
 	struct napi_struct napi;
-	struct net_device_stats stats;
 	spinlock_t lock;
 
 	/* Frequently used values: keep some adjacent for cache effect. */
@@ -408,7 +408,8 @@ static int  mdio_read(struct net_device *dev, int phy_id, int location);
 static void mdio_write(struct net_device *dev, int phy_id, int location, int value);
 static int  rhine_open(struct net_device *dev);
 static void rhine_tx_timeout(struct net_device *dev);
-static int  rhine_start_tx(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t rhine_start_tx(struct sk_buff *skb,
+				  struct net_device *dev);
 static irqreturn_t rhine_interrupt(int irq, void *dev_instance);
 static void rhine_tx(struct net_device *dev);
 static int rhine_rx(struct net_device *dev, int limit);
@@ -589,7 +590,7 @@ static int rhine_napipoll(struct napi_struct *napi, int budget)
 	work_done = rhine_rx(dev, budget);
 
 	if (work_done < budget) {
-		netif_rx_complete(napi);
+		napi_complete(napi);
 
 		iowrite16(IntrRxDone | IntrRxErr | IntrRxEmpty| IntrRxOverflow |
 			  IntrRxDropped | IntrRxNoBuf | IntrTxAborted |
@@ -621,6 +622,7 @@ static const struct net_device_ops rhine_netdev_ops = {
 	.ndo_start_xmit		 = rhine_start_tx,
 	.ndo_get_stats		 = rhine_get_stats,
 	.ndo_set_multicast_list	 = rhine_set_rx_mode,
+	.ndo_change_mtu		 = eth_change_mtu,
 	.ndo_validate_addr	 = eth_validate_addr,
 	.ndo_set_mac_address 	 = eth_mac_addr,
 	.ndo_do_ioctl		 = netdev_ioctl,
@@ -685,7 +687,7 @@ static int __devinit rhine_init_one(struct pci_dev *pdev,
 		goto err_out;
 
 	/* this should always be supported */
-	rc = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
+	rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
 	if (rc) {
 		printk(KERN_ERR "32-bit PCI DMA addresses not supported by "
 		       "the card!?\n");
@@ -1208,15 +1210,17 @@ static void rhine_tx_timeout(struct net_device *dev)
 	enable_irq(rp->pdev->irq);
 
 	dev->trans_start = jiffies;
-	rp->stats.tx_errors++;
+	dev->stats.tx_errors++;
 	netif_wake_queue(dev);
 }
 
-static int rhine_start_tx(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t rhine_start_tx(struct sk_buff *skb,
+				  struct net_device *dev)
 {
 	struct rhine_private *rp = netdev_priv(dev);
 	void __iomem *ioaddr = rp->base;
 	unsigned entry;
+	unsigned long flags;
 
 	/* Caution: the write order is important here, set the field
 	   with the "ownership" bits last. */
@@ -1225,7 +1229,7 @@ static int rhine_start_tx(struct sk_buff *skb, struct net_device *dev)
 	entry = rp->cur_tx % TX_RING_SIZE;
 
 	if (skb_padto(skb, ETH_ZLEN))
-		return 0;
+		return NETDEV_TX_OK;
 
 	rp->tx_skbuff[entry] = skb;
 
@@ -1236,8 +1240,8 @@ static int rhine_start_tx(struct sk_buff *skb, struct net_device *dev)
 			/* packet too long, drop it */
 			dev_kfree_skb(skb);
 			rp->tx_skbuff[entry] = NULL;
-			rp->stats.tx_dropped++;
-			return 0;
+			dev->stats.tx_dropped++;
+			return NETDEV_TX_OK;
 		}
 
 		/* Padding is not copied and so must be redone. */
@@ -1260,7 +1264,7 @@ static int rhine_start_tx(struct sk_buff *skb, struct net_device *dev)
 		cpu_to_le32(TXDESC | (skb->len >= ETH_ZLEN ? skb->len : ETH_ZLEN));
 
 	/* lock eth irq */
-	spin_lock_irq(&rp->lock);
+	spin_lock_irqsave(&rp->lock, flags);
 	wmb();
 	rp->tx_ring[entry].tx_status = cpu_to_le32(DescOwn);
 	wmb();
@@ -1279,13 +1283,13 @@ static int rhine_start_tx(struct sk_buff *skb, struct net_device *dev)
 
 	dev->trans_start = jiffies;
 
-	spin_unlock_irq(&rp->lock);
+	spin_unlock_irqrestore(&rp->lock, flags);
 
 	if (debug > 4) {
 		printk(KERN_DEBUG "%s: Transmit frame #%d queued in slot %d.\n",
 		       dev->name, rp->cur_tx-1, entry);
 	}
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 /* The interrupt handler does all of the Rx thread work and cleans up
@@ -1319,7 +1323,7 @@ static irqreturn_t rhine_interrupt(int irq, void *dev_instance)
 				  IntrPCIErr | IntrStatsMax | IntrLinkChange,
 				  ioaddr + IntrEnable);
 
-			netif_rx_schedule(&rp->napi);
+			napi_schedule(&rp->napi);
 		}
 
 		if (intr_status & (IntrTxErrSummary | IntrTxDone)) {
@@ -1377,29 +1381,33 @@ static void rhine_tx(struct net_device *dev)
 				printk(KERN_DEBUG "%s: Transmit error, "
 				       "Tx status %8.8x.\n",
 				       dev->name, txstatus);
-			rp->stats.tx_errors++;
-			if (txstatus & 0x0400) rp->stats.tx_carrier_errors++;
-			if (txstatus & 0x0200) rp->stats.tx_window_errors++;
-			if (txstatus & 0x0100) rp->stats.tx_aborted_errors++;
-			if (txstatus & 0x0080) rp->stats.tx_heartbeat_errors++;
+			dev->stats.tx_errors++;
+			if (txstatus & 0x0400)
+				dev->stats.tx_carrier_errors++;
+			if (txstatus & 0x0200)
+				dev->stats.tx_window_errors++;
+			if (txstatus & 0x0100)
+				dev->stats.tx_aborted_errors++;
+			if (txstatus & 0x0080)
+				dev->stats.tx_heartbeat_errors++;
 			if (((rp->quirks & rqRhineI) && txstatus & 0x0002) ||
 			    (txstatus & 0x0800) || (txstatus & 0x1000)) {
-				rp->stats.tx_fifo_errors++;
+				dev->stats.tx_fifo_errors++;
 				rp->tx_ring[entry].tx_status = cpu_to_le32(DescOwn);
 				break; /* Keep the skb - we try again */
 			}
 			/* Transmitter restarted in 'abnormal' handler. */
 		} else {
 			if (rp->quirks & rqRhineI)
-				rp->stats.collisions += (txstatus >> 3) & 0x0F;
+				dev->stats.collisions += (txstatus >> 3) & 0x0F;
 			else
-				rp->stats.collisions += txstatus & 0x0F;
+				dev->stats.collisions += txstatus & 0x0F;
 			if (debug > 6)
 				printk(KERN_DEBUG "collisions: %1.1x:%1.1x\n",
 				       (txstatus >> 3) & 0xF,
 				       txstatus & 0xF);
-			rp->stats.tx_bytes += rp->tx_skbuff[entry]->len;
-			rp->stats.tx_packets++;
+			dev->stats.tx_bytes += rp->tx_skbuff[entry]->len;
+			dev->stats.tx_packets++;
 		}
 		/* Free the original skb. */
 		if (rp->tx_skbuff_dma[entry]) {
@@ -1454,21 +1462,24 @@ static int rhine_rx(struct net_device *dev, int limit)
 				printk(KERN_WARNING "%s: Oversized Ethernet "
 				       "frame %p vs %p.\n", dev->name,
 				       rp->rx_head_desc, &rp->rx_ring[entry]);
-				rp->stats.rx_length_errors++;
+				dev->stats.rx_length_errors++;
 			} else if (desc_status & RxErr) {
 				/* There was a error. */
 				if (debug > 2)
 					printk(KERN_DEBUG "rhine_rx() Rx "
 					       "error was %8.8x.\n",
 					       desc_status);
-				rp->stats.rx_errors++;
-				if (desc_status & 0x0030) rp->stats.rx_length_errors++;
-				if (desc_status & 0x0048) rp->stats.rx_fifo_errors++;
-				if (desc_status & 0x0004) rp->stats.rx_frame_errors++;
+				dev->stats.rx_errors++;
+				if (desc_status & 0x0030)
+					dev->stats.rx_length_errors++;
+				if (desc_status & 0x0048)
+					dev->stats.rx_fifo_errors++;
+				if (desc_status & 0x0004)
+					dev->stats.rx_frame_errors++;
 				if (desc_status & 0x0002) {
 					/* this can also be updated outside the interrupt handler */
 					spin_lock(&rp->lock);
-					rp->stats.rx_crc_errors++;
+					dev->stats.rx_crc_errors++;
 					spin_unlock(&rp->lock);
 				}
 			}
@@ -1512,8 +1523,8 @@ static int rhine_rx(struct net_device *dev, int limit)
 			}
 			skb->protocol = eth_type_trans(skb, dev);
 			netif_receive_skb(skb);
-			rp->stats.rx_bytes += pkt_len;
-			rp->stats.rx_packets++;
+			dev->stats.rx_bytes += pkt_len;
+			dev->stats.rx_packets++;
 		}
 		entry = (++rp->cur_rx) % RX_RING_SIZE;
 		rp->rx_head_desc = &rp->rx_ring[entry];
@@ -1598,8 +1609,8 @@ static void rhine_error(struct net_device *dev, int intr_status)
 	if (intr_status & IntrLinkChange)
 		rhine_check_media(dev, 0);
 	if (intr_status & IntrStatsMax) {
-		rp->stats.rx_crc_errors += ioread16(ioaddr + RxCRCErrs);
-		rp->stats.rx_missed_errors += ioread16(ioaddr + RxMissed);
+		dev->stats.rx_crc_errors += ioread16(ioaddr + RxCRCErrs);
+		dev->stats.rx_missed_errors += ioread16(ioaddr + RxMissed);
 		clear_tally_counters(ioaddr);
 	}
 	if (intr_status & IntrTxAborted) {
@@ -1653,12 +1664,12 @@ static struct net_device_stats *rhine_get_stats(struct net_device *dev)
 	unsigned long flags;
 
 	spin_lock_irqsave(&rp->lock, flags);
-	rp->stats.rx_crc_errors += ioread16(ioaddr + RxCRCErrs);
-	rp->stats.rx_missed_errors += ioread16(ioaddr + RxMissed);
+	dev->stats.rx_crc_errors += ioread16(ioaddr + RxCRCErrs);
+	dev->stats.rx_missed_errors += ioread16(ioaddr + RxMissed);
 	clear_tally_counters(ioaddr);
 	spin_unlock_irqrestore(&rp->lock, flags);
 
-	return &rp->stats;
+	return &dev->stats;
 }
 
 static void rhine_set_rx_mode(struct net_device *dev)

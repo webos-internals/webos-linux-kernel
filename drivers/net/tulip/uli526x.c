@@ -200,7 +200,7 @@ enum uli526x_CR6_bits {
 
 /* Global variable declaration ----------------------------- */
 static int __devinitdata printed_version;
-static char version[] __devinitdata =
+static const char version[] __devinitconst =
 	KERN_INFO DRV_NAME ": ULi M5261/M5263 net driver, version "
 	DRV_VERSION " (" DRV_RELDATE ")\n";
 
@@ -215,7 +215,8 @@ static int mode = 8;
 
 /* function declaration ------------------------------------- */
 static int uli526x_open(struct net_device *);
-static int uli526x_start_xmit(struct sk_buff *, struct net_device *);
+static netdev_tx_t uli526x_start_xmit(struct sk_buff *,
+					    struct net_device *);
 static int uli526x_stop(struct net_device *);
 static void uli526x_set_filter_mode(struct net_device *);
 static const struct ethtool_ops netdev_ethtool_ops;
@@ -282,7 +283,7 @@ static int __devinit uli526x_init_one (struct pci_dev *pdev,
 		return -ENOMEM;
 	SET_NETDEV_DEV(dev, &pdev->dev);
 
-	if (pci_set_dma_mask(pdev, DMA_32BIT_MASK)) {
+	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
 		printk(KERN_WARNING DRV_NAME ": 32-bit PCI DMA not available.\n");
 		err = -ENODEV;
 		goto err_out_free;
@@ -567,7 +568,8 @@ static void uli526x_init(struct net_device *dev)
  *	Send a packet to media from the upper layer.
  */
 
-static int uli526x_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t uli526x_start_xmit(struct sk_buff *skb,
+					    struct net_device *dev)
 {
 	struct uli526x_board_info *db = netdev_priv(dev);
 	struct tx_desc *txptr;
@@ -582,7 +584,7 @@ static int uli526x_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb->len > MAX_PACKET_SIZE) {
 		printk(KERN_ERR DRV_NAME ": big packet = %d\n", (u16)skb->len);
 		dev_kfree_skb(skb);
-		return 0;
+		return NETDEV_TX_OK;
 	}
 
 	spin_lock_irqsave(&db->lock, flags);
@@ -591,7 +593,7 @@ static int uli526x_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (db->tx_packet_cnt >= TX_FREE_DESC_CNT) {
 		spin_unlock_irqrestore(&db->lock, flags);
 		printk(KERN_ERR DRV_NAME ": No Tx resource %ld\n", db->tx_packet_cnt);
-		return 1;
+		return NETDEV_TX_BUSY;
 	}
 
 	/* Disable NIC interrupt */
@@ -624,7 +626,7 @@ static int uli526x_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	/* free this SKB */
 	dev_kfree_skb(skb);
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 

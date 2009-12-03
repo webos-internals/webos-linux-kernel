@@ -15,7 +15,7 @@
 //
 //  Copyright (c) 1996-2002 Winbond Electronics Corp. All Rights Reserved.
 //============================================================================
-#include "os_common.h"
+#include "sysdef.h"
 
 #include "mds_f.h"
 
@@ -45,7 +45,7 @@ u8 MLMESendFrame(struct wbsoft_priv * adapter, u8 *pMMPDU, u16 len, u8 DataType)
 	return true;
 }
 
-void MLME_GetNextPacket(struct wbsoft_priv *adapter, PDESCRIPTOR desc)
+void MLME_GetNextPacket(struct wbsoft_priv *adapter, struct wb35_descriptor *desc)
 {
 	desc->InternalUsed = desc->buffer_start_index + desc->buffer_number;
 	desc->InternalUsed %= MAX_DESCRIPTOR_BUFFER_INDEX;

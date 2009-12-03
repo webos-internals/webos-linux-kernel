@@ -17,19 +17,8 @@
 
 #include <linux/types.h>
 
-/* Enable autodetection of SVGA adapters and modes. */
-#undef CONFIG_VIDEO_SVGA
-
-/* Enable autodetection of VESA modes */
-#define CONFIG_VIDEO_VESA
-
-/* Retain screen contents when switching modes */
-#define CONFIG_VIDEO_RETAIN
-
-/* Force 400 scan lines for standard modes (hack to fix bad BIOS behaviour */
-#undef CONFIG_VIDEO_400_HACK
-
-/* This code uses an extended set of video mode numbers. These include:
+/*
+ * This code uses an extended set of video mode numbers. These include:
  * Aliases for standard modes
  *      NORMAL_VGA (-1)
  *      EXTENDED_VGA (-2)
@@ -67,13 +56,8 @@
 /* The "recalculate timings" flag */
 #define VIDEO_RECALC 0x8000
 
-/* Define DO_STORE according to CONFIG_VIDEO_RETAIN */
-#ifdef CONFIG_VIDEO_RETAIN
 void store_screen(void);
 #define DO_STORE() store_screen()
-#else
-#define DO_STORE() ((void)0)
-#endif /* CONFIG_VIDEO_RETAIN */
 
 /*
  * Mode table structures
@@ -111,20 +95,6 @@ extern u16 video_segment;
 extern int force_x, force_y;	/* Don't query the BIOS for cols/rows */
 extern int do_restore;		/* Restore screen contents */
 extern int graphic_mode;	/* Graphics mode with linear frame buffer */
-
-/*
- * int $0x10 is notorious for touching registers it shouldn't.
- * gcc doesn't like %ebp being clobbered, so define it as a push/pop
- * sequence here.
- *
- * A number of systems, including the original PC can clobber %bp in
- * certain circumstances, like when scrolling.  There exists at least
- * one Trident video card which could clobber DS under a set of
- * circumstances that we are unlikely to encounter (scrolling when
- * using an extended graphics mode of more than 800x600 pixels), but
- * it's cheap insurance to deal with that here.
- */
-#define INT10 "pushl %%ebp; pushw %%ds; int $0x10; popw %%ds; popl %%ebp"
 
 /* Accessing VGA indexed registers */
 static inline u8 in_idx(u16 port, u8 index)
