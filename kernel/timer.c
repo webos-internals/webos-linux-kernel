@@ -44,9 +44,13 @@
 #include <asm/timex.h>
 #include <asm/io.h>
 
+#include <linux/gen_timer.h>
+
 u64 jiffies_64 __cacheline_aligned_in_smp = INITIAL_JIFFIES;
 
+
 EXPORT_SYMBOL(jiffies_64);
+
 
 /*
  * per-CPU timer vector definitions:
@@ -900,6 +904,9 @@ static void run_timer_softirq(struct softirq_action *h)
 
 	if (time_after_eq(jiffies, base->timer_jiffies))
 		__run_timers(base);
+#ifdef CONFIG_TCP_FASTPATH
+	run_gen_timers();
+#endif
 }
 
 /*

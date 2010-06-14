@@ -359,6 +359,7 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		}
 
 		card->type = MMC_TYPE_SD;
+		host->mode = MMC_MODE_SD;
 		memcpy(card->raw_cid, cid, sizeof(card->raw_cid));
 	}
 
@@ -441,7 +442,8 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	/*
 	 * Switch to wider bus (if supported).
 	 */
-	if ((host->caps & MMC_CAP_4_BIT_DATA) &&
+	if (((host->caps & MMC_CAP_4_BIT_DATA)
+		|| (host->caps & MMC_CAP_8_BIT_DATA)) &&
 		(card->scr.bus_widths & SD_SCR_BUS_WIDTH_4)) {
 		err = mmc_app_set_bus_width(card, MMC_BUS_WIDTH_4);
 		if (err)

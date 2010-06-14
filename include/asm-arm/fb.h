@@ -8,7 +8,7 @@
 static inline void fb_pgprotect(struct file *file, struct vm_area_struct *vma,
 				unsigned long off)
 {
-	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+	vma->vm_page_prot = pgprot_writethrough(vma->vm_page_prot);
 }
 
 static inline int fb_is_primary_device(struct fb_info *info)

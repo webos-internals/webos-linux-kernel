@@ -1,0 +1,42 @@
+#
+# Input accelerometers configuration
+#
+menuconfig INPUT_ACCELEROMETER
+	bool "Accelerometers" if EMBEDDED
+	default n
+	help
+	  Say Y here, and a list of supported accelerometers will be displayed.
+	  This option doesn't affect the kernel.
+
+	  If unsure, say N.
+
+if INPUT_ACCELEROMETER
+
+config ACCELEROMETER_KXSD9
+        tristate "KXSD9 based accelerometer"
+        depends on INPUT_ACCELEROMETER && I2C
+	default n
+        help
+          Say Y here if you want to use the KXSD9 based accelerometer.
+		  
+config ACCELEROMETER_TEST_DEBUG_KXSD9
+        tristate "KXSD9 based accelerometer test debug Mode"
+        depends on INPUT_ACCELEROMETER && I2C && ACCELEROMETER_KXSD9
+	default n
+        help
+          Say Y here if you want to debug and test the KXSD9 based accelerometer.
+
+config ACCELEROMETER_KXTE9
+        tristate "KXTE9 based accelerometer"
+        depends on I2C
+	default n
+        help
+          Say Y here if you want to use the KXTE9 based accelerometer.
+
+config ACCELEROMETER_TEST_DEBUG_KXTE9
+        tristate "KXTE9 based accelerometer test debug Mode"
+        depends on I2C && ACCELEROMETER_KXTE9
+	default n
+        help
+          Say Y here if you want to debug and test the KXTE9 based accelerometer.      
+endif

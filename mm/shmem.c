@@ -76,6 +76,10 @@
 /* Pretend that each entry is of this size in directory's i_size */
 #define BOGO_DIRENT_SIZE 20
 
+#ifdef CONFIG_TMPFS_ACCOUNTING
+atomic_t shmem_nrpages = ATOMIC_INIT(0);
+#endif // CONFIG_TMPFS_ACCOUNTING
+
 /* Flag allocation requirements to shmem_getpage and shmem_swp_alloc */
 enum sgp_type {
 	SGP_QUICK,	/* don't try more than file page cache lookup */
@@ -230,6 +234,9 @@ static void shmem_recalc_inode(struct inode *inode)
 		info->alloced -= freed;
 		shmem_unacct_blocks(info->flags, freed);
 		shmem_free_blocks(inode, freed);
+#ifdef CONFIG_TMPFS_ACCOUNTING
+		atomic_sub(freed, &shmem_nrpages);
+#endif // CONFIG_TMPFS_ACCOUNTING 
 	}
 }
 
@@ -1309,6 +1316,9 @@ repeat:
 		clear_highpage(filepage);
 		flush_dcache_page(filepage);
 		SetPageUptodate(filepage);
+#ifdef CONFIG_TMPFS_ACCOUNTING
+		atomic_inc(&shmem_nrpages);
+#endif // CONFIG_TMPFS_ACCOUNTING
 	}
 done:
 	if (*pagep != filepage) {

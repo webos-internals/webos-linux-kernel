@@ -5,8 +5,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  */
 
 #include <linux/module.h>
@@ -74,7 +74,7 @@ int dsp_kfunc_device_register(struct dsp_kfunc_device *kdev)
 {
 	static DEFINE_MUTEX(dsp_pdata_lock);
 
-	mutex_init(&kdev->lock);
+	spin_lock_init(&kdev->lock);
 
 	mutex_lock(&dsp_pdata_lock);
 	list_add_tail(&kdev->entry, &dsp_pdata.kdev_list);
@@ -89,117 +89,59 @@ static inline void omap_init_dsp(void) { }
 #endif	/* CONFIG_OMAP_DSP */
 
 /*-------------------------------------------------------------------------*/
-#if	defined(CONFIG_I2C_OMAP) || defined(CONFIG_I2C_OMAP_MODULE)
-
-#define	OMAP1_I2C_BASE		0xfffb3800
-#define OMAP2_I2C_BASE1		0x48070000
-#define OMAP_I2C_SIZE		0x3f
-#define OMAP1_I2C_INT		INT_I2C
-#define OMAP2_I2C_INT1		56
-
-static struct resource i2c_resources1[] = {
-	{
-		.start		= 0,
-		.end		= 0,
-		.flags		= IORESOURCE_MEM,
-	},
-	{
-		.start		= 0,
-		.flags		= IORESOURCE_IRQ,
-	},
-};
-
-/* DMA not used; works around erratum writing to non-empty i2c fifo */
-
-static struct platform_device omap_i2c_device1 = {
-	.name           = "i2c_omap",
-	.id             = 1,
-	.num_resources	= ARRAY_SIZE(i2c_resources1),
-	.resource	= i2c_resources1,
-};
-
-/* See also arch/arm/mach-omap2/devices.c for second I2C on 24xx */
-static void omap_init_i2c(void)
-{
-	if (cpu_is_omap24xx()) {
-		i2c_resources1[0].start = OMAP2_I2C_BASE1;
-		i2c_resources1[0].end = OMAP2_I2C_BASE1 + OMAP_I2C_SIZE;
-		i2c_resources1[1].start = OMAP2_I2C_INT1;
-	} else {
-		i2c_resources1[0].start = OMAP1_I2C_BASE;
-		i2c_resources1[0].end = OMAP1_I2C_BASE + OMAP_I2C_SIZE;
-		i2c_resources1[1].start = OMAP1_I2C_INT;
-	}
-
-	/* FIXME define and use a boot tag, in case of boards that
-	 * either don't wire up I2C, or chips that mux it differently...
-	 * it can include clocking and address info, maybe more.
-	 */
-	if (cpu_is_omap24xx()) {
-		omap_cfg_reg(M19_24XX_I2C1_SCL);
-		omap_cfg_reg(L15_24XX_I2C1_SDA);
-	} else {
-		omap_cfg_reg(I2C_SCL);
-		omap_cfg_reg(I2C_SDA);
-	}
-
-	(void) platform_device_register(&omap_i2c_device1);
-}
-
-#else
-static inline void omap_init_i2c(void) {}
-#endif
-
-/*-------------------------------------------------------------------------*/
 #if	defined(CONFIG_KEYBOARD_OMAP) || defined(CONFIG_KEYBOARD_OMAP_MODULE)
 
 static void omap_init_kp(void)
 {
+	/* REVISIT: 2430 keypad is on TWL4030 */
+	if (cpu_is_omap2430() || cpu_is_omap34xx())
+		return;
+
 	if (machine_is_omap_h2() || machine_is_omap_h3()) {
-		omap_cfg_reg(F18_1610_KBC0);
-		omap_cfg_reg(D20_1610_KBC1);
-		omap_cfg_reg(D19_1610_KBC2);
-		omap_cfg_reg(E18_1610_KBC3);
-		omap_cfg_reg(C21_1610_KBC4);
+		omap_cfg_reg("F18_1610_KBC0");
+		omap_cfg_reg("D20_1610_KBC1");
+		omap_cfg_reg("D19_1610_KBC2");
+		omap_cfg_reg("E18_1610_KBC3");
+		omap_cfg_reg("C21_1610_KBC4");
 
-		omap_cfg_reg(G18_1610_KBR0);
-		omap_cfg_reg(F19_1610_KBR1);
-		omap_cfg_reg(H14_1610_KBR2);
-		omap_cfg_reg(E20_1610_KBR3);
-		omap_cfg_reg(E19_1610_KBR4);
-		omap_cfg_reg(N19_1610_KBR5);
+		omap_cfg_reg("G18_1610_KBR0");
+		omap_cfg_reg("F19_1610_KBR1");
+		omap_cfg_reg("H14_1610_KBR2");
+		omap_cfg_reg("E20_1610_KBR3");
+		omap_cfg_reg("E19_1610_KBR4");
+		omap_cfg_reg("N19_1610_KBR5");
 	} else if (machine_is_omap_perseus2() || machine_is_omap_fsample()) {
-		omap_cfg_reg(E2_730_KBR0);
-		omap_cfg_reg(J7_730_KBR1);
-		omap_cfg_reg(E1_730_KBR2);
-		omap_cfg_reg(F3_730_KBR3);
-		omap_cfg_reg(D2_730_KBR4);
+		omap_cfg_reg("E2_730_KBR0");
+		omap_cfg_reg("J7_730_KBR1");
+		omap_cfg_reg("E1_730_KBR2");
+		omap_cfg_reg("F3_730_KBR3");
+		omap_cfg_reg("D2_730_KBR4");
 
-		omap_cfg_reg(C2_730_KBC0);
-		omap_cfg_reg(D3_730_KBC1);
-		omap_cfg_reg(E4_730_KBC2);
-		omap_cfg_reg(F4_730_KBC3);
-		omap_cfg_reg(E3_730_KBC4);
+		omap_cfg_reg("C2_730_KBC0");
+		omap_cfg_reg("D3_730_KBC1");
+		omap_cfg_reg("E4_730_KBC2");
+		omap_cfg_reg("F4_730_KBC3");
+		omap_cfg_reg("E3_730_KBC4");
 	} else if (machine_is_omap_h4()) {
-		omap_cfg_reg(T19_24XX_KBR0);
-		omap_cfg_reg(R19_24XX_KBR1);
-		omap_cfg_reg(V18_24XX_KBR2);
-		omap_cfg_reg(M21_24XX_KBR3);
-		omap_cfg_reg(E5__24XX_KBR4);
+		omap_cfg_reg("T19_24XX_KBR0");
+		omap_cfg_reg("R19_24XX_KBR1");
+		omap_cfg_reg("V18_24XX_KBR2");
+		omap_cfg_reg("M21_24XX_KBR3");
+		omap_cfg_reg("E5__24XX_KBR4");
 		if (omap_has_menelaus()) {
-			omap_cfg_reg(B3__24XX_KBR5);
-			omap_cfg_reg(AA4_24XX_KBC2);
-			omap_cfg_reg(B13_24XX_KBC6);
+			omap_cfg_reg("B3__24XX_KBR5");
+			omap_cfg_reg("AA4_24XX_KBC2");
+			omap_cfg_reg("B13_24XX_KBC6");
 		} else {
-			omap_cfg_reg(M18_24XX_KBR5);
-			omap_cfg_reg(H19_24XX_KBC2);
-			omap_cfg_reg(N19_24XX_KBC6);
+			omap_cfg_reg("M18_24XX_KBR5");
+			omap_cfg_reg("H19_24XX_KBC2");
+			omap_cfg_reg("N19_24XX_KBC6");
 		}
-		omap_cfg_reg(R20_24XX_KBC0);
-		omap_cfg_reg(M14_24XX_KBC1);
-		omap_cfg_reg(V17_24XX_KBC3);
-		omap_cfg_reg(P21_24XX_KBC4);
-		omap_cfg_reg(L14_24XX_KBC5);
+		omap_cfg_reg("R20_24XX_KBC0");
+		omap_cfg_reg("M14_24XX_KBC1");
+		omap_cfg_reg("V17_24XX_KBC3");
+		omap_cfg_reg("P21_24XX_KBC4");
+		omap_cfg_reg("L14_24XX_KBC5");
 	}
 }
 #else
@@ -252,6 +194,7 @@ static struct omap_mmc_conf mmc2_conf;
 
 static u64 mmc2_dmamask = 0xffffffff;
 
+
 static struct resource mmc2_resources[] = {
 	{
 		.start		= OMAP_MMC2_BASE,
@@ -281,6 +224,10 @@ static void __init omap_init_mmc(void)
 	const struct omap_mmc_config	*mmc_conf;
 	const struct omap_mmc_conf	*mmc;
 
+	/* REVISIT: 2430 has HS MMC */
+	if (cpu_is_omap2430() || cpu_is_omap34xx())
+		return;
+
 	/* NOTE:  assumes MMC was never (wrongly) enabled */
 	mmc_conf = omap_get_config(OMAP_TAG_MMC, struct omap_mmc_config);
 	if (!mmc_conf)
@@ -290,36 +237,47 @@ static void __init omap_init_mmc(void)
 	mmc = &mmc_conf->mmc[0];
 	if (mmc->enabled) {
 		if (cpu_is_omap24xx()) {
-			omap_cfg_reg(H18_24XX_MMC_CMD);
-			omap_cfg_reg(H15_24XX_MMC_CLKI);
-			omap_cfg_reg(G19_24XX_MMC_CLKO);
-			omap_cfg_reg(F20_24XX_MMC_DAT0);
-			omap_cfg_reg(F19_24XX_MMC_DAT_DIR0);
-			omap_cfg_reg(G18_24XX_MMC_CMD_DIR);
+			omap_cfg_reg("H18_24XX_MMC_CMD");
+			omap_cfg_reg("H15_24XX_MMC_CLKI");
+			omap_cfg_reg("G19_24XX_MMC_CLKO");
+			omap_cfg_reg("F20_24XX_MMC_DAT0");
+			omap_cfg_reg("F19_24XX_MMC_DAT_DIR0");
+			omap_cfg_reg("G18_24XX_MMC_CMD_DIR");
 		} else {
-			omap_cfg_reg(MMC_CMD);
-			omap_cfg_reg(MMC_CLK);
-			omap_cfg_reg(MMC_DAT0);
+			omap_cfg_reg("MMC_CMD");
+			omap_cfg_reg("MMC_CLK");
+			omap_cfg_reg("MMC_DAT0");
 			if (cpu_is_omap1710()) {
-				omap_cfg_reg(M15_1710_MMC_CLKI);
-				omap_cfg_reg(P19_1710_MMC_CMDDIR);
-				omap_cfg_reg(P20_1710_MMC_DATDIR0);
+				omap_cfg_reg("M15_1710_MMC_CLKI");
+				omap_cfg_reg("P19_1710_MMC_CMDDIR");
+				omap_cfg_reg("P20_1710_MMC_DATDIR0");
 			}
 		}
 		if (mmc->wire4) {
 			if (cpu_is_omap24xx()) {
-				omap_cfg_reg(H14_24XX_MMC_DAT1);
-				omap_cfg_reg(E19_24XX_MMC_DAT2);
-				omap_cfg_reg(D19_24XX_MMC_DAT3);
-				omap_cfg_reg(E20_24XX_MMC_DAT_DIR1);
-				omap_cfg_reg(F18_24XX_MMC_DAT_DIR2);
-				omap_cfg_reg(E18_24XX_MMC_DAT_DIR3);
+				omap_cfg_reg("H14_24XX_MMC_DAT1");
+				omap_cfg_reg("E19_24XX_MMC_DAT2");
+				omap_cfg_reg("D19_24XX_MMC_DAT3");
+				omap_cfg_reg("E20_24XX_MMC_DAT_DIR1");
+				omap_cfg_reg("F18_24XX_MMC_DAT_DIR2");
+				omap_cfg_reg("E18_24XX_MMC_DAT_DIR3");
 			} else {
-				omap_cfg_reg(MMC_DAT1);
+				omap_cfg_reg("MMC_DAT1");
 				/* NOTE:  DAT2 can be on W10 (here) or M15 */
 				if (!mmc->nomux)
-					omap_cfg_reg(MMC_DAT2);
-				omap_cfg_reg(MMC_DAT3);
+					omap_cfg_reg("MMC_DAT2");
+				omap_cfg_reg("MMC_DAT3");
+			}
+		}
+		if (mmc->internal_clock) {
+			/*
+			 * Use internal loop-back in MMC/SDIO
+			 * Module Input Clock selection
+			 */
+			if (cpu_is_omap24xx()) {
+				u32 v = omap_ctrl_readl(OMAP242X_CONTROL_DEVCONF);
+				v |= (1 << 24);
+				omap_ctrl_writel(v, OMAP242X_CONTROL_DEVCONF);
 			}
 		}
 		mmc1_conf = *mmc;
@@ -331,20 +289,20 @@ static void __init omap_init_mmc(void)
 	mmc = &mmc_conf->mmc[1];
 	if (mmc->enabled) {
 		if (!mmc->nomux) {
-			omap_cfg_reg(Y8_1610_MMC2_CMD);
-			omap_cfg_reg(Y10_1610_MMC2_CLK);
-			omap_cfg_reg(R18_1610_MMC2_CLKIN);
-			omap_cfg_reg(W8_1610_MMC2_DAT0);
+			omap_cfg_reg("Y8_1610_MMC2_CMD");
+			omap_cfg_reg("Y10_1610_MMC2_CLK");
+			omap_cfg_reg("R18_1610_MMC2_CLKIN");
+			omap_cfg_reg("W8_1610_MMC2_DAT0");
 			if (mmc->wire4) {
-				omap_cfg_reg(V8_1610_MMC2_DAT1);
-				omap_cfg_reg(W15_1610_MMC2_DAT2);
-				omap_cfg_reg(R10_1610_MMC2_DAT3);
+				omap_cfg_reg("V8_1610_MMC2_DAT1");
+				omap_cfg_reg("W15_1610_MMC2_DAT2");
+				omap_cfg_reg("R10_1610_MMC2_DAT3");
 			}
 
 			/* These are needed for the level shifter */
-			omap_cfg_reg(V9_1610_MMC2_CMDDIR);
-			omap_cfg_reg(V5_1610_MMC2_DATDIR0);
-			omap_cfg_reg(W19_1610_MMC2_DATDIR1);
+			omap_cfg_reg("V9_1610_MMC2_CMDDIR");
+			omap_cfg_reg("V5_1610_MMC2_DATDIR0");
+			omap_cfg_reg("W19_1610_MMC2_DATDIR1");
 		}
 
 		/* Feedback clock must be set on OMAP-1710 MMC2 */
@@ -406,11 +364,35 @@ static inline void omap_init_uwire(void) {}
 #endif
 
 /*-------------------------------------------------------------------------*/
+#ifdef CONFIG_TWL4030_RTC
+
+static struct platform_device omap_rtc_device = {
+	.name           = "omap_twl4030rtc",
+	.id             = -1,
+	.num_resources	= 0,
+	.resource	= NULL,
+};
+
+static void omap_init_rtc(void)
+{
+	(void) platform_device_register(&omap_rtc_device);
+}
+#else
+static inline void omap_init_rtc(void) {}
+#endif
+/*-------------------------------------------------------------------------*/
 
 #if	defined(CONFIG_OMAP_WATCHDOG) || defined(CONFIG_OMAP_WATCHDOG_MODULE)
 
-#ifdef CONFIG_ARCH_OMAP24XX
+#if defined(CONFIG_ARCH_OMAP34XX)
+#define OMAP_WDT_BASE		0x48314000
+#elif defined(CONFIG_ARCH_OMAP24XX)
+#ifdef CONFIG_ARCH_OMAP2430
+/* WDT2 */
+#define	OMAP_WDT_BASE		0x49016000
+#else
 #define	OMAP_WDT_BASE		0x48022000
+#endif
 #else
 #define	OMAP_WDT_BASE		0xfffeb000
 #endif
@@ -425,7 +407,7 @@ static struct resource wdt_resources[] = {
 
 static struct platform_device omap_wdt_device = {
 	.name	   = "omap_wdt",
-	.id	     = -1,
+	.id	     = 2,
 	.num_resources	= ARRAY_SIZE(wdt_resources),
 	.resource	= wdt_resources,
 };
@@ -471,6 +453,19 @@ static void omap_init_rng(void)
 static inline void omap_init_rng(void) {}
 #endif
 
+static struct platform_device omap_palkern_device = {
+	.name           = "omap_palkern",
+	.id             = -1,
+	.num_resources	= 0,
+	.resource	= NULL,
+};
+
+static void omap_init_palkern(void)
+{
+	(void) platform_device_register(&omap_palkern_device);
+}
+
+
 /*
  * This gets called after board-specific INIT_MACHINE, and initializes most
  * on-chip peripherals accessible on this board (except for few like USB):
@@ -493,21 +488,17 @@ static inline void omap_init_rng(void) {}
  */
 static int __init omap_init_devices(void)
 {
-/*
- * Need to enable relevant once for 2430 SDP
- */
-#ifndef CONFIG_MACH_OMAP_2430SDP
 	/* please keep these calls, and their implementations above,
 	 * in alphabetical order so they're easier to sort through.
 	 */
 	omap_init_dsp();
-	omap_init_i2c();
 	omap_init_kp();
 	omap_init_mmc();
 	omap_init_uwire();
 	omap_init_wdt();
 	omap_init_rng();
-#endif
+        omap_init_rtc();
+	omap_init_palkern();
 	return 0;
 }
 arch_initcall(omap_init_devices);

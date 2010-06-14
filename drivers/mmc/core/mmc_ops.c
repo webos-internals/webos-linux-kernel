@@ -5,8 +5,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  */
 
 #include <linux/types.h>
@@ -109,7 +109,7 @@ int mmc_send_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 	cmd.arg = mmc_host_is_spi(host) ? 0 : ocr;
 	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R3 | MMC_CMD_BCR;
 
-	for (i = 100; i; i--) {
+	for (i = 1000; i; i--) {
 		err = mmc_wait_for_cmd(host, &cmd, 0);
 		if (err)
 			break;
@@ -129,7 +129,8 @@ int mmc_send_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 
 		err = -ETIMEDOUT;
 
-		mmc_delay(10);
+		mmc_delay(1);
+//		mmc_delay(10);
 	}
 
 	if (rocr && !mmc_host_is_spi(host))

@@ -25,6 +25,11 @@
 #define INTC_MIR_CLEAR0	0x0088
 #define INTC_MIR_SET0	0x008c
 
+#define sync_p_port_write()	\
+	do { 			\
+		int dv = 0;	\
+		__asm__ __volatile__ ("mcr p15, 0, %0, c7, c10, 4" : : "r" (dv));	\
+	} while(0)
 /*
  * OMAP2 has a number of different interrupt controllers, each interrupt
  * controller is identified as its own "bank". Register definitions are
@@ -37,17 +42,17 @@ static struct omap_irq_bank {
 } __attribute__ ((aligned(4))) irq_banks[] = {
 	{
 		/* MPU INTC */
-		.base_reg	= IO_ADDRESS(OMAP24XX_IC_BASE),
+		.base_reg	= 0,
 		.nr_irqs	= 96,
-	}, {
-		/* XXX: DSP INTC */
-	}
+	},
 };
 
 /* XXX: FIQ and additional INTC support (only MPU at the moment) */
 static void omap_ack_irq(unsigned int irq)
 {
+	sync_p_port_write();
 	__raw_writel(0x1, irq_banks[0].base_reg + INTC_CONTROL);
+	sync_p_port_write();
 }
 
 static void omap_mask_irq(unsigned int irq)
@@ -59,8 +64,9 @@ static void omap_mask_irq(unsigned int irq)
 	} else if (irq >= 32) {
 		irq %= 32;
 	}
-
+	sync_p_port_write();
 	__raw_writel(1 << irq, irq_banks[0].base_reg + INTC_MIR_SET0 + offset);
+	sync_p_port_write();
 }
 
 static void omap_unmask_irq(unsigned int irq)
@@ -72,8 +78,9 @@ static void omap_unmask_irq(unsigned int irq)
 	} else if (irq >= 32) {
 		irq %= 32;
 	}
-
+	sync_p_port_write();
 	__raw_writel(1 << irq, irq_banks[0].base_reg + INTC_MIR_CLEAR0 + offset);
+	sync_p_port_write();
 }
 
 static void omap_mask_ack_irq(unsigned int irq)
@@ -118,10 +125,12 @@ void __init omap_init_irq(void)
 	for (i = 0; i < ARRAY_SIZE(irq_banks); i++) {
 		struct omap_irq_bank *bank = irq_banks + i;
 
-		/* XXX */
-		if (!bank->base_reg)
-			continue;
-
+		if (cpu_is_omap24xx()) {
+			bank->base_reg = IO_ADDRESS(OMAP24XX_IC_BASE);
+		}
+		if (cpu_is_omap34xx()) {
+			bank->base_reg = VA_IC_BASE;
+		}
 		omap_irq_bank_init_one(bank);
 
 		nr_irqs += bank->nr_irqs;

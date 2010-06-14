@@ -90,6 +90,13 @@ struct usb_request {
 
 	int			status;
 	unsigned		actual;
+
+#ifdef CONFIG_USB_GADGET_REQUEST_DEBUG
+#define USB_GADGET_REQUEST_MAGIC	0x5a5a5a5a
+
+	unsigned		magic;
+	unsigned		queued;
+#endif
 };
 
 /*-------------------------------------------------------------------------*/
@@ -110,11 +117,20 @@ struct usb_ep_ops {
 		gfp_t gfp_flags);
 	void (*free_request) (struct usb_ep *ep, struct usb_request *req);
 
+	void *(*alloc_buffer) (struct usb_ep *ep, unsigned bytes,
+		dma_addr_t *dma, gfp_t gfp_flags);
+	void (*free_buffer) (struct usb_ep *ep, void *buf, dma_addr_t dma,
+		unsigned bytes);
+	// NOTE:  on 2.6, drivers may also use dma_map() and
+	// dma_sync_single_*() to directly manage dma overhead. 
+
 	int (*queue) (struct usb_ep *ep, struct usb_request *req,
 		gfp_t gfp_flags);
 	int (*dequeue) (struct usb_ep *ep, struct usb_request *req);
 
 	int (*set_halt) (struct usb_ep *ep, int value);
+	int (*set_wedge) (struct usb_ep *ep);
+
 	int (*fifo_status) (struct usb_ep *ep);
 	void (*fifo_flush) (struct usb_ep *ep);
 };
@@ -225,6 +241,47 @@ static inline void
 usb_ep_free_request (struct usb_ep *ep, struct usb_request *req)
 {
 	ep->ops->free_request (ep, req);
+}
+
+/**
+ * usb_ep_alloc_buffer - allocate an I/O buffer
+ * @ep:the endpoint associated with the buffer
+ * @len:length of the desired buffer
+ * @dma:pointer to the buffer's DMA address; must be valid
+ * @gfp_flags:GFP_* flags to use
+ *
+ * Returns a new buffer, or null if one could not be allocated.
+ * The buffer is suitably aligned for dma, if that endpoint uses DMA,
+ * and the caller won't have to care about dma-inconsistency
+ * or any hidden "bounce buffer" mechanism.  No additional per-request
+ * DMA mapping will be required for such buffers.
+ * Free it later with usb_ep_free_buffer().
+ *
+ * You don't need to use this call to allocate I/O buffers unless you
+ * want to make sure drivers don't incur costs for such "bounce buffer"
+ * copies or per-request DMA mappings.
+ */
+static inline void *
+usb_ep_alloc_buffer (struct usb_ep *ep, unsigned len, dma_addr_t *dma,
+	gfp_t gfp_flags)
+{
+	return ep->ops->alloc_buffer (ep, len, dma, gfp_flags);
+}
+
+/**
+ * usb_ep_free_buffer - frees an i/o buffer
+ * @ep:the endpoint associated with the buffer
+ * @buf:CPU view address of the buffer
+ * @dma:the buffer's DMA address
+ * @len:length of the buffer
+ *
+ * reverses the effect of usb_ep_alloc_buffer().
+ * caller guarantees the buffer will no longer be accessed
+ */
+static inline void
+usb_ep_free_buffer (struct usb_ep *ep, void *buf, dma_addr_t dma, unsigned len)
+{
+	ep->ops->free_buffer (ep, buf, dma, len);
 }
 
 /**
@@ -350,6 +407,25 @@ static inline int
 usb_ep_clear_halt (struct usb_ep *ep)
 {
 	return ep->ops->set_halt (ep, 0);
+}
+
+/**
+ * usb_ep_set_wedge - sets the halt feature and ignores clear requests
+ * @ep: the endpoint being wedged
+ *
+ * Use this to stall an endpoint and ignore CLEAR_FEATURE(HALT_ENDPOINT)
+ * requests. If the gadget driver clears the halt status, it will
+ * automatically unwedge the endpoint.
+ *
+ * Returns zero on success, else negative errno.
+ */
+static inline int
+usb_ep_set_wedge(struct usb_ep *ep)
+{
+	if (ep->ops->set_wedge)
+		return ep->ops->set_wedge(ep);
+	else
+		return ep->ops->set_halt(ep, 1);
 }
 
 /**
@@ -838,7 +914,7 @@ struct usb_gadget_strings {
 };
 
 /* put descriptor for string with that id into buf (buflen >= 256) */
-int usb_gadget_get_string (struct usb_gadget_strings *table, int id, u8 *buf);
+int usb_gadget_get_string(const struct usb_gadget_strings *table, int id, u8 *buf);
 
 /*-------------------------------------------------------------------------*/
 
@@ -852,6 +928,25 @@ int usb_descriptor_fillbuf(void *, unsigned,
 int usb_gadget_config_buf(const struct usb_config_descriptor *config,
 	void *buf, unsigned buflen, const struct usb_descriptor_header **desc);
 
+/* copy a NULL-terminated vector of descriptors */
+struct usb_descriptor_header **usb_copy_descriptors(
+		struct usb_descriptor_header **);
+
+/* return copy of endpoint descriptor given original descriptor set */
+struct usb_endpoint_descriptor *usb_find_endpoint(
+	struct usb_descriptor_header **src,
+	struct usb_descriptor_header **copy,
+	struct usb_endpoint_descriptor *match);
+
+/**
+ * usb_free_descriptors - free descriptors returned by usb_copy_descriptors()
+ * @v: vector of descriptors
+ */
+static inline void usb_free_descriptors(struct usb_descriptor_header **v)
+{
+	kfree(v);
+}
+
 /*-------------------------------------------------------------------------*/
 
 /* utility wrapping a simple endpoint selection policy */
@@ -863,4 +958,4 @@ extern void usb_ep_autoconfig_reset (struct usb_gadget *) __devinit;
 
 #endif  /* __KERNEL__ */
 
-#endif	/* __LINUX_USB_GADGET_H */
+#endif /* __LINUX_USB_GADGET_H */

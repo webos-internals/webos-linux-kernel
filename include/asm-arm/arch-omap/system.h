@@ -17,7 +17,14 @@ extern void omap_prcm_arch_reset(char mode);
 
 static inline void arch_idle(void)
 {
+	/* This option is used for debugging with JTAG. cpu_do_idle() will
+	 * eventually execute a WFI instruction which will cause a JTAG
+	 * connection to break. Therefore we disable the cpu_do_idle() if we
+	 * are debugging with JTAG.
+	 */
+#ifndef CONFIG_DISABLE_WFI
 	cpu_do_idle();
+#endif
 }
 
 static inline void omap1_arch_reset(char mode)
@@ -40,7 +47,7 @@ static inline void omap1_arch_reset(char mode)
 
 static inline void arch_reset(char mode)
 {
-	if (!cpu_is_omap24xx())
+	if (!cpu_class_is_omap2())
 		omap1_arch_reset(mode);
 	else
 		omap_prcm_arch_reset(mode);

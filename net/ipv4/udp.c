@@ -1605,6 +1605,29 @@ static void udp4_format_sock(struct sock *sp, char *tmpbuf, int bucket)
 		atomic_read(&sp->sk_refcnt), sp);
 }
 
+static void udp4_idle_format_sock(struct sock *sp, char *tmpbuf, int bucket)
+{
+	struct inet_sock *inet = inet_sk(sp);
+	__be32 dest = inet->daddr;
+	__be32 src  = inet->rcv_saddr;
+	__u16 destp	  = ntohs(inet->dport);
+	__u16 srcp	  = ntohs(inet->sport);
+ 	struct timespec ts_curr, ts;
+        unsigned int idle_time=0;
+
+	ts=ktime_to_timespec(sp->sk_stamp);
+        ktime_get_ts(&ts_curr);
+        idle_time=(ts_curr.tv_sec-ts.tv_sec);
+
+	sprintf(tmpbuf, "%4d: %08X:%04X %08X:%04X"
+		" %02X %08X:%08X %02X:%08lX %08X %5d %8d %lu %d %p %u",
+		bucket, src, srcp, dest, destp, sp->sk_state,
+		atomic_read(&sp->sk_wmem_alloc),
+		atomic_read(&sp->sk_rmem_alloc),
+		0, 0L, 0, sock_i_uid(sp), 0, sock_i_ino(sp),
+		atomic_read(&sp->sk_refcnt), sp, idle_time);
+}
+
 int udp4_seq_show(struct seq_file *seq, void *v)
 {
 	if (v == SEQ_START_TOKEN)
@@ -1622,6 +1645,23 @@ int udp4_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
+int udp4_idle_seq_show(struct seq_file *seq, void *v)
+{
+	if (v == SEQ_START_TOKEN)
+		seq_printf(seq, "%-127s\n",
+			   "  sl  local_address rem_address   st tx_queue "
+			   "rx_queue tr tm->when retrnsmt   uid  timeout "
+			   "inode");
+	else {
+		char tmpbuf[129];
+		struct udp_iter_state *state = seq->private;
+
+		udp4_idle_format_sock(v, tmpbuf, state->bucket);
+		seq_printf(seq, "%-127s\n", tmpbuf);
+	}
+	return 0;
+}
+
 /* ------------------------------------------------------------------------ */
 static struct file_operations udp4_seq_fops;
 static struct udp_seq_afinfo udp4_seq_afinfo = {
@@ -1633,14 +1673,28 @@ static struct udp_seq_afinfo udp4_seq_afinfo = {
 	.seq_fops	= &udp4_seq_fops,
 };
 
+static struct udp_seq_afinfo udp4_idle_seq_afinfo = {
+	.owner		= THIS_MODULE,
+	.name		= "udp_idle",
+	.family		= AF_INET,
+	.hashtable	= udp_hash,
+	.seq_show	= udp4_idle_seq_show,
+	.seq_fops	= &udp4_seq_fops,
+};
+
 int __init udp4_proc_init(void)
 {
-	return udp_proc_register(&udp4_seq_afinfo);
+	int ret;
+	ret=udp_proc_register(&udp4_seq_afinfo);
+	if(ret<0)
+		return ret;
+	return udp_proc_register(&udp4_idle_seq_afinfo);
 }
 
 void udp4_proc_exit(void)
 {
 	udp_proc_unregister(&udp4_seq_afinfo);
+	udp_proc_unregister(&udp4_idle_seq_afinfo);
 }
 #endif /* CONFIG_PROC_FS */
 

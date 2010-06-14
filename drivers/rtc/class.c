@@ -39,11 +39,13 @@ static void rtc_device_release(struct device *dev)
  * system's wall clock; restore it on resume().
  */
 
-static struct timespec	delta;
-static time_t		oldtime;
+static struct timespec	delta;		/* Diff between xtime and rtc */
+static time_t		oldtime;	/* RTC at suspend */
 
 static int rtc_suspend(struct device *dev, pm_message_t mesg)
 {
+	int ret;
+	int retry;
 	struct rtc_device	*rtc = to_rtc_device(dev);
 	struct rtc_time		tm;
 	struct timespec		ts = current_kernel_time();
@@ -53,7 +55,12 @@ static int rtc_suspend(struct device *dev, pm_message_t mesg)
 				BUS_ID_SIZE) != 0)
 		return 0;
 
-	rtc_read_time(rtc, &tm);
+	retry = 5;
+	do {
+		ret = rtc_read_time(rtc, &tm);
+	} while (ret && retry--);
+	if (ret)
+		printk(KERN_ERR "%s: Could not read RTC in suspend.\n", __FILE__);
 	rtc_tm_to_time(&tm, &oldtime);
 
 	/* RTC precision is 1 second; adjust delta for avg 1/2 sec err */
@@ -95,6 +102,17 @@ static int rtc_resume(struct device *dev)
 				newtime + delta.tv_sec,
 				(NSEC_PER_SEC >> 1) + delta.tv_nsec);
 	do_settimeofday(&time);
+
+	/* Adjust total sleep time so that boot time will be correct.
+	 * Because of round-off error, there is a 50% chance that boot
+	 * time will drift backwards one second here.  Unless
+	 * total_sleep_time is stored as a timespec instead of a time_t,
+	 * this is unavoidable.
+	 */
+	total_sleep_time += (newtime - oldtime);
+
+	/* Adjust network time as well */
+	wall_to_network.tv_sec += (newtime - oldtime);
 
 	return 0;
 }

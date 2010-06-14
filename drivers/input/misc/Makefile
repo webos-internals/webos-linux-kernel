@@ -18,3 +18,10 @@ obj-$(CONFIG_INPUT_POWERMATE)		+= powermate.o
 obj-$(CONFIG_INPUT_YEALINK)		+= yealink.o
 obj-$(CONFIG_HP_SDC_RTC)		+= hp_sdc_rtc.o
 obj-$(CONFIG_INPUT_UINPUT)		+= uinput.o
+
+obj-$(CONFIG_HSDL9100_PROX_SENSOR)	+= hsdl9100_proxsensor.o
+
+hsdl9100_proxsensor-objs := hsdl9100_prox_sense.o 
+hsdl9100_proxsensor-$(CONFIG_ARCH_OMAP) += hsdl9100_prox_sense_omap.o
+
+obj-$(CONFIG_LIGHTSENSOR_AMBIENT6200)    += temt6200_lightsensor.o

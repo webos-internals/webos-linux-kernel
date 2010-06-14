@@ -27,6 +27,10 @@
 #include <linux/pid_namespace.h>
 #include <linux/nsproxy.h>
 
+#ifdef CONFIG_MINI_CORE
+#include <linux/minicore2.h>
+#endif
+
 #include <asm/param.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -377,7 +381,8 @@ int dequeue_signal(struct task_struct *tsk, sigset_t *mask, siginfo_t *info)
 	/* We only dequeue private signals from ourselves, we don't let
 	 * signalfd steal them
 	 */
-	signr = __dequeue_signal(&tsk->pending, mask, info);
+	if (tsk == current)
+		signr = __dequeue_signal(&tsk->pending, mask, info);
 	if (!signr) {
 		signr = __dequeue_signal(&tsk->signal->shared_pending,
 					 mask, info);
@@ -405,7 +410,8 @@ int dequeue_signal(struct task_struct *tsk, sigset_t *mask, siginfo_t *info)
 			}
 		}
 	}
-	recalc_sigpending();
+	if (likely(tsk == current))
+		recalc_sigpending();
 	if (signr && unlikely(sig_kernel_stop(signr))) {
 		/*
 		 * Set a marker that we have dequeued a stop signal.  Our
@@ -1604,7 +1610,7 @@ static inline int may_ptrace_stop(void)
  * If we actually decide not to stop at all because the tracer is gone,
  * we leave nostop_code in current->exit_code.
  */
-static void ptrace_stop(int exit_code, int nostop_code, siginfo_t *info)
+void ptrace_stop(int exit_code, int nostop_code, siginfo_t *info)
 {
 	/*
 	 * If there is a group stop in progress,
@@ -1901,6 +1907,29 @@ relock:
 		}
 
 		spin_unlock_irq(&current->sighand->siglock);
+
+#ifdef CONFIG_MINI_CORE
+		/**
+		 * Dump a minicore for dangerous signals like SIGSEGV, etc
+		 * _even_ if the program has registered a signal handler for it.
+		 *
+		 * We be sure to avoid this path if the program is already being
+		 * ptraced.
+		 */
+		if (sig_kernel_coredump(signr) && !(current->ptrace & PT_PTRACED)
+			&& signr != SIGQUIT && signr != SIGKILL)
+		{
+			int ret;
+
+			ret = minicore_launch(signr, info);
+
+			/**
+			 * FIXME there is a race of threads coming out of minicore detach.
+			 * To see this race, move this ahead of userspace sighandlers
+			 * above, and run threads_abort_sighandler.
+			 */
+		}
+#endif
 
 		/*
 		 * Anything else is fatal, maybe with a core dump.

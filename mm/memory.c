@@ -453,6 +453,8 @@ copy_one_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 				make_migration_entry_read(&entry);
 				pte = swp_entry_to_pte(entry);
 				set_pte_at(src_mm, addr, src_pte, pte);
+			} else {
+				rss[2]++;
 			}
 		}
 		goto out_set_pte;
@@ -493,10 +495,10 @@ static int copy_pte_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 	pte_t *src_pte, *dst_pte;
 	spinlock_t *src_ptl, *dst_ptl;
 	int progress = 0;
-	int rss[2];
+	int rss[3];
 
 again:
-	rss[1] = rss[0] = 0;
+	rss[2] = rss[1] = rss[0] = 0;
 	dst_pte = pte_alloc_map_lock(dst_mm, dst_pmd, addr, &dst_ptl);
 	if (!dst_pte)
 		return -ENOMEM;
@@ -529,6 +531,7 @@ again:
 	spin_unlock(src_ptl);
 	pte_unmap_nested(src_pte - 1);
 	add_mm_rss(dst_mm, rss[0], rss[1]);
+	add_mm_counter(dst_mm, swapped_vm, rss[2]);
 	pte_unmap_unlock(dst_pte - 1, dst_ptl);
 	cond_resched();
 	if (addr != end)
@@ -625,6 +628,7 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	spinlock_t *ptl;
 	int file_rss = 0;
 	int anon_rss = 0;
+	int swapped_vm = 0;
 
 	pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
 	arch_enter_lazy_mmu_mode();
@@ -681,7 +685,10 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 			page_remove_rmap(page, vma);
 			tlb_remove_page(tlb, page);
 			continue;
+		} else if (!pte_file(ptent)) {
+			swapped_vm--;
 		}
+
 		/*
 		 * If details->check_mapping, we leave swap entries;
 		 * if details->nonlinear_vma, we leave file entries.
@@ -694,6 +701,7 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	} while (pte++, addr += PAGE_SIZE, (addr != end && *zap_work > 0));
 
 	add_mm_rss(mm, file_rss, anon_rss);
+	add_mm_counter(mm, swapped_vm, swapped_vm);
 	arch_leave_lazy_mmu_mode();
 	pte_unmap_unlock(pte - 1, ptl);
 
@@ -2108,6 +2116,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	/* The page isn't present yet, go ahead with the fault. */
 
 	inc_mm_counter(mm, anon_rss);
+	dec_mm_counter(mm, swapped_vm);
 	pte = mk_pte(page, vma->vm_page_prot);
 	if (write_access && can_share_swap_page(page)) {
 		pte = maybe_mkwrite(pte_mkdirty(pte), vma);

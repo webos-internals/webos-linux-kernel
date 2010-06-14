@@ -11,6 +11,39 @@
 #ifndef __OMAP2_GPMC_H
 #define __OMAP2_GPMC_H
 
+/* Maximum Number of Chip Selects */
+#define GPMC_CS_NUM             8
+
+#define GPMC_REVISION           0x00
+#define GPMC_SYSCONFIG          0x10
+#define GPMC_SYSSTATUS          0x14
+#define GPMC_IRQSTATUS		0x18
+#define GPMC_IRQENABLE		0x1C
+#define GPMC_TIMEOUT_CTRL	0x40
+#define GPMC_ERR_ADDRESS        0x44
+#define GPMC_ERR_TYPE           0x48
+#define GPMC_CONFIG		0x50
+#define GPMC_STATUS		0x54
+#define GPMC_PREFETCH_CONFIG1   0x1e0
+#define GPMC_PREFETCH_CONFIG2   0x1e4
+#define GPMC_PREFETCH_CONTROL   0x1e8
+#define GPMC_PREFETCH_STATUS    0x1f0
+#define GPMC_ECC_CONFIG         0x1F4
+#define GPMC_ECC_CONTROL        0x1F8
+#define GPMC_ECC_SIZE_CONFIG    0x1FC
+#define GPMC_ECC1_RESULT        0x200
+#define GPMC_ECC2_RESULT        0x204
+#define GPMC_ECC3_RESULT        0x208
+#define GPMC_ECC4_RESULT        0x20C
+#define GPMC_ECC5_RESULT        0x210
+#define GPMC_ECC6_RESULT        0x214
+#define GPMC_ECC7_RESULT        0x218
+#define GPMC_ECC8_RESULT        0x21C
+#define GPMC_ECC9_RESULT        0x220
+
+#define GPMC_CS0_BASE		0x60
+#define GPMC_CS_SIZE            0x30
+
 #define GPMC_CS_CONFIG1		0x00
 #define GPMC_CS_CONFIG2		0x04
 #define GPMC_CS_CONFIG3		0x08

@@ -19,6 +19,9 @@
 #include <linux/time.h>
 #include <linux/tick.h>
 
+#ifdef CONFIG_TIMECHANGE_EVENT
+#include <linux/timechange.h>
+#endif
 
 /*
  * This read-write spinlock protects us from races in SMP while
@@ -44,7 +47,15 @@ __cacheline_aligned_in_smp DEFINE_SEQLOCK(xtime_lock);
  */
 struct timespec xtime __attribute__ ((aligned (16)));
 struct timespec wall_to_monotonic __attribute__ ((aligned (16)));
-static unsigned long total_sleep_time;		/* seconds */
+
+/* wall_to_network
+
+ * Keeps a separate clock synced with network time regardless of changes to
+ * xtime.  Stored as a delta from xtime: xtime + wall_to_network yields
+ * current network time (UTC).
+ */
+struct timespec wall_to_network __attribute__ ((aligned (16)));
+unsigned long total_sleep_time;		/* seconds */
 
 static struct timespec xtime_cache __attribute__ ((aligned (16)));
 static inline void update_xtime_cache(u64 nsec)
@@ -116,7 +127,6 @@ void getnstimeofday(struct timespec *ts)
 }
 
 EXPORT_SYMBOL(getnstimeofday);
-
 /**
  * do_gettimeofday - Returns the time of day in a timeval
  * @tv:		pointer to the timeval to be set
@@ -133,6 +143,7 @@ void do_gettimeofday(struct timeval *tv)
 }
 
 EXPORT_SYMBOL(do_gettimeofday);
+
 /**
  * do_settimeofday - Sets the time of day
  * @tv:		pointer to the timespec variable containing the new time
@@ -142,8 +153,8 @@ EXPORT_SYMBOL(do_gettimeofday);
 int do_settimeofday(struct timespec *tv)
 {
 	unsigned long flags;
-	time_t wtm_sec, sec = tv->tv_sec;
-	long wtm_nsec, nsec = tv->tv_nsec;
+	time_t wtm_sec, wtn_sec, sec = tv->tv_sec;
+	s64 wtm_nsec, wtn_nsec, nsec = tv->tv_nsec;
 
 	if ((unsigned long)tv->tv_nsec >= NSEC_PER_SEC)
 		return -EINVAL;
@@ -154,9 +165,12 @@ int do_settimeofday(struct timespec *tv)
 
 	wtm_sec  = wall_to_monotonic.tv_sec + (xtime.tv_sec - sec);
 	wtm_nsec = wall_to_monotonic.tv_nsec + (xtime.tv_nsec - nsec);
+	wtn_sec  = wall_to_network.tv_sec + (xtime.tv_sec - sec);
+	wtn_nsec = wall_to_network.tv_nsec + (xtime.tv_nsec - nsec);
 
 	set_normalized_timespec(&xtime, sec, nsec);
 	set_normalized_timespec(&wall_to_monotonic, wtm_sec, wtm_nsec);
+	set_normalized_timespec( &wall_to_network, wtn_sec, wtn_nsec );
 
 	clock->error = 0;
 	ntp_clear();
@@ -167,6 +181,10 @@ int do_settimeofday(struct timespec *tv)
 
 	/* signal hrtimers about time change */
 	clock_was_set();
+
+#ifdef CONFIG_TIMECHANGE_EVENT
+	timechange_notify();
+#endif
 
 	return 0;
 }
@@ -262,6 +280,7 @@ void __init timekeeping_init(void)
 	xtime.tv_nsec = 0;
 	set_normalized_timespec(&wall_to_monotonic,
 		-xtime.tv_sec, -xtime.tv_nsec);
+	set_normalized_timespec(&wall_to_network, 0, 0 );
 	total_sleep_time = 0;
 
 	write_sequnlock_irqrestore(&xtime_lock, flags);

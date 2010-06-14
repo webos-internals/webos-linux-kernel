@@ -8,8 +8,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -80,23 +80,98 @@
 #define OMAP243X_GPMC_PHYS	OMAP243X_GPMC_BASE	/* 0x49000000 */
 #define OMAP243X_GPMC_VIRT	0xFE000000
 #define OMAP243X_GPMC_SIZE	SZ_1M
+#define OMAP243X_SDRC_PHYS	OMAP243X_SDRC_BASE
+#define OMAP243X_SDRC_VIRT	0xFD000000
+#define OMAP243X_SDRC_SIZE	SZ_1M
+#define OMAP243X_SMS_PHYS	OMAP243X_SMS_BASE
+#define OMAP243X_SMS_VIRT	0xFC000000
+#define OMAP243X_SMS_SIZE	SZ_1M
+
 #endif
 
 #define IO_OFFSET	0x90000000
 #define IO_ADDRESS(pa)	((pa) + IO_OFFSET)	/* Works for L3 and L4 */
+#define OMAP2_IO_ADDRESS(pa)	((pa) + IO_OFFSET)	/* Works for L3 and L4 */
 #define io_p2v(pa)	((pa) + IO_OFFSET)	/* Works for L3 and L4 */
 #define io_v2p(va)	((va) - IO_OFFSET)	/* Works for L3 and L4 */
 
 /* DSP */
-#define DSP_MEM_24XX_PHYS	OMAP24XX_DSP_MEM_BASE	/* 0x58000000 */
+#define DSP_MEM_24XX_PHYS	OMAP2420_DSP_MEM_BASE	/* 0x58000000 */
 #define DSP_MEM_24XX_VIRT	0xe0000000
 #define DSP_MEM_24XX_SIZE	0x28000
-#define DSP_IPI_24XX_PHYS	OMAP24XX_DSP_IPI_BASE	/* 0x59000000 */
+#define DSP_IPI_24XX_PHYS	OMAP2420_DSP_IPI_BASE	/* 0x59000000 */
 #define DSP_IPI_24XX_VIRT	0xe1000000
 #define DSP_IPI_24XX_SIZE	SZ_4K
-#define DSP_MMU_24XX_PHYS	OMAP24XX_DSP_MMU_BASE	/* 0x5a000000 */
+#define DSP_MMU_24XX_PHYS	OMAP2420_DSP_MMU_BASE	/* 0x5a000000 */
 #define DSP_MMU_24XX_VIRT	0xe2000000
 #define DSP_MMU_24XX_SIZE	SZ_4K
+
+#elif defined(CONFIG_ARCH_OMAP3)
+
+/* Select ARM view IO behavior */
+#ifdef CONFIG_INTERCONNECT_IO_POSTING
+/* ARM writes to devices are postable.  Further software 
+ * sychronization neeed ex: DSB or register read back 
+ */
+#define IO_MAP_TYPE	MT_DEVICE
+#else
+/* ARM writes to devices are sychronized */
+#define IO_MAP_TYPE	MT_MEMORY_SO
+#endif
+
+#define IO_OFFSET		0x90000000
+#define IO_ADDRESS(pa)		((pa) + IO_OFFSET)/* Works for the entire IO Map */
+#define OMAP2_IO_ADDRESS(pa)	((pa) + IO_OFFSET)/* Works for L3 and L4 */
+#define io_p2v(pa)		((pa) + IO_OFFSET)/* Works for the entire IO Map */
+#define io_v2p(va)		((va) - IO_OFFSET)/* Works for the entire IO Map */
+
+#define L4_PHYS		L4_BASE				/* 0x48000000 */
+#define L4_VIRT		(L4_PHYS + IO_OFFSET)		/* 0xD8000000 */
+#define L4_SIZE		SZ_4M	/* 1MB of 128MB used, want 1MB sect */
+
+
+#define L4_WK_PHYS	L4_WKUP_BASE			/* 0x48300000 */
+#define L4_WK_VIRT	(L4_WK_PHYS + IO_OFFSET)	/* 0xD8300000 */
+#define L4_WK_SIZE	SZ_1M
+
+#define L4_PER_PHYS	L4_PER_BASE			/* 0x49000000 */
+#define L4_PER_VIRT	(L4_PER_PHYS + IO_OFFSET) 	/* 0xD9000000 */
+#define L4_PER_SIZE	SZ_1M
+
+#define L4_EMU_PHYS	L4_EMU_BASE			/* 0x54000000 */
+#define L4_EMU_VIRT	(L4_EMU_PHYS + IO_OFFSET) 	/* 0xE4000000 */
+#define L4_EMU_SIZE	SZ_1M
+
+#define GFX_PHYS	GFX_BASE			/* 0x50000000 */
+#define GFX_VIRT	(GFX_PHYS + IO_OFFSET)		/* 0xE0000000 */
+#define GFX_SIZE	SZ_64K
+
+#define L3_PHYS		L3_BASE				/* 0x68000000 */
+#define L3_VIRT		(L3_PHYS + IO_OFFSET)		/* 0xF8000000 */
+#define L3_SIZE		SZ_1M	/* 81kB of 128MB used, want 1MB sect */
+
+#define SMS_PHYS 	SMS_BASE 			/* 0x6C000000*/
+#define SMS_VIRT 	(SMS_PHYS + IO_OFFSET)		/* 0xFC000000 */
+#define SMS_SIZE 	SZ_1M
+
+#define SDRC_PHYS 	SDRC_BASE			/* 0x6D000000*/
+#define SDRC_VIRT	(SDRC_PHYS + IO_OFFSET)		/* 0xFD000000 */
+#define SDRC_SIZE 	SZ_1M
+
+#define GPMC_PHYS 	GPMC_BASE			/* 0x6E000000 */
+#define GPMC_VIRT 	(GPMC_PHYS + IO_OFFSET)		/* 0xFE000000 */
+#define GPMC_SIZE 	SZ_1M
+
+/* DSP */
+#define DSP_MEM_34XX_PHYS	OMAP34XX_DSP_MEM_BASE	/* 0x58000000 */
+#define DSP_MEM_34XX_VIRT	0xe0000000
+#define DSP_MEM_34XX_SIZE	0x28000
+#define DSP_IPI_34XX_PHYS	OMAP34XX_DSP_IPI_BASE	/* 0x59000000 */
+#define DSP_IPI_34XX_VIRT	0xe1000000
+#define DSP_IPI_34XX_SIZE	SZ_4K
+#define DSP_MMU_34XX_PHYS	OMAP34XX_DSP_MMU_BASE	/* 0x5a000000 */
+#define DSP_MMU_34XX_VIRT	0xe2000000
+#define DSP_MMU_34XX_SIZE	SZ_4K
 
 #endif
 

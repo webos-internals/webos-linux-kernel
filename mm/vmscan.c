@@ -826,7 +826,7 @@ static unsigned long shrink_inactive_list(unsigned long max_scan,
 		 */
 		if (nr_freed < nr_taken && !current_is_kswapd() &&
 					sc->order > PAGE_ALLOC_COSTLY_ORDER) {
-			congestion_wait(WRITE, HZ/10);
+			congestion_wait(BLK_RW_ASYNC, HZ/10);
 
 			/*
 			 * The attempt at page out may have made some
@@ -1107,21 +1107,30 @@ static unsigned long shrink_zone(int priority, struct zone *zone,
 	unsigned long nr_inactive;
 	unsigned long nr_to_scan;
 	unsigned long nr_reclaimed = 0;
+	unsigned long tmp;
+	unsigned long zone_active;
+	unsigned long zone_inactive;
 
 	/*
 	 * Add one to `nr_to_scan' just to make sure that the kernel will
 	 * slowly sift through the active list.
 	 */
-	zone->nr_scan_active +=
-		(zone_page_state(zone, NR_ACTIVE) >> priority) + 1;
+	zone_active = zone_page_state(zone, NR_ACTIVE);
+	tmp = (zone_active >> priority) + 1;
+	if (unlikely(tmp > zone_active))
+		tmp = zone_active;
+	zone->nr_scan_active += tmp;
 	nr_active = zone->nr_scan_active;
 	if (nr_active >= sc->swap_cluster_max)
 		zone->nr_scan_active = 0;
 	else
 		nr_active = 0;
 
-	zone->nr_scan_inactive +=
-		(zone_page_state(zone, NR_INACTIVE) >> priority) + 1;
+	zone_inactive = zone_page_state(zone, NR_INACTIVE);
+	tmp = (zone_inactive >> priority) + 1;
+	if (unlikely(tmp > zone_inactive))
+		tmp = zone_inactive;
+	zone->nr_scan_inactive += tmp;
 	nr_inactive = zone->nr_scan_inactive;
 	if (nr_inactive >= sc->swap_cluster_max)
 		zone->nr_scan_inactive = 0;
@@ -1267,7 +1276,7 @@ unsigned long try_to_free_pages(struct zone **zones, int order, gfp_t gfp_mask)
 
 		/* Take a nap, wait for some writeback to complete */
 		if (sc.nr_scanned && priority < DEF_PRIORITY - 2)
-			congestion_wait(WRITE, HZ/10);
+			congestion_wait(BLK_RW_ASYNC, HZ/10);
 	}
 	/* top priority shrink_caches still had more to do? don't OOM, then */
 	if (!sc.all_unreclaimable)
@@ -1445,7 +1454,7 @@ loop_again:
 		 * another pass across the zones.
 		 */
 		if (total_scanned && priority < DEF_PRIORITY - 2)
-			congestion_wait(WRITE, HZ/10);
+			congestion_wait(BLK_RW_ASYNC, HZ/10);
 
 		/*
 		 * We do this so kswapd doesn't build up large priorities for
@@ -1702,7 +1711,7 @@ unsigned long shrink_all_memory(unsigned long nr_pages)
 				goto out;
 
 			if (sc.nr_scanned && prio < DEF_PRIORITY - 2)
-				congestion_wait(WRITE, HZ / 10);
+				congestion_wait(BLK_RW_ASYNC, HZ / 10);
 		}
 	}
 

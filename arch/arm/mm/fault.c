@@ -18,6 +18,10 @@
 #include <asm/tlbflush.h>
 #include <asm/uaccess.h>
 
+#ifdef CONFIG_KGDB_ATTACH_WAIT_ON_SIGSEGV
+#include <linux/kgdb.h>
+#endif
+
 #include "fault.h"
 
 /*
@@ -118,6 +122,30 @@ __do_user_fault(struct task_struct *tsk, unsigned long addr,
 		show_pte(tsk->mm, addr);
 		show_regs(regs);
 	}
+#endif
+
+#ifdef CONFIG_KGDB_ATTACH_WAIT_ON_SIGSEGV
+	/* If CONFIG_KGDB_ATTACH_WAIT_ON_SIGSEGV is defined we want to break
+	 * into the KGDB debugger before we send the signal to the user
+	 * process. This allows us to examine the cause of the SIGSEGV before
+	 * resuming execution.
+	 *
+	 * CONFIG_KGDB_ATTACH_WAIT_ON_SIGSEGV depends on KGDB to be compiled
+	 * into the kernel and can be enabled in menuconfig at:
+	 *
+	 * -> Kernel hacking
+	 *   [*] KGDB: Wait for debugger to attach on an user space SIGSEGV
+	 */
+
+#ifdef CONFIG_OE_SEND_BUILD_INFO_ON_SIGSEGV
+	/* Before we hit the breakpoint, we need to make sure that our
+	 * transport is up and running, wait for the host to connect and send
+	 * the build metadata to the host.
+	 */
+	/* TODO */
+#endif
+
+	breakpoint();
 #endif
 
 	tsk->thread.address = addr;

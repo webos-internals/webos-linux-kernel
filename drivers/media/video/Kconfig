@@ -672,6 +672,8 @@ source "drivers/media/video/cx23885/Kconfig"
 
 source "drivers/media/video/ivtv/Kconfig"
 
+source "drivers/media/video/omappe/Kconfig"
+
 config VIDEO_M32R_AR
 	tristate "AR devices"
 	depends on M32R && VIDEO_V4L1
@@ -699,6 +701,30 @@ config VIDEO_CAFE_CCIC
 	  This is a video4linux2 driver for the Marvell 88ALP01 integrated
 	  CMOS camera controller.  This is the controller found on first-
 	  generation OLPC systems.
+
+config VIDEO_VX6852
+	tristate "ST VX6852 sensor driver"
+
+config VIDEO_VX6852_SETTING
+	bool "SMIA 1.0 personality file support"
+	depends on VIDEO_VX6852
+	select VIDEO_SMIA10
+
+config VIDEO_VX6852_SETTING_PROFILE
+	bool "Profile personification"
+	depends on VIDEO_VX6852_SETTING
+
+config VIDEO_VX6852_SILICON_BUG_HACKS
+	bool "Employ hacks for silicon bugs"
+	depends on VIDEO_VX6852
+
+config VIDEO_VX6852_DBG
+	bool "Debugging support"
+	depends on VIDEO_VX6852
+
+config VIDEO_VX6852_I2C_LOG
+	bool "Enable logging for i2c writes to the vx6852 sensor"
+	depends on VIDEO_VX6852
 
 #
 # USB Multimedia device configuration

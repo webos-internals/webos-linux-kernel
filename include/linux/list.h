@@ -20,6 +20,19 @@
 
 struct list_head {
 	struct list_head *next, *prev;
+#ifdef CONFIG_DEBUG_FREE_PAGE_LIST_PALM
+#define LIST_DEBUG_MAGIC_IN_FREE_LIST		0x19691969
+#define LIST_DEBUG_MAGIC_NOT_IN_FREE_LIST	0x23092309
+	/* NOTE:
+	 *
+	 * When adding this field to struct list_head we also need to change
+	 * struct raw_prio_tree_node and struct prio_tree_node as there are
+	 * assumptions being made about the size of struct list_head and the
+	 * location of the 'parent' field in the prio_tree structs. These
+	 * changes can be found in include/linux/prio_tree.h
+	 */
+	u32 magic;
+#endif
 };
 
 #define LIST_HEAD_INIT(name) { &(name), &(name) }
@@ -31,6 +44,9 @@ static inline void INIT_LIST_HEAD(struct list_head *list)
 {
 	list->next = list;
 	list->prev = list;
+#ifdef CONFIG_DEBUG_FREE_PAGE_LIST_PALM
+	list->magic = LIST_DEBUG_MAGIC_NOT_IN_FREE_LIST;
+#endif
 }
 
 /*

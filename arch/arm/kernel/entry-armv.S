@@ -280,7 +280,6 @@ __pabt_svc:
 	mrs	r9, cpsr
 	tst	r3, #PSR_I_BIT
 	biceq	r9, r9, #PSR_I_BIT
-	msr	cpsr_c, r9
 
 	@
 	@ set args, then call main handler
@@ -288,7 +287,15 @@ __pabt_svc:
 	@  r0 - address of faulting instruction
 	@  r1 - pointer to registers on stack
 	@
-	mov	r0, r2				@ address (pc)
+#ifdef MULTI_PABORT
+	mov	r0, r2			@ pass address of aborted instruction.
+	ldr	r4, .LCprocfns
+	mov	lr, pc
+	ldr	pc, [r4, #]
+#else
+	CPU_PABORT_HANDLER(r0, r2)
+#endif
+	msr	cpsr_c, r9			@ Maybe enable interrupts
 	mov	r1, sp				@ regs
 	bl	do_PrefetchAbort		@ call abort handler
 
@@ -442,10 +449,6 @@ __irq_usr:
 __und_usr:
 	usr_entry
 
-	tst	r3, #PSR_T_BIT			@ Thumb mode?
-	bne	__und_usr_unknown		@ ignore FP
-	sub	r4, r2, #4
-
 	@
 	@ fall through to the emulation code, which returns using r9 if
 	@ it has emulated the instruction, or the more conventional lr
@@ -455,7 +458,25 @@ __und_usr:
 	@
 	adr	r9, ret_from_exception
 	adr	lr, __und_usr_unknown
-1:	ldrt	r0, [r4]
+
+	tst	r3, #PSR_T_BIT			@ Thumb mode?
+	subeq	r4, r2, #4			@ ARM instr at LR - 4
+	subne	r4, r2, #2			@ Thumb instr at LR - 2
+1:	ldreqt	r0, [r4]
+	beq	call_fpe
+	@ Thumb instruction
+#if __LINUX_ARM_ARCH__ >= 7
+2:	ldrht	r5, [r4], #2
+	and	r0, r5, #0xf800			@ mask bits 111x x... .... ....
+	cmp	r0, #0xe800			@ 32bit instruction if xx != 0
+	blo	__und_usr_unknown
+3:	ldrht	r0, [r4]
+	add	r2, r2, #2			@ r2 is PC + 2, make it PC + 4
+	orr	r0, r0, r5, lsl #16
+#else
+	b	__und_usr_unknown
+#endif
+
 	@
 	@ fallthrough to call_fpe
 	@
@@ -464,10 +485,14 @@ __und_usr:
  * The out of line fixup for the ldrt above.
  */
 	.section .fixup, "ax"
-2:	mov	pc, r9
+4:	mov	pc, r9
 	.previous
 	.section __ex_table,"a"
-	.long	1b, 2b
+	.long	1b, 4b
+#if __LINUX_ARM_ARCH__ >= 7
+	.long	2b, 4b
+	.long	3b, 4b
+#endif
 	.previous
 
 /*
@@ -480,6 +505,13 @@ __und_usr:
  * co-processor instructions.  However, we have to watch out
  * for the ARM6/ARM7 SWI bug.
  *
+ * Neon is a special case that has to be handled here. Not all
+ * Neon instructions are co-processor instructions, so we have
+ * to make a special case of checking for them. Plus, there's
+ * five groups of them, so we have a table of mask/opcode pairs
+ * to check against, and if any match then we branch off into the
+ * Neon handler code.
+ *
  * Emulators may wish to make use of the following registers:
  *  r0  = instruction opcode.
  *  r2  = PC+4
@@ -487,8 +519,31 @@ __und_usr:
  *  r10 = this threads thread_info structure.
  *  lr  = unrecognised instruction return address
  */
+	@
+	@ Fall-through from Thumb-2 __und_usr
+	@
+#ifdef CONFIG_NEON
+	adr	r6, .LCneon_thumb_opcodes
+	b	2f
+#endif
 call_fpe:
+#ifdef CONFIG_NEON
+	adr	r6, .LCneon_arm_opcodes
+2:
+	ldr	r7, [r6],#4			@ mask value
+	cmp	r7, #0
+	beq	1f				@ if mask is 0 then we've done
+	and	r8, r0, r7
+	ldr	r7, [r6],#4			@ opcode bits matching in mask
+	cmp	r8, r7
+	bne	2b
+	get_thread_info r10
+	enable_irq
+	b	do_vfp				@ Let VFP handler handle this
+1:
+#endif
 	tst	r0, #0x08000000			@ only CDP/CPRT/LDC/STC have bit 27
+	tstne	r0, #0x04000000			@ bit 26 set on both ARM and Thumb-2
 #if defined(CONFIG_CPU_ARM610) || defined(CONFIG_CPU_ARM710)
 	and	r8, r0, #0x0f000000		@ mask out op-code bits
 	teqne	r8, #0x0f000000			@ SWI (ARM6/7 bug)?
@@ -537,6 +592,39 @@ call_fpe:
 	mov	pc, lr				@ CP#14 (Debug)
 	mov	pc, lr				@ CP#15 (Control)
 
+#ifdef CONFIG_NEON
+	.align	6
+
+.LCneon_arm_opcodes:
+	.word	0xfe000000			@ mask
+	.word	0xf2000000			@ opcode
+
+	.word	0x0e000f00			@ mask
+	.word	0x0c000b00			@ opcode
+
+	.word	0xff100000			@ mask
+	.word	0xf4000000			@ opcode
+
+	.word	0x0f000f10			@ mask
+	.word	0x0e000b10			@ opcode
+
+	.word	0x0fe00fd0			@ mask
+	.word	0x0c400b10			@ opcode
+
+	.word	0x00000000			@ mask
+	.word	0x00000000			@ opcode
+
+.LCneon_thumb_opcodes:
+	.word	0xef000000			@ mask
+	.word	0xef000000			@ opcode
+
+	.word	0xff100000			@ mask
+	.word	0xf9000000			@ opcode
+
+	.word	0x00000000			@ mask
+	.word	0x00000000			@ opcode
+#endif
+
 do_fpe:
 	enable_irq
 	ldr	r4, .LCfp
@@ -568,8 +656,15 @@ __und_usr_unknown:
 __pabt_usr:
 	usr_entry
 
+#ifdef MULTI_PABORT
+	mov	r0, r2			@ pass address of aborted instruction.
+	ldr	r4, .LCprocfns
+	mov	lr, pc
+	ldr	pc, [r4, #]
+#else
+	CPU_PABORT_HANDLER(r0, r2)
+#endif
 	enable_irq				@ Enable interrupts
-	mov	r0, r2				@ address (pc)
 	mov	r1, sp				@ regs
 	bl	do_PrefetchAbort		@ call abort handler
 	/* fall through */
@@ -590,6 +685,12 @@ ENTRY(__switch_to)
 	add	ip, r1, #TI_CPU_SAVE
 	ldr	r3, [r2, #TI_TP_VALUE]
 	stmia	ip!, {r4 - sl, fp, sp, lr}	@ Store most regs on stack
+#ifdef CONFIG_ARM_XENON
+	mrc	p14, 6, r4, c1, c0, 0		@ current xenon state
+	ldr	r5, [r2, #TI_XENONSTATE]	@ value to restore
+	str	r4, [r1, #TI_XENONSTATE]	@ save current
+	mcr	p14, 6, r5, c1, c0, 0		@ restore new value
+#endif
 #ifdef CONFIG_MMU
 	ldr	r6, [r2, #TI_CPU_DOMAIN]
 #endif

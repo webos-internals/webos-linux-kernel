@@ -7,8 +7,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -209,7 +209,7 @@ static void __init osk_init_smc91x(void)
 
 static void __init osk_init_cf(void)
 {
-	omap_cfg_reg(M7_1610_GPIO62);
+	omap_cfg_reg("M7_1610_GPIO62");
 	if ((omap_request_gpio(62)) < 0) {
 		printk("Error requesting gpio 62 for CF irq\n");
 		return;
@@ -253,7 +253,7 @@ static struct omap_lcd_config osk_lcd_config __initdata = {
 };
 #endif
 
-static struct omap_board_config_kernel osk_config[] = {
+static struct omap_board_config_kernel osk_config[] __initdata = {
 	{ OMAP_TAG_USB,           &osk_usb_config },
 	{ OMAP_TAG_UART,		&osk_uart_config },
 #ifdef	CONFIG_OMAP_OSK_MISTRAL
@@ -373,45 +373,45 @@ static void __init osk_mistral_init(void)
 	 */
 
 	/* parallel camera interface */
-	omap_cfg_reg(J15_1610_CAM_LCLK);
-	omap_cfg_reg(J18_1610_CAM_D7);
-	omap_cfg_reg(J19_1610_CAM_D6);
-	omap_cfg_reg(J14_1610_CAM_D5);
-	omap_cfg_reg(K18_1610_CAM_D4);
-	omap_cfg_reg(K19_1610_CAM_D3);
-	omap_cfg_reg(K15_1610_CAM_D2);
-	omap_cfg_reg(K14_1610_CAM_D1);
-	omap_cfg_reg(L19_1610_CAM_D0);
-	omap_cfg_reg(L18_1610_CAM_VS);
-	omap_cfg_reg(L15_1610_CAM_HS);
-	omap_cfg_reg(M19_1610_CAM_RSTZ);
-	omap_cfg_reg(Y15_1610_CAM_OUTCLK);
+	omap_cfg_reg("J15_1610_CAM_LCLK");
+	omap_cfg_reg("J18_1610_CAM_D7");
+	omap_cfg_reg("J19_1610_CAM_D6");
+	omap_cfg_reg("J14_1610_CAM_D5");
+	omap_cfg_reg("K18_1610_CAM_D4");
+	omap_cfg_reg("K19_1610_CAM_D3");
+	omap_cfg_reg("K15_1610_CAM_D2");
+	omap_cfg_reg("K14_1610_CAM_D1");
+	omap_cfg_reg("L19_1610_CAM_D0");
+	omap_cfg_reg("L18_1610_CAM_VS");
+	omap_cfg_reg("L15_1610_CAM_HS");
+	omap_cfg_reg("M19_1610_CAM_RSTZ");
+	omap_cfg_reg("Y15_1610_CAM_OUTCLK");
 
 	/* serial camera interface */
-	omap_cfg_reg(H19_1610_CAM_EXCLK);
-	omap_cfg_reg(W13_1610_CCP_CLKM);
-	omap_cfg_reg(Y12_1610_CCP_CLKP);
+	omap_cfg_reg("H19_1610_CAM_EXCLK");
+	omap_cfg_reg("W13_1610_CCP_CLKM");
+	omap_cfg_reg("Y12_1610_CCP_CLKP");
 	/* CCP_DATAM CONFLICTS WITH UART1.TX (and serial console) */
-	// omap_cfg_reg(Y14_1610_CCP_DATAM);
-	omap_cfg_reg(W14_1610_CCP_DATAP);
+	// omap_cfg_reg("Y14_1610_CCP_DATAM");
+	omap_cfg_reg("W14_1610_CCP_DATAP");
 
 	/* CAM_PWDN */
 	if (omap_request_gpio(11) == 0) {
-		omap_cfg_reg(N20_1610_GPIO11);
+		omap_cfg_reg("N20_1610_GPIO11");
 		omap_set_gpio_direction(11, 0 /* out */);
 		omap_set_gpio_dataout(11, 0 /* off */);
 	} else
 		pr_debug("OSK+Mistral: CAM_PWDN is awol\n");
 
 
-	// omap_cfg_reg(P19_1610_GPIO6);	// BUSY
-	omap_cfg_reg(P20_1610_GPIO4);	// PENIRQ
+	// omap_cfg_reg("P19_1610_GPIO6");	// BUSY
+	omap_cfg_reg("P20_1610_GPIO4");	// PENIRQ
 	set_irq_type(OMAP_GPIO_IRQ(4), IRQT_FALLING);
 	spi_register_board_info(mistral_boardinfo,
 			ARRAY_SIZE(mistral_boardinfo));
 
 	/* the sideways button (SW1) is for use as a "wakeup" button */
-	omap_cfg_reg(N15_1610_MPUIO2);
+	omap_cfg_reg("N15_1610_MPUIO2");
 	if (omap_request_gpio(OMAP_MPUIO(2)) == 0) {
 		int ret = 0;
 		omap_set_gpio_direction(OMAP_MPUIO(2), 1);
@@ -437,7 +437,7 @@ static void __init osk_mistral_init(void)
 	/* LCD:  backlight, and power; power controls other devices on the
 	 * board, like the touchscreen, EEPROM, and wakeup (!) switch.
 	 */
-	omap_cfg_reg(PWL);
+	omap_cfg_reg("PWL");
 	if (omap_request_gpio(2) == 0) {
 		omap_set_gpio_direction(2, 0 /* out */);
 		omap_set_gpio_dataout(2, 1 /* on */);
@@ -469,7 +469,7 @@ static void __init osk_init(void)
 	USB_TRANSCEIVER_CTRL_REG |= (3 << 1);
 
 	/* irq for tps65010 chip */
-	/* bootloader effectively does:  omap_cfg_reg(U19_1610_MPUIO1); */
+	/* bootloader effectively does:  omap_cfg_reg("U19_1610_MPUIO1"); */
 	if (gpio_request(OMAP_MPUIO(1), "tps65010") == 0)
 		gpio_direction_input(OMAP_MPUIO(1));
 

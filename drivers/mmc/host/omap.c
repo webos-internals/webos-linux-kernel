@@ -21,6 +21,7 @@
 #include <linux/delay.h>
 #include <linux/spinlock.h>
 #include <linux/timer.h>
+#include <linux/mmc/mmc.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
 #include <linux/clk.h>
@@ -36,6 +37,7 @@
 #include <asm/arch/mux.h>
 #include <asm/arch/fpga.h>
 #include <asm/arch/tps65010.h>
+#include <asm/arch/board-sx1.h>
 
 #define	OMAP_MMC_REG_CMD	0x00
 #define	OMAP_MMC_REG_ARGL	0x04
@@ -568,9 +570,8 @@ static void mmc_omap_switch_timer(unsigned long arg)
 static void mmc_omap_switch_handler(struct work_struct *work)
 {
 	struct mmc_omap_host *host = container_of(work, struct mmc_omap_host, switch_work);
-	struct mmc_card *card;
 	static int complained = 0;
-	int cards = 0, cover_open;
+	int cover_open;
 
 	if (host->switch_pin == -1)
 		return;
@@ -580,10 +581,6 @@ static void mmc_omap_switch_handler(struct work_struct *work)
 		host->switch_last_state = cover_open;
 	}
 	mmc_detect_change(host->mmc, 0);
-	list_for_each_entry(card, &host->mmc->cards, node) {
-		if (mmc_card_present(card))
-			cards++;
-	}
 	if (mmc_omap_cover_is_open(host)) {
 		if (!complained) {
 			dev_info(mmc_dev(host->mmc), "cover is open\n");
@@ -888,7 +885,9 @@ static void innovator_fpga_socket_power(int on)
  */
 static void mmc_omap_power(struct mmc_omap_host *host, int on)
 {
-	if (on) {
+	if (machine_is_sx1())
+		sx1_setmmcpower(on);
+	else if (on) {
 		if (machine_is_omap_innovator())
 			innovator_fpga_socket_power(1);
 		else if (machine_is_omap_h2())

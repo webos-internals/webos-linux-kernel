@@ -265,8 +265,11 @@ static void videobuf_status(struct videobuf_queue *q, struct v4l2_buffer *b,
 		b->flags |= V4L2_BUF_FLAG_QUEUED;
 		break;
 	case STATE_DONE:
-	case STATE_ERROR:
 		b->flags |= V4L2_BUF_FLAG_DONE;
+		break;
+	case STATE_ERROR:
+		b->flags |= V4L2_BUF_FLAG_DONE | V4L2_BUF_FLAG_ERROR;
+		vb->state = STATE_IDLE;
 		break;
 	case STATE_NEEDS_INIT:
 	case STATE_IDLE:
@@ -597,9 +600,7 @@ int videobuf_dqbuf(struct videobuf_queue *q,
 	switch (buf->state) {
 	case STATE_ERROR:
 		dprintk(1,"dqbuf: state is error\n");
-		retval = -EIO;
 		CALL(q,sync,q, buf);
-		buf->state = STATE_IDLE;
 		break;
 	case STATE_DONE:
 		dprintk(1,"dqbuf: state is done\n");

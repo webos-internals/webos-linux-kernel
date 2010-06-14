@@ -1709,7 +1709,11 @@ int usb_port_suspend(struct usb_device *udev)
 	 * NOTE:  OTG devices may issue remote wakeup (or SRP) even when
 	 * we don't explicitly enable it here.
 	 */
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	if (0) {
+#else
 	if (udev->do_remote_wakeup) {
+#endif
 		status = usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
 				USB_REQ_SET_FEATURE, USB_RECIP_DEVICE,
 				USB_DEVICE_REMOTE_WAKEUP, 0,
@@ -2647,6 +2651,26 @@ done:
 	hub_port_disable(hub, port1, 1);
 }
 
+#ifdef CONFIG_MODEM_POWER_ON_NOTIFY
+extern struct raw_notifier_head modem_power_on_notifier_list;
+
+static int port_status_change_enabled = 0;
+
+static int
+modem_power_on_cb(struct notifier_block *nb, unsigned long val, void *ctxt)
+{
+	printk(KERN_INFO "%s: modem power %s notified\n", usbcore_name,
+	       val ? "on" : "off");
+	port_status_change_enabled = val;
+	return 0;
+}
+
+static struct notifier_block modem_power_on_nb = {
+	.notifier_call = modem_power_on_cb,
+};
+
+#endif
+
 static void hub_events(void)
 {
 	struct list_head *tmp;
@@ -2732,6 +2756,11 @@ static void hub_events(void)
 			hub->nerrors = 0;
 			hub->error = 0;
 		}
+
+#ifdef CONFIG_MODEM_POWER_ON_NOTIFY
+		if (!port_status_change_enabled)
+			goto skip;
+#endif
 
 		/* deal with port status changes */
 		for (i = 1; i <= hub->descriptor->bNbrPorts; i++) {
@@ -2824,6 +2853,9 @@ static void hub_events(void)
 						portstatus, portchange);
 		} /* end for i */
 
+#ifdef CONFIG_MODEM_POWER_ON_NOTIFY
+	skip:
+#endif
 		/* deal with hub status changes */
 		if (test_and_clear_bit(0, hub->event_bits) == 0)
 			;	/* do nothing */
@@ -2911,6 +2943,11 @@ int usb_hub_init(void)
 		return -1;
 	}
 
+#ifdef CONFIG_MODEM_POWER_ON_NOTIFY
+	raw_notifier_chain_register(&modem_power_on_notifier_list,
+				    &modem_power_on_nb);
+#endif
+
 	khubd_task = kthread_run(hub_thread, NULL, "khubd");
 	if (!IS_ERR(khubd_task))
 		return 0;
@@ -2926,6 +2963,10 @@ void usb_hub_cleanup(void)
 {
 	kthread_stop(khubd_task);
 
+#ifdef CONFIG_MODEM_POWER_ON_NOTIFY
+	raw_notifier_chain_unregister(&modem_power_on_notifier_list,
+				      &modem_power_on_nb);
+#endif
 	/*
 	 * Hub resources are freed for us by usb_deregister. It calls
 	 * usb_driver_purge on every device which in turn calls that

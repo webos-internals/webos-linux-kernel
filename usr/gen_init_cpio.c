@@ -22,6 +22,8 @@
 
 static unsigned int offset;
 static unsigned int ino = 721;
+static time_t mtime;
+
 
 struct file_handler {
 	const char *type;
@@ -102,7 +104,6 @@ static int cpio_mkslink(const char *name, const char *target,
 			 unsigned int mode, uid_t uid, gid_t gid)
 {
 	char s[256];
-	time_t mtime = time(NULL);
 
 	sprintf(s,"%s%08X%08X%08lX%08lX%08X%08lX"
 	       "%08X%08X%08X%08X%08X%08X%08X",
@@ -150,7 +151,6 @@ static int cpio_mkgeneric(const char *name, unsigned int mode,
 		       uid_t uid, gid_t gid)
 {
 	char s[256];
-	time_t mtime = time(NULL);
 
 	sprintf(s,"%s%08X%08X%08lX%08lX%08X%08lX"
 	       "%08X%08X%08X%08X%08X%08X%08X",
@@ -238,7 +238,6 @@ static int cpio_mknod(const char *name, unsigned int mode,
 		       unsigned int maj, unsigned int min)
 {
 	char s[256];
-	time_t mtime = time(NULL);
 
 	if (dev_type == 'b')
 		mode |= S_IFBLK;
@@ -493,7 +492,7 @@ int main (int argc, char *argv[])
 	int ec = 0;
 	int line_nr = 0;
 
-	if (2 != argc) {
+	if (2 != argc && 4 != argc ) {
 		usage(argv[0]);
 		exit(1);
 	}
@@ -507,6 +506,20 @@ int main (int argc, char *argv[])
 		exit(1);
 	}
 
+	mtime = time(NULL);
+	if (argc >= 4 ) {
+		if (!strcmp(argv[2], "-t")) {
+			unsigned long tm;
+			sscanf(argv[3], "%ld", &tm );
+			mtime = (time_t) tm;
+		}
+	} else {
+		char *env = getenv("KCONFIG_NOTIMESTAMP");
+		if (env && *env) {
+			mtime = (time_t) 0;
+		}
+	}
+	
 	while (fgets(line, LINE_SIZE, cpio_list)) {
 		int type_idx;
 		size_t slen = strlen(line);

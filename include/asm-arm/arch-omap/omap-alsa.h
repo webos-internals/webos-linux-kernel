@@ -11,8 +11,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -46,6 +46,25 @@
 #include <sound/pcm.h>
 #include <asm/arch/mcbsp.h>
 #include <linux/platform_device.h>
+/*
+ * Debug functions
+ */
+#undef DEBUG
+//#define DEBUG
+
+#define ERR(ARGS...) printk(KERN_ERR "{%s}-ERROR: ", __FUNCTION__);printk(ARGS);
+
+#ifdef DEBUG
+#define DPRINTK(ARGS...)  printk(KERN_INFO "<%s>: ",__FUNCTION__);printk(ARGS)
+#define ADEBUG() printk("XXX Alsa debug f:%s, l:%d\n", __FUNCTION__, __LINE__)
+#define FN_IN printk(KERN_INFO "[%s]: start\n", __FUNCTION__)
+#define FN_OUT(n) printk(KERN_INFO "[%s]: end(%u)\n",__FUNCTION__, n)
+#else
+#define DPRINTK(ARGS...)	/* nop */
+#define ADEBUG()		/* nop */
+#define FN_IN			/* nop */
+#define FN_OUT(n)		/* nop */
+#endif
 
 #define DMA_BUF_SIZE	(1024 * 8)
 

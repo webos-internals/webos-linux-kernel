@@ -421,6 +421,8 @@ int sysfs_add_one(struct sysfs_addrm_cxt *acxt, struct sysfs_dirent *sd)
 	if (sysfs_find_dirent(acxt->parent_sd, sd->s_name)) {
 		printk(KERN_WARNING "sysfs: duplicate filename '%s' "
 		       "can not be created\n", sd->s_name);
+		/* REVISIT qc modem always causes this error - tk */
+		if (strncmp(sd->s_name, "usbdev", 6) != 0)
 		WARN_ON(1);
 		return -EEXIST;
 	}

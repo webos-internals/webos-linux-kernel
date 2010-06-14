@@ -451,6 +451,12 @@ struct device {
 	void	(*release)(struct device * dev);
 };
 
+static inline const char *dev_name(struct device *dev)
+{
+	/* will be changed into kobject_name(&dev->kobj) in the near future */
+	return dev->bus_id;
+}
+
 #ifdef CONFIG_NUMA
 static inline int dev_to_node(struct device *dev)
 {
@@ -555,7 +561,8 @@ extern void firmware_unregister(struct kset *);
 /* debugging and troubleshooting/diagnostic helpers. */
 extern const char *dev_driver_string(struct device *dev);
 #define dev_printk(level, dev, format, arg...)	\
-	printk(level "%s %s: " format , dev_driver_string(dev) , (dev)->bus_id , ## arg)
+	printk(level "%s %s: " format , dev_driver_string(dev) , \
+	       dev_name(dev) , ## arg)
 
 #ifdef DEBUG
 #define dev_dbg(dev, format, arg...)		\

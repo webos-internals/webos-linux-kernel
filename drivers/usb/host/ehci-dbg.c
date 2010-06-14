@@ -3,8 +3,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -783,6 +783,45 @@ show_registers (struct class_device *class_dev, char *buf)
 	size -= temp;
 	next += temp;
 #endif
+
+//#define ULPI_DEBUG
+#ifdef ULPI_DEBUG
+        //Output: ULPI registers
+        omap_writel( (0<<16)| (3<<22) | (1<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug("\n\n Port1: ISP1504 vid-low = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        omap_writel( (1<<16)| (3<<22) | (1<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug(" Port1: ISP1504 vid-high = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        omap_writel( (2<<16)| (3<<22) | (1<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug(" Port1: ISP1504 pid-low = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        omap_writel( (3<<16)| (3<<22) | (1<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug(" Port1: ISP1504 pid-high = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        omap_writel( (0xA<<16)| (3<<22) | (1<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug(" Port1:  ISP1504 OTG-CTRL[1] = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        pr_debug(" Port1: ISP1504 Expected CC-04-04-15\n");
+
+        omap_writel( (0<<16)| (3<<22) | (2<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug("\n\n Port2: ISP1504 vid-low = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        omap_writel( (1<<16)| (3<<22) | (2<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug(" Port2: ISP1504 vid-high = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        omap_writel( (2<<16)| (3<<22) | (2<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug(" Port2: ISP1504 pid-low = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        omap_writel( (3<<16)| (3<<22) | (2<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug(" Port2: ISP1504 pid-high = 0x%x\n", omap_readl(0x480648A4) & 0xFF);
+        pr_debug(" Port2: ISP1504 Expected CC-04-04-15\n");
+        omap_writel( (0xA<<16)| (3<<22) | (2<<24) | (1<<31), 0x480648A4);
+        while( !(omap_readl(0x480648A4) & (1<<31)) );
+        pr_debug(" Port2: ISP1504 OTG-CTRL[2] = 0x%x\n\n", omap_readl(0x480648A4) & 0xFF);
+#endif
+#undef ULPI_DEBUG
 
 done:
 	spin_unlock_irqrestore (&ehci->lock, flags);

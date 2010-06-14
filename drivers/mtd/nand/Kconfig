@@ -69,6 +69,19 @@ config MTD_NAND_AMS_DELTA
 	help
 	  Support for NAND flash on Amstrad E3 (Delta).
 
+config MTD_NAND_OMAP
+	tristate "NAND Flash device on OMAP 3430SDP/H4/H3/H2/P2 boards"
+	depends on ARM && MTD_NAND && (ARCH_OMAP1 || ARCH_OMAP_H2 || MACH_OMAP_H3 || MACH_OMAP_PERSEUS2 || ARCH_OMAP34XX)
+	help
+	  Support for NAND flash on Texas Instruments H3/H2/P2 platforms.
+
+config MTD_NAND_OMAP_HW
+	bool "OMAP HW NAND Flash controller support"
+        depends on ARM && ARCH_OMAP16XX && MTD_NAND
+
+	help
+	  Driver for TI OMAP16xx hardware NAND flash controller.
+
 config MTD_NAND_TOTO
 	tristate "NAND Flash device on TOTO board"
 	depends on ARCH_OMAP && BROKEN
@@ -305,5 +318,11 @@ config MTD_ALAUDA
 	help
 	  These two (and possibly other) Alauda-based cardreaders for
 	  SmartMedia and xD allow raw flash access.
+
+config MTD_NAND_BRISKET
+	tristate "NAND Flash device on Brisket (aka Joplin) board"
+	depends on ARM && MTD_NAND && ARCH_OMAP24XX
+	help
+	  Support for NAND flash on Brisket (aka Joplin OMAP2430) board.
 
 endif # MTD_NAND

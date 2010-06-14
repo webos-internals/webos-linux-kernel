@@ -9,8 +9,8 @@
  * 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
@@ -44,6 +44,9 @@
 #include "hcd.h"
 #include "hub.h"
 
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+#include <linux/modem_activity.h>
+#endif
 
 /*-------------------------------------------------------------------------*/
 
@@ -1422,6 +1425,9 @@ int hcd_bus_suspend(struct usb_device *rhdev)
 	if (status == 0) {
 		usb_set_device_state(rhdev, USB_STATE_SUSPENDED);
 		hcd->state = HC_STATE_SUSPENDED;
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+		modem_activity_usb_suspend();
+#endif
 	} else {
 		hcd->state = old_state;
 		dev_dbg(&rhdev->dev, "bus %s fail, err %d\n",
@@ -1443,6 +1449,14 @@ int hcd_bus_resume(struct usb_device *rhdev)
 	if (hcd->state == HC_STATE_RUNNING)
 		return 0;
 
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	status = modem_activity_usb_resume(1000);
+	if (status) {
+		printk(KERN_ERR "%s: modem doesn't wake up (error %d)\n",
+		       __func__, status);
+		return -ETIMEDOUT;
+	}
+#endif
 	hcd->state = HC_STATE_RESUMING;
 	status = hcd->driver->bus_resume(hcd);
 	if (status == 0) {

@@ -11,8 +11,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -61,12 +61,14 @@ static void omap_set_vpp(struct map_info *map, int enable)
 {
 	static int	count;
 
-	if (enable) {
-		if (count++ == 0)
-			OMAP_EMIFS_CONFIG_REG |= OMAP_EMIFS_CONFIG_WP;
-	} else {
-		if (count && (--count == 0))
-			OMAP_EMIFS_CONFIG_REG &= ~OMAP_EMIFS_CONFIG_WP;
+	if ((!cpu_is_omap24xx()) && (!cpu_is_omap34xx()) ) {
+		if (enable) {
+			if (count++ == 0)
+				OMAP_EMIFS_CONFIG_REG |= OMAP_EMIFS_CONFIG_WP;
+		} else {
+			if (count && (--count == 0))
+				OMAP_EMIFS_CONFIG_REG &= ~OMAP_EMIFS_CONFIG_WP;
+		}
 	}
 }
 
@@ -105,6 +107,13 @@ static int __devinit omapflash_probe(struct platform_device *pdev)
 		goto out_iounmap;
 	}
 	info->mtd->owner = THIS_MODULE;
+	if (info->mtd->unlock)
+		info->mtd->unlock(info->mtd, 0, info->mtd->size);
+	{
+		size_t ret_len;
+		u_char buf;
+		(void) info->mtd->read(info->mtd, 0, 1, &ret_len, &buf);
+	}
 
 #ifdef CONFIG_MTD_PARTITIONS
 	err = parse_mtd_partitions(info->mtd, part_probes, &info->parts, 0);
@@ -133,11 +142,12 @@ out_free_info:
 static int __devexit omapflash_remove(struct platform_device *pdev)
 {
 	struct omapflash_info *info = platform_get_drvdata(pdev);
+	struct flash_platform_data *pdata = pdev->dev.platform_data;
 
 	platform_set_drvdata(pdev, NULL);
 
 	if (info) {
-		if (info->parts) {
+		if (info->parts || (pdata && pdata->parts)) {
 			del_mtd_partitions(info->mtd);
 			kfree(info->parts);
 		} else

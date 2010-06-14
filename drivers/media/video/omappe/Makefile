@@ -1,0 +1,11 @@
+obj-$(CONFIG_VIDEO_OMAP24XX_VIDEOLIB) += omap24xxlib.o
+obj-$(CONFIG_VIDEO_OMAP_SENSOR_MT9D112) += sensor_mt9d112.o
+obj-$(CONFIG_VIDEO_OMAP24XX_CAMERA) += omap24xxcam.o
+obj-$(CONFIG_VIDEO_OMAP24XX_VIDEOOUT) += omap24xxvout.o
+obj-$(CONFIG_VIDEO_OMAP34XX_VIDEOBUF) += omap34xx-videobuf.o
+obj-$(CONFIG_VIDEO_OMAP34XX_V4L2) += omap34xx-v4l2.o
+obj-$(CONFIG_VIDEO_OMAP34XX_ISP) += omap34xx-isp.o omap34xx-isp-mmu.o
+obj-$(CONFIG_VIDEO_OMAP34XX_ISP_DBG) += omap34xx-isp-dbg.o
+obj-$(CONFIG_VIDEO_OMAP34XX_ISP_SMIA10) += omap34xx-isp-smia10.o
+obj-$(CONFIG_VIDEO_OMAP34XX_ISP_VIDEO) += omap34xx-isp-video.o
+obj-$(CONFIG_VIDEO_OMAP34XX_ISP_STATS) += omap34xx-isp-stats.o

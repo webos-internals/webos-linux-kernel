@@ -15,6 +15,10 @@
 #include <linux/usb/quirks.h>
 #include "usb.h"
 
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+#include <linux/modem_activity.h>
+#endif
+
 /* List of quirky USB devices.  Please keep this list ordered by:
  * 	1) Vendor ID
  * 	2) Product ID
@@ -76,7 +80,14 @@ void usb_detect_quirks(struct usb_device *udev)
 
 	/* By default, disable autosuspend for all non-hubs */
 #ifdef	CONFIG_USB_SUSPEND
-	if (udev->descriptor.bDeviceClass != USB_CLASS_HUB)
+	if (udev->descriptor.bDeviceClass == USB_CLASS_HUB) {
+		printk(KERN_INFO "%s: disable autosuspend for hub! udev=%p\n",
+		       __func__, udev);
 		udev->autosuspend_disabled = 1;
+	}
+	else {
+		printk(KERN_INFO "%s: do not disable autosuspend for udev=%p\n",
+		       __func__, udev);
+	}
 #endif
 }

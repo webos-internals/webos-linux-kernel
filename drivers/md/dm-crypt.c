@@ -627,7 +627,7 @@ static void process_write(struct dm_crypt_io *io)
 
 		/* out of memory -> run queues */
 		if (remaining)
-			congestion_wait(WRITE, HZ/100);
+			congestion_wait(BLK_RW_ASYNC, HZ/100);
 	}
 }
 

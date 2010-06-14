@@ -6,8 +6,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -712,6 +712,14 @@ static void setup_color_conv_coef(void)
 	}  ctbl_bt601_5 = {
 		    298,  409,    0,  298, -208, -100,  298,    0,  517, 0,
 	};
+#if 0
+	const struct color_conv_coef ctbl_bt601_5_full = {
+		    256,  351,    0,  256, -179,  -86,  256,    0,  443, 1,
+	}, ctbl_bt709 = {
+		    298,  459,    0,  298, -137,  -55,  298,    0,  541, 0,
+	}, ctbl_bt709_f = {
+		    256,  394,    0,  256, -118,  -47,  256,    0,  465, 1,	},
+#endif
 	const struct color_conv_coef *ct;
 #define CVAL(x, y)	(((x & 2047) << 16) | (y & 2047))
 
@@ -879,20 +887,24 @@ static irqreturn_t omap_dispc_irq_handler(int irq, void *dev)
 
 static int get_dss_clocks(void)
 {
-	if (IS_ERR((dispc.dss_ick = clk_get(dispc.fbdev->dev, "dss_ick")))) {
-		dev_err(dispc.fbdev->dev, "can't get dss_ick\n");
+	char *dss_ick = "dss_ick";
+	char *dss1_fck = cpu_is_omap34xx() ? "dss1_alwon_fck" : "dss1_fck";
+	char *tv_fck = cpu_is_omap34xx() ? "dss_tv_fck" : "dss_54m_fck";
+
+	if (IS_ERR((dispc.dss_ick = clk_get(dispc.fbdev->dev, dss_ick)))) {
+		dev_err(dispc.fbdev->dev, "can't get %s", dss_ick);
 		return PTR_ERR(dispc.dss_ick);
 	}
 
-	if (IS_ERR((dispc.dss1_fck = clk_get(dispc.fbdev->dev, "dss1_fck")))) {
-		dev_err(dispc.fbdev->dev, "can't get dss1_fck\n");
+	if (IS_ERR((dispc.dss1_fck = clk_get(dispc.fbdev->dev, dss1_fck)))) {
+		dev_err(dispc.fbdev->dev, "can't get %s", dss1_fck);
 		clk_put(dispc.dss_ick);
 		return PTR_ERR(dispc.dss1_fck);
 	}
 
 	if (IS_ERR((dispc.dss_54m_fck =
-				clk_get(dispc.fbdev->dev, "dss_54m_fck")))) {
-		dev_err(dispc.fbdev->dev, "can't get dss_54m_fck\n");
+				clk_get(dispc.fbdev->dev, tv_fck)))) {
+		dev_err(dispc.fbdev->dev, "can't get %s", tv_fck);
 		clk_put(dispc.dss_ick);
 		clk_put(dispc.dss1_fck);
 		return PTR_ERR(dispc.dss_54m_fck);

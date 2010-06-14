@@ -14,12 +14,24 @@
 struct raw_prio_tree_node {
 	struct prio_tree_node	*left;
 	struct prio_tree_node	*right;
+#ifdef CONFIG_DEBUG_FREE_PAGE_LIST_PALM
+	/* This field compensates for adding the 'magic' field in struct
+	 * list_head.
+	 */
+	void *dummy;
+#endif
 	struct prio_tree_node	*parent;
 };
 
 struct prio_tree_node {
 	struct prio_tree_node	*left;
 	struct prio_tree_node	*right;
+#ifdef CONFIG_DEBUG_FREE_PAGE_LIST_PALM
+	/* This field compensates for adding the 'magic' field in struct
+	 * list_head.
+	 */
+	void *dummy;
+#endif
 	struct prio_tree_node	*parent;
 	unsigned long		start;
 	unsigned long		last;	/* last location _in_ interval */

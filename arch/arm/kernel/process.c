@@ -123,6 +123,8 @@ EXPORT_SYMBOL(pm_power_off);
 void (*arm_pm_restart)(char str) = arm_machine_restart;
 EXPORT_SYMBOL_GPL(arm_pm_restart);
 
+void (*arm_put_reboot_args)(char *str) = NULL;
+EXPORT_SYMBOL(arm_put_reboot_args);
 
 /*
  * This is our default idle handler.  We need to disable
@@ -165,7 +167,7 @@ void cpu_idle(void)
 		if (!idle)
 			idle = default_idle;
 		leds_event(led_idle_start);
-		tick_nohz_stop_sched_tick();
+		tick_nohz_stop_sched_tick(1);
 		while (!need_resched())
 			idle();
 		leds_event(led_idle_end);
@@ -197,8 +199,11 @@ void machine_power_off(void)
 		pm_power_off();
 }
 
-void machine_restart(char * __unused)
+void machine_restart(char * args)
 {
+	if(arm_put_reboot_args)
+		arm_put_reboot_args(args);
+
 	arm_pm_restart(reboot_mode);
 }
 

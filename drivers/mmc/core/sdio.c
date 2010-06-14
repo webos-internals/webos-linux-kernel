@@ -5,8 +5,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  */
 
 #include <linux/err.h>
@@ -213,10 +213,47 @@ static void mmc_sdio_detect(struct mmc_host *host)
 	}
 }
 
+static void mmc_sdio_suspend(struct mmc_host *host)
+{
+    BUG_ON(!host);
+
+    return;
+}
+
+static void mmc_sdio_resume(struct mmc_host *host)
+{
+    int err = 0;
+
+    BUG_ON(!host);
+    BUG_ON(!host->card);
+
+    mmc_claim_host(host);
+
+    if (!mmc_host_is_spi(host)) {
+        mmc_set_bus_mode(host, MMC_BUSMODE_PUSHPULL);
+    }
+
+    mmc_set_clock(host, host->card->cis.max_dtr);
+    mmc_set_bus_width(host, MMC_BUS_WIDTH_4);
+
+remove:
+    mmc_release_host(host);
+
+    if (err) {
+        mmc_sdio_remove(host);
+
+        mmc_claim_host(host);
+        mmc_detach_bus(host);
+        mmc_release_host(host);
+    }
+    return;
+}
 
 static const struct mmc_bus_ops mmc_sdio_ops = {
 	.remove = mmc_sdio_remove,
 	.detect = mmc_sdio_detect,
+	.suspend = mmc_sdio_suspend,
+	.resume = mmc_sdio_resume,
 };
 
 
@@ -245,12 +282,14 @@ int mmc_attach_sdio(struct mmc_host *host, u32 ocr)
 		ocr &= ~0x7F;
 	}
 
+#ifndef CONFIG_SDIO_FORCE_OPCOND_1_8V
 	if (ocr & MMC_VDD_165_195) {
 		printk(KERN_WARNING "%s: SDIO card claims to support the "
 		       "incompletely defined 'low voltage range'. This "
 		       "will be ignored.\n", mmc_hostname(host));
 		ocr &= ~MMC_VDD_165_195;
 	}
+#endif
 
 	host->ocr = mmc_select_voltage(host, ocr);
 

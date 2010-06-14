@@ -7,8 +7,7 @@
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
+    the Free Software Foundation; version 2 of the License.
 
     This program is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -63,7 +62,8 @@ the next instruction.  If it is a floating point instruction, it
 executes the instruction, without returning to user space.  In this
 way it repeatedly looks ahead and executes floating point instructions
 until it encounters a non floating point instruction, at which time it
-returns via _fpreturn.
+returns via _fpreturn.  Decoding Thumb-2 instructions is hard so only
+one instuction is emulated before returning.
 
 This is done to reduce the effect of the trap overhead on each
 floating point instructions.  GCC attempts to group floating point
@@ -80,18 +80,12 @@ nwfpe_enter:
 	ldr	r5, [sp, #S_PC]		@ get contents of PC;
 	mov	r6, r0			@ save the opcode
 emulate:
-	ldr	r1, [sp, #S_PSR]	@ fetch the PSR
-	bl	checkCondition		@ check the condition
-	cmp	r0, #0			@ r0 = 0 ==> condition failed
-
-	@ if condition code failed to match, next insn
-	beq	next			@ get the next instruction;
-
-	mov	r0, r6			@ prepare for EmulateAll()
 	bl	EmulateAll		@ emulate the instruction
 	cmp	r0, #0			@ was emulation successful
 	moveq	pc, r4			@ no, return failure
-
+	ldr	r7, [sp, #64]		@ fetch the PSR
+	tst	r7, #0x20
+	movne	pc, r9			@ return ok if in Thumb mode
 next:
 .Lx1:	ldrt	r6, [r5], #4		@ get the next instruction and
 					@ increment PC
@@ -105,7 +99,15 @@ next:
 	str	r5, [sp, #S_PC]		@ update PC copy in regs
 
 	mov	r0, r6			@ save a copy
-	b	emulate			@ check condition and emulate
+	mov	r1, r7			@ fetch the condition codes
+	bl	checkCondition		@ check the condition
+	cmp	r0, #0			@ r0 = 0 ==> condition failed
+
+	@ if condition code failed to match, next insn
+	beq	next			@ get the next instruction;
+
+	mov	r0, r6			@ prepare for EmulateAll()
+	b	emulate			@ if r0 != 0, goto EmulateAll
 
 	@ We need to be prepared for the instructions at .Lx1 and .Lx2 
 	@ to fault.  Emit the appropriate exception gunk to fix things up.

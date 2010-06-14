@@ -326,17 +326,17 @@ tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
 	else {
 		/* assume OMAP 2420 ES2.0 and later */
 		if (dmachan & (1 << 0))
-			omap_cfg_reg(AA10_242X_DMAREQ0);
+			omap_cfg_reg("AA10_242X_DMAREQ0");
 		if (dmachan & (1 << 1))
-			omap_cfg_reg(AA6_242X_DMAREQ1);
+			omap_cfg_reg("AA6_242X_DMAREQ1");
 		if (dmachan & (1 << 2))
-			omap_cfg_reg(E4_242X_DMAREQ2);
+			omap_cfg_reg("E4_242X_DMAREQ2");
 		if (dmachan & (1 << 3))
-			omap_cfg_reg(G4_242X_DMAREQ3);
+			omap_cfg_reg("G4_242X_DMAREQ3");
 		if (dmachan & (1 << 4))
-			omap_cfg_reg(D3_242X_DMAREQ4);
+			omap_cfg_reg("D3_242X_DMAREQ4");
 		if (dmachan & (1 << 5))
-			omap_cfg_reg(E3_242X_DMAREQ5);
+			omap_cfg_reg("E3_242X_DMAREQ5");
 	}
 
 	/* so far so good ... register the device */

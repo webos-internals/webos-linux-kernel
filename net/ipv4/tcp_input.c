@@ -3104,6 +3104,7 @@ static int tcp_ack(struct sock *sk, struct sk_buff *skb, int flag)
 	 */
 	sk->sk_err_soft = 0;
 	tp->rcv_tstamp = tcp_time_stamp;
+	sk->sk_stamp=ktime_get();
 	prior_packets = tp->packets_out;
 	if (!prior_packets)
 		goto no_queue;

@@ -54,13 +54,124 @@ config MMC_RICOH_MMC
 
 config MMC_OMAP
 	tristate "TI OMAP Multimedia Card Interface support"
-	depends on ARCH_OMAP
+	depends on (ARCH_OMAP1 || ARCH_OMAP2420) && MMC
 	select TPS65010 if MACH_OMAP_H2
 	help
 	  This selects the TI OMAP Multimedia card Interface.
 	  If you have an OMAP board with a Multimedia Card slot,
 	  say Y or M here.
 
+	  If unsure, say N.
+
+choice
+    prompt "TI OMAP24XX/34XX Multimedia Card Interface support"
+	depends on MMC && ( ARCH_OMAP24XX || ARCH_OMAP34XX )
+
+config MMC_DRV_PE
+	bool "Palm edition"
+	help
+	  This selects Palm edition of OMAP Multimedia card Interface driver.
+
+config MMC_DRV_TE
+	bool "TI edition"
+	help
+	  This selects the TI edition of OMAP Multimedia card Interface driver.
+endchoice
+
+config MMC_HSMMC_PE
+	tristate "TI OMAP24XX/34XX driver (Palm edition)"
+	depends on MMC && MMC_DRV_PE
+	default n
+	select OMAP2430_MMC1 if ARCH_OMAP2430
+	select OMAP2430_MMC2 if ARCH_OMAP2430
+	select OMAP3430_MMC1 if ARCH_OMAP3430
+	select OMAP3430_MMC2 if ARCH_OMAP3430
+	help
+	  This selects the TI OMAP24XX/34XX Multimedia card Interface.
+	  If you have an OMAP board with a Multimedia Card slot,
+	  say Y or M here.
+
+	  If unsure, say N.
+
+config OMAP_SDIO_PE
+	boolean "OMAP SDIO Support (Palm edition)"
+	depends on MMC_HSMMC_PE 
+	default y
+	help
+	  This selects SDIO support for OMAP24XX/34XX Multimedia Card Interface (Palm edition).
+	  If unsure, say N.
+
+config MMC_OMAP2430
+	tristate "TI OMAP2430  Multimedia Card Interface support"
+	depends on ARCH_OMAP2430 && MMC && MMC_DRV_TE
+	default y if MMC
+	help
+	  This selects the TI OMAP2430 Multimedia card Interface.
+	  If you have an OMAP board with a Multimedia Card slot,
+	  say Y or M here.
+
+	  If unsure, say N.
+
+config OMAP2430_MMC1
+	boolean "TI OMAP2430 MMC1 Support "
+	depends on MMC_OMAP2430
+	default y if MMC_OMAP2430
+	help
+	  This selects the TI OMAP2430 MMC1 controller support.
+	  If you have an OMAP board with a Multimedia Card slot,
+	  say Y or M here.
+
+config OMAP2430_MMC2
+	boolean "TI OMAP2430 MMC2 Support "
+	depends on MMC_OMAP2430
+	default y if MMC_OMAP2430
+	help
+	  This selects the TI OMAP2430 MMC2 controller support.
+	  If you have an OMAP board with a Multimedia Card slot,
+	  say Y or M here.
+
+config MMC_OMAP3430
+	tristate "TI OMAP3430  Multimedia Card Interface support"
+	depends on ARCH_OMAP3 && MMC && MMC_DRV_TE
+	default y if MMC
+	help
+	  This selects the TI OMAP3430 Multimedia card Interface.
+	  If you have an OMAP board with a Multimedia Card slot,
+	  say Y or M here.
+	  If unsure, say N.
+
+config OMAP3430_MMC1
+	boolean "TI OMAP3430 MMC1 Support "
+	depends on MMC_OMAP3430
+	default y if MMC_OMAP3430
+	help
+	  This selects the TI OMAP3430 MMC1 controller support.
+	  If you have an OMAP board with a Multimedia Card slot,
+	  say Y or M here.
+
+config OMAP3430_MMC2
+	boolean "TI OMAP3430 MMC2 Support "
+	depends on MMC_OMAP3430
+	default y if MMC_OMAP3430
+	help
+	  This selects the TI OMAP3430 MMC2 controller support.
+	  If you have an OMAP board with a Multimedia Card slot,
+	  say Y or M here.
+
+config OMAP_SDIO
+	boolean "OMAP SDIO Support"
+	depends on (MMC_OMAP2430 || MMC_OMAP3430)
+	default y
+	help
+	  This selects the OMAP SDIO driver support.
+	  If unsure, say N.
+
+config OMAP_SDIO_NON_DMA_MODE
+	boolean "Use the SDIO card in non dma mode"
+	depends on OMAP_SDIO
+	default n
+	help
+	  This selects the MMC driver to run in non-dma mode.
 	  If unsure, say N.
 
 config MMC_WBSD

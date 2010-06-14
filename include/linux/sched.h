@@ -921,6 +921,8 @@ struct task_struct {
 	unsigned int flags;	/* per process flags, defined below */
 	unsigned int ptrace;
 
+	struct completion *ptrace_attach_done;
+
 	int lock_depth;		/* BKL lock depth */
 
 #ifdef CONFIG_SMP

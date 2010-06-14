@@ -185,6 +185,63 @@ config TOUCHSCREEN_UCB1400
 	  To compile this driver as a module, choose M here: the
 	  module will be called ucb1400_ts.
 
+config TOUCHSCREEN_TSC2005
+	tristate "TSC 2005 based touchscreens"
+	depends on SPI_MASTER
+	help
+	  Say Y here if you have a touchscreen interface using the
+	  TSC 2005 controller, and your board-specific initialization
+	  code includes that in its table of SPI devices.  Also make
+	  sure the proper SPI controller is selected.
+
+	  If unsure, say N (but it's safe to say "Y").
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called tsc2005.
+
+config TOUCHSCREEN_TSC2102
+	tristate "TSC 2102 based touchscreens"
+	depends on SPI_MASTER
+	select SPI_TSC2102
+	help
+	  Say Y here if you have a touchscreen interface using the
+	  TI TSC 2102 controller, and your board-specific initialization
+	  code includes that in its table of SPI devices.  Also make
+	  sure the proper SPI controller is selected.
+
+	  If unsure, say N (but it's safe to say "Y").
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called tsc2102_ts.
+
+config TOUCHSCREEN_TSC2301
+	tristate "TSC2301 touchscreen support"
+	depends on SPI_TSC2301
+	help
+	  Say Y here for if you are using the touchscreen features of TSC2301.
+
+config TOUCHSCREEN_TM1129
+        tristate "Synaptics TM1129 capacitive touchscreen "
+        depends on SPI_MASTER 
+        help
+          Say Y here if you have a Synaptics TM1129 touchscreen/controller.
+
+	  If unsure, say N (but it's safe to say "Y").
+
+          To compile this driver as a module, choose M here: the
+          module will be called tm1129.
+
+config TOUCHSCREEN_CY8MRLN
+        tristate "Cypress PSoC capacitive touchscreen "
+        depends on SPI_MASTER 
+          help
+          Say Y here if you have a Cypress PSoC touchscreen/controller.
+
+	  If unsure, say N (but it's safe to say "Y").
+
+          To compile this driver as a module, choose M here: the
+          module will be called cy8mrln.
+
 config TOUCHSCREEN_USB_COMPOSITE
 	tristate "USB Touchscreen Driver"
 	depends on USB_ARCH_HAS_HCD

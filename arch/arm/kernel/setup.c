@@ -803,6 +803,9 @@ static unsigned long kexec_boot_params_buf[(KEXEC_BOOT_PARAMS_SIZE + 3) / 4];
 
 void __init setup_arch(char **cmdline_p)
 {
+#if	defined(CONFIG_KGDB)
+	extern void __init early_trap_init(void);
+#endif
 	struct tag *tags = (struct tag *)&init_tags;
 	struct machine_desc *mdesc;
 	char *from = default_command_line;
@@ -880,6 +883,10 @@ void __init setup_arch(char **cmdline_p)
 	conswitchp = &dummy_con;
 #endif
 #endif
+
+#if	defined(CONFIG_KGDB)
+	early_trap_init();
+#endif
 }
 
 
@@ -927,6 +934,41 @@ c_show_cache(struct seq_file *m, const char *type, unsigned int cache)
 		type, 8 << CACHE_LINE(cache),
 		type, 1 << (6 + CACHE_SIZE(cache) - CACHE_ASSOC(cache) -
 			    CACHE_LINE(cache)));
+}
+
+static void
+c_show_cache_v7(struct seq_file *m, int level, char type)
+{
+	unsigned int selector;
+	unsigned int cache_size_id;
+	unsigned int line_len;
+	unsigned int assoc;
+	unsigned int sets;
+
+	selector = ((level - 1) << 1) | (type == 'I' ? 1 : 0);
+
+	/* XXX race condition between the following two instructions */
+
+	/* select the correct cache level */
+	asm("mcr	p15, 2, %0, c0, c0, 0" : : "r" (selector));
+
+	/* read the cache size id register */
+	asm("mrc	p15, 1, %0, c0, c0, 0" : "=r" (cache_size_id) :	 : "cc");
+
+	line_len = (1 << ((cache_size_id & 0x7) + 4));
+	assoc = ((cache_size_id >> 3) & 0x1ff) + 1;
+	sets = ((cache_size_id >> 13) & 0x3fff) + 1;
+
+	seq_printf(m, "\tfeatures\t: %s%s%s%s\n", 
+		(cache_size_id & (1<<31)) ? "write-through " : "",
+		(cache_size_id & (1<<30)) ? "write-back " : "",
+		(cache_size_id & (1<<29)) ? "read-alloc " : "",
+		(cache_size_id & (1<<28)) ? "write-alloc" : "");
+
+	seq_printf(m, "\tsize\t\t: %d KB\n", line_len * assoc * sets / 1024);
+	seq_printf(m, "\tassoc\t\t: %d\n", assoc);
+	seq_printf(m, "\tline length\t: %d\n", line_len);
+	seq_printf(m, "\tsets\t\t: %d\n", sets);
 }
 
 static int c_show(struct seq_file *m, void *v)
@@ -982,23 +1024,68 @@ static int c_show(struct seq_file *m, void *v)
 	}
 	seq_printf(m, "CPU revision\t: %d\n", processor_id & 15);
 
+
+	/* print the main and aux control registers */
+	{
+		uint32_t control, aux;
+		asm("mrc p15, 0, %0, c1, c0, 0" : "=r" (control));
+		seq_printf(m, "Control reg\t: 0x%x\n", control);
+		asm("mrc p15, 0, %0, c1, c0, 1" : "=r" (aux));
+		seq_printf(m, "Aux control reg\t: 0x%x\n", aux);
+	}
+
 	{
 		unsigned int cache_info = read_cpuid(CPUID_CACHETYPE);
 		if (cache_info != processor_id) {
-			seq_printf(m, "Cache type\t: %s\n"
-				      "Cache clean\t: %s\n"
-				      "Cache lockdown\t: %s\n"
-				      "Cache format\t: %s\n",
-				   cache_types[CACHE_TYPE(cache_info)],
-				   cache_clean[CACHE_TYPE(cache_info)],
-				   cache_lockdown[CACHE_TYPE(cache_info)],
-				   CACHE_S(cache_info) ? "Harvard" : "Unified");
+			if (cache_info & (1<<31)) {
+				/* v7 style cache */
+				unsigned int cache_level_id;
 
-			if (CACHE_S(cache_info)) {
-				c_show_cache(m, "I", CACHE_ISIZE(cache_info));
-				c_show_cache(m, "D", CACHE_DSIZE(cache_info));
+				asm("mrc p15, 1, %0, c0, c0, 1"  : "=r" (cache_level_id) : : "cc");
+
+				for (i = 1; i <= 8; i++) {
+					switch (cache_level_id & 0x7) {
+						case 1:
+							seq_printf(m, "L%d instruction cache:\n", i);
+							c_show_cache_v7(m, i, 'I');
+							break;
+						case 2:
+							seq_printf(m, "L%d data cache:\n", i);
+							c_show_cache_v7(m, i, 'D');
+							break;
+						case 3:
+							seq_printf(m, "L%d instruction cache:\n", i);
+							c_show_cache_v7(m, i, 'I');
+							seq_printf(m, "L%d data cache:\n", i);
+							c_show_cache_v7(m, i, 'D');
+							break;
+						case 4:
+							seq_printf(m, "L%d unified cache:\n", i);
+							c_show_cache_v7(m, i, 'U');
+							break;
+					}
+					cache_level_id >>= 3;
+				}
+
+				seq_printf(m, "Cache LoC\t: %d\n", cache_level_id & 0x7);
+				cache_level_id >>= 3;
+				seq_printf(m, "Cache LoU\t: %d\n", cache_level_id & 0x7);
 			} else {
-				c_show_cache(m, "Cache", CACHE_ISIZE(cache_info));
+				seq_printf(m, "Cache type\t: %s\n"
+						  "Cache clean\t: %s\n"
+						  "Cache lockdown\t: %s\n"
+						  "Cache format\t: %s\n",
+					   cache_types[CACHE_TYPE(cache_info)],
+					   cache_clean[CACHE_TYPE(cache_info)],
+					   cache_lockdown[CACHE_TYPE(cache_info)],
+					   CACHE_S(cache_info) ? "Harvard" : "Unified");
+
+				if (CACHE_S(cache_info)) {
+					c_show_cache(m, "I", CACHE_ISIZE(cache_info));
+					c_show_cache(m, "D", CACHE_DSIZE(cache_info));
+				} else {
+					c_show_cache(m, "Cache", CACHE_ISIZE(cache_info));
+				}
 			}
 		}
 	}

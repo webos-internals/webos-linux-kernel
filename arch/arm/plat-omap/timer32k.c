@@ -15,8 +15,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -54,7 +54,10 @@
 #include <asm/mach/time.h>
 #include <asm/arch/dmtimer.h>
 
-struct sys_timer omap_timer;
+struct clk* sync_32k_clk;
+unsigned long long last_tick;
+unsigned int oneshot;
+
 
 /*
  * ---------------------------------------------------------------------------
@@ -71,7 +74,9 @@ struct sys_timer omap_timer;
 #if defined(CONFIG_ARCH_OMAP16XX)
 #define TIMER_32K_SYNCHRONIZED		0xfffbc410
 #elif defined(CONFIG_ARCH_OMAP24XX)
-#define TIMER_32K_SYNCHRONIZED		(OMAP24XX_32KSYNCT_BASE + 0x10)
+#define TIMER_32K_SYNCHRONIZED		(OMAP2_32KSYNCT_BASE + 0x10)
+#elif defined(CONFIG_ARCH_OMAP34XX)
+#define TIMER_32K_SYNCHRONIZED		0x48320010
 #else
 #error OMAP 32KHz timer does not currently work on 15XX!
 #endif
@@ -120,13 +125,16 @@ static inline void omap_32k_timer_stop(void)
 
 #define omap_32k_timer_ack_irq()
 
-#elif defined(CONFIG_ARCH_OMAP2)
+#elif defined(CONFIG_ARCH_OMAP2) || defined(CONFIG_ARCH_OMAP3)
 
 static struct omap_dm_timer *gptimer;
 
-static inline void omap_32k_timer_start(unsigned long load_val)
+inline void omap_32k_timer_start(unsigned long load_val)
 {
-	omap_dm_timer_set_load(gptimer, 1, 0xffffffff - load_val);
+	if (oneshot)
+		omap_dm_timer_set_load(gptimer, 0, 0xffffffff - load_val);
+	else
+		omap_dm_timer_set_load(gptimer, 1, 0xffffffff - load_val);
 	omap_dm_timer_set_int_enable(gptimer, OMAP_TIMER_INT_OVERFLOW);
 	omap_dm_timer_start(gptimer);
 }
@@ -151,9 +159,12 @@ static void omap_32k_timer_set_mode(enum clock_event_mode mode,
 
 	switch (mode) {
 	case CLOCK_EVT_MODE_PERIODIC:
+		oneshot = 0;
 		omap_32k_timer_start(OMAP_32K_TIMER_TICK_PERIOD);
 		break;
 	case CLOCK_EVT_MODE_ONESHOT:
+		oneshot = 1;
+		break;
 	case CLOCK_EVT_MODE_UNUSED:
 	case CLOCK_EVT_MODE_SHUTDOWN:
 		break;
@@ -162,10 +173,17 @@ static void omap_32k_timer_set_mode(enum clock_event_mode mode,
 	}
 }
 
+int omap_set_next_event(unsigned long cycles, struct clock_event_device *evt)
+{
+	omap_32k_timer_start(cycles);
+	return 0;
+}
+
 static struct clock_event_device clockevent_32k_timer = {
 	.name		= "32k-timer",
-	.features       = CLOCK_EVT_FEAT_PERIODIC,
+	.features       = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT,
 	.shift		= 32,
+	.set_next_event = omap_set_next_event,
 	.set_mode	= omap_32k_timer_set_mode,
 };
 
@@ -173,7 +191,7 @@ static struct clock_event_device clockevent_32k_timer = {
  * The 32KHz synchronized timer is an additional timer on 16xx.
  * It is always running.
  */
-static inline unsigned long omap_32k_sync_timer_read(void)
+inline unsigned long omap_32k_sync_timer_read(void)
 {
 	return omap_readl(TIMER_32K_SYNCHRONIZED);
 }
@@ -181,7 +199,7 @@ static inline unsigned long omap_32k_sync_timer_read(void)
 /*
  * Rounds down to nearest usec. Note that this will overflow for larger values.
  */
-static inline unsigned long omap_32k_ticks_to_usecs(unsigned long ticks_32k)
+inline unsigned long omap_32k_ticks_to_usecs(unsigned long ticks_32k)
 {
 	return (ticks_32k * 5*5*5*5*5*5) >> 9;
 }
@@ -189,8 +207,7 @@ static inline unsigned long omap_32k_ticks_to_usecs(unsigned long ticks_32k)
 /*
  * Rounds down to nearest nsec.
  */
-static inline unsigned long long
-omap_32k_ticks_to_nsecs(unsigned long ticks_32k)
+inline unsigned long long omap_32k_ticks_to_nsecs(unsigned long ticks_32k)
 {
 	return (unsigned long long) ticks_32k * 1000 * 5*5*5*5*5*5 >> 9;
 }
@@ -222,12 +239,16 @@ static struct irqaction omap_32k_timer_irq = {
 
 static __init void omap_init_32k_timer(void)
 {
+	int ret;
 	if (cpu_class_is_omap1())
 		setup_irq(INT_OS_TIMER, &omap_32k_timer_irq);
+	sync_32k_clk = clk_get(NULL,"sync_32k_ick");
+	ret = clk_enable(sync_32k_clk);
+	BUG_ON(ret != 0);
 
-#ifdef CONFIG_ARCH_OMAP2
+#if defined(CONFIG_ARCH_OMAP2) || defined(CONFIG_ARCH_OMAP3)
 	/* REVISIT: Check 24xx TIOCP_CFG settings after idle works */
-	if (cpu_is_omap24xx()) {
+	if (cpu_class_is_omap2()) {
 		gptimer = omap_dm_timer_request_specific(1);
 		BUG_ON(gptimer == NULL);
 
@@ -249,6 +270,60 @@ static __init void omap_init_32k_timer(void)
 
 	clockevent_32k_timer.cpumask = cpumask_of_cpu(0);
 	clockevents_register_device(&clockevent_32k_timer);
+	
+
+}
+
+void omap_disable_system_timer(void)
+{
+	omap_dm_timer_set_int_enable(gptimer,0);
+	omap_dm_timer_stop(gptimer);
+	while(omap_dm_timer_read_reg(gptimer, OMAP_TIMER_WRITE_PEND_REG));
+	omap_32k_timer_ack_irq();
+	omap_32k_timer_ack_irq();
+	last_tick = omap_32k_sync_timer_read();
+}
+
+void omap_enable_system_timer(void)
+{
+	unsigned long long now = omap_32k_sync_timer_read();
+	unsigned long long tick_cnt = 0;
+	unsigned long rem;
+	unsigned long long rem_u64;
+	struct timespec sleeptime;
+
+	omap_dm_timer_set_int_enable(gptimer,
+		OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW |
+		OMAP_TIMER_INT_MATCH);
+	omap_dm_timer_start(gptimer);
+	/* wait for all the writes to complete as we are running in 
+	*posted mode */
+	while(omap_dm_timer_read_reg(gptimer, OMAP_TIMER_WRITE_PEND_REG));
+
+	tick_cnt = (now - last_tick);
+	do_div(tick_cnt, OMAP_32K_TIMER_TICK_PERIOD+1);
+
+        /* Fix up the wall time */
+	rem = do_div(tick_cnt,HZ);
+	sleeptime.tv_sec = tick_cnt;
+	rem_u64 = 1000000000UL;
+	rem_u64 = rem_u64*rem;
+	do_div(rem_u64,HZ);
+
+	sleeptime.tv_nsec = rem_u64;
+
+	write_seqlock_irq(&xtime_lock);
+	xtime.tv_sec += sleeptime.tv_sec;
+	xtime.tv_nsec += sleeptime.tv_nsec;
+
+	/* nsec may have overflowed 1 sec */
+	while (xtime.tv_nsec >= 1000000000) {
+		xtime.tv_nsec -= 1000000000;
+		xtime.tv_sec++;
+	}
+	write_sequnlock_irq(&xtime_lock);
+
+	omap_32k_timer_ack_irq();
 }
 
 /*

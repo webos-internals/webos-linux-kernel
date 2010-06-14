@@ -143,15 +143,46 @@ struct bio {
  * bit 0 -- read (not set) or write (set)
  * bit 1 -- rw-ahead when set
  * bit 2 -- barrier
- * bit 3 -- fail fast, don't want low level driver retries
- * bit 4 -- synchronous I/O hint: the block layer will unplug immediately
+ *	Insert a serialization point in the IO queue, forcing previously
+ *	submitted IO to be completed before this one is issued.
+ * bit 3 -- synchronous I/O hint.
+ * bit 4 -- Unplug the device immediately after submitting this bio.
+ * bit 5 -- metadata request
+ *	Used for tracing to differentiate metadata and data IO. May also
+ *	get some preferential treatment in the IO scheduler
+ * bit 6 -- discard sectors
+ *	Informs the lower level device that this range of sectors is no longer
+ *	used by the file system and may thus be freed by the device. Used
+ *	for flash based storage.
+ * bit 7 -- fail fast device errors
+ * bit 8 -- fail fast transport errors
+ * bit 9 -- fail fast driver errors
+ *	Don't want driver retries for any fast fail whatever the reason.
+ * bit 10 -- Tell the IO scheduler not to wait for more requests after this
+	one has been submitted, even if it is a SYNC request.
  */
-#define BIO_RW		0
-#define BIO_RW_AHEAD	1
+#define BIO_RW		0	/* Must match RW in req flags (blkdev.h) */
+#define BIO_RW_AHEAD	1	/* Must match FAILFAST in req flags */
 #define BIO_RW_BARRIER	2
-#define BIO_RW_FAILFAST	3
-#define BIO_RW_SYNC	4
+#define BIO_RW_SYNCIO	3
+#define BIO_RW_UNPLUG	4
 #define BIO_RW_META	5
+#define BIO_RW_FAILFAST	7
+#define BIO_RW_NOIDLE	10
+
+#define bio_rw_flagged(bio, flag)	((bio)->bi_rw & (1 << (flag)))
+
+/*
+ * Old defines, these should eventually be replaced by direct usage of
+ * bio_rw_flagged()
+ */
+#define bio_barrier(bio)	bio_rw_flagged(bio, BIO_RW_BARRIER)
+#define bio_sync(bio)		bio_rw_flagged(bio, BIO_RW_SYNCIO)
+#define bio_unplug(bio)		bio_rw_flagged(bio, BIO_RW_UNPLUG)
+#define bio_failfast(bio)	bio_rw_flagged(bio, BIO_RW_FAILFAST)
+#define bio_rw_ahead(bio)	bio_rw_flagged(bio, BIO_RW_AHEAD)
+#define bio_rw_meta(bio)	bio_rw_flagged(bio, BIO_RW_META)
+#define bio_noidle(bio)		bio_rw_flagged(bio, BIO_RW_NOIDLE)
 
 /*
  * upper 16 bits of bi_rw define the io priority of this bio
@@ -176,11 +207,6 @@ struct bio {
 #define bio_offset(bio)		bio_iovec((bio))->bv_offset
 #define bio_segments(bio)	((bio)->bi_vcnt - (bio)->bi_idx)
 #define bio_sectors(bio)	((bio)->bi_size >> 9)
-#define bio_barrier(bio)	((bio)->bi_rw & (1 << BIO_RW_BARRIER))
-#define bio_sync(bio)		((bio)->bi_rw & (1 << BIO_RW_SYNC))
-#define bio_failfast(bio)	((bio)->bi_rw & (1 << BIO_RW_FAILFAST))
-#define bio_rw_ahead(bio)	((bio)->bi_rw & (1 << BIO_RW_AHEAD))
-#define bio_rw_meta(bio)	((bio)->bi_rw & (1 << BIO_RW_META))
 #define bio_empty_barrier(bio)	(bio_barrier(bio) && !(bio)->bi_size)
 
 static inline unsigned int bio_cur_sectors(struct bio *bio)

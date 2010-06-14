@@ -624,5 +624,12 @@ config TCP_MD5SIG
 
 	  If unsure, say N.
 
+config TCP_FASTPATH
+        bool "TCP Timeouts via fastpath"
+        depends on FASTPATH
+        ---help---
+          Registers as fastpath client to schedule periodic fast wakeup from sleep to
+          handle TCP timeouts
+
 source "net/ipv4/ipvs/Kconfig"
 

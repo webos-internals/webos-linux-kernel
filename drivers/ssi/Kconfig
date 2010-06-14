@@ -1,0 +1,22 @@
+menu "Synchronous Serial Interfaces (SSI)"
+
+config OMAP_MCBSP
+        depends on ARCH_OMAP2 || ARCH_OMAP3
+        tristate "McBSP Support on OMAP"
+	default y
+        ---help---
+          Say Y here if you want support for the Muilti Channeled Buffered Serial Port interface
+          on an OMAP processor.
+          Automatically selected if SOUND_OMAP_TSC2101 is selected
+
+menu "McBSP fifo support"
+        depends on ARCH_OMAP3
+
+config USE_MCBSP_FIFO
+        depends on ARCH_OMAP34XX
+        bool "Enable McBSP fifo "
+        default n
+        ---help---
+        Enables the fifo usage for 34xx platform
+endmenu
+endmenu

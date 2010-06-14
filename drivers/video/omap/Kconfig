@@ -7,6 +7,44 @@ config FB_OMAP
 	help
           Frame buffer driver for OMAP based boards.
 
+config FB_OMAP_LCDC_EXTERNAL
+	bool "External LCD controller support"
+	depends on FB_OMAP
+	help
+	  Say Y here, if you want to have support for boards with an
+	  external LCD controller connected to the SoSSI/RFBI interface.
+
+config FB_OMAP_LCDC_HWA742
+	bool "Epson HWA742 LCD controller support"
+	depends on FB_OMAP && FB_OMAP_LCDC_EXTERNAL
+	help
+	  Say Y here if you want to have support for the external
+	  Epson HWA742 LCD controller.
+
+config FB_OMAP_LCDC_BLIZZARD
+	bool "Epson Blizzard LCD controller support"
+	depends on FB_OMAP && FB_OMAP_LCDC_EXTERNAL
+	help
+	  Say Y here if you want to have support for the external
+	  Epson Blizzard LCD controller.
+
+config FB_OMAP_MANUAL_UPDATE
+	bool "Default to manual update mode"
+	depends on FB_OMAP && FB_OMAP_LCDC_EXTERNAL
+	help
+	  Say Y here, if your user-space applications are capable of
+	  notifying the frame buffer driver when a change has occured in
+          the frame buffer content and thus a reload of the image data to
+	  the external frame buffer is required. If unsure, say N.
+
+config FB_OMAP_LCD_MIPID
+	bool "MIPI DBI-C/DCS compatible LCD support"
+	depends on FB_OMAP && SPI_MASTER && CBUS_TAHVO
+	help
+	  Say Y here if you want to have support for LCDs compatible with
+	  the Mobile Industry Processor Interface DBI-C/DCS
+	  specification. (Supported LCDs: Philips LPH8923, Sharp LS041Y3)
+
 config FB_OMAP_BOOTLOADER_INIT
 	bool "Check bootloader initialization"
 	depends on FB_OMAP
@@ -56,3 +94,86 @@ config FB_OMAP_LCDC_BLIZZARD
 	help
 	  Say Y here if you want to have support for the external
 	  Epson Blizzard LCD controller.
+
+config FB_OMAP_LCD_VGA
+	tristate "OMAP 3430 SDP VGA Display"
+	depends on ARCH_OMAP34XX
+
+config FB_OMAP_DISPLAY_CLASS
+	tristate "OMAP display class support (EXPERIMENTAL)"
+	depends on FB_OMAP && (ARCH_OMAP34XX || ARCH_OMAP24XX)
+	help
+	  Say Y here if you wan tto use the generic linux display controller
+	  interface with the omap processor
+
+config FB_OMAP_CONTROLLER
+	tristate "Support for OMAP display controllers"
+	depends on FB_OMAP_DISPLAY_CLASS && (ARCH_OMAP34XX)
+	help
+	  Say Y here if you want to use OMAP LCD display controller
+
+config OMAP_DISPLAY_ENABLE_AUTO_LPR_AT_BOOT
+	bool "Enable AUTO LPR mode for OMAP LCD controller at boot time"
+	depends on FB_OMAP_CONTROLLER
+	help
+	  Say Y here if you want to enable automatic handling of the OMAP LCD
+	  controller LPR (Low Power Refresh) mode at boot time.
+
+	  You can choose N here and enable automatic LPR mode handling at
+	  run-time using the lpr_mode sysfs entry.
+
+config FB_OMAP_BACKLIGHT_TPS61060
+	tristate "Support for LCD backlight control using TPS61060 LED driver"
+	depends on FB_OMAP_DISPLAY_CLASS
+	help
+	  Say Y here if you want to control the LCD backlight using the TI TPS61060
+	  chip
+
+config FB_OMAP_BACKLIGHT_MAXIM8831
+	tristate "Support for LCD backlight control using MAXIM8831 chip"
+	depends on FB_OMAP_DISPLAY_CLASS && I2C && LEDS_MAXIM8831
+	help
+	  Say Y here if you want to use the Maxim 8831 chip to control the LCD backlight
+
+config FB_OMAP_BACKLIGHT_EVT
+	tristate "Support for LCD backlight control on Castle board"
+	depends on FB_OMAP_DISPLAY_CLASS && I2C && LEDS_MAXIM8831
+	help
+	  Say Y here if you want to use the LCD backlight Castle board
+
+config FB_OMAP_PANEL_ACX567AKM
+	tristate "Support for Sony's ACX567AKM series displays"
+	depends on FB_OMAP_DISPLAY_CLASS && SPI && ARCH_OMAP3430
+	help
+	  Say Y here if you want to use Sony's acx567akm series LCD panels
+
+config SPI_ACX567AKM_BACKLIGHT
+	bool "Built-in backlight control"
+	depends on FB_OMAP_PANEL_ACX567AKM
+
+config OMAP_DISPLAY_ALREADY_ON_AT_BOOT
+       bool "Display is already on and configured during boot"
+       depends on FB_OMAP_PANEL_ACX567AKM
+       help
+         Say Y here if display is already on and configured before init runs.  
+         Note, the display is must be configured for the same values that 
+         the drivers are configured for.
+
+config SPI_ACX567AKM_DBG
+	bool "Debugging support"
+	depends on FB_OMAP_PANEL_ACX567AKM
+
+config FB_OMAP_PANEL_FPD95220
+	tristate "Support for National Semi's FPD95220 series display controllers"
+	depends on FB_OMAP_DISPLAY_CLASS && SPI
+	help
+	  Say Y here if you want to use LCD panels with National Semi's FPD95220
+	  series display controllers
+
+config FB_OMAP_ON_VIDEO_LAYER
+	tristate "Omap frame buffer on video layer"
+	depends on FB_OMAP_DISPLAY_CLASS && ARCH_OMAP3430 && FB_OMAP_CONTROLLER
+	help
+	  Say Y here if you want to use an Omap Video layer as a frame buffer
+
+

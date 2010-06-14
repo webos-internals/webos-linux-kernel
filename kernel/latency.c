@@ -269,11 +269,14 @@ EXPORT_SYMBOL_GPL(unregister_latency_notifier);
 static __init int latency_init(void)
 {
 	atomic_set(&current_max_latency, INFINITE_LATENCY);
+#ifndef CONFIG_ARCH_OMAP34XX
+	/* Disabled for OMAP3 to allow core off in cpuidle */
 	/*
 	 * we don't want by default to have longer latencies than 2 ticks,
 	 * since that would cause lost ticks
 	 */
 	set_acceptable_latency("kernel", 2*1000000/HZ);
+#endif
 	return 0;
 }
 

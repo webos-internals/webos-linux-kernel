@@ -57,6 +57,7 @@
 #include <linux/device.h>
 #include <linux/kthread.h>
 #include <linux/sched.h>
+#include <linux/gen_timer.h>
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -104,6 +105,13 @@ extern void tc_init(void);
 
 enum system_states system_state;
 EXPORT_SYMBOL(system_state);
+
+/*
+ * Open Embedded build info string
+ */
+#ifdef CONFIG_OE_BUILD_INFO
+const char oe_build_info[] = CONFIG_OE_BUILD_INFO_STRING;
+#endif
 
 /*
  * Boot command-line arguments
@@ -568,6 +576,9 @@ asmlinkage void __init start_kernel(void)
 	init_IRQ();
 	pidhash_init();
 	init_timers();
+#ifdef CONFIG_TCP_FASTPATH
+	init_gen_timers();
+#endif
 	hrtimers_init();
 	softirq_init();
 	timekeeping_init();

@@ -4,14 +4,15 @@
  * Table of the Omap register configurations for the FUNC_MUX and
  * PULL_DWN combinations.
  *
- * Copyright (C) 2003 - 2005 Nokia Corporation
+ * Copyright (C) 2004 - 2008 Texas Instruments Inc.
+ * Copyright (C) 2003 - 2008 Nokia Corporation
  *
- * Written by Tony Lindgren <tony.lindgren@nokia.com>
+ * Written by Tony Lindgren
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,14 +28,6 @@
  *	 - W8	     = ball
  *	 - 1610	     = 1510 or 1610, none if common for both 1510 and 1610
  *	 - MMC2_DAT0 = function
- *
- * Change log:
- *   Added entry for the I2C interface. (02Feb 2004)
- *   Copyright (C) 2004 Texas Instruments
- *
- *   Added entry for the keypad and uwire CS1. (09Mar 2004)
- *   Copyright (C) 2004 Texas Instruments
- *
  */
 
 #ifndef __ASM_ARCH_MUX_H
@@ -132,20 +125,69 @@
 	.pu_pd_val	= pull_mode,				\
 },
 
+/* 24xx/34xx mux bit defines */
+#define OMAP2_PULL_ENA		(1 << 3)
+#define OMAP2_PULL_UP		(1 << 4)
+#define OMAP2_ALTELECTRICALSEL	(1 << 5)
 
-#define PULL_DISABLED	0
-#define PULL_ENABLED	1
+/* 34xx specific mux bit defines */
+#define OMAP3_INPUT_EN		(1 << 8)
+#define OMAP3_OFF_EN		(1 << 9)
+#define OMAP3_OFFOUT_ENn	(1 << 10)
+#define OMAP3_OFFOUT_VAL	(1 << 11)
+#define OMAP3_OFF_PULL_EN	(1 << 12)
+#define OMAP3_OFF_PULL_UP	(1 << 13)
+#define OMAP3_WAKEUP_EN		(1 << 14)
 
-#define PULL_DOWN	0
-#define PULL_UP		1
+/* 34xx mux mode options for each pin. See TRM for options */
+#define	OMAP34XX_MUX_MODE0	0
+#define	OMAP34XX_MUX_MODE1	1
+#define	OMAP34XX_MUX_MODE2	2
+#define	OMAP34XX_MUX_MODE3	3
+#define	OMAP34XX_MUX_MODE4	4
+#define	OMAP34XX_MUX_MODE5	5
+#define	OMAP34XX_MUX_MODE6	6
+#define	OMAP34XX_MUX_MODE7	7
+
+/* 34xx active pin states */
+#define OMAP34XX_PIN_OUTPUT		0
+#define OMAP34XX_PIN_OUTPUT_PULLUP	(OMAP2_PULL_ENA | OMAP2_PULL_UP)
+#define OMAP34XX_PIN_OUTPUT_PULLDOWN	OMAP2_PULL_ENA
+
+#define OMAP34XX_PIN_INPUT		OMAP3_INPUT_EN
+#define OMAP34XX_PIN_INPUT_PULLUP	(OMAP2_PULL_ENA | OMAP3_INPUT_EN \
+						| OMAP2_PULL_UP)
+#define OMAP34XX_PIN_INPUT_PULLDOWN	(OMAP2_PULL_ENA | OMAP3_INPUT_EN)
+
+/* 34xx off mode states */
+#define OMAP34XX_PIN_OFF_NONE           0
+#define OMAP34XX_PIN_OFF_OUTPUT_HIGH	(OMAP3_OFF_EN | OMAP3_OFFOUT_VAL)
+#define OMAP34XX_PIN_OFF_OUTPUT_LOW	(OMAP3_OFF_EN)
+
+#define OMAP34XX_PIN_OFF_INPUT          (OMAP3_OFF_EN | OMAP3_OFFOUT_ENn )
+#define OMAP34XX_PIN_OFF_INPUT_PULLUP	(OMAP3_OFF_EN | OMAP3_OFFOUT_ENn | \
+					 OMAP3_OFF_PULL_EN | OMAP3_OFF_PULL_UP)
+#define OMAP34XX_PIN_OFF_INPUT_PULLDOWN	(OMAP3_OFF_EN | OMAP3_OFFOUT_ENn | \
+					 OMAP3_OFF_PULL_EN)
+#define OMAP34XX_PIN_OFF_WAKEUPENABLE	(OMAP3_OFFOUT_ENn | OMAP3_WAKEUP_EN)
+
+#define MUX_CFG_34XX(desc, reg_offset, mux_value) {		\
+	.name		= desc,					\
+	.debug		= 0,					\
+	.mux_reg	= reg_offset,				\
+	.mux_val	= mux_value				\
+},
 
 struct pin_config {
-	char *name;
-	unsigned char busy;
-	unsigned char debug;
+	char 			*name;
+	const unsigned int 	mux_reg;
+	unsigned char		debug;
 
-	const char *mux_reg_name;
-	const unsigned int mux_reg;
+#if	defined(CONFIG_ARCH_OMAP34XX)
+	u16			mux_val; /* Wake-up, off mode, pull, mux mode */
+#endif
+
+#if	defined(CONFIG_ARCH_OMAP1) || defined(CONFIG_ARCH_OMAP24XX)
 	const unsigned char mask_offset;
 	const unsigned char mask;
 
@@ -157,6 +199,12 @@ struct pin_config {
 	const char *pu_pd_name;
 	const unsigned int pu_pd_reg;
 	const unsigned char pu_pd_val;
+#endif
+
+#if	defined(CONFIG_OMAP_MUX_DEBUG) || defined(CONFIG_OMAP_MUX_WARNINGS)
+	const char *mux_reg_name;
+#endif
+
 };
 
 enum omap730_index {
@@ -469,7 +517,12 @@ enum omap24xx_index {
 	AA8_242X_GPIO58,
 	Y20_24XX_GPIO60,
 	W4__24XX_GPIO74,
+	N15_24XX_GPIO85,
 	M15_24XX_GPIO92,
+	P20_24XX_GPIO93,
+	P18_24XX_GPIO95,
+	M18_24XX_GPIO96,
+	L14_24XX_GPIO97,
 	J15_24XX_GPIO99,
 	V14_24XX_GPIO117,
 	P14_24XX_GPIO125,
@@ -493,8 +546,6 @@ enum omap24xx_index {
 	G4_242X_DMAREQ3,
 	D3_242X_DMAREQ4,
 	E3_242X_DMAREQ5,
-
-	P20_24XX_TSC_IRQ,
 
 	/* UART3 */
 	K15_24XX_UART3_TX,
@@ -557,19 +608,67 @@ enum omap24xx_index {
 	B3__24XX_KBR5,
 	AA4_24XX_KBC2,
 	B13_24XX_KBC6,
+
+	/* 2430 USB */
+	AD9_2430_USB0_PUEN,
+	Y11_2430_USB0_VP,
+	AD7_2430_USB0_VM,
+	AE7_2430_USB0_RCV,
+	AD4_2430_USB0_TXEN,
+	AF9_2430_USB0_SE0,
+	AE6_2430_USB0_DAT,
+	AD24_2430_USB1_SE0,
+	AB24_2430_USB1_RCV,
+	Y25_2430_USB1_TXEN,
+	AA26_2430_USB1_DAT,
+
+	/* 2430 HS-USB */
+	AD9_2430_USB0HS_DATA3,
+	Y11_2430_USB0HS_DATA4,
+	AD7_2430_USB0HS_DATA5,
+	AE7_2430_USB0HS_DATA6,
+	AD4_2430_USB0HS_DATA2,
+	AF9_2430_USB0HS_DATA0,
+	AE6_2430_USB0HS_DATA1,
+	AE8_2430_USB0HS_CLK,
+	AD8_2430_USB0HS_DIR,
+	AE5_2430_USB0HS_STP,
+	AE9_2430_USB0HS_NXT,
+	AC7_2430_USB0HS_DATA7,
+
+	/* 2430 McBSP */
+	AC10_2430_MCBSP2_FSX,
+	AD16_2430_MCBSP2_CLX,
+	AE13_2430_MCBSP2_DX,
+	AD13_2430_MCBSP2_DR,
+	AC10_2430_MCBSP2_FSX_OFF,
+	AD16_2430_MCBSP2_CLX_OFF,
+	AE13_2430_MCBSP2_DX_OFF,
+	AD13_2430_MCBSP2_DR_OFF,
+};
+
+
+struct omap_mux_cfg {
+	struct pin_config	*pins;
+	unsigned long		size;
+	int			(*cfg_reg)(const struct pin_config *cfg);
 };
 
 #ifdef	CONFIG_OMAP_MUX
 /* setup pin muxing in Linux */
 extern int omap1_mux_init(void);
 extern int omap2_mux_init(void);
-extern int omap_mux_register(struct pin_config * pins, unsigned long size);
-extern int omap_cfg_reg(unsigned long reg_cfg);
+extern int omap3_mux_init(void);
+extern unsigned int omap_get_mux_reg(const char *mux_name);
+extern int omap_mux_register(struct omap_mux_cfg *);
+extern int omap_cfg_reg(const char *mux_name);
 #else
 /* boot loader does it all (no warnings from CONFIG_OMAP_MUX_WARNINGS) */
 static inline int omap1_mux_init(void) { return 0; }
 static inline int omap2_mux_init(void) { return 0; }
-static inline int omap_cfg_reg(unsigned long reg_cfg) { return 0; }
+static inline int omap3_mux_init(void) { return 0; }
+extern unsigned int omap_get_mux_reg(const char *mux_name) { return 0; }
+static inline int omap_cfg_reg(const char *mux_name) { return 0; }
 #endif
 
 #endif

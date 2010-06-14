@@ -425,6 +425,7 @@ struct usb_device {
 
 	unsigned long last_busy;	/* time of last use */
 	int autosuspend_delay;		/* in jiffies */
+	int autosuspend_delay_default;	/* This is a part of two-tier autosuspend */
 
 	unsigned auto_pm:1;		/* autosuspend/resume in progress */
 	unsigned do_remote_wakeup:1;	/* remote wakeup should be enabled */

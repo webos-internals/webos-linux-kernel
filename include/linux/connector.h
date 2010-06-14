@@ -6,8 +6,8 @@
  * 
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -38,8 +38,12 @@
 #define CN_W1_VAL			0x1
 #define CN_IDX_V86D			0x4
 #define CN_VAL_V86D_UVESAFB		0x1
+#define CN_IDX_SX1SND			0x5
+#define CN_VAL_SX1SND			0x1
+#define CN_IDX_SX1PM			0x6
+#define CN_VAL_SX1PM			0x1
 
-#define CN_NETLINK_USERS		5
+#define CN_NETLINK_USERS		7
 
 /*
  * Maximum connector's message size.

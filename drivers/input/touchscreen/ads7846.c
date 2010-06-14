@@ -27,6 +27,7 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/ads7846.h>
 #include <asm/irq.h>
+#include <asm/arch/twl4030.h>
 
 #ifdef	CONFIG_ARM
 #include <asm/mach-types.h>
@@ -586,8 +587,8 @@ static void ads7846_rx(void *ads)
 		input_report_abs(input, ABS_PRESSURE, Rt);
 
 		input_sync(input);
-#ifdef VERBOSE
-		dev_dbg(&ts->spi->dev, "%4d/%4d/%4d\n", x, y, Rt);
+#ifdef CONFIG_SPI_TI_OMAP_TEST
+		dev_info(&ts->spi->dev, "%4d/%4d/%4d\n", x, y, Rt);
 #endif
 	}
 
@@ -826,7 +827,7 @@ static int __devinit ads7846_probe(struct spi_device *spi)
 	struct spi_transfer		*x;
 	int				vref;
 	int				err;
-
+	
 	if (!spi->irq) {
 		dev_dbg(&spi->dev, "no IRQ?\n");
 		return -ENODEV;
@@ -835,6 +836,15 @@ static int __devinit ads7846_probe(struct spi_device *spi)
 	if (!pdata) {
 		dev_dbg(&spi->dev, "no platform data?\n");
 		return -ENODEV;
+	}
+
+	/* enable voltage */
+	if(pdata->vaux_control != NULL) {
+		err = pdata->vaux_control(VAUX_ENABLE);
+		if (err != 0) {
+			dev_dbg(&spi->dev, "TS vaux enable failed\n");
+			return err;
+		}
 	}
 
 	/* don't exceed max specified sample rate */
@@ -1098,6 +1108,8 @@ static int __devinit ads7846_probe(struct spi_device *spi)
 		err = -EBUSY;
 		goto err_cleanup_filter;
 	}
+
+	enable_irq_wake(spi->irq);
 
 	err = ads784x_hwmon_register(spi, ts);
 	if (err)

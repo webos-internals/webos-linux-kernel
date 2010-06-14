@@ -5,10 +5,14 @@
  * Texas Instruments, <www.ti.com>
  * Richard Woodruff <r-woodruff2@ti.com>
  *
+ * (C) Copyright 2006 Nokia Corporation
+ * Fixed idle loop sleep
+ * Igor Stoppa <igor.stoppa@nokia.com>
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of
- * the License, or (at your option) any later version.
+ * published by the Free Software Foundation; version 2 of
+ * that License.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,19 +30,13 @@
 #include <asm/arch/io.h>
 #include <asm/arch/pm.h>
 
-#define A_32KSYNC_CR_V		IO_ADDRESS(OMAP_TIMER32K_BASE+0x10)
-#define A_PRCM_VOLTCTRL_V	IO_ADDRESS(OMAP24XX_PRCM_BASE+0x50)
-#define A_PRCM_CLKCFG_CTRL_V	IO_ADDRESS(OMAP24XX_PRCM_BASE+0x80)
-#define A_CM_CLKEN_PLL_V	IO_ADDRESS(OMAP24XX_PRCM_BASE+0x500)
-#define A_CM_IDLEST_CKGEN_V	IO_ADDRESS(OMAP24XX_PRCM_BASE+0x520)
-#define A_CM_CLKSEL1_PLL_V	IO_ADDRESS(OMAP24XX_PRCM_BASE+0x540)
-#define A_CM_CLKSEL2_PLL_V	IO_ADDRESS(OMAP24XX_PRCM_BASE+0x544)
+#include <asm/arch/omap24xx.h>
 
-#define A_SDRC_DLLA_CTRL_V	IO_ADDRESS(OMAP24XX_SDRC_BASE+0x60)
-#define	A_SDRC_POWER_V		IO_ADDRESS(OMAP24XX_SDRC_BASE+0x70)
-#define A_SDRC_RFR_CTRL_V	IO_ADDRESS(OMAP24XX_SDRC_BASE+0xA4)
+#define A_SDRC_DLLA_CTRL_V	IO_ADDRESS(OMAP2_SDRC_BASE + 0x60)
+#define	A_SDRC_POWER_V		IO_ADDRESS(OMAP2_SDRC_BASE + 0x70)
+#define A_SDRC_RFR_CTRL_V	IO_ADDRESS(OMAP2_SDRC_BASE + 0xA4)
 #define A_SDRC0_V		(0xC0000000)
-#define A_SDRC_MANUAL_V		IO_ADDRESS(OMAP24XX_SDRC_BASE+0xA8)
+#define A_SDRC_MANUAL_V		IO_ADDRESS(OMAP2_SDRC_BASE + 0xA8)
 
 	.text
 
@@ -53,7 +51,7 @@
  */
 ENTRY(omap24xx_idle_loop_suspend)
 	stmfd	sp!, {r0, lr}		@ save registers on stack
-	mov	r0, #0			@ clear for mcr setup
+	mov	r0, #0x0		@ clear for mrc call
 	mcr	p15, 0, r0, c7, c0, 4	@ wait for interrupt
 	ldmfd	sp!, {r0, pc}		@ restore regs and return
 
@@ -67,9 +65,6 @@ ENTRY(omap24xx_idle_loop_suspend_sz)
  *
  * Input:
  * R0 :	DLL ctrl value pre-Sleep
- * R1 : Processor+Revision
- *	2420: 0x21 = 242xES1, 0x26 = 242xES2.2
- *	2430: 0x31 = 2430ES1, 0x32 = 2430ES2
  *
  * The if the DPLL is going to AutoIdle. It seems like the DPLL may be back on
  * when we get called, but the DLL probably isn't.  We will wait a bit more in
@@ -129,14 +124,8 @@ A_SDRC_POWER:
 	.word A_SDRC_POWER_V
 A_SDRC0:
 	.word A_SDRC0_V
-A_CM_CLKSEL2_PLL_S:
-	.word A_CM_CLKSEL2_PLL_V
-A_CM_CLKEN_PLL:
-	.word A_CM_CLKEN_PLL_V
 A_SDRC_DLLA_CTRL_S:
 	.word A_SDRC_DLLA_CTRL_V
-A_SDRC_MANUAL_S:
-	.word A_SDRC_MANUAL_V
 
 ENTRY(omap24xx_cpu_suspend_sz)
 	.word	. - omap24xx_cpu_suspend

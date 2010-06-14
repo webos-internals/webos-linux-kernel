@@ -1,0 +1,78 @@
+config VIDEO_OMAPPE
+	bool
+
+menu "OMAP V4L2 drivers (Palm edition)"
+	depends on VIDEO_DEV && (ARCH_OMAP24XX || ARCH_OMAP34XX)
+
+config VIDEO_OMAP24XX_VIDEOLIB
+	tristate "Video out library"
+	select VIDEO_OMAPPE
+
+config VIDEO_OMAP24XX_VIDEOOUT
+	tristate "Video out driver"
+	depends on VIDEO_OMAP24XX_VIDEOLIB
+	select VIDEOBUF_GEN
+	select VIDEOBUF_DMA_SG
+
+config VIDEO_OMAP24XX_TVOUT
+	bool "TV out support"
+	select VIDEO_OMAPPE
+
+config VIDEO_OMAP24XX_CAMERA
+	tristate "Camera driver"
+	depends on VIDEO_OMAP24XX_VIDEOLIB && ARCH_OMAP24XX
+	select VIDEOBUF_GEN
+	select VIDEOBUF_DMA_SG
+
+config VIDEO_OMAP_SENSOR_MT9D112
+	tristate "Micron MT9D112 ISP sensor driver (2MP)"
+	depends on ARCH_OMAP2430
+	select VIDEO_OMAPPE
+
+config VIDEO_OMAP34XX_VIDEOBUF
+	tristate
+	select VIDEOBUF_GEN
+
+config VIDEO_OMAP34XX_V4L2
+	bool
+	select VIDEO_OMAPPE
+	select VIDEO_OMAP34XX_VIDEOBUF
+
+config VIDEO_OMAP34XX_ISP
+	tristate "ISP driver"
+	depends on ARCH_OMAP34XX
+	select VIDEO_OMAP34XX_V4L2
+
+config VIDEO_OMAP34XX_ISP_IDIOSYNCRATIC
+	bool "Mimic reference driver idiosyncracies"
+	depends on VIDEO_OMAP34XX_ISP
+
+config VIDEO_OMAP34XX_ISP_PREVIEW_RED_PHASE
+	bool "Force first preview input pixel to be red"
+	depends on VIDEO_OMAP34XX_ISP_IDIOSYNCRATIC
+
+config VIDEO_OMAP34XX_ISP_DBG
+	bool "Debugging support"
+	depends on VIDEO_OMAP34XX_ISP
+
+comment "ISP interfaces"
+
+config VIDEO_OMAP34XX_ISP_SMIA10
+	tristate "SMIA 1.0"
+	depends on VIDEO_OMAP34XX_ISP
+
+comment "ISP video devices"
+
+config VIDEO_OMAP34XX_ISP_VIDEO
+	tristate "Video capture"
+	depends on VIDEO_OMAP34XX_ISP
+
+config FORCE_MAX_ZONEORDER
+	int "Maximum memory zone order"
+	depends on VIDEO_OMAP34XX_ISP_VIDEO
+
+config VIDEO_OMAP34XX_ISP_STATS
+	tristate "Stats capture"
+	depends on VIDEO_OMAP34XX_ISP
+
+endmenu

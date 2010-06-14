@@ -9,8 +9,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -31,6 +31,9 @@
 #include <asm/io.h>
 
 #define OMAP_MPUIO_BASE			(void __iomem *)0xfffb5000
+
+#define GPIO_DIR_INPUT              1
+#define GPIO_DIR_OUTPUT             0
 
 #ifdef CONFIG_ARCH_OMAP730
 #define OMAP_MPUIO_INPUT_LATCH		0x00
@@ -74,7 +77,23 @@ extern int omap_request_gpio(int gpio);
 extern void omap_free_gpio(int gpio);
 extern void omap_set_gpio_direction(int gpio, int is_input);
 extern void omap_set_gpio_dataout(int gpio, int enable);
-extern int omap_get_gpio_datain(int gpio);
+extern int  omap_get_gpio_datain (int gpio);
+extern int  omap_get_gpio_dataout(int gpio);
+extern int  omap_get_gpio_level  (int gpio);
+extern void omap2_gpio_prepare_for_retention(void);
+extern void omap2_gpio_resume_after_retention(void);
+#ifdef CONFIG_PM
+extern void omap_gpio_save(void);
+extern void omap_gpio_restore(void);
+#else
+#define omap_gpio_save()
+#define omap_gpio_restore()
+#endif
+
+#if defined(CONFIG_ARCH_OMAP24XX) || defined(CONFIG_ARCH_OMAP34XX)
+extern void omap_set_gpio_debounce(int gpio, int enable);
+extern void omap_set_gpio_debounce_time(int gpio, int enable);
+#endif
 
 /*-------------------------------------------------------------------------*/
 
@@ -121,7 +140,7 @@ static inline int gpio_direction_output(unsigned gpio, int value)
 
 static inline int gpio_get_value(unsigned gpio)
 {
-	return omap_get_gpio_datain(gpio);
+	return omap_get_gpio_level(gpio);
 }
 
 static inline void gpio_set_value(unsigned gpio, int value)
@@ -129,6 +148,7 @@ static inline void gpio_set_value(unsigned gpio, int value)
 	omap_set_gpio_dataout(gpio, value);
 }
 
+#include <linux/kernel.h>
 #include <asm-generic/gpio.h>		/* cansleep wrappers */
 
 static inline int gpio_to_irq(unsigned gpio)
@@ -141,6 +161,16 @@ static inline int irq_to_gpio(unsigned irq)
 	if (cpu_class_is_omap1() && (irq < (IH_MPUIO_BASE + 16)))
 		return (irq - IH_MPUIO_BASE) + OMAP_MAX_GPIO_LINES;
 	return irq - IH_GPIO_BASE;
+}
+
+static inline void gpio_set_debounce(int gpio, int enable)
+{
+	omap_set_gpio_debounce(gpio, enable);
+}
+
+static inline void gpio_set_debounce_time(int gpio, int time)
+{
+	omap_set_gpio_debounce_time(gpio, time);
 }
 
 #endif

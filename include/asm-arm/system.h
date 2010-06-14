@@ -129,6 +129,7 @@ extern void cpu_init(void);
 
 void arm_machine_restart(char mode);
 extern void (*arm_pm_restart)(char str);
+extern void (*arm_put_reboot_args)(char* str);
 
 /*
  * Intel's XScale3 core supports some v6 features (supersections, L2)

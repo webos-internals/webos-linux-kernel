@@ -131,6 +131,27 @@ apply_relocate(Elf32_Shdr *sechdrs, const char *strtab, unsigned int symindex,
 			*(u32 *)loc |= offset & 0x00ffffff;
 			break;
 
+		case R_ARM_MOVW_ABS_NC:
+			/* MOVW immediate ARM looks like ............XXXX....XXXXXXXXXXXX */
+			/* extract A from the instruction, sign extend the 16bit immediate */
+			offset = ((((*(u32 *)loc & 0xfff) | ((*(u32 *)loc & 0xf0000)) >> 4) << 16) >> 16);
+			offset += sym->st_value;
+
+			*(u32 *)loc &= 0xfff0f000;
+			*(u32 *)loc |= (offset & 0x00000fff) | ((offset & 0x0000f000) << 4);
+			break;
+
+		case R_ARM_MOVT_ABS:
+			/* MOVT immediate ARM looks like ............XXXX....XXXXXXXXXXXX */
+			/* extract A from the instruction, top 16 bits of immediate */
+			offset = ((*(u32 *)loc & 0xfff) | ((*(u32 *)loc & 0xf0000) >> 4)) << 16;
+			offset += sym->st_value;
+
+			offset >>= 16;
+			*(u32 *)loc &= 0xfff0f000;
+			*(u32 *)loc |= (offset & 0x00000fff) | ((offset & 0x0000f000) << 4);
+			break;
+
 		default:
 			printk(KERN_ERR "%s: unknown relocation: %u\n",
 			       module->name, ELF32_R_TYPE(rel->r_info));

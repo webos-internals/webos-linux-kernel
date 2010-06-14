@@ -9,8 +9,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  */
 
 #include <linux/kernel.h>
@@ -230,6 +230,15 @@ static int sdio_read_cis(struct mmc_card *card, struct sdio_func *func)
 					       ptr + i, 0, &this->data[i]);
 			if (ret)
 				break;
+
+#ifdef CONFIG_SDIO_WORKAROUND_MARVELL_CIS_B1_BUG
+			// workaround for marvell B1 CIS issue: 
+			// dummy read into other register area (non-CIS)
+			{
+				unsigned char dummy;
+				(void) mmc_io_rw_direct(card, 0, 0, 0, 0, &dummy);
+			}
+#endif			
 		}
 		if (ret) {
 			kfree(this);
