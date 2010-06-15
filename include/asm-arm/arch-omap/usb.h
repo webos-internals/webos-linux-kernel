@@ -132,7 +132,7 @@
 #	define	CONF_USB_PWRDN_DP_R	(1 << 1)
 
 /* OMAP2 */
-#define	CONTROL_DEVCONF_REG		__REG32(L4_24XX_BASE + 0x0274)
+#define	CONTROL_DEVCONF_REG		__REG32( OMAP2_CTRL_BASE + 0x0274)
 #	define	USB_UNIDIR			0x0
 #	define	USB_UNIDIR_TLL			0x1
 #	define	USB_BIDIR			0x2
@@ -143,5 +143,16 @@
 #	define	USBT2TLL5PI		(1 << 17)
 #	define	USB0PUENACTLOI		(1 << 16)
 #	define	USBSTANDBYCTRL		(1 << 15)
+
+/* 
+ * Structure for tracking if USB on Trition is muxed to USB or UART mode
+ */
+typedef enum {
+    USBMUX_USB,
+    USBMUX_UART3
+} omap_usbmux_t;
+
+omap_usbmux_t omap_usbmux_mode(void);
+int omap_usbmux_cfg(omap_usbmux_t);
 
 #endif	/* __ASM_ARCH_OMAP_USB_H */

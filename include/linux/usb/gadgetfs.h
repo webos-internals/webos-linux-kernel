@@ -1,11 +1,3 @@
-#ifndef __LINUX_USB_GADGETFS_H
-#define __LINUX_USB_GADGETFS_H
-
-#include <asm/types.h>
-#include <asm/ioctl.h>
-
-#include <linux/usb/ch9.h>
-
 /*
  * Filesystem based user-mode API to USB Gadget controller hardware
  *
@@ -22,6 +14,14 @@
  * or earlier; writing endpoint descriptors to /dev/gadget/$ENDPOINT
  * then performing data transfers by reading or writing.
  */
+
+#ifndef __LINUX_USB_GADGETFS_H
+#define __LINUX_USB_GADGETFS_H
+
+#include <asm/types.h>
+#include <asm/ioctl.h>
+
+#include <linux/usb/ch9.h>
 
 /*
  * Events are delivered on the ep0 file descriptor, when the user mode driver
@@ -58,6 +58,11 @@ struct usb_gadgetfs_event {
 	enum usb_gadgetfs_event_type	type;
 };
 
+
+/* The 'g' code is also used by printer gadget ioctl requests.
+ * Don't add any colliding codes to either driver, and keep
+ * them in unique ranges (size 0x20 for now).
+ */
 
 /* endpoint ioctls */
 

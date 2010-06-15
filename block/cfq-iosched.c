@@ -882,6 +882,12 @@ static void cfq_arm_slice_timer(struct cfq_data *cfqd)
 	struct cfq_io_context *cic;
 	unsigned long sl;
 
+	/*
+	 * SSD device without seek penalty, disable idling
+	 */
+	if (blk_queue_nonrot(cfqd->queue))
+		return;
+
 	WARN_ON(!RB_EMPTY_ROOT(&cfqq->sort_list));
 	WARN_ON(cfq_cfqq_slice_new(cfqq));
 
@@ -1836,8 +1842,10 @@ static void cfq_completed_request(struct request_queue *q, struct request *rq)
 		}
 		if (cfq_slice_used(cfqq))
 			cfq_slice_expired(cfqd, 1);
-		else if (sync && RB_EMPTY_ROOT(&cfqq->sort_list))
+		else if (sync && !rq_noidle(rq) &&
+			 RB_EMPTY_ROOT(&cfqq->sort_list)) {
 			cfq_arm_slice_timer(cfqd);
+		}
 	}
 
 	if (!cfqd->rq_in_driver)

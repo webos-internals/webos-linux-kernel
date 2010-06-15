@@ -8,6 +8,15 @@
 obj-$(CONFIG_SOUND_OSS)		+= sound.o
 obj-$(CONFIG_SOUND_CS4232)	+= cs4232.o ad1848.o 
 
+ifdef CONFIG_ARCH_OMAP1
+obj-$(CONFIG_SOUND_OMAP)        += omap-audio-dma-intfc.o omap-audio.o
+obj-$(CONFIG_SOUND_OMAP_TSC2101)+= omap-audio-tsc2101.o
+obj-$(CONFIG_SOUND_OMAP_AIC23)  += omap-audio-aic23.o
+else
+obj-$(CONFIG_SOUND_OMAP)        += omap2-audio-buf-intfc.o omap2-audio.o
+obj-$(CONFIG_SOUND_OMAP_TWL4030)+= omap2-audio-twl4030.o
+endif
+
 # Please leave it as is, cause the link order is significant !
 
 obj-$(CONFIG_SOUND_SH_DAC_AUDIO)	+= sh_dac_audio.o

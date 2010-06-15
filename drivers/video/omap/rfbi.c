@@ -583,6 +583,6 @@ const struct lcd_ctrl_extif omap2_ext_if = {
 	.setup_tearsync		= rfbi_setup_tearsync,
 	.enable_tearsync	= rfbi_enable_tearsync,
 
-	.max_transmit_size	= (u32) ~0,
+	.max_transmit_size	= (u32)~0,
 };
 

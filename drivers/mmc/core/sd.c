@@ -359,6 +359,7 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		}
 
 		card->type = MMC_TYPE_SD;
+		host->mode = MMC_MODE_SD;
 		memcpy(card->raw_cid, cid, sizeof(card->raw_cid));
 	}
 
@@ -441,7 +442,8 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	/*
 	 * Switch to wider bus (if supported).
 	 */
-	if ((host->caps & MMC_CAP_4_BIT_DATA) &&
+	if (((host->caps & MMC_CAP_4_BIT_DATA)
+		|| (host->caps & MMC_CAP_8_BIT_DATA)) &&
 		(card->scr.bus_widths & SD_SCR_BUS_WIDTH_4)) {
 		err = mmc_app_set_bus_width(card, MMC_BUS_WIDTH_4);
 		if (err)
@@ -593,15 +595,28 @@ static void mmc_sd_suspend(struct mmc_host *host)
 static void mmc_sd_resume(struct mmc_host *host)
 {
 	int err;
+	int retries;
 
 	BUG_ON(!host);
 	BUG_ON(!host->card);
 
 	mmc_claim_host(host);
-	err = mmc_sd_init_card(host, host->ocr, host->card);
+	retries = 5;
+	while (retries) {
+		err = mmc_sd_init_card(host, host->ocr, host->card);
+
+		if (err) {
+			retries--;
+			continue;
+		}
+		break;
+	}
+
 	mmc_release_host(host);
 
 	if (err) {
+		printk(KERN_ERR "%s: Re-init card failure (err = %d)\n",
+		       mmc_hostname(host),  err);
 		mmc_sd_remove(host);
 
 		mmc_claim_host(host);
@@ -633,6 +648,7 @@ static const struct mmc_bus_ops mmc_sd_ops = {
 int mmc_attach_sd(struct mmc_host *host, u32 ocr)
 {
 	int err;
+	int retries;
 
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
@@ -648,6 +664,12 @@ int mmc_attach_sd(struct mmc_host *host, u32 ocr)
 		err = mmc_spi_read_ocr(host, 0, &ocr);
 		if (err)
 			goto err;
+	}
+
+	if (ocr & (1 << 31)) {
+		printk(KERN_WARNING "%s: card has not finished power-up!"
+		       "  (OCR = 0x%.8x)\n", mmc_hostname(host), ocr);
+		mdelay(5);
 	}
 
 	/*
@@ -681,9 +703,21 @@ int mmc_attach_sd(struct mmc_host *host, u32 ocr)
 	/*
 	 * Detect and init the card.
 	 */
-	err = mmc_sd_init_card(host, host->ocr, NULL);
-	if (err)
+	retries = 5;
+	while (retries) {
+		err = mmc_sd_init_card(host, host->ocr, NULL);
+		if (err) {
+			retries--;
+			continue;
+		}
+		break;
+	}
+
+	if (!retries) {
+		printk(KERN_ERR "%s: Init card failure (err = %d)\n",
+		       mmc_hostname(host),  err);
 		goto err;
+	}
 
 	mmc_release_host(host);
 

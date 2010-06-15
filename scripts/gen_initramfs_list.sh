@@ -287,7 +287,7 @@ if [ ! -z ${output_file} ]; then
 	if [ "${is_cpio_compressed}" = "compressed" ]; then
 		cat ${cpio_tfile} > ${output_file}
 	else
-		cat ${cpio_tfile} | gzip -f -9 - > ${output_file}
+		cat ${cpio_tfile} | gzip -n -f -9 - > ${output_file}
 	fi
 	[ -z ${cpio_file} ] && rm ${cpio_tfile}
 fi

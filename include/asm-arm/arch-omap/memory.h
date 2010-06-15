@@ -38,7 +38,7 @@
  */
 #if defined(CONFIG_ARCH_OMAP1)
 #define PHYS_OFFSET		UL(0x10000000)
-#elif defined(CONFIG_ARCH_OMAP2)
+#elif defined(CONFIG_ARCH_OMAP2) || defined(CONFIG_ARCH_OMAP3)
 #define PHYS_OFFSET		UL(0x80000000)
 #endif
 
@@ -94,8 +94,13 @@
 #define CONFIG_FB_OMAP_CONSISTENT_DMA_SIZE 2
 #endif
 
+#if defined(CONFIG_ARCH_OMAP1)
 #define CONSISTENT_DMA_SIZE \
 	(((CONFIG_FB_OMAP_CONSISTENT_DMA_SIZE + 1) & ~1) * 1024 * 1024)
+#elif defined(CONFIG_ARCH_OMAP2) || defined(CONFIG_ARCH_OMAP3)
+/* #define CONSISTENT_DMA_SIZE (14 *1024 *1024) */
+#define CONSISTENT_DMA_SIZE (24 *1024 *1024)
+#endif
 
 #endif
 

@@ -14,6 +14,7 @@
 #include <linux/kthread.h>
 #include <linux/notifier.h>
 #include <linux/module.h>
+#include <linux/kgdb.h>
 
 #include <asm/irq_regs.h>
 
@@ -52,6 +53,10 @@ void touch_softlockup_watchdog(void)
 {
 	int this_cpu = raw_smp_processor_id();
 
+#ifdef CONFIG_KGDB
+	if (unlikely(kgdb_softlock_skip[smp_processor_id()]))
+		kgdb_softlock_skip[smp_processor_id()] = 0;
+#endif
 	__raw_get_cpu_var(touch_timestamp) = get_timestamp(this_cpu);
 }
 EXPORT_SYMBOL(touch_softlockup_watchdog);
@@ -107,6 +112,11 @@ void softlockup_tick(void)
 	/* Warn about unreasonable 10+ seconds delays: */
 	if (now <= (touch_timestamp + softlockup_thresh))
 		return;
+
+#ifdef CONFIG_KGDB
+	if (unlikely(kgdb_softlock_skip[this_cpu]))
+		return;
+#endif
 
 	per_cpu(print_timestamp, this_cpu) = touch_timestamp;
 

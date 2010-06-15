@@ -102,6 +102,10 @@ __acquires(ohci->lock)
 	dl_done_list (ohci);
 	finish_unlinks (ohci, ohci_frame_no(ohci));
 
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	ohci_writel (ohci, OHCI_INTR_RHSC, &ohci->regs->intrdisable);
+	ohci->hc_control &= ~OHCI_CTRL_RWE;
+#else
 	/* maybe resume can wake root hub */
 	if (device_may_wakeup(&ohci_to_hcd(ohci)->self.root_hub->dev) ||
 			autostop)
@@ -110,7 +114,7 @@ __acquires(ohci->lock)
 		ohci_writel (ohci, OHCI_INTR_RHSC, &ohci->regs->intrdisable);
 		ohci->hc_control &= ~OHCI_CTRL_RWE;
 	}
-
+#endif
 	/* Suspend hub ... this is the "global (to this bus) suspend" mode,
 	 * which doesn't imply ports will first be individually suspended.
 	 */
@@ -351,6 +355,9 @@ static int ohci_root_hub_state_changes(struct ohci_hcd *ohci, int changed,
 
 		/* if no devices have been attached for one second, autostop */
 		} else {
+#ifdef CONFIG_MACH_SIRLOIN
+			any_connected = 1; /* REVISIT */
+#endif
 			if (changed || any_connected) {
 				ohci->autostop = 0;
 				ohci->next_statechange = jiffies +

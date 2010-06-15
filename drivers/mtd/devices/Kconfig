@@ -152,6 +152,13 @@ config MTD_BLOCK2MTD
 	  Testing MTD users (eg JFFS2) on large media and media that might
 	  be removed during a write (using the floppy drive).
 
+config MTD_MSM_NAND
+	tristate "MSM NAND Device Support"
+	depends on MTD && ARCH_MSM
+	default y
+	help
+	  Support for some nand chips connected to the MSM nand controller.
+
 comment "Disk-On-Chip Device Drivers"
 
 config MTD_DOC2000

@@ -427,7 +427,7 @@ static void balance_dirty_pages(struct address_space *mapping)
 		if (pages_written >= write_chunk)
 			break;		/* We've done our duty */
 
-		congestion_wait(WRITE, HZ/10);
+		congestion_wait(BLK_RW_ASYNC, HZ/10);
 	}
 
 	if (bdi_nr_reclaimable + bdi_nr_writeback < bdi_thresh &&
@@ -521,7 +521,7 @@ void throttle_vm_writeout(gfp_t gfp_mask)
                 if (global_page_state(NR_UNSTABLE_NFS) +
 			global_page_state(NR_WRITEBACK) <= dirty_thresh)
                         	break;
-                congestion_wait(WRITE, HZ/10);
+                congestion_wait(BLK_RW_ASYNC, HZ/10);
 
 		/*
 		 * The caller might hold locks which can prevent IO completion
@@ -565,8 +565,9 @@ static void background_writeout(unsigned long _min_pages)
 		min_pages -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
 		if (wbc.nr_to_write > 0 || wbc.pages_skipped > 0) {
 			/* Wrote less than expected */
-			congestion_wait(WRITE, HZ/10);
-			if (!wbc.encountered_congestion)
+			if (wbc.encountered_congestion)
+				congestion_wait(BLK_RW_ASYNC, HZ/10);
+			else
 				break;
 		}
 	}
@@ -636,7 +637,7 @@ static void wb_kupdate(unsigned long arg)
 		writeback_inodes(&wbc);
 		if (wbc.nr_to_write > 0) {
 			if (wbc.encountered_congestion)
-				congestion_wait(WRITE, HZ/10);
+				congestion_wait(BLK_RW_ASYNC, HZ/10);
 			else
 				break;	/* All the old data is written */
 		}

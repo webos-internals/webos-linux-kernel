@@ -21,6 +21,7 @@
 #include <linux/freezer.h>
 #include <linux/vmstat.h>
 #include <linux/syscalls.h>
+#include <linux/fastpath.h>
 
 #include "power.h"
 
@@ -167,6 +168,10 @@ int suspend_devices_and_enter(suspend_state_t state)
 		printk(KERN_ERR "Some devices failed to suspend\n");
 		goto Resume_console;
 	}
+
+	fastpath_fastsleep_set(0);
+
+ Prepare_suspend:
 	if (suspend_ops->prepare) {
 		error = suspend_ops->prepare();
 		if (error)
@@ -177,8 +182,14 @@ int suspend_devices_and_enter(suspend_state_t state)
 		suspend_enter(state);
 
 	enable_nonboot_cpus();
-	if (suspend_ops->finish)
+	if (suspend_ops->finish) {
 		suspend_ops->finish();
+    }
+	if (suspend_ops->fastsleep && suspend_ops->fastsleep()) {
+		fastpath_fastsleep_set(1);
+		goto Prepare_suspend;
+	}
+
  Resume_devices:
 	device_resume();
  Resume_console:
@@ -238,8 +249,13 @@ static int enter_state(suspend_state_t state)
 	if (!mutex_trylock(&pm_mutex))
 		return -EBUSY;
 
+
 	printk("Syncing filesystems ... ");
+#ifdef  CONFIG_SKIP_SYNC_ON_SUSPEND
+	printk("skipped for target platform ... ");
+#else
 	sys_sync();
+#endif
 	printk("done.\n");
 
 	pr_debug("PM: Preparing system for %s sleep\n", pm_states[state]);

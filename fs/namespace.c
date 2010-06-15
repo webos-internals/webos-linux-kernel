@@ -577,6 +577,11 @@ static int do_umount(struct vfsmount *mnt, int flags)
 		sb->s_op->umount_begin(mnt, flags);
 	unlock_kernel();
 
+#ifdef CONFIG_FORCED_UNMOUNT
+	if (flags & MNT_FORCE)
+		quiesce_filesystem(mnt);
+#endif
+
 	/*
 	 * No sense to grab the lock for this test, but test itself looks
 	 * somewhat bogus. Suggestions for better replacement?

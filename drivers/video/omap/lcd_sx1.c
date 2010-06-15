@@ -132,7 +132,7 @@ static void display_init(void)
 {
 	int i;
 
-	omap_cfg_reg(MCBSP3_CLKX);
+	omap_cfg_reg("MCBSP3_CLKX");
 
 	mdelay(2);
 	setup_GPIO();
@@ -159,14 +159,14 @@ static void display_init(void)
 
 	/* init LCD phase 2 */
 	epson_sendbyte(0, 0xCB);
-	for (i = 0; i < 125; i++)
+	for( i = 0; i < 125; i++)
 		epson_sendbyte(1, INIT_2[i]);
 	omap_set_gpio_dataout(_A_LCD_SSC_CS, 1);
 	omap_set_gpio_dataout(_A_LCD_SSC_CS, 0);
 
 	/* init LCD phase 2a */
 	epson_sendbyte(0, 0xCC);
-	for (i = 0; i < 14; i++)
+	for( i = 0; i < 14; i++)
 		epson_sendbyte(1, INIT_3[i]);
 	omap_set_gpio_dataout(_A_LCD_SSC_CS, 1);
 	omap_set_gpio_dataout(_A_LCD_SSC_CS, 0);

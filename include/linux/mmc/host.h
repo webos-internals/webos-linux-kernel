@@ -41,6 +41,7 @@ struct mmc_ios {
 
 #define MMC_BUS_WIDTH_1		0
 #define MMC_BUS_WIDTH_4		2
+#define MMC_BUS_WIDTH_8		4
 
 	unsigned char	timing;			/* timing specification used */
 
@@ -94,6 +95,10 @@ struct mmc_host {
 #define MMC_CAP_SD_HIGHSPEED	(1 << 3)	/* Can do SD high-speed timing */
 #define MMC_CAP_SDIO_IRQ	(1 << 4)	/* Can signal pending SDIO IRQs */
 #define MMC_CAP_SPI		(1 << 5)	/* Talks only SPI protocols */
+#define MMC_CAP_8_BIT_DATA	(1 << 6)	/* Can the host do 8 bit transfers */
+#define MMC_CAP_BYTEBLOCK	(1 << 7)	/* Can do non-log2 block sizes */
+#define MMC_CAP_NO_DETECTION_ON_START 	(1 << 15) /* Should host initiate card detection while starting */
+#define MMC_CAP_OPEN_ENDED_ONLY (1 <<16)	/* Use openended read/write ONLY */
 
 	/* host specific block data */
 	unsigned int		max_seg_size;	/* see blk_queue_max_segment_size */
@@ -109,6 +114,11 @@ struct mmc_host {
 
 	struct mmc_ios		ios;		/* current io bus settings */
 	u32			ocr;		/* the current OCR setting */
+
+	unsigned int		mode;		/* current card mode of host */
+#define MMC_MODE_MMC		0
+#define MMC_MODE_SD		1
+#define MMC_MODE_SDIO		2
 
 	/* group bitfields together to minimize padding */
 	unsigned int		use_spi_crc:1;
@@ -135,6 +145,16 @@ struct mmc_host {
 	struct led_trigger	*led;		/* activity led */
 #endif
 
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
+	struct {
+		struct sdio_cis			*cis;
+		struct sdio_cccr		*cccr;
+		struct sdio_embedded_func	*funcs;
+		int				num_funcs;
+	} embedded_sdio_data;
+#endif
+	struct dentry		*debugfs_root;
+
 	unsigned long		private[0] ____cacheline_aligned;
 };
 
@@ -142,6 +162,14 @@ extern struct mmc_host *mmc_alloc_host(int extra, struct device *);
 extern int mmc_add_host(struct mmc_host *);
 extern void mmc_remove_host(struct mmc_host *);
 extern void mmc_free_host(struct mmc_host *);
+
+#ifdef CONFIG_MMC_EMBEDDED_SDIO
+extern void mmc_set_embedded_sdio_data(struct mmc_host *host,
+				       struct sdio_cis *cis,
+				       struct sdio_cccr *cccr,
+				       struct sdio_embedded_func *funcs,
+				       int num_funcs);
+#endif
 
 static inline void *mmc_priv(struct mmc_host *host)
 {

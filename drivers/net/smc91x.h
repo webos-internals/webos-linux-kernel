@@ -260,6 +260,8 @@ SMC_outw(u16 val, void __iomem *ioaddr, int reg)
 		   machine_is_omap_h2() \
 		|| machine_is_omap_h3() \
 		|| machine_is_omap_h4() \
+		|| machine_is_omap_osk()\
+		|| machine_is_omap_apollon()\
 		|| (machine_is_omap_innovator() && !cpu_is_omap1510()) \
 	) ? IRQF_TRIGGER_FALLING : IRQF_TRIGGER_RISING)
 
@@ -455,6 +457,20 @@ static inline void LPD7_SMC_outsw (unsigned char* a, int r,
 #define SMC_outsl(a, r, p, l)	writesl((a) + (r), p, l)
 
 #define SMC_IRQ_FLAGS		(0)
+
+#elif   defined(CONFIG_ARCH_MSM)
+
+#define SMC_CAN_USE_8BIT	0
+#define SMC_CAN_USE_16BIT	1
+#define SMC_CAN_USE_32BIT	0
+#define SMC_NOWAIT		1
+
+#define SMC_inw(a, r)		readw((a) + (r))
+#define SMC_outw(v, a, r)	writew(v, (a) + (r))
+#define SMC_insw(a, r, p, l)	readsw((a) + (r), p, l)
+#define SMC_outsw(a, r, p, l)	writesw((a) + (r), p, l)
+
+#define SMC_IRQ_FLAGS		IRQF_TRIGGER_HIGH
 
 #else
 

@@ -283,7 +283,6 @@ struct zone {
 	 */
 	int prev_priority;
 
-
 	ZONE_PADDING(_pad2_)
 	/* Rarely used or read-mostly fields */
 

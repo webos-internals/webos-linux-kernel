@@ -106,10 +106,12 @@ obj-$(CONFIG_IPMI_HANDLER)	+= ipmi/
 obj-$(CONFIG_HANGCHECK_TIMER)	+= hangcheck-timer.o
 obj-$(CONFIG_TCG_TPM)		+= tpm/
 
+obj-$(CONFIG_DCC_TTY)		+= dcc_tty.o
 obj-$(CONFIG_PS3_FLASH)		+= ps3flash.o
 
 obj-$(CONFIG_JS_RTC)		+= js-rtc.o
 js-rtc-y = rtc.o
+obj-$(CONFIG_MSM_KGSL)          += msm_kgsl/
 
 # Files generated that shall be removed upon make clean
 clean-files := consolemap_deftbl.c defkeymap.c
@@ -126,10 +128,34 @@ $(obj)/defkeymap.o:  $(obj)/defkeymap.c
 # loadkeys version for the map. By default, we'll use the shipped
 # versions.
 # GENERATE_KEYMAP := 1
+# KEYMAP := defkeymap.map
+
+ifeq ($(CONFIG_MACH_BRISKET),y)
+KEYMAP := defkeymap_joplin
+GENERATE_KEYMAP := 1
+endif
+
+ifeq ($(CONFIG_MACH_CHUCK),y)
+KEYMAP := defkeymap_chuck
+GENERATE_KEYMAP := 1
+endif
+
+ifeq ($(CONFIG_MACH_FLANK),y)
+KEYMAP := defkeymap_joplin
+GENERATE_KEYMAP := 1
+endif
+
+ifeq ($(CONFIG_MACH_SIRLOIN),y)
+KEYMAP := defkeymap_joplin
+GENERATE_KEYMAP := 1
+endif
 
 ifdef GENERATE_KEYMAP
 
-$(obj)/defkeymap.c: $(obj)/%.c: $(src)/%.map
+# wgr NEW code as of 2.6.24
+# $(obj)/defkeymap.c: $(obj)/%.c: $(src)/%.map
+# OLD code as of 2.6.22 PE
+$(obj)/defkeymap.c : $(src)/$(KEYMAP).map
 	loadkeys --mktable $< > $@.tmp
 	sed -e 's/^static *//' $@.tmp > $@
 	rm $@.tmp

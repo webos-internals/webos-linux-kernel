@@ -24,10 +24,13 @@ obj-$(CONFIG_MTD_NAND_TS7250)		+= ts7250.o
 obj-$(CONFIG_MTD_NAND_NANDSIM)		+= nandsim.o
 obj-$(CONFIG_MTD_NAND_CS553X)		+= cs553x_nand.o
 obj-$(CONFIG_MTD_NAND_NDFC)		+= ndfc.o
+obj-$(CONFIG_MTD_NAND_OMAP) 		+= omap-nand-flash.o
+obj-$(CONFIG_MTD_NAND_OMAP_HW)		+= omap-hw.o
 obj-$(CONFIG_MTD_NAND_AT91)		+= at91_nand.o
 obj-$(CONFIG_MTD_NAND_CM_X270)		+= cmx270_nand.o
 obj-$(CONFIG_MTD_NAND_BASLER_EXCITE)	+= excite_nandflash.o
 obj-$(CONFIG_MTD_NAND_PLATFORM)		+= plat_nand.o
 obj-$(CONFIG_MTD_ALAUDA)		+= alauda.o
+obj-$(CONFIG_MTD_NAND_BRISKET)		+= omap2_nand.o
 
 nand-objs := nand_base.o nand_bbt.o

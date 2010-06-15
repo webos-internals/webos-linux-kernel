@@ -1038,6 +1038,30 @@ config DEVPORT
 	depends on ISA || PCI
 	default y
 
+config DCC_TTY
+	tristate "DCC tty driver"
+	depends on ARM
+
+config MSM_KGSL
+	tristate "MSM 3D Graphics driver for QSD8x50 and MSM7x27"
+	default y
+ 	depends on FB && ARM 
+ 	select GENERIC_ALLOCATOR
+ 	select FW_LOADER
+ 	---help---
+ 	  3D graphics driver for QSD8x50 and MSM7x27. Required to
+ 	  use hardware accelerated OpenGL ES 2.0 and 1.1 on these
+ 	  chips.
+
+config MSM_KGSL_MMU
+	bool "Turn on MMU for graphics driver"
+	depends on MSM_KGSL
+	default y
+ 
+config MSM_KGSL_DRM
+ 	bool "Build a DRM interface for the MSM_KGSL driver"
+ 	depends on MSM_KGSL && DRM
+
 source "drivers/s390/char/Kconfig"
 
 endmenu

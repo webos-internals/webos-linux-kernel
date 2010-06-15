@@ -1709,7 +1709,11 @@ int usb_port_suspend(struct usb_device *udev)
 	 * NOTE:  OTG devices may issue remote wakeup (or SRP) even when
 	 * we don't explicitly enable it here.
 	 */
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	if (0) {
+#else
 	if (udev->do_remote_wakeup) {
+#endif
 		status = usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
 				USB_REQ_SET_FEATURE, USB_RECIP_DEVICE,
 				USB_DEVICE_REMOTE_WAKEUP, 0,

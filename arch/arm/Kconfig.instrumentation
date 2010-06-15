@@ -28,6 +28,11 @@ config OPROFILE
 
 	  If unsure, say N.
 
+config OPROFILE_ARMV7
+	bool 
+	depends on OPROFILE && CPU_V7 && !SMP
+	default y
+
 config OPROFILE_ARMV6
 	bool
 	depends on OPROFILE && CPU_V6 && !SMP

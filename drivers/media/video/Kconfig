@@ -4,14 +4,14 @@
 
 menuconfig VIDEO_CAPTURE_DRIVERS
 	bool "Video capture adapters"
-	depends on VIDEO_DEV
+	depends on VIDEO_V4L2
 	default y
 	---help---
 	  Say Y here to enable selecting the video adapters for
 	  webcams, analog TV, and hybrid analog/digital TV.
 	  Some of those devices also supports FM radio.
 
-if VIDEO_CAPTURE_DRIVERS && VIDEO_DEV
+if VIDEO_CAPTURE_DRIVERS && VIDEO_V4L2
 
 config VIDEO_ADV_DEBUG
 	bool "Enable advanced debug functionality"
@@ -672,6 +672,10 @@ source "drivers/media/video/cx23885/Kconfig"
 
 source "drivers/media/video/ivtv/Kconfig"
 
+source "drivers/media/video/omappe/Kconfig"
+
+source "drivers/media/video/msm/Kconfig"
+
 config VIDEO_M32R_AR
 	tristate "AR devices"
 	depends on M32R && VIDEO_V4L1
@@ -699,6 +703,30 @@ config VIDEO_CAFE_CCIC
 	  This is a video4linux2 driver for the Marvell 88ALP01 integrated
 	  CMOS camera controller.  This is the controller found on first-
 	  generation OLPC systems.
+
+config VIDEO_VX6852
+	tristate "ST VX6852 sensor driver"
+
+config VIDEO_VX6852_SETTING
+	bool "SMIA 1.0 personality file support"
+	depends on VIDEO_VX6852
+	select VIDEO_SMIA10
+
+config VIDEO_VX6852_SETTING_PROFILE
+	bool "Profile personification"
+	depends on VIDEO_VX6852_SETTING
+
+config VIDEO_VX6852_SILICON_BUG_HACKS
+	bool "Employ hacks for silicon bugs"
+	depends on VIDEO_VX6852
+
+config VIDEO_VX6852_SILICON_BUG_HACKS_DBG
+	bool "Debugging support"
+	depends on VIDEO_VX6852_SILICON_BUG_HACKS
+
+config VIDEO_VX6852_DBG
+	bool "Debugging support"
+	depends on VIDEO_VX6852
 
 #
 # USB Multimedia device configuration
@@ -803,5 +831,22 @@ config USB_ZR364XX
 	  module will be called zr364xx.
 
 endif # V4L_USB_DRIVERS
+
+if ARCH_MSM
+
+#
+# Qualcomm Incorporated SOC camera configuration
+#
+
+comment "Qualcomm MSM Camera And Video"
+
+menuconfig MSM_CAMERA
+	bool "Qualcomm MSM camera and video capture support"
+	depends on VIDEO_V4L2
+	---help---
+	  Say Y here to enable selecting the video adapters for
+	  Qualcomm msm camera and video encoding
+
+endif # ARCH_MSM
 
 endif # VIDEO_CAPTURE_DRIVERS

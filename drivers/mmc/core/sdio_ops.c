@@ -60,8 +60,13 @@ int mmc_send_io_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 		mmc_delay(10);
 	}
 
-	if (rocr)
+	if (rocr) {
 		*rocr = cmd.resp[mmc_host_is_spi(host) ? 1 : 0];
+#ifdef CONFIG_SDIO_FORCE_OPCOND_1_8V
+		// MAR: our sdio card lies to us as it actually runs at 1.8V
+		*rocr |= MMC_VDD_165_195;
+#endif
+	}
 
 	return err;
 }

@@ -203,6 +203,15 @@ static struct mem_type mem_types[] = {
 		.prot_sect	= PROT_SECT_DEVICE | PMD_SECT_WB,
 		.domain		= DOMAIN_IO,
 	},	
+	[MT_DEVICE_EXT_BUFFERED_MSM7X00A] = { /* msm7k uses the hw pte bits
+					       * to enable additional external
+					       * buffering on the memory bus */
+		.prot_pte	= PROT_PTE_DEVICE | L_PTE_EXT_BUFFERED,
+		.prot_pte_ext	= PTE_EXT_TEX(7),
+		.prot_l1	= PMD_TYPE_TABLE,
+		.prot_sect	= PROT_SECT_DEVICE | PMD_SECT_TEX(7),
+		.domain		= DOMAIN_IO,
+	},
 	[MT_DEVICE_IXP2000] = {	  /* IXP2400 requires XCB=101 for on-chip I/O */
 		.prot_pte	= PROT_PTE_DEVICE,
 		.prot_l1	= PMD_TYPE_TABLE,
@@ -229,6 +238,16 @@ static struct mem_type mem_types[] = {
 				L_PTE_USER | L_PTE_EXEC,
 		.prot_l1   = PMD_TYPE_TABLE,
 		.domain    = DOMAIN_USER,
+	},
+	[MT_MEMORY_SO] = {
+		.prot_sect = PMD_TYPE_SECT | PMD_SECT_AP_WRITE |
+				PMD_SECT_UNCACHED | PMD_SECT_XN,
+		.domain    = DOMAIN_KERNEL,
+	},
+	[MT_MEMORY_SO_EXE] = {
+		.prot_sect = PMD_TYPE_SECT | PMD_SECT_AP_WRITE |
+				PMD_SECT_UNCACHED,
+		.domain    = DOMAIN_KERNEL,
 	},
 	[MT_MEMORY] = {
 		.prot_sect = PMD_TYPE_SECT | PMD_SECT_AP_WRITE,
@@ -319,7 +338,11 @@ static void __init build_mem_type_table(void)
 		/*
 		 * Mark the device area as "shared device"
 		 */
-		mem_types[MT_DEVICE].prot_pte |= L_PTE_BUFFERABLE;
+		/* PALM: removed bufferable bit here as per change
+		 * 639b0ae7f5bcd645862a9c3ea2d4321475c71d7a from Russell King Sept. 6 2008
+		 * Needed to fix memory corruption issue with 7x27 GPU.
+		 */
+		/*mem_types[MT_DEVICE].prot_pte |= L_PTE_BUFFERABLE;*/
 		mem_types[MT_DEVICE].prot_sect |= PMD_SECT_BUFFERED;
 
 #ifdef CONFIG_SMP

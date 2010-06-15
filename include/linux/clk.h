@@ -121,4 +121,5 @@ int clk_set_parent(struct clk *clk, struct clk *parent);
  */
 struct clk *clk_get_parent(struct clk *clk);
 
+int clk_set_flags(struct clk *clk, unsigned long flags);
 #endif

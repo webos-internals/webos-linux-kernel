@@ -33,6 +33,10 @@
 #include <linux/serial.h> /* for serial_state and serial_icounter_struct */
 #include <linux/delay.h>
 #include <linux/mutex.h>
+#include <linux/kgdb.h>
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+#include <linux/modem_activity.h>
+#endif
 
 #include <asm/irq.h>
 #include <asm/uaccess.h>
@@ -56,6 +60,12 @@ static struct lock_class_key port_lock_key;
 #define uart_console(port)	((port)->cons && (port)->cons->index == (port)->line)
 #else
 #define uart_console(port)	(0)
+#endif
+
+#ifdef CONFIG_KGDB_CONSOLE
+#define uart_kgdb(port) (port->cons && !strcmp(port->cons->name, "kgdb"))
+#else
+#define uart_kgdb(port) (0)
 #endif
 
 static void uart_change_speed(struct uart_state *state, struct ktermios *old_termios);
@@ -96,6 +106,10 @@ static void __uart_start(struct tty_struct *tty)
 	if (!uart_circ_empty(&state->info->xmit) && state->info->xmit.buf &&
 	    !tty->stopped && !tty->hw_stopped)
 		port->ops->start_tx(port);
+
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	modem_activity_touch_uart_port ( port->line, 0, __FUNCTION__ );
+#endif
 }
 
 static void uart_start(struct tty_struct *tty)
@@ -1675,6 +1689,9 @@ static int uart_line_info(char *buf, struct uart_driver *drv, int i)
 			mmio ? (unsigned long long)port->mapbase
 		             : (unsigned long long) port->iobase,
 			port->irq);
+	if (port->iotype == UPIO_MEM)
+		ret += sprintf(buf+ret, " membase 0x%08lX",
+					   (unsigned long) port->membase);
 
 	if (port->type == PORT_UNKNOWN) {
 		strcat(buf, "\n");
@@ -2166,9 +2183,9 @@ uart_configure_port(struct uart_driver *drv, struct uart_state *state,
 
 		/*
 		 * Power down all ports by default, except the
-		 * console if we have one.
+		 * console (real or kgdb) if we have one.
 		 */
-		if (!uart_console(port))
+		if (!uart_console(port) && !uart_kgdb(port))
 			uart_change_pm(state, 3);
 	}
 }
@@ -2357,6 +2374,12 @@ int uart_add_one_port(struct uart_driver *drv, struct uart_port *port)
 	 * Ensure UPF_DEAD is not set.
 	 */
 	port->flags &= ~UPF_DEAD;
+
+#if defined(CONFIG_KGDB_8250)
+	/* Add any 8250-like ports we find later. */
+	if (port->type <= PORT_MAX_8250)
+		kgdb8250_add_port(port->line, port);
+#endif
 
  out:
 	mutex_unlock(&state->mutex);

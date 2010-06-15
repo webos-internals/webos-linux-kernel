@@ -1880,6 +1880,21 @@ config FB_XILINX
 	  framebuffer. ML300 carries a 640*480 LCD display on the board,
 	  ML403 uses a standard DB15 VGA connector.
 
+config FB_MSM
+	tristate "MSM Frame Buffer support"
+	depends on FB && ARM && ARCH_MSM
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	help
+	  Support for the MDDI framebuffer.
+
+config FB_MSM_LOGO
+	depends on FB_MSM
+        bool "MSM Frame Buffer Logo"
+        help
+          Show /logo.rle during boot.
+
 config FB_VIRTUAL
 	tristate "Virtual Frame Buffer support (ONLY FOR TESTING!)"
 	depends on FB

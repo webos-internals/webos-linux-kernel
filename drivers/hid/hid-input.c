@@ -1165,6 +1165,7 @@ int hidinput_connect(struct hid_device *hid)
 				input_dev->name = hid->name;
 				input_dev->phys = hid->phys;
 				input_dev->uniq = hid->uniq;
+				input_dev->country = hid->country;
 				input_dev->id.bustype = hid->bus;
 				input_dev->id.vendor  = hid->vendor;
 				input_dev->id.product = hid->product;

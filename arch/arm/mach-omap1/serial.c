@@ -15,6 +15,7 @@
 #include <linux/delay.h>
 #include <linux/serial.h>
 #include <linux/tty.h>
+#include <linux/kgdb.h>
 #include <linux/serial_8250.h>
 #include <linux/serial_reg.h>
 #include <linux/clk.h>
@@ -151,8 +152,8 @@ void __init omap_serial_init(void)
 					clk_set_rate(uart1_ck, 12000000);
 			}
 			if (cpu_is_omap15xx()) {
-				omap_cfg_reg(UART1_TX);
-				omap_cfg_reg(UART1_RTS);
+				omap_cfg_reg("UART1_TX");
+				omap_cfg_reg("UART1_RTS");
 				if (machine_is_omap_innovator()) {
 					reg = fpga_read(OMAP1510_FPGA_POWER);
 					reg |= OMAP1510_FPGA_PCR_COM1_EN;
@@ -173,8 +174,8 @@ void __init omap_serial_init(void)
 					clk_set_rate(uart2_ck, 48000000);
 			}
 			if (cpu_is_omap15xx()) {
-				omap_cfg_reg(UART2_TX);
-				omap_cfg_reg(UART2_RTS);
+				omap_cfg_reg("UART2_TX");
+				omap_cfg_reg("UART2_RTS");
 				if (machine_is_omap_innovator()) {
 					reg = fpga_read(OMAP1510_FPGA_POWER);
 					reg |= OMAP1510_FPGA_PCR_COM2_EN;
@@ -193,12 +194,15 @@ void __init omap_serial_init(void)
 					clk_set_rate(uart3_ck, 12000000);
 			}
 			if (cpu_is_omap15xx()) {
-				omap_cfg_reg(UART3_TX);
-				omap_cfg_reg(UART3_RX);
+				omap_cfg_reg("UART3_TX");
+				omap_cfg_reg("UART3_RX");
 			}
 			break;
 		}
 		omap_serial_reset(&serial_platform_data[i]);
+#ifdef CONFIG_KGDB_8250
+		kgdb8250_add_platform_port(i, &serial_platform_data[i]);
+#endif
 	}
 }
 
@@ -222,21 +226,21 @@ void omap_serial_wake_trigger(int enable)
 
 	if (uart1_ck != NULL) {
 		if (enable)
-			omap_cfg_reg(V14_16XX_GPIO37);
+			omap_cfg_reg("V14_16XX_GPIO37");
 		else
-			omap_cfg_reg(V14_16XX_UART1_RX);
+			omap_cfg_reg("V14_16XX_UART1_RX");
 	}
 	if (uart2_ck != NULL) {
 		if (enable)
-			omap_cfg_reg(R9_16XX_GPIO18);
+			omap_cfg_reg("R9_16XX_GPIO18");
 		else
-			omap_cfg_reg(R9_16XX_UART2_RX);
+			omap_cfg_reg("R9_16XX_UART2_RX");
 	}
 	if (uart3_ck != NULL) {
 		if (enable)
-			omap_cfg_reg(L14_16XX_GPIO49);
+			omap_cfg_reg("L14_16XX_GPIO49");
 		else
-			omap_cfg_reg(L14_16XX_UART3_RX);
+			omap_cfg_reg("L14_16XX_UART3_RX");
 	}
 }
 

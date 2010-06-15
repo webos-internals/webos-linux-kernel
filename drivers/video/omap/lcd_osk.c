@@ -39,7 +39,7 @@ static void osk_panel_cleanup(struct lcd_panel *panel)
 static int osk_panel_enable(struct lcd_panel *panel)
 {
 	/* configure PWL pin */
-	omap_cfg_reg(PWL);
+	omap_cfg_reg("PWL");
 
 	/* Enable PWL unit */
 	omap_writeb(0x01, OMAP_PWL_CLK_ENABLE);

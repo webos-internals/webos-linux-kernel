@@ -13,6 +13,13 @@ menuconfig MISC_DEVICES
 
 if MISC_DEVICES
 
+config ANDROID_PMEM
+	bool "Android pmem allocator"
+	depends on ARCH_MSM
+	default y
+	help
+		none
+
 config IBM_ASM
 	tristate "Device driver for IBM RSA service processor"
 	depends on X86 && PCI && INPUT && EXPERIMENTAL
@@ -219,6 +226,23 @@ config THINKPAD_ACPI_BAY
 
 	  If you are not sure, say Y here.
 
+config LOW_MEMORY_KILLER
+    tristate "Low Memory Killer"
+	depends on LOW_MEMORY_NOTIFY
+	  ---help---
+	  Register processes to be killed when memory is low.
+
+config LOW_MEMORY_NOTIFY
+    bool "Low Memory Notify"
+	  ---help---
+	  Provide interface to register for low memory notifications.
+
+config KERNEL_DEBUGGER_CORE
+	bool "Kernel Debugger Core"
+	default n
+	---help---
+	  Generic kernel debugging command processor used by low level
+	  (interrupt context) platform-specific debuggers.
 
 config ATMEL_SSC
 	tristate "Device driver for Atmel SSC peripheral"
@@ -232,4 +256,147 @@ config ATMEL_SSC
 
 	  If unsure, say N.
 
+config HSUART
+	bool "High Speed UART engine"
+	default n
+	---help---
+	  Generic HSUART engine, which calls platform specific code to facilitate High speed UART driver".
+
+config THERMISTOR_TMP105
+        tristate "Thermistor Support for TI TMP105 devices"
+        ---help---
+          Build support for the Texas Intruments TMP105 Temperature Sensor
+
+config CHARGER_SMB339
+        bool "Current Control Support SMB339"
+        ---help---
+          Build support for the Summit Microelectronics SMB339 Current Chip
+
+config TWL4030_RTC
+	bool "TWL4030 RTC Driver"
+	depends on TWL4030_CORE
+
+config OMAP_BCI_BATTERY
+	bool "OMAP243x/34xx Battery driver"
+	depends on (MACH_OMAP_2430SDP || MACH_OMAP_3430SDP) && TWL4030_CORE
+	default y
+	---help---
+	  Support for OMAP243x/34xx Battery driver. This driver can give support for TWL4030 Battery Charge Interface.
+
+config OMAP_TWL4030_BATTERY_EVENTS
+	bool "TWL4030 Battery monitoring and event notification"
+	depends on OMAP_BCI_BATTERY
+	default y
+	---help---
+	  Support for Battery driver's TWL4030 event handler registration and notification capabilities
+
+config OMAP_BQ27000_BATTERY
+	bool "BQ Battery monitoring and charge support"
+	depends on OMAP_HDQ
+	default y
+	---help---
+	  Support for battery driver's BQ27000 fuel gauge chip, battery monitoring capabilities.
+
+config OMAP_BQ27000_BATTERY_EVENTS
+	bool "BQ Battery monitoring and event notification"
+	depends on OMAP_BQ27000_BATTERY
+	default y
+	---help---
+	  Support for Battery driver's event handler registration and notification capabilities
+
+config OMAP_BATTERY_SYSFS
+	bool "OMAP243x/343x  Battery driver Sysfs"
+	depends on OMAP_BCI_BATTERY || OMAP_BQ27000_BATTERY
+	default y
+	---help---
+	  OMAP243x/34xx Battery driver sysfs entries.
+
+config OMAP_VIBRATOR
+	tristate "OMAP34xx Vibrator driver."
+	depends on ARCH_OMAP3430
+	default y
+	---help---
+	  Say Y here if you want to use the Vibrator driver on the OMAP34xx-based reference platform.
+
+config MSM_VIBRATOR
+	tristate "MSM Vibrator driver"
+	depends on ARCH_MSM
+	default y
+	---help---
+	  Say Y here if you want to use the Vibrator driver on the MSM-based reference platform.
+
+config PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	bool "Qualcomm Modem Handshaking support on Palm devices"
+	depends on ARCH_OMAP3430
+	default y
+	help
+	  Enable this option if you want support for Qualcomm Modem Handshaking on Palm
+	  devices.
+
+config OMAP_MISC_HSUART
+	tristate "OMAP High speed UART device driver"
+	depends on ARCH_OMAP2 || ARCH_OMAP3
+	depends on HS_SERIAL_SUPPORT
+	---help---
+	  Select Y if you want to expose High speed UART as a non-tty (misc) device
+
+config HSUART_LOG_EVENTS
+	bool "Enable event logging (debug) for High speed UART device driver"
+	depends on OMAP_MISC_HSUART
+	default n
+	---help---
+	  Select Y if you want to enable events logging (debug) for High speed UART driver
+
+config USER_PINS
+	tristate "Sysfs GPIO pins control"
+	depends on ARCH_OMAP2 || ARCH_OMAP3 || ARCH_MSM
+	---help---
+	   Support Select Y if you want to expose some gpio pins through sysfs. 
+
+config HRES_COUNTER
+	tristate "High resolution counter"
+	depends on ARCH_OMAP2 || ARCH_OMAP3 || ARCH_MSM
+	---help---
+	  Select Y if you want to enable High resolution counter.
+
+config HRES_COUNTER_TIMER32K
+	bool "Use 32K sync timer for time stamps"
+	depends on HRES_COUNTER
+	default n
+	---help---
+	  Select Y if you want to use 32K clock for timestamps.
+
+config PALM_NDUID
+	tristate "Nova Device UID"
+	depends on MACH_SIRLOIN || MACH_BRISKET || MACH_FLANK || MACH_CHUCK
+	depends on PROC_FS
+	depends on CRYPTO_SHA1
+	---help---
+		Select Y if you want to export Nova Device UID in /proc and /dev
+
+config HARDKEY_REBOOT
+   tristate "Hard keys emergency reboot"
+	depends on MACH_SIRLOIN || MACH_BRISKET || MACH_FLANK || MACH_CHUCK
+	depends on GPIO_KEYS_REBOOT_TRIGGER
+	---help---
+		Select Y if you want to be able to perform emergency reboot by holding 
+		gpio keys.
+	
+config KERNEL_LOG
+	bool "Kernel ram log"
+	---help---
+		Select Y for support for keeping kernel logs in physical memory
+
+config BATTERY_SIMPLE
+	bool "Simple battery interface"	
+	help
+	  Say Y to enable a simple battery interface.
+
+config BLUETOOTH_POWER_STATE
+	bool "Bluetooth power state"
+	default y
+	---help---
+		Select Y for the user space to indicate the current bluetooth power state to the kernel
+
 endif # MISC_DEVICES
+

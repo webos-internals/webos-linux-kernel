@@ -33,7 +33,8 @@ struct resource_list {
  */
 #define IORESOURCE_BITS		0x000000ff	/* Bus-specific bits */
 
-#define IORESOURCE_IO		0x00000100	/* Resource type */
+#define IORESOURCE_TYPE_BITS    0x00000f00      /* Resource type */
+#define IORESOURCE_IO		0x00000100	
 #define IORESOURCE_MEM		0x00000200
 #define IORESOURCE_IRQ		0x00000400
 #define IORESOURCE_DMA		0x00000800
@@ -109,6 +110,15 @@ extern int allocate_resource(struct resource *root, struct resource *new,
 			     void *alignf_data);
 int adjust_resource(struct resource *res, resource_size_t start,
 		    resource_size_t size);
+
+static inline resource_size_t resource_size(struct resource *res)
+{
+        return res->end - res->start + 1;
+}
+static inline unsigned long resource_type(struct resource *res)
+{
+        return res->flags & IORESOURCE_TYPE_BITS;
+}
 
 /* Convenience shorthand with allocation */
 #define request_region(start,n,name)	__request_region(&ioport_resource, (start), (n), (name))

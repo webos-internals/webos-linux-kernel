@@ -252,6 +252,9 @@ static inline ktime_t hrtimer_cb_get_time(struct hrtimer *timer)
 
 extern ktime_t ktime_get(void);
 extern ktime_t ktime_get_real(void);
+#ifdef CONFIG_INTSOCK_NETFILTER
+extern ktime_t ktime_get_uptime(void);
+#endif
 
 /* Exported timer functions: */
 

@@ -556,8 +556,8 @@ static int __init omap_uwire_init(void)
 
 	if (machine_is_omap_h2()) {
 		/* defaults: W21 SDO, U18 SDI, V19 SCL */
-		omap_cfg_reg(N14_1610_UWIRE_CS0);
-		omap_cfg_reg(N15_1610_UWIRE_CS1);
+		omap_cfg_reg("N14_1610_UWIRE_CS0");
+		omap_cfg_reg("N15_1610_UWIRE_CS1");
 	}
 	if (machine_is_omap_perseus2()) {
 		/* configure pins: MPU_UW_nSCS1, MPU_UW_SDO, MPU_UW_SCLK */

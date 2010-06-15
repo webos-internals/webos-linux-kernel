@@ -123,6 +123,14 @@ config INPUT_EVDEV
 	  To compile this driver as a module, choose M here: the
 	  module will be called evdev.
 
+config INPUT_EVDEV_TRACK_QUEUE
+    bool "Track Event queue"
+    default y
+    depends on INPUT_EVDEV 
+    ---help---
+       Say Y if you want to be able to track presence of unread events 
+	   in event queues associated with target input device.
+
 config INPUT_EVBUG
 	tristate "Event debugging"
 	---help---
@@ -150,6 +158,8 @@ source "drivers/input/tablet/Kconfig"
 source "drivers/input/touchscreen/Kconfig"
 
 source "drivers/input/misc/Kconfig"
+
+source "drivers/input/accelerometer/Kconfig"
 
 endif
 

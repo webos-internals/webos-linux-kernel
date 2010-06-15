@@ -42,7 +42,8 @@ menu "Advanced Linux Sound Architecture"
 
 config SND
 	tristate "Advanced Linux Sound Architecture"
-	depends on SOUND
+	depends on SOUND	
+
 	help
 	  Say 'Y' or 'M' to enable ALSA (Advanced Linux Sound Architecture),
 	  the new base sound system.
@@ -93,6 +94,7 @@ menu "Open Sound System"
 config SOUND_PRIME
 	tristate "Open Sound System (DEPRECATED)"
 	depends on SOUND
+	depends on !SND
 	help
 	  Say 'Y' or 'M' to enable Open Sound System drivers.
 

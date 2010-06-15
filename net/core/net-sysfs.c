@@ -261,6 +261,54 @@ static ssize_t netstat_show(const struct device *d,
 	return ret;
 }
 
+	
+static ssize_t idletime_show(struct device *d,				
+			   struct device_attribute *attr, char *buf,
+			   unsigned long offset)
+{
+	struct net_device *dev = to_net_dev(d);
+	struct net_device_stats *stats;
+	ssize_t ret = -EINVAL;
+
+	if (offset > sizeof(struct net_device_stats) ||
+	    offset % sizeof(unsigned long) != 0)
+		WARN_ON(1);
+
+	read_lock(&dev_base_lock);
+	if (dev_isalive(dev) && dev->get_stats &&
+	    (stats = (*dev->get_stats)(dev)))
+	{
+		if(*(unsigned long *)(((u8 *) stats) + offset) != 0)
+		{
+			ret = sprintf(buf, fmt_ulong,
+			     (jiffies - *(unsigned long *)(((u8 *) stats) + offset))/HZ);
+		}
+		else	
+		{
+			ret = sprintf(buf,"-1\n");
+		}
+	}
+
+	read_unlock(&dev_base_lock);
+	return ret;
+}
+
+static ssize_t show_rx_idletime(struct device *d,				
+			   struct device_attribute *attr, char *buf) 	
+{	
+	return idletime_show(d, attr, buf,				
+		offsetof(struct net_device_stats, rx_lasttime));
+}
+
+static ssize_t show_tx_idletime(struct device *d,				
+			   struct device_attribute *attr, char *buf) 	
+{	
+	return idletime_show(d, attr, buf,				
+		offsetof(struct net_device_stats, tx_lasttime));
+}
+static DEVICE_ATTR(rx_idletime, S_IRUGO, show_rx_idletime, NULL);
+static DEVICE_ATTR(tx_idletime, S_IRUGO, show_tx_idletime, NULL);
+
 /* generate a read-only statistics attribute */
 #define NETSTAT_ENTRY(name)						\
 static ssize_t show_##name(struct device *d,				\
@@ -319,6 +367,8 @@ static struct attribute *netstat_attrs[] = {
 	&dev_attr_tx_window_errors.attr,
 	&dev_attr_rx_compressed.attr,
 	&dev_attr_tx_compressed.attr,
+	&dev_attr_rx_idletime.attr,
+	&dev_attr_tx_idletime.attr,
 	NULL
 };
 

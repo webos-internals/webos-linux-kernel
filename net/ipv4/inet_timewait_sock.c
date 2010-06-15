@@ -12,6 +12,7 @@
 #include <net/inet_hashtables.h>
 #include <net/inet_timewait_sock.h>
 #include <net/ip.h>
+#include <linux/gen_timer.h>
 
 /* Must be called with locally disabled BHs. */
 static void __inet_twsk_kill(struct inet_timewait_sock *tw,
@@ -186,8 +187,13 @@ void inet_twdr_hangman(unsigned long data)
 			need_timer = 1;
 	}
 	twdr->slot = ((twdr->slot + 1) & (INET_TWDR_TWKILL_SLOTS - 1));
-	if (need_timer)
+	if (need_timer) 
+#ifdef CONFIG_TCP_FASTPATH
+		mod_gen_timer(&twdr->tw_timer, jiffies + twdr->period);
+#else
 		mod_timer(&twdr->tw_timer, jiffies + twdr->period);
+#endif
+
 out:
 	spin_unlock(&twdr->death_lock);
 }
@@ -239,7 +245,11 @@ void inet_twsk_deschedule(struct inet_timewait_sock *tw,
 	if (inet_twsk_del_dead_node(tw)) {
 		inet_twsk_put(tw);
 		if (--twdr->tw_count == 0)
+#ifdef CONFIG_TCP_FASTPATH
+			del_gen_timer(&twdr->tw_timer);
+#else
 			del_timer(&twdr->tw_timer);
+#endif
 	}
 	spin_unlock(&twdr->death_lock);
 	__inet_twsk_kill(tw, twdr->hashinfo);
@@ -322,7 +332,11 @@ void inet_twsk_schedule(struct inet_timewait_sock *tw,
 	hlist_add_head(&tw->tw_death_node, list);
 
 	if (twdr->tw_count++ == 0)
+#ifdef CONFIG_TCP_FASTPATH
+		mod_gen_timer(&twdr->tw_timer, jiffies + twdr->period);
+#else
 		mod_timer(&twdr->tw_timer, jiffies + twdr->period);
+#endif
 	spin_unlock(&twdr->death_lock);
 }
 
@@ -377,7 +391,11 @@ void inet_twdr_twcal_tick(unsigned long data)
 
 out:
 	if ((twdr->tw_count -= killed) == 0)
+#ifdef CONFIG_TCP_FASTPATH
+		del_gen_timer(&twdr->tw_timer);
+#else
 		del_timer(&twdr->tw_timer);
+#endif
 	NET_ADD_STATS_BH(LINUX_MIB_TIMEWAITKILLED, killed);
 	spin_unlock(&twdr->death_lock);
 }

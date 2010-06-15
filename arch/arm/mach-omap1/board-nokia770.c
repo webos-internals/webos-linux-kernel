@@ -34,7 +34,10 @@
 #include <asm/arch/aic23.h>
 #include <asm/arch/gpio.h>
 #include <asm/arch/omapfb.h>
+#include <asm/arch/hwa742.h>
 #include <asm/arch/lcd_mipid.h>
+
+#include "../plat-omap/dsp/dsp_common.h"
 
 #define ADS7846_PENDOWN_GPIO	15
 
@@ -162,6 +165,47 @@ static struct spi_board_info nokia770_spi_board_info[] __initdata = {
 	},
 };
 
+static struct {
+	struct clk *sys_ck;
+} hwa742;
+
+static int hwa742_get_clocks(void)
+{
+	hwa742.sys_ck = clk_get(NULL, "bclk");
+	if (IS_ERR(hwa742.sys_ck)) {
+		printk(KERN_ERR "can't get HWA742 clock\n");
+		return PTR_ERR(hwa742.sys_ck);
+	}
+	return 0;
+}
+
+static unsigned long hwa742_get_clock_rate(struct device *dev)
+{
+	return clk_get_rate(hwa742.sys_ck);
+}
+
+static void hwa742_power_up(struct device *dev)
+{
+	clk_enable(hwa742.sys_ck);
+}
+
+static void hwa742_power_down(struct device *dev)
+{
+	clk_disable(hwa742.sys_ck);
+}
+
+static struct hwa742_platform_data nokia770_hwa742_platform_data = {
+	.get_clock_rate	= hwa742_get_clock_rate,
+	.power_up	= hwa742_power_up,
+	.power_down	= hwa742_power_down,
+	.te_connected	= 1,
+};
+
+static void hwa742_dev_init(void)
+{
+	hwa742_get_clocks();
+	omapfb_set_ctrl_platform_data(&nokia770_hwa742_platform_data);
+}
 
 /* assume no Mini-AB port */
 
@@ -190,7 +234,7 @@ static struct omap_mmc_config nokia770_mmc_config __initdata = {
 	},
 };
 
-static struct omap_board_config_kernel nokia770_config[] = {
+static struct omap_board_config_kernel nokia770_config[] __initdata = {
 	{ OMAP_TAG_USB,		NULL },
 	{ OMAP_TAG_MMC,		&nokia770_mmc_config },
 };
@@ -332,6 +376,7 @@ static void __init omap_nokia770_init(void)
 	omap_gpio_init();
 	omap_serial_init();
 	omap_dsp_init();
+	hwa742_dev_init();
 	ads7846_dev_init();
 	mipid_dev_init();
 }

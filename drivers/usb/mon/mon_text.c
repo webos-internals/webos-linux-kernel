@@ -150,6 +150,11 @@ static inline char mon_text_get_data(struct mon_event_text *ep, struct urb *urb,
 			return '>';
 	}
 
+#if defined(CONFIG_MACH_BRISKET) || defined(CONFIG_MACH_FLANK) || defined(CONFIG_MACH_SIRLOIN)
+	/* 
+	 * Our modem driver sets transfer_buffer, so just use it.
+	 */
+#else
 	/*
 	 * The check to see if it's safe to poke at data has an enormous
 	 * number of corner cases, but it seems that the following is
@@ -163,6 +168,7 @@ static inline char mon_text_get_data(struct mon_event_text *ep, struct urb *urb,
 	    (urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP)) {
 		return mon_dmapeek(ep->data, urb->transfer_dma, len);
 	}
+#endif
 
 	if (urb->transfer_buffer == NULL)
 		return 'Z';	/* '0' would be not as pretty. */

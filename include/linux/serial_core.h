@@ -149,6 +149,9 @@
 /* Freescale ColdFire */
 #define PORT_MCF	78
 
+/* MSM7200 serial port */
+#define PORT_MSM_SERIAL 79
+
 
 #ifdef __KERNEL__
 

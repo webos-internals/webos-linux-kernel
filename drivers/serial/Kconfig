@@ -121,7 +121,7 @@ config SERIAL_8250_CS
 
 config SERIAL_8250_NR_UARTS
 	int "Maximum number of 8250/16550 serial ports"
-	depends on SERIAL_8250
+	depends on SERIAL_8250 || KGDB_8250
 	default "4"
 	help
 	  Set this to the number of serial ports you want the driver
@@ -1283,5 +1283,49 @@ config SERIAL_OF_PLATFORM
 	  on a platform specific bus, you should enable this option.
 	  Currently, only 8250 compatible ports are supported, but
 	  others can easily be added.
+
+config SERIAL_MSM
+	bool "MSM7X00A on-chip serial port support"
+	depends on ARM && ARCH_MSM
+	select SERIAL_CORE
+	help
+	  Support for the UARTs in the Qualcomm MSM7K.
+config SERIAL_MSM
+        bool "MSM7X25 on-chip serial port support"
+        depends on ARM && ARCH_MSM7X25
+        select SERIAL_CORE
+        help
+          Support for the UARTs in the Qualcomm MSM7X25.
+
+
+config SERIAL_MSM_CONSOLE
+	bool "MSM serial console"
+	depends on SERIAL_MSM=y
+	select SERIAL_CORE_CONSOLE
+	help
+	  Support for console on the UARTs in the Qualcomm MSM7K.
+
+config SERIAL_MSM_CLOCK_CONTROL
+	bool "Allow tty clients to make clock requests to msm uarts."
+	depends on SERIAL_MSM=y
+	default y
+	help
+	 Provides an interface for tty clients to request the msm uart clock
+	 to be turned on or off for power savings.
+
+config SERIAL_MSM_RX_WAKEUP
+	bool "Wakeup the msm uart clock on GPIO activity."
+	depends on SERIAL_MSM_CLOCK_CONTROL
+	default n
+	help
+	 Requires SERIAL_MSM_CLOCK_CONTROL. Wake up the uart while the uart
+	 clock is off, using a wakeup GPIO.
+
+config SERIAL_MSM_NO_UART3_RX_WAKE
+	bool "Disable rx wake for UART3."
+	depends on SERIAL_MSM_CLOCK_CONTROL
+	default y
+	help
+	  Prevents RX on UART3 from being a wake source.
 
 endmenu

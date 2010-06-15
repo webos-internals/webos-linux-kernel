@@ -132,7 +132,6 @@ ENTRY(cpu_v6_switch_mm)
 ENTRY(cpu_v6_set_pte_ext)
 #ifdef CONFIG_MMU
 	str	r1, [r0], #-2048		@ linux version
-
 	bic	r3, r1, #0x000003f0
 	bic	r3, r3, #0x00000003
 	orr	r3, r3, r2
@@ -153,6 +152,12 @@ ENTRY(cpu_v6_set_pte_ext)
 	tst	r1, #L_PTE_EXEC
 	orreq	r3, r3, #PTE_EXT_XN
 
+	tst	r1, #L_PTE_DEVICE
+	orrne	r3, r3, #PTE_EXT_TEX(2)
+
+	tst	r1, #L_PTE_EXT_BUFFERED
+	orrne	r3, r3, #PTE_EXT_TEX(7)
+
 	tst	r1, #L_PTE_PRESENT
 	moveq	r3, #0
 
@@ -160,8 +165,6 @@ ENTRY(cpu_v6_set_pte_ext)
 	mcr	p15, 0, r0, c7, c10, 1 @ flush_pte
 #endif
 	mov	pc, lr
-
-
 
 
 cpu_v6_name:
@@ -240,6 +243,7 @@ ENTRY(v6_processor_functions)
 	.word	cpu_v6_dcache_clean_area
 	.word	cpu_v6_switch_mm
 	.word	cpu_v6_set_pte_ext
+	.word	pabort_noifar
 	.size	v6_processor_functions, . - v6_processor_functions
 
 	.type	cpu_arch_name, #object

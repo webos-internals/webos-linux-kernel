@@ -1380,4 +1380,7 @@ struct tcp_request_sock_ops {
 extern void tcp_v4_init(struct net_proto_family *ops);
 extern void tcp_init(void);
 
+#ifdef CONFIG_INTSOCK_NETFILTER
+extern void check_idle_sockets(void);
+#endif
 #endif	/* _TCP_H */

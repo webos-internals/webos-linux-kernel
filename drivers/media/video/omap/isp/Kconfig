@@ -1,0 +1,11 @@
+config VIDEO_OMAP34XX_ISP
+	tristate "omap isp driver"
+	depends on ARCH_OMAP34XX 
+
+config VIDEO_OMAP34XX_ISP_PREVIEWER
+	tristate "omap isp previewer"
+	depends on VIDEO_OMAP34XX_ISP && !ARCH_OMAP3410
+
+config VIDEO_OMAP34XX_ISP_RESIZER
+	tristate "omap isp resizer"
+	depends on VIDEO_OMAP34XX_ISP && !ARCH_OMAP3410

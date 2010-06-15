@@ -15,7 +15,7 @@
 char *task_mem(struct mm_struct *mm, char *buffer)
 {
 	unsigned long data, text, lib;
-	unsigned long hiwater_vm, total_vm, hiwater_rss, total_rss;
+	unsigned long hiwater_vm, total_vm, hiwater_rss, total_rss, swapped_vm;
 
 	/*
 	 * Note: to minimize their overhead, mm maintains hiwater_vm and
@@ -30,6 +30,7 @@ char *task_mem(struct mm_struct *mm, char *buffer)
 	hiwater_rss = total_rss = get_mm_rss(mm);
 	if (hiwater_rss < mm->hiwater_rss)
 		hiwater_rss = mm->hiwater_rss;
+	swapped_vm = get_mm_counter(mm, swapped_vm);
 
 	data = mm->total_vm - mm->shared_vm - mm->stack_vm;
 	text = (PAGE_ALIGN(mm->end_code) - (mm->start_code & PAGE_MASK)) >> 10;
@@ -44,7 +45,8 @@ char *task_mem(struct mm_struct *mm, char *buffer)
 		"VmStk:\t%8lu kB\n"
 		"VmExe:\t%8lu kB\n"
 		"VmLib:\t%8lu kB\n"
-		"VmPTE:\t%8lu kB\n",
+		"VmPTE:\t%8lu kB\n"
+		"VmSwap:\t%8lu kB\n",
 		hiwater_vm << (PAGE_SHIFT-10),
 		(total_vm - mm->reserved_vm) << (PAGE_SHIFT-10),
 		mm->locked_vm << (PAGE_SHIFT-10),
@@ -52,7 +54,8 @@ char *task_mem(struct mm_struct *mm, char *buffer)
 		total_rss << (PAGE_SHIFT-10),
 		data << (PAGE_SHIFT-10),
 		mm->stack_vm << (PAGE_SHIFT-10), text, lib,
-		(PTRS_PER_PTE*sizeof(pte_t)*mm->nr_ptes) >> 10);
+		(PTRS_PER_PTE*sizeof(pte_t)*mm->nr_ptes) >> 10,
+		swapped_vm << (PAGE_SHIFT-10));
 	return buffer;
 }
 
@@ -122,6 +125,7 @@ struct mem_size_stats
 	unsigned long private_clean;
 	unsigned long private_dirty;
 	unsigned long referenced;
+	unsigned long swapped;
 };
 
 struct pmd_walker {
@@ -199,21 +203,24 @@ static int show_map_internal(struct seq_file *m, void *v, struct mem_size_stats 
 			   "Shared_Dirty:   %8lu kB\n"
 			   "Private_Clean:  %8lu kB\n"
 			   "Private_Dirty:  %8lu kB\n"
-			   "Referenced:     %8lu kB\n",
+			   "Referenced:     %8lu kB\n"
+			   "Swapped:        %8lu kB\n",
 			   (vma->vm_end - vma->vm_start) >> 10,
 			   mss->resident >> 10,
 			   mss->shared_clean  >> 10,
 			   mss->shared_dirty  >> 10,
 			   mss->private_clean >> 10,
 			   mss->private_dirty >> 10,
-			   mss->referenced >> 10);
+			   mss->referenced >> 10,
+			   mss->swapped >> 10);
 
 	if (m->count < m->size)  /* vma is copied successfully */
 		m->version = (vma != get_gate_vma(task))? vma->vm_start: 0;
 	return 0;
 }
 
-static int show_map(struct seq_file *m, void *v)
+// Needed by minicore
+int show_map(struct seq_file *m, void *v)
 {
 	return show_map_internal(m, v, NULL);
 }
@@ -230,8 +237,14 @@ static void smaps_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	for (; addr != end; pte++, addr += PAGE_SIZE) {
 		ptent = *pte;
-		if (!pte_present(ptent))
+		if (pte_none(ptent))
 			continue;
+
+		if (!pte_present(ptent)) {
+			if (!pte_file(ptent))
+				mss->swapped += PAGE_SIZE;
+			continue;
+		}
 
 		mss->resident += PAGE_SIZE;
 

@@ -92,7 +92,12 @@ call_usermodehelper_keys(char *path, char **argv, char **envp,
 extern void usermodehelper_init(void);
 
 struct file;
+struct subprocess_info;
 extern int call_usermodehelper_pipe(char *path, char *argv[], char *envp[],
 				    struct file **filp);
+
+extern int call_usermodehelper_pipe_ext(char *path, char *argv[], char *envp[],
+				    struct file **filp, struct subprocess_info **sub_info);
+int finish_usermodehelper_pipe_ext(struct subprocess_info *sub_info);
 
 #endif /* __LINUX_KMOD_H__ */

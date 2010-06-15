@@ -156,6 +156,9 @@ struct net_device_stats
 	/* for cslip etc */
 	unsigned long	rx_compressed;
 	unsigned long	tx_compressed;
+
+	unsigned long	rx_lasttime;
+	unsigned long	tx_lasttime;
 };
 
 

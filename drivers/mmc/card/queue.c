@@ -14,6 +14,7 @@
 #include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/scatterlist.h>
+#include <linux/workqueue.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
@@ -22,6 +23,11 @@
 #define MMC_QUEUE_BOUNCESZ	65536
 
 #define MMC_QUEUE_SUSPENDED	(1 << 0)
+
+static void mq_cleanup_work(struct work_struct *work);
+static DECLARE_WORK(mq_cleanup_worker, mq_cleanup_work);
+static struct mmc_queue *cleanup_mq;
+static DEFINE_SPINLOCK(mq_cleanup_lock);
 
 /*
  * Prepare a MMC request. This just filters out odd stuff.
@@ -48,7 +54,11 @@ static int mmc_queue_thread(void *d)
 
 	current->flags |= PF_MEMALLOC;
 
+	set_freezable();
 	down(&mq->thread_sem);
+
+	complete(&mq->thread_wait);
+
 	do {
 		struct request *req = NULL;
 
@@ -65,7 +75,8 @@ static int mmc_queue_thread(void *d)
 				break;
 			}
 			up(&mq->thread_sem);
-			schedule();
+			if (!try_to_freeze())
+				schedule();
 			down(&mq->thread_sem);
 			continue;
 		}
@@ -74,6 +85,8 @@ static int mmc_queue_thread(void *d)
 		mq->issue_fn(mq, req);
 	} while (1);
 	up(&mq->thread_sem);
+
+	complete(&mq->thread_wait);
 
 	return 0;
 }
@@ -190,12 +203,14 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card, spinlock_t *lock
 	}
 
 	init_MUTEX(&mq->thread_sem);
+	init_completion(&mq->thread_wait);
 
 	mq->thread = kthread_run(mmc_queue_thread, mq, "mmcqd");
 	if (IS_ERR(mq->thread)) {
 		ret = PTR_ERR(mq->thread);
 		goto free_bounce_sg;
 	}
+	wait_for_completion(&mq->thread_wait);
 
 	return 0;
  free_bounce_sg:
@@ -215,8 +230,35 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card, spinlock_t *lock
 
 void mmc_cleanup_queue(struct mmc_queue *mq)
 {
-	struct request_queue *q = mq->queue;
 	unsigned long flags;
+
+	BUG_ON(!mq);
+
+	/*
+	 * The actual cleanup is done from a work_queue because if you
+	 * thread_stop() while resuming, you'll deadlock.
+	 */
+	spin_lock_irqsave(&mq_cleanup_lock, flags);
+	cleanup_mq = mq;
+	schedule_work(&mq_cleanup_worker);
+	spin_unlock_irqrestore(&mq_cleanup_lock, flags);
+}
+EXPORT_SYMBOL(mmc_cleanup_queue);
+
+static void mq_cleanup_work(struct work_struct *work)
+{
+	struct mmc_queue *mq;
+	unsigned long flags;
+	struct request_queue *q;
+
+	spin_lock_irqsave(&mq_cleanup_lock, flags);
+	mq = cleanup_mq;
+	cleanup_mq = NULL;
+	spin_unlock_irqrestore(&mq_cleanup_lock, flags);
+
+	BUG_ON(!mq);
+
+	q = mq->queue;
 
 	/* Mark that we should start throwing out stragglers */
 	spin_lock_irqsave(q->queue_lock, flags);
@@ -226,8 +268,10 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	/* Make sure the queue isn't suspended, as that will deadlock */
 	mmc_queue_resume(mq);
 
+	init_completion(&mq->thread_wait);
 	/* Then terminate our worker thread */
 	kthread_stop(mq->thread);
+	wait_for_completion(&mq->thread_wait);
 
  	if (mq->bounce_sg)
  		kfree(mq->bounce_sg);
@@ -244,7 +288,6 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 
 	mq->card = NULL;
 }
-EXPORT_SYMBOL(mmc_cleanup_queue);
 
 /**
  * mmc_queue_suspend - suspend a MMC request queue

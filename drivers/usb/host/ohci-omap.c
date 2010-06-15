@@ -65,13 +65,27 @@ static inline int tps65010_set_gpio_out_value(unsigned gpio, unsigned value)
 extern int usb_disabled(void);
 extern int ocpi_enable(void);
 
+#ifdef CONFIG_ARCH_OMAP24XX
+static struct clk *fs_usb_ick;
+static struct clk *fs_usb_fck;
+#else
 static struct clk *usb_host_ck;
 static struct clk *usb_dc_ck;
+#endif
 static int host_enabled;
 static int host_initialized;
 
 static void omap_ohci_clock_power(int on)
 {
+#ifdef CONFIG_ARCH_OMAP24XX
+	if (on) {
+		clk_enable(fs_usb_ick);
+		clk_enable(fs_usb_fck);
+	} else {
+		clk_disable(fs_usb_ick);
+		clk_disable(fs_usb_fck);
+	}
+#else
 	if (on) {
 		clk_enable(usb_dc_ck);
 		clk_enable(usb_host_ck);
@@ -81,6 +95,7 @@ static void omap_ohci_clock_power(int on)
 		clk_disable(usb_host_ck);
 		clk_disable(usb_dc_ck);
 	}
+#endif
 }
 
 /*
@@ -227,7 +242,7 @@ static int ohci_omap_init(struct usb_hcd *hcd)
 
 	omap_ohci_clock_power(1);
 
-	if (cpu_is_omap1510()) {
+	if (cpu_is_omap15xx()) {
 		omap_1510_local_bus_power(1);
 		omap_1510_local_bus_init();
 	}
@@ -249,12 +264,12 @@ static int ohci_omap_init(struct usb_hcd *hcd)
 			rh &= ~RH_A_NOCP;
 
 			/* gpio9 for overcurrent detction */
-			omap_cfg_reg(W8_1610_GPIO9);
+			omap_cfg_reg("W8_1610_GPIO9");
 			omap_request_gpio(9);
 			omap_set_gpio_direction(9, 1 /* IN */);
 
 			/* for paranoia's sake:  disable USB.PUEN */
-			omap_cfg_reg(W4_USB_HIGHZ);
+			omap_cfg_reg("W4_USB_HIGHZ");
 		}
 		ohci_writel(ohci, rh, &ohci->regs->roothub.a);
 		distrust_firmware = 0;
@@ -311,11 +326,23 @@ static int usb_hcd_omap_probe (const struct hc_driver *driver,
 		return -ENODEV;
 	}
 
+#ifdef CONFIG_ARCH_OMAP24XX
+	fs_usb_ick = clk_get(0, "usb_l4_ick");
+	if (IS_ERR(fs_usb_ick)) {
+		printk(KERN_ERR "hcd probe: can't get usb_ick\n");
+		return PTR_ERR(fs_usb_ick);
+	}
+	fs_usb_fck = clk_get(0, "usb_fck");
+	if (IS_ERR(fs_usb_fck)) {
+		printk(KERN_ERR "hcd probe: can't get usb_fck\n");
+		return PTR_ERR(fs_usb_fck);
+	}
+#else
 	usb_host_ck = clk_get(0, "usb_hhc_ck");
 	if (IS_ERR(usb_host_ck))
 		return PTR_ERR(usb_host_ck);
 
-	if (!cpu_is_omap1510())
+	if (!cpu_is_omap15xx())
 		usb_dc_ck = clk_get(0, "usb_dc_ck");
 	else
 		usb_dc_ck = clk_get(0, "lb_ck");
@@ -324,7 +351,7 @@ static int usb_hcd_omap_probe (const struct hc_driver *driver,
 		clk_put(usb_host_ck);
 		return PTR_ERR(usb_dc_ck);
 	}
-
+#endif
 
 	hcd = usb_create_hcd (driver, &pdev->dev, pdev->dev.bus_id);
 	if (!hcd) {
@@ -368,8 +395,13 @@ err2:
 err1:
 	usb_put_hcd(hcd);
 err0:
+#ifdef CONFIG_ARCH_OMAP24XX
+	clk_put(fs_usb_ick);
+	clk_put(fs_usb_fck);
+#else
 	clk_put(usb_dc_ck);
 	clk_put(usb_host_ck);
+#endif
 	return retval;
 }
 
@@ -399,8 +431,13 @@ usb_hcd_omap_remove (struct usb_hcd *hcd, struct platform_device *pdev)
 		omap_free_gpio(9);
 	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
 	usb_put_hcd(hcd);
+#ifdef CONFIG_ARCH_OMAP24XX
+	clk_put(fs_usb_ick);
+	clk_put(fs_usb_fck);
+#else
 	clk_put(usb_dc_ck);
 	clk_put(usb_host_ck);
+#endif
 }
 
 /*-------------------------------------------------------------------------*/

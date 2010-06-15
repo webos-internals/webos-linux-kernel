@@ -1385,7 +1385,7 @@ config FORCEDETH_NAPI
 
 config CS89x0
 	tristate "CS89x0 support"
-	depends on NET_PCI && (ISA || MACH_IXDP2351 || ARCH_IXDP2X01 || ARCH_PNX010X)
+	depends on (ARCH_MSM7X25 || (NET_PCI && (ISA || MACH_IXDP2351 || ARCH_IXDP2X01 || ARCH_PNX010X)))
 	---help---
 	  Support for CS89x0 chipset based Ethernet cards. If you have a
 	  network (Ethernet) card of this type, say Y and read the
@@ -3038,6 +3038,18 @@ config NETCONSOLE
 	---help---
 	If you want to log kernel messages over the network, enable this.
 	See <file:Documentation/networking/netconsole.txt> for details.
+
+config MSM_RMNET
+	tristate "MSM RMNET Virtual Network Device"
+	depends on ARCH_MSM
+	help
+	  Virtual ethernet interface for MSM RMNET transport.
+config MSM_RMNET
+        tristate "MSM RMNET Virtual Network Device"
+        depends on ARCH_MSM7X25
+        help
+          Virtual ethernet interface for MSM RMNET transport.
+
 
 config NETCONSOLE_DYNAMIC
 	bool "Dynamic reconfiguration of logging targets (EXPERIMENTAL)"

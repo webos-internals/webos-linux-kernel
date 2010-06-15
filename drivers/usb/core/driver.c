@@ -1527,7 +1527,13 @@ static int usb_suspend(struct device *dev, pm_message_t message)
 		return 0;
 	}
 
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	/* we always skip sys resume because the modem can't be awake
+	 * until sys resume is complete */
+	udev->skip_sys_resume = 1;
+#else
 	udev->skip_sys_resume = 0;
+#endif
 	return usb_external_suspend_device(udev, message);
 }
 

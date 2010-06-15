@@ -48,6 +48,13 @@ static void tick_do_update_jiffies64(ktime_t now)
 	unsigned long ticks = 0;
 	ktime_t delta;
 
+	/*
+	 * Do a quick check without holding xtime_lock:
+	 */
+	delta = ktime_sub(now, last_jiffies_update);
+	if (delta.tv64 < tick_period.tv64)
+		return;
+
 	/* Reevalute with xtime_lock held */
 	write_seqlock(&xtime_lock);
 
@@ -133,14 +140,13 @@ void tick_nohz_update_jiffies(void)
 	if (!ts->tick_stopped)
 		return;
 
-	touch_softlockup_watchdog();
-
 	cpu_clear(cpu, nohz_cpu_mask);
 	now = ktime_get();
 
 	local_irq_save(flags);
 	tick_do_update_jiffies64(now);
 	local_irq_restore(flags);
+	touch_softlockup_watchdog();
 }
 
 /**
@@ -150,7 +156,7 @@ void tick_nohz_update_jiffies(void)
  * Called either from the idle loop or from irq_exit() when an idle period was
  * just interrupted by an interrupt which did not cause a reschedule.
  */
-void tick_nohz_stop_sched_tick(void)
+void tick_nohz_stop_sched_tick(int inidle)
 {
 	unsigned long seq, last_jiffies, next_jiffies, delta_jiffies, flags;
 	struct tick_sched *ts;
@@ -178,10 +184,14 @@ void tick_nohz_stop_sched_tick(void)
 	if (unlikely(ts->nohz_mode == NOHZ_MODE_INACTIVE))
 		goto end;
 
+	if (!inidle && !ts->inidle)
+		goto end;
+		
+	ts->inidle = 1;
+
 	if (need_resched())
 		goto end;
 
-	cpu = smp_processor_id();
 	if (unlikely(local_softirq_pending())) {
 		static int ratelimit;
 
@@ -190,6 +200,7 @@ void tick_nohz_stop_sched_tick(void)
 			       local_softirq_pending());
 			ratelimit++;
 		}
+		goto end;
 	}
 
 	now = ktime_get();
@@ -228,8 +239,26 @@ void tick_nohz_stop_sched_tick(void)
 	/* Schedule the tick, if we are at least one jiffie off */
 	if ((long)delta_jiffies >= 1) {
 
+		/*
+		* calculate the expiry time for the next timer wheel
+		* timer. delta_jiffies >= NEXT_TIMER_MAX_DELTA signals
+		* that there is no timer pending or at least extremly
+		* far into the future (12 days for HZ=1000). In this
+		* case we set the expiry to the end of the universe.
+		*/
+		if (delta_jiffies < NEXT_TIMER_MAX_DELTA)
+			expires = ktime_add_ns(last_update, tick_period.tv64 *
+					       delta_jiffies);
+		else
+			expires.tv64 = KTIME_MAX;
+
 		if (delta_jiffies > 1)
 			cpu_set(cpu, nohz_cpu_mask);
+
+		/* Skip reprogram of event if it has not changed */
+		if (ts->tick_stopped && ktime_equal(expires, dev->next_event))
+			goto out;
+
 		/*
 		 * nohz_stop_sched_tick can be called several times before
 		 * the nohz_restart_sched_tick is called. This happens when
@@ -264,26 +293,16 @@ void tick_nohz_stop_sched_tick(void)
 
 		ts->idle_sleeps++;
 
+		ts->idle_expires = expires;
+
 		/*
-		 * delta_jiffies >= NEXT_TIMER_MAX_DELTA signals that
-		 * there is no timer pending or at least extremly far
-		 * into the future (12 days for HZ=1000). In this case
-		 * we simply stop the tick timer:
+		 * No active timers ?
 		 */
-		if (unlikely(delta_jiffies >= NEXT_TIMER_MAX_DELTA)) {
-			ts->idle_expires.tv64 = KTIME_MAX;
+		if (unlikely(expires.tv64 == KTIME_MAX)) {
 			if (ts->nohz_mode == NOHZ_MODE_HIGHRES)
 				hrtimer_cancel(&ts->sched_timer);
 			goto out;
 		}
-
-		/*
-		 * calculate the expiry time for the next timer wheel
-		 * timer
-		 */
-		expires = ktime_add_ns(last_update, tick_period.tv64 *
-				       delta_jiffies);
-		ts->idle_expires = expires;
 
 		if (ts->nohz_mode == NOHZ_MODE_HIGHRES) {
 			hrtimer_start(&ts->sched_timer, expires,
@@ -291,7 +310,7 @@ void tick_nohz_stop_sched_tick(void)
 			/* Check, if the timer was already in the past */
 			if (hrtimer_active(&ts->sched_timer))
 				goto out;
-		} else if(!tick_program_event(expires, 0))
+		} else if (!tick_program_event(expires, 0))
 				goto out;
 		/*
 		 * We are past the event already. So we crossed a
@@ -308,6 +327,12 @@ out:
 	ts->sleep_length = ktime_sub(dev->next_event, now);
 end:
 	local_irq_restore(flags);
+}
+
+unsigned long tick_nohz_get_idle_jiffies(void)
+{
+	struct tick_sched *ts = &__get_cpu_var(tick_cpu_sched);
+	return ts->idle_jiffies;
 }
 
 /**
@@ -334,14 +359,18 @@ void tick_nohz_restart_sched_tick(void)
 	unsigned long ticks;
 	ktime_t now, delta;
 
-	if (!ts->tick_stopped)
+	local_irq_disable();
+
+	if (!ts->inidle || !ts->tick_stopped) {
+		ts->inidle = 0;
+		local_irq_enable();
 		return;
+	}
+	ts->inidle = 0;
 
 	/* Update jiffies first */
-	now = ktime_get();
-
-	local_irq_disable();
 	select_nohz_load_balancer(0);
+	now = ktime_get();
 	tick_do_update_jiffies64(now);
 	cpu_clear(cpu, nohz_cpu_mask);
 

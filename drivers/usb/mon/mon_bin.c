@@ -371,12 +371,17 @@ static inline char mon_bin_get_setup(unsigned char *setupb,
 static char mon_bin_get_data(const struct mon_reader_bin *rp,
     unsigned int offset, struct urb *urb, unsigned int length)
 {
-
+#if defined(CONFIG_MACH_BRISKET) || defined(CONFIG_MACH_FLANK) || defined(CONFIG_MACH_SIRLOIN)
+	/* 
+	 * Our modem driver sets transfer_buffer, so just use it.
+	 */
+#else
 	if (urb->dev->bus->uses_dma &&
 	    (urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP)) {
 		mon_dmapeek_vec(rp, offset, urb->transfer_dma, length);
 		return 0;
 	}
+#endif
 
 	if (urb->transfer_buffer == NULL)
 		return 'Z';

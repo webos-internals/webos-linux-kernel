@@ -77,6 +77,28 @@ ktime_t ktime_get_real(void)
 
 EXPORT_SYMBOL_GPL(ktime_get_real);
 
+
+#ifdef CONFIG_INTSOCK_NETFILTER
+/**
+ * ktime_get_uptime - get the uptime (wall-) time in ktime_t format
+ * (including total sleep time)
+ * returns the time in ktime_t format
+ */
+ktime_t ktime_get_uptime(void)
+{
+	struct timespec now;
+
+	ktime_get_ts(&now);
+
+	monotonic_to_bootbased(&now);
+
+	return timespec_to_ktime(now);
+}
+
+EXPORT_SYMBOL_GPL(ktime_get_uptime);
+#endif
+
+
 /*
  * The timer bases:
  *

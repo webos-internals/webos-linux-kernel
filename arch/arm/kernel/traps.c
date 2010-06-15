@@ -302,6 +302,7 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	unsigned int instr;
 	struct undef_hook *hook;
 	siginfo_t info;
+	mm_segment_t fs;
 	void __user *pc;
 	unsigned long flags;
 
@@ -312,6 +313,8 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	 */
 	regs->ARM_pc -= correction;
 
+	fs = get_fs();
+	set_fs(KERNEL_DS);
 	pc = (void __user *)instruction_pointer(regs);
 
 	if (processor_mode(regs) == SVC_MODE) {
@@ -321,6 +324,7 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	} else {
 		get_user(instr, (u32 __user *)pc);
 	}
+	set_fs(fs);
 
 	spin_lock_irqsave(&undef_lock, flags);
 	list_for_each_entry(hook, &undef_hook, node) {
@@ -404,13 +408,43 @@ static int bad_syscall(int n, struct pt_regs *regs)
 	return regs->ARM_r0;
 }
 
+#ifdef CONFIG_ARCH_MSM
+#define CACHE_LINE_SIZE 32
+void flush_axi_bus_buffer(void);
+
+static inline void
+clean_and_invalidate_user_range(unsigned long start, unsigned long end)
+{
+	unsigned long addr;
+
+	for (addr = start; addr < end; addr += CACHE_LINE_SIZE)
+		asm ("mcr p15, 0, %0, c7, c14, 1" : : "r" (addr) );
+	asm ("mcr p15, 0, %0, c7, c10, 4" : : "r" (0) );
+	asm ("mcr p15, 0, %0, c7, c5, 0" : : "r" (0) );
+
+	flush_axi_bus_buffer();
+}
+#endif
+
 static inline void
 do_cache_op(unsigned long start, unsigned long end, int flags)
 {
 	struct vm_area_struct *vma;
 
+#ifdef CONFIG_ARCH_MSM
+	if (end < start)
+#else
 	if (end < start || flags)
+#endif
 		return;
+
+#ifdef CONFIG_ARCH_MSM
+	if (flags == 1) {
+		clean_and_invalidate_user_range(start & PAGE_MASK,
+			PAGE_ALIGN(end));
+		return;
+	}
+#endif
 
 	vma = find_vma(current->active_mm, start);
 	if (vma && vma->vm_start < end) {
@@ -420,7 +454,11 @@ do_cache_op(unsigned long start, unsigned long end, int flags)
 			end = vma->vm_end;
 
 		flush_cache_user_range(vma, start, end);
+#if CONFIG_ARCH_MSM
+		flush_axi_bus_buffer();
+#endif
 	}
+
 }
 
 /*
@@ -705,6 +743,13 @@ EXPORT_SYMBOL(abort);
 
 void __init trap_init(void)
 {
+#if   defined(CONFIG_KGDB)
+	return;
+}
+
+void __init early_trap_init(void)
+{
+#endif
 	unsigned long vectors = CONFIG_VECTORS_BASE;
 	extern char __stubs_start[], __stubs_end[];
 	extern char __vectors_start[], __vectors_end[];

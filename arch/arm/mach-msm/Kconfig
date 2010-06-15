@@ -1,0 +1,403 @@
+if ARCH_MSM
+
+choice
+	prompt "MSM CPU families"
+	depends on ARCH_MSM
+	default ARCH_MSM7X00A
+
+config ARCH_MSM7X00A
+	depends on ARCH_MSM
+	bool "Boards based on MSM7X00A cpus"
+	
+config ARCH_MSM7X25
+	depends on ARCH_MSM
+	select ARCH_DISCONTIGMEM_ENABLE
+	bool "Boards based on MSM7X25 cpus"
+
+endchoice
+
+config MACH_HALIBUT
+	depends on ARCH_MSM7X00A
+	default y
+	bool "Halibut Board (QCT SURF7200A)"
+	help
+	  Support for the Qualcomm SURF7200A eval board.
+
+config MACH_BLENNY
+	depends on ARCH_MSM7X25
+	default y
+	bool "Blenny Board (QCT SURF7625A)"
+	help
+	  Support for the Qualcomm SURF7625A eval board.
+
+config MACH_CHUCK
+	depends on ARCH_MSM7X25
+	select GENERIC_GPIO
+	default y
+	bool "Chuck"
+	help
+	  Support for Chuck
+choice
+	prompt "MSM Low-Level Debug UART"
+	depends on ARCH_MSM
+	default MSM_LL_DEBUG_UART1
+	help
+	  If there is a debug serial port hooked up, this option
+	  will make sure the Uncompressing Linux... messages and
+	  the DEBUG_LL messages get routed to it correctly.
+
+config MSM_LL_DEBUG_UART1
+	bool "UART1"
+
+config MSM_LL_DEBUG_UART2
+	bool "UART2"
+
+config MSM_LL_DEBUG_UART3
+	bool "UART3"
+
+config MSM_LL_DEBUG_NONE
+	bool "NONE"
+
+endchoice
+
+config MSM7X00A_IDLE
+	depends on ARCH_MSM
+	default y
+	bool "Idle Support for MSM7X00A"
+
+choice
+	prompt "Default Timer"
+	default MSM7X00A_USE_DG_TIMER
+
+	config MSM7X00A_USE_GP_TIMER
+		bool "GP Timer"
+	help
+	  Low resolution timer that allows power collapse from idle.
+
+	config MSM7X00A_USE_DG_TIMER
+		bool "DG Timer"
+	help
+	  High resolution timer.
+endchoice	  
+
+choice
+	prompt "Suspend sleep mode"
+	default MSM7X00A_SLEEP_MODE_POWER_COLLAPSE_SUSPEND
+	help
+	  Allows overriding the sleep mode used. Leave at power
+	  collapse suspend unless the arm9 image has problems.
+
+	config MSM7X00A_SLEEP_MODE_POWER_COLLAPSE_SUSPEND
+		bool "Power collapse suspend"
+	help
+	  Lowest sleep state. Returns through reset vector.
+
+	config MSM7X00A_SLEEP_MODE_POWER_COLLAPSE
+		bool "Power collapse"
+	help
+	  Sleep state that returns through reset vector.
+
+	config MSM7X00A_SLEEP_MODE_APPS_SLEEP
+		bool "Apps Sleep"
+
+	config MSM7X00A_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT
+		bool "Ramp down cpu clock and wait for interrupt"
+
+	config MSM7X00A_SLEEP_WAIT_FOR_INTERRUPT
+		bool "Wait for interrupt"
+endchoice	  
+
+config MSM7X00A_SLEEP_MODE
+	int
+	default 0 if MSM7X00A_SLEEP_MODE_POWER_COLLAPSE_SUSPEND
+	default 1 if MSM7X00A_SLEEP_MODE_POWER_COLLAPSE
+	default 2 if MSM7X00A_SLEEP_MODE_APPS_SLEEP
+	default 3 if MSM7X00A_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT
+	default 4 if MSM7X00A_SLEEP_WAIT_FOR_INTERRUPT
+
+choice
+	prompt "Idle sleep mode"
+	default MSM7X00A_IDLE_SLEEP_MODE_POWER_COLLAPSE
+	help
+	  Allows overriding the sleep mode used from idle. Leave at power
+	  collapse suspend unless the arm9 image has problems.
+
+	config MSM7X00A_IDLE_SLEEP_MODE_POWER_COLLAPSE_SUSPEND
+		bool "Power collapse suspend"
+	help
+	  Lowest sleep state. Returns through reset vector.
+
+	config MSM7X00A_IDLE_SLEEP_MODE_POWER_COLLAPSE
+		bool "Power collapse"
+	help
+	  Sleep state that returns through reset vector.
+
+	config MSM7X00A_IDLE_SLEEP_MODE_APPS_SLEEP
+		bool "Apps Sleep"
+
+	config MSM7X00A_IDLE_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT
+		bool "Ramp down cpu clock and wait for interrupt"
+
+	config MSM7X00A_IDLE_SLEEP_WAIT_FOR_INTERRUPT
+		bool "Wait for interrupt"
+endchoice	  
+
+config MSM7X00A_IDLE_SLEEP_MODE
+	int
+	default 0 if MSM7X00A_IDLE_SLEEP_MODE_POWER_COLLAPSE_SUSPEND
+	default 1 if MSM7X00A_IDLE_SLEEP_MODE_POWER_COLLAPSE
+	default 2 if MSM7X00A_IDLE_SLEEP_MODE_APPS_SLEEP
+	default 3 if MSM7X00A_IDLE_SLEEP_MODE_RAMP_DOWN_AND_WAIT_FOR_INTERRUPT
+	default 4 if MSM7X00A_IDLE_SLEEP_WAIT_FOR_INTERRUPT
+
+config MSM7X00A_IDLE_SLEEP_MIN_TIME
+	int "Minimum idle time before sleep"
+	default 20000000
+	help
+	  Minimum idle time in nanoseconds before entering low power mode.
+
+config MSM7X00A_IDLE_SPIN_TIME
+	int "Idle spin time before cpu ramp down"
+	default 80000
+	help
+	  Spin time in nanoseconds before ramping down cpu clock and entering
+	  any low power state.
+
+menuconfig MSM_IDLE_STATS
+	bool "Collect idle statistics"
+	default y
+	help
+	  Collect idle statistics and export them in proc/msm_pm_stats.
+
+if MSM_IDLE_STATS
+
+config MSM_IDLE_STATS_FIRST_BUCKET
+	int "First bucket time"
+	default 62500
+	help
+	  Upper time limit in nanoseconds of first bucket.
+
+config MSM_IDLE_STATS_BUCKET_SHIFT
+	int "Bucket shift"
+	default 2
+
+config MSM_IDLE_STATS_BUCKET_COUNT
+	int "Bucket count"
+	default 10
+
+config MSM_SUSPEND_STATS_FIRST_BUCKET
+	int "First bucket time for suspend"
+	default 1000000000
+	help
+	  Upper time limit in nanoseconds of first bucket of the
+	  histogram.  This is for collecting statistics on suspend.
+
+endif # MSM_IDLE_STATS
+
+config MSM_FIQ_SUPPORT
+	default y
+	bool "Enable installation of an FIQ handler."
+
+config MSM_SERIAL_DEBUGGER
+	select MSM_FIQ_SUPPORT
+	select KERNEL_DEBUGGER_CORE
+	default n
+	bool "FIQ Mode Serial Debugger"
+	help
+	  The FIQ serial debugger can accept commands even when the
+	  kernel is unresponsive due to being stuck with interrupts
+	  disabled.  Depends on the kernel debugger core in drivers/misc.
+
+config MSM_SERIAL_DEBUGGER_CONSOLE
+	depends on MSM_SERIAL_DEBUGGER
+	default n
+	bool "Console on FIQ Serial Debugger port"
+	help
+	  Enables a console so that printk messages are displayed on
+	  the debugger serial port as the occur.
+
+config MSM_SMD
+	default y
+	bool "MSM Shared Memory Driver (SMD)"
+	help
+	  Support for the shared memory interface between the apps
+	  processor and the baseband processor.  Provides access to
+	  the "shared heap", as well as virtual serial channels
+	  used to communicate with various services on the baseband
+	  processor.
+
+config MSM_N_WAY_SMD
+	depends on (MSM_SMD && (ARCH_QSD || MACH_CHUCK || MACH_MSM7X27_SURF || MACH_MSM7X27_FFA))
+	default y
+	bool "MSM N-WAY SMD support"
+	help
+	  Supports APPS-QDSP SMD communication along with
+	  normal APPS-MODEM SMD communication.
+
+config MSM_N_WAY_SMSM
+	depends on (MSM_SMD && (ARCH_QSD || MACH_CHUCK || MACH_MSM7X27_SURF || MACH_MSM7X27_FFA))
+	default y
+	bool "MSM N-WAY SMSM support"
+	help
+	  Supports APPS-QDSP SMSM communication along with
+	  normal APPS-MODEM SMSM communication.
+
+config MSM_RESET_MODEM
+	tristate "Reset Modem Driver"
+	depends on MSM_SMD
+	default m
+	help
+	  Allows the user to reset the modem through a device node.
+
+config MSM_ONCRPCROUTER
+	depends on MSM_SMD
+	default y
+	bool "MSM ONCRPC router support"
+	help
+	  Support for the MSM ONCRPC router for communication between
+	  the ARM9 and ARM11
+
+config MSM_ONCRPCROUTER_DEBUG
+	depends on MSM_ONCRPCROUTER
+	default y
+	bool "MSM debug ONCRPC router support"
+	help
+	  Support for debugging the ONCRPC router for communication
+	  between the ARM9 and ARM11
+
+config MSM_RPCSERVERS
+	depends on MSM_ONCRPCROUTER
+	default y
+	bool "Kernel side RPC server bundle"
+	help
+	  none
+
+config MSM_DALRPC
+	bool "DAL RPC support"
+	depends on ARCH_QSD
+	default y
+	help
+	  Supports RPC calls to DAL devices on remote processor cores.
+
+config MSM_DALRPC_TEST
+	tristate "DAL RPC test module"
+	depends on (MSM_DALRPC && DEBUG_FS)
+	default m
+	help
+	  Exercises DAL RPC calls to QDSP6.
+
+if CPU_FREQ_MSM
+
+config MSM_CPU_FREQ_SET_MIN_MAX
+	bool "Set Min/Max CPU frequencies."
+	default n
+	help
+	  Allow setting min and max CPU frequencies. Sysfs can be used
+	  to override these values.
+
+config MSM_CPU_FREQ_MAX
+	int "Max CPU Frequency"
+	depends on MSM_CPU_FREQ_SET_MIN_MAX
+	default 384000
+
+config MSM_CPU_FREQ_MIN
+	int "Min CPU Frequency"
+	depends on MSM_CPU_FREQ_SET_MIN_MAX
+	default 245760
+
+endif # CPU_FREQ_MSM
+
+config MSM_HW3D
+	tristate "MSM Hardware 3D Register Driver"
+	depends on ARCH_MSM7X00A
+	default y
+	help
+	  Provides access to registers needed by the userspace OpenGL|ES
+	  library.
+
+config MSM_ADSP
+	tristate "MSM ADSP driver"
+	default y
+	help
+	  Provides access to registers needed by the userspace aDSP library.
+
+config AUDIO_AAC_PLUS
+	depends on (MSM_ADSP || QSD_AUDIO)
+	bool "AAC+ Audio"
+	default y
+	help
+	  Provides AAC+ decoding
+
+config AUDIO_ENHANCED_AAC_PLUS
+	depends on AUDIO_AAC_PLUS
+	bool "Enhanced AAC+ Audio"
+	default y
+	help
+	  Provides Enhanced AAC+ decoding
+
+config MSM_PERF
+	tristate "MSM Performance Counter Driver"
+	depends on ARCH_MSM
+	default n
+	help
+	  Provides access to ARM11 performance counters.
+
+config MSM_PWM
+	tristate "MSM PWM Driver"
+	depends on ARCH_MSM
+	default y
+	help
+	  Provides access to the GP_MN clock
+
+config MSM_POWER_DEBUG
+	tristate "MSM Power Debug Driver"
+	depends on ARCH_MSM
+	default y
+	help
+	  Provides access to debug power settings
+
+config MSM_ADM_OFF_AT_POWER_COLLAPSE
+	bool "Turn off ADM clock during power collapse"
+	default n
+	help
+	  The application processor turns off the ADM clock before
+	  entering power collapse and turns it back on after exiting
+	  power collapse.
+
+config MSM_UART3_OFF_AT_POWER_COLLAPSE
+	bool "Turn off UART3 clock during power collapse"
+	default n
+	help
+	  The application processor turns off the UART3 clock before
+	   entering power collapse and turns it back on after exiting
+	   power collapse.
+
+config MSM_UARTDM
+	tristate "MSM UARTDM (High Speed) Driver"
+	depends on ARCH_MSM
+	default y
+	help
+	  Provides access to the high speed uart ports.
+
+config ARCH_HAS_IO_REMAP_PFN_RANGE
+	tristate "Arch-specific io_remap_pfn_range implementation"
+	default y
+
+choice
+	prompt "Power management timeout action"
+	default MSM_PM_TIMEOUT_HALT
+	help
+	  Selects the Application Processor's action when Power Management
+	  times out waiting for Modem's handshake.
+
+	config MSM_PM_TIMEOUT_HALT
+		bool "Halt the Application Processor"
+
+	config MSM_PM_TIMEOUT_RESET_MODEM
+		bool "Reset the Modem Processor"
+
+	config MSM_PM_TIMEOUT_RESET_CHIP
+		bool "Reset the entire chip"
+endchoice
+
+endif

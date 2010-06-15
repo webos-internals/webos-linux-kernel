@@ -160,7 +160,7 @@ static int cpio_mkgeneric(const char *name, unsigned int mode,
 		(long) uid,		/* uid */
 		(long) gid,		/* gid */
 		2,			/* nlink */
-		(long) mtime,		/* mtime */
+		(long) 0,		/* mtime */
 		0,			/* filesize */
 		3,			/* major */
 		1,			/* minor */
@@ -253,7 +253,7 @@ static int cpio_mknod(const char *name, unsigned int mode,
 		(long) uid,		/* uid */
 		(long) gid,		/* gid */
 		1,			/* nlink */
-		(long) mtime,		/* mtime */
+		(long) 0,		/* mtime */
 		0,			/* filesize */
 		3,			/* major */
 		1,			/* minor */

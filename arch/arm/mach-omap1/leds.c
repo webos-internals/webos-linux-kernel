@@ -46,13 +46,13 @@ omap_leds_init(void)
 		 * The same pins drive a LED on the OSK Mistral board, but
 		 * that's a different kind of LED (just one color at a time).
 		 */
-		omap_cfg_reg(P18_1610_GPIO3);
+		omap_cfg_reg("P18_1610_GPIO3");
 		if (omap_request_gpio(3) == 0)
 			omap_set_gpio_direction(3, 0);
 		else
 			printk(KERN_WARNING "LED: can't get GPIO3/red?\n");
 
-		omap_cfg_reg(MPUIO4);
+		omap_cfg_reg("MPUIO4");
 		if (omap_request_gpio(OMAP_MPUIO(4)) == 0)
 			omap_set_gpio_direction(OMAP_MPUIO(4), 0);
 		else

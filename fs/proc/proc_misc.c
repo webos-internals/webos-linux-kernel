@@ -53,6 +53,14 @@
 #include <asm/div64.h>
 #include "internal.h"
 
+#ifdef CONFIG_LOW_MEMORY_NOTIFY
+#include <linux/lowmemnotify.h>
+#endif
+
+#ifdef CONFIG_TMPFS_ACCOUNTING
+#include <linux/shmem_fs.h>
+#endif // CONFIG_TMPFS_ACCOUNTING
+
 #define LOAD_INT(x) ((x) >> FSHIFT)
 #define LOAD_FRAC(x) LOAD_INT(((x) & (FIXED_1-1)) * 100)
 /*
@@ -149,6 +157,12 @@ static int meminfo_read_proc(char *page, char **start, off_t off,
 	len = sprintf(page,
 		"MemTotal:     %8lu kB\n"
 		"MemFree:      %8lu kB\n"
+#ifdef CONFIG_LOW_MEMORY_NOTIFY
+		"MemchuteFree: %8lu kB\n"
+#endif
+#ifdef CONFIG_TMPFS_ACCOUNTING
+		"Tmpfs:        %8lu kB\n"
+#endif // CONFIG_TMPFS_ACCOUNTING
 		"Buffers:      %8lu kB\n"
 		"Cached:       %8lu kB\n"
 		"SwapCached:   %8lu kB\n"
@@ -179,6 +193,12 @@ static int meminfo_read_proc(char *page, char **start, off_t off,
 		"VmallocChunk: %8lu kB\n",
 		K(i.totalram),
 		K(i.freeram),
+#ifdef CONFIG_LOW_MEMORY_NOTIFY
+		K((unsigned long)memnotify_get_free()),
+#endif
+#ifdef CONFIG_TMPFS_ACCOUNTING
+		K((unsigned long)atomic_read(&shmem_nrpages)),
+#endif // CONFIG_TMPFS_ACCOUNTING
 		K(i.bufferram),
 		K(cached),
 		K(total_swapcache_pages),

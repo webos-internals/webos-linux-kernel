@@ -16,6 +16,7 @@
 #include <linux/pagemap.h>
 #include <linux/file.h>
 #include <linux/slab.h>
+#include <linux/blkdev.h>
 
 MODULE_ALIAS_MISCDEV(FUSE_MINOR);
 
@@ -225,8 +226,8 @@ static void request_end(struct fuse_conn *fc, struct fuse_req *req)
 			wake_up_all(&fc->blocked_waitq);
 		}
 		if (fc->num_background == FUSE_CONGESTION_THRESHOLD) {
-			clear_bdi_congested(&fc->bdi, READ);
-			clear_bdi_congested(&fc->bdi, WRITE);
+			clear_bdi_congested(&fc->bdi, BLK_RW_SYNC);
+			clear_bdi_congested(&fc->bdi, BLK_RW_ASYNC);
 		}
 		fc->num_background--;
 	}
@@ -384,8 +385,8 @@ static void request_send_nowait(struct fuse_conn *fc, struct fuse_req *req)
 		if (fc->num_background == FUSE_MAX_BACKGROUND)
 			fc->blocked = 1;
 		if (fc->num_background == FUSE_CONGESTION_THRESHOLD) {
-			set_bdi_congested(&fc->bdi, READ);
-			set_bdi_congested(&fc->bdi, WRITE);
+			set_bdi_congested(&fc->bdi, BLK_RW_SYNC);
+			set_bdi_congested(&fc->bdi, BLK_RW_ASYNC);
 		}
 
 		queue_request(fc, req);

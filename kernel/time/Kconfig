@@ -28,3 +28,12 @@ config GENERIC_CLOCKEVENTS_BUILD
 	default y
 	depends on GENERIC_CLOCKEVENTS || GENERIC_CLOCKEVENTS_MIGR
 
+#
+# Misc time configuration options
+#
+config TIMECHANGE_EVENT
+	bool
+	default y
+	depends on GENERIC_TIME
+	help
+	  This enables broadcasting of time change uevents into userspace.

@@ -546,6 +546,14 @@ static long uinput_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			phys[length - 1] = '\0';
 			break;
 
+		case UI_SET_COUNTRY:
+			if (udev->state == UIST_CREATED) {
+				retval = -EINVAL;
+				goto out;
+			}
+			udev->dev->country = arg;
+			break;
+
 		case UI_BEGIN_FF_UPLOAD:
 			if (copy_from_user(&ff_up, p, sizeof(ff_up))) {
 				retval = -EFAULT;

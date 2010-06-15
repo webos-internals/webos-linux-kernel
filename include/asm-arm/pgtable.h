@@ -170,6 +170,14 @@ extern void __pgd_error(const char *file, int line, unsigned long val);
 #define L_PTE_WRITE		(1 << 5)
 #define L_PTE_EXEC		(1 << 6)
 #define L_PTE_DIRTY		(1 << 7)
+#define L_PTE_DEVICE		(1 << 8)	/* msm7k only (v6)
+						 * some addresses must be
+						 * accessed with special
+						 * extended bits */
+#define L_PTE_EXT_BUFFERED	(1 << 9)	/* msm7k only (v6)
+						 * enables additional write
+						 * buffering on the memory bus
+						 * controller */
 #define L_PTE_SHARED		(1 << 10)	/* shared(v6), coherent(xsc3) */
 
 #ifndef __ASSEMBLY__
@@ -246,11 +254,11 @@ extern struct page *empty_zero_page;
 #define pte_unmap(pte)		do { } while (0)
 #define pte_unmap_nested(pte)	do { } while (0)
 
-#define set_pte_ext(ptep,pte,ext) cpu_set_pte_ext(ptep,pte,ext)
+#define set_pte_ext(ptep,pte,ext) cpu_set_pte_ext(ptep,pte,ext);
 
 #define set_pte_at(mm,addr,ptep,pteval) do { \
 	set_pte_ext(ptep, pteval, (addr) >= TASK_SIZE ? 0 : PTE_EXT_NG); \
- } while (0)
+} while (0)
 
 /*
  * The following only work if pte_present() is true.
@@ -285,10 +293,15 @@ PTE_BIT_FUNC(mkyoung,   |= L_PTE_YOUNG);
  */
 #define pgprot_noncached(prot)	__pgprot(pgprot_val(prot) & ~(L_PTE_CACHEABLE | L_PTE_BUFFERABLE))
 #define pgprot_writecombine(prot) __pgprot(pgprot_val(prot) & ~L_PTE_CACHEABLE)
+#define pgprot_device(prot)	__pgprot((pgprot_val(prot) | L_PTE_DEVICE) & \
+					 ~(L_PTE_CACHEABLE | L_PTE_BUFFERABLE))
+#define pgprot_ext_buffered(prot) __pgprot(pgprot_val(prot) | L_PTE_EXT_BUFFERED)
+#define pgprot_cacheable(prot) __pgprot(pgprot_val(prot) & ~L_PTE_BUFFERABLE)
 
 #define pmd_none(pmd)		(!pmd_val(pmd))
 #define pmd_present(pmd)	(pmd_val(pmd))
 #define pmd_bad(pmd)		(pmd_val(pmd) & 2)
+#define pmd_table(pmd)		((pmd_val(pmd) & PMD_TYPE_MASK) == PMD_TYPE_TABLE)
 
 #define copy_pmd(pmdpd,pmdps)		\
 	do {				\
@@ -386,8 +399,15 @@ extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
  * remap a physical page `pfn' of size `size' with page protection `prot'
  * into virtual address `from'
  */
+#ifndef CONFIG_ARCH_HAS_IO_REMAP_PFN_RANGE
 #define io_remap_pfn_range(vma,from,pfn,size,prot) \
 		remap_pfn_range(vma, from, pfn, size, prot)
+#else
+#include <asm/arch/mm.h>
+extern int io_remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
+			      unsigned long pfn, unsigned long size,
+			      pgprot_t prot);
+#endif
 
 #define pgtable_cache_init() do { } while (0)
 

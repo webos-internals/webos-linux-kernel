@@ -41,6 +41,7 @@ config CPU_LLSERIAL_S3C2440
 # boot configurations
 
 comment "Boot options"
+	depends on PLAT_S3C
 
 config S3C_BOOT_WATCHDOG
 	bool "S3C Initialisation watchdog"
@@ -58,6 +59,7 @@ config S3C_BOOT_ERROR_RESET
 	  kernel decompressor detects an error during decompression.
 
 comment "Power management"
+	depends on PLAT_S3C
 
 config S3C2410_PM_DEBUG
 	bool "S3C2410 PM Suspend debug"

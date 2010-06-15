@@ -175,6 +175,10 @@ static char version[] __initdata =
 static unsigned int netcard_portlist[] __initdata =
    { 0x80090303, 0x300, 0x320, 0x340, 0x360, 0x200, 0x220, 0x240, 0x260, 0x280, 0x2a0, 0x2c0, 0x2e0, 0};
 static unsigned int cs8900_irq_map[] = {12,0,0,0};
+#elif defined(CONFIG_ARCH_MSM7X25)
+#include <asm/arch/msm_iomap.h>
+static unsigned int netcard_portlist[] __initdata = {MSM_CS4_BASE + 0x0600, 0};
+static unsigned int cs8900_irq_map[] = {MSM_GPIO_TO_INT(30), 0, 0, 0};
 #elif defined(CONFIG_SH_HICOSH4)
 static unsigned int netcard_portlist[] __initdata =
    { 0x0300, 0};
@@ -374,7 +378,7 @@ writeword(unsigned long base_addr, int portno, u16 value)
 {
 	__raw_writel(value, base_addr + (portno << 1));
 }
-#elif defined(CONFIG_ARCH_PNX010X)
+#elif defined(CONFIG_ARCH_MSM7X25) || defined(CONFIG_ARCH_PNX010X)
 static u16
 readword(unsigned long base_addr, int portno)
 {
@@ -558,6 +562,7 @@ cs89x0_probe1(struct net_device *dev, int ioaddr, int modular)
 		readreg(dev, 0);
 #endif
 
+#ifndef CONFIG_ARCH_MSM7X25
 	/* Grab the region so we can find another board if autoIRQ fails. */
 	/* WTF is going on here? */
 	if (!request_region(ioaddr & ~3, NETCARD_IO_EXTENT, DRV_NAME)) {
@@ -566,6 +571,7 @@ cs89x0_probe1(struct net_device *dev, int ioaddr, int modular)
 		retval = -EBUSY;
 		goto out1;
 	}
+#endif
 
 #ifdef CONFIG_SH_HICOSH4
 	/* truely reset the chip */
@@ -667,6 +673,20 @@ cs89x0_probe1(struct net_device *dev, int ioaddr, int modular)
 			confd += j;
 			cnt -= j;
 		}
+	} else
+#endif
+
+#ifdef CONFIG_ARCH_MSM7X25
+	if (1) {
+		/* no eeprom, set dummy MAC address*/
+		__u16 dummy_mac[] = {0x5000, 0x01B7, 0xCF98};
+		for (i = 0; i < ETH_ALEN/2; i++) {
+	  	    dev->dev_addr[i*2] = dummy_mac[i] & 0xFF;
+	  	    dev->dev_addr[i*2+1] = dummy_mac[i] >> 8;
+	  	    writereg(dev, PP_IA+i*2, dummy_mac[i]);
+		}
+
+		lp->force = FORCE_RJ45;
 	} else
 #endif
 
@@ -802,7 +822,7 @@ cs89x0_probe1(struct net_device *dev, int ioaddr, int modular)
 	} else {
 		i = lp->isa_config & INT_NO_MASK;
 		if (lp->chip_type == CS8900) {
-#if defined(CONFIG_MACH_IXDP2351) || defined(CONFIG_ARCH_IXDP2X01) || defined(CONFIG_ARCH_PNX010X)
+#if defined(CONFIG_MACH_IXDP2351) || defined(CONFIG_ARCH_IXDP2X01) || defined(CONFIG_ARCH_PNX010X) || defined(CONFIG_ARCH_MSM7X25)
 		        i = cs8900_irq_map[0];
 #else
 			/* Translate the IRQ using the IRQ mapping table. */
@@ -866,7 +886,9 @@ cs89x0_probe1(struct net_device *dev, int ioaddr, int modular)
 out3:
 	writeword(dev->base_addr, ADD_PORT, PP_ChipID);
 out2:
+#ifndef CONFIG_ARCH_MSM7X25
 	release_region(ioaddr & ~3, NETCARD_IO_EXTENT);
+#endif
 out1:
 	return retval;
 }
@@ -1304,7 +1326,7 @@ net_open(struct net_device *dev)
 	else
 #endif
 	{
-#if !defined(CONFIG_MACH_IXDP2351) && !defined(CONFIG_ARCH_IXDP2X01) && !defined(CONFIG_ARCH_PNX010X)
+#if !defined(CONFIG_MACH_IXDP2351) && !defined(CONFIG_ARCH_IXDP2X01) && !defined(CONFIG_ARCH_PNX010X) && !defined(CONFIG_ARCH_MSM7X25)
 		if (((1 << dev->irq) & lp->irq_map) == 0) {
 			printk(KERN_ERR "%s: IRQ %d is not in our map of allowable IRQs, which is %x\n",
                                dev->name, dev->irq, lp->irq_map);
@@ -1319,7 +1341,11 @@ net_open(struct net_device *dev)
 		writereg(dev, PP_BusCTL, ENABLE_IRQ | MEMORY_ON);
 #endif
 		write_irq(dev, lp->chip_type, dev->irq);
+#if defined(CONFIG_ARCH_MSM7X25)
+		ret = request_irq(dev->irq, &net_interrupt, IRQF_TRIGGER_HIGH, dev->name, dev);
+#else
 		ret = request_irq(dev->irq, &net_interrupt, 0, dev->name, dev);
+#endif
 		if (ret) {
 			if (net_debug)
 				printk(KERN_DEBUG "cs89x0: request_irq(%d) failed\n", dev->irq);

@@ -1,0 +1,53 @@
+
+The particular device's board-foo.c will register msm_mddi/0 (and
+maybe msm_mddi/1) and optionally provide platform_data that has hooks
+to power up and power down the device on the other end of the MDDI
+link.
+
+The MDDI driver's probe() will be called for each "msm_mddi" device.
+It will enable power to the client side of the link (if the
+platform_data is provided) and attempt to initialize the MDDI
+interface and get the capabilities of the client.  If the client
+responds, the capabilities will be cached and a device
+"mddi_c_####_####" will be registered (where #### is the hex mfr_name
+and product_code).  The mddi_info struct for this MDDI channel will be
+saved in the platform_data of the published client device.
+
+A MDDI client driver's probe() will be called for each matching device
+and the probe() method will use the mddi_info struct and its own
+mddi_panel_info struct to call mddi_add_panel() and register the panel
+with the MDDI driver.  A client that supports more than one panel
+would call mddi_add_panel() multiple times -- once for each panel.
+The mddi_panel_info struct contains specific-to-client-and-panel
+hooks for enabling and disabling the display, etc.
+
+The MDDI driver, upon panel registration, will publish a mddi_panel/0
+device (or /1, /2, etc as necessary), again setting its mddi_info
+struct as the platform_data for the device.
+
+The framebuffer core's probe() will be called for each mddi_panel
+device published and will query the capabilities of the panel, allocate
+appropriate framebuffer storage, and publish a framebuffer to the
+system by calling register_framebuffer().
+
+They are not supported yet, but EBI2 panels would be made available in
+a similar way -- an ebi2_panel/0  would be published, for example, and
+the framebuffer core would have registered a  driver for that class of
+platform device as well.
+
+                         mddi_add_panel() <- mddi_client_foobar.c
+                                |                  ^
+                                v                  |
+board.c  --> "msm_mddi/0" --> mddi.c -----> "mddi_c_1234_5678" (after get caps)
+                                |
+                                v
+                           "mddi_panel/0" (after add_panel)
+                                |
+                                v
+                             msm_fb.c
+                                |
+                                v
+                       register_framebuffer()
+                                |
+                                v
+                            "/dev/fb0"

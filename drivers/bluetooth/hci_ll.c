@@ -45,6 +45,8 @@
 #include <linux/signal.h>
 #include <linux/ioctl.h>
 #include <linux/skbuff.h>
+#include <linux/serial_core.h>
+#include <linux/tty.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -173,6 +175,28 @@ static int ll_close(struct hci_uart *hu)
 	return 0;
 }
 
+#ifdef CONFIG_BT_HCIUART_LL_USE_MSM_SERIAL_CLOCK_CONTROL
+void msm_serial_clock_on(struct uart_port *port, int force);
+void msm_serial_clock_request_off(struct uart_port *port);
+
+static void __ll_msm_serial_clock_on(struct tty_struct *tty) {
+	struct uart_state *state = tty->driver_data;
+	struct uart_port *port = state->port;
+
+	msm_serial_clock_on(port, 1);
+}
+
+static void __ll_msm_serial_clock_request_off(struct tty_struct *tty) {
+	struct uart_state *state = tty->driver_data;
+	struct uart_port *port = state->port;
+
+	msm_serial_clock_request_off(port);
+}
+#else
+static inline void __ll_msm_serial_clock_on(struct tty_struct *tty) {}
+static inline void __ll_msm_serial_clock_request_off(struct tty_struct *tty) {}
+#endif
+
 /*
  * internal function, which does common work of the device wake up process:
  * 1. places all pending packets (waiting in tx_wait_q list) in txq list.
@@ -218,6 +242,10 @@ static void ll_device_want_to_wakeup(struct hci_uart *hu)
 		BT_DBG("dual wake-up-indication");
 		/* deliberate fall-through - do not add break */
 	case HCILL_ASLEEP:
+		/* Make sure clock is on - we may have turned clock off since
+		 * receiving the wake up indicator
+         */
+		__ll_msm_serial_clock_on(hu->tty);
 		/* acknowledge device wake up */
 		if (send_hcill_cmd(HCILL_WAKE_UP_ACK, hu) < 0) {
 			BT_ERR("cannot acknowledge device wake up");
@@ -271,6 +299,11 @@ out:
 
 	/* actually send the sleep ack packet */
 	hci_uart_tx_wakeup(hu);
+
+	spin_lock_irqsave(&ll->hcill_lock, flags);
+	if (ll->hcill_state == HCILL_ASLEEP)
+		__ll_msm_serial_clock_request_off(hu->tty);
+	spin_unlock_irqrestore(&ll->hcill_lock, flags);
 }
 
 /*
@@ -322,6 +355,7 @@ static int ll_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 		break;
 	case HCILL_ASLEEP:
 		BT_DBG("device asleep, waking up and queueing packet");
+		__ll_msm_serial_clock_on(hu->tty);
 		/* save packet for later */
 		skb_queue_tail(&ll->tx_wait_q, skb);
 		/* awake device */

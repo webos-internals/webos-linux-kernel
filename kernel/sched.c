@@ -59,6 +59,7 @@
 #include <linux/times.h>
 #include <linux/tsacct_kern.h>
 #include <linux/kprobes.h>
+#include <linux/kgdb.h>
 #include <linux/delayacct.h>
 #include <linux/reciprocal_div.h>
 #include <linux/unistd.h>
@@ -3826,9 +3827,10 @@ EXPORT_SYMBOL(__wake_up);
 /*
  * Same as __wake_up but called with the spinlock in wait_queue_head_t held.
  */
-void fastcall __wake_up_locked(wait_queue_head_t *q, unsigned int mode)
+void fastcall __wake_up_locked(wait_queue_head_t *q, unsigned int mode,
+		      int nr_exclusive, void *key)
 {
-	__wake_up_common(q, mode, 1, 0, NULL);
+	__wake_up_common(q, mode, nr_exclusive, 0, key);
 }
 
 /**
@@ -4920,7 +4922,7 @@ static void show_task(struct task_struct *p)
 	printk(KERN_CONT "%5lu %5d %6d\n", free,
 		task_pid_nr(p), task_pid_nr(p->real_parent));
 
-	if (state != TASK_RUNNING)
+	//if (state != TASK_RUNNING)
 		show_stack(p, NULL);
 }
 
@@ -6848,6 +6850,9 @@ void __might_sleep(char *file, int line)
 {
 #ifdef in_atomic
 	static unsigned long prev_jiffy;	/* ratelimiting */
+
+	if (atomic_read(&debugger_active))
+		return;
 
 	if ((in_atomic() || irqs_disabled()) &&
 	    system_state == SYSTEM_RUNNING && !oops_in_progress) {

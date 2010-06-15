@@ -74,7 +74,7 @@ struct lcd_panel palmtt_panel = {
 	.vbp		= 7,
 	.pcd		= 0,
 
-	.init		= palmtt_panel_init,
+	.init= palmtt_panel_init,
 	.cleanup	= palmtt_panel_cleanup,
 	.enable		= palmtt_panel_enable,
 	.disable	= palmtt_panel_disable,

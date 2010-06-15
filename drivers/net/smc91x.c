@@ -447,6 +447,11 @@ static inline void  smc_rcv(struct net_device *dev)
 		dev->name, packet_number, status,
 		packet_len, packet_len);
 
+	if (unlikely(packet_len == 0 && !(status & RS_ERRORS))) {
+		printk(KERN_ERR "%s: bad memory timings: rxlen %u status %x\n",
+			dev->name, packet_len, status);
+		status |= RS_TOOSHORT;
+	}
 	back:
 	if (unlikely(packet_len < 6 || status & RS_ERRORS)) {
 		if (status & RS_TOOLONG && packet_len <= (1514 + 4 + 6)) {
@@ -1935,11 +1940,14 @@ static int __init smc_probe(struct net_device *dev, void __iomem *ioaddr)
 	lp->ctl_rfduplx = 0;
 	lp->ctl_rspeed = 10;
 
+#if 0
+// TODO: patch to use 10Mbit
 	if (lp->version >= (CHIP_91100 << 4)) {
 		lp->ctl_rfduplx = 1;
 		lp->ctl_rspeed = 100;
 	}
 
+#endif
 	/* Grab the IRQ */
       	retval = request_irq(dev->irq, &smc_interrupt, SMC_IRQ_FLAGS, dev->name, dev);
       	if (retval)

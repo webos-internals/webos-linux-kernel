@@ -38,8 +38,12 @@
 #define CN_W1_VAL			0x1
 #define CN_IDX_V86D			0x4
 #define CN_VAL_V86D_UVESAFB		0x1
+#define CN_IDX_SX1SND			0x5
+#define CN_VAL_SX1SND			0x1
+#define CN_IDX_SX1PM			0x6
+#define CN_VAL_SX1PM			0x1
 
-#define CN_NETLINK_USERS		5
+#define CN_NETLINK_USERS		7
 
 /*
  * Maximum connector's message size.

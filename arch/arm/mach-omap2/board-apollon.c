@@ -4,7 +4,7 @@
  * Copyright (C) 2005,2006 Samsung Electronics
  * Author: Kyungmin Park <kyungmin.park@samsung.com>
  *
- * Modified from mach-omap/omap2/board-h4.c
+ * Modified from mach-omap2/board-h4.c
  *
  * Code for apollon OMAP2 board. Should work on many OMAP2 systems where
  * the bootloader passes the board-specific data to the kernel.
@@ -22,11 +22,10 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/onenand.h>
-#include <linux/irq.h>
-#include <linux/interrupt.h>
 #include <linux/delay.h>
 #include <linux/leds.h>
-#include <linux/irq.h>
+#include <linux/err.h>
+#include <linux/clk.h>
 
 #include <asm/hardware.h>
 #include <asm/mach-types.h>
@@ -40,15 +39,13 @@
 #include <asm/arch/board.h>
 #include <asm/arch/common.h>
 #include <asm/arch/gpmc.h>
-#include "prcm-regs.h"
 
 /* LED & Switch macros */
 #define LED0_GPIO13		13
 #define LED1_GPIO14		14
 #define LED2_GPIO15		15
-#define SW_ENTER_GPIO16		16
-#define SW_UP_GPIO17		17
-#define SW_DOWN_GPIO58		58
+#define LED3_GPIO92		92
+#define LED4_GPIO93		93
 
 #define APOLLON_FLASH_CS	0
 #define APOLLON_ETH_CS		1
@@ -162,6 +159,20 @@ static struct omap_led_config apollon_led_config[] = {
 		},
 		.gpio	= LED2_GPIO15,
 	},
+#ifdef CONFIG_MACH_OMAP_APOLLON_PLUS
+	{
+		.cdev	= {
+			.name	= "apollon:led3",
+		},
+		.gpio	= LED3_GPIO92,
+	},
+	{
+		.cdev	= {
+			.name	= "apollon:led4",
+		},
+		.gpio	= LED4_GPIO93,
+	},
+#endif
 };
 
 static struct omap_led_platform_data apollon_led_data = {
@@ -187,16 +198,42 @@ static struct platform_device *apollon_devices[] __initdata = {
 static inline void __init apollon_init_smc91x(void)
 {
 	unsigned long base;
+	unsigned int rate;
+	struct clk *l3ck;
+	int eth_cs;
+
+	l3ck = clk_get(NULL, "core_l3_ck");
+	if (IS_ERR(l3ck))
+		rate = 100000000;
+	else
+		rate = clk_get_rate(l3ck);
+
+	eth_cs = APOLLON_ETH_CS;
 
 	/* Make sure CS1 timings are correct */
-	GPMC_CONFIG1_1 = 0x00011203;
-	GPMC_CONFIG2_1 = 0x001f1f01;
-	GPMC_CONFIG3_1 = 0x00080803;
-	GPMC_CONFIG4_1 = 0x1c091c09;
-	GPMC_CONFIG5_1 = 0x041f1f1f;
-	GPMC_CONFIG6_1 = 0x000004c4;
+	gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG1, 0x00011200);
 
-	if (gpmc_cs_request(APOLLON_ETH_CS, SZ_16M, &base) < 0) {
+	if (rate >= 160000000) {
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG2, 0x001f1f01);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG3, 0x00080803);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG4, 0x1c0b1c0a);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG5, 0x041f1F1F);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG6, 0x000004C4);
+	} else if (rate >= 130000000) {
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG2, 0x001f1f00);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG3, 0x00080802);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG4, 0x1C091C09);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG5, 0x041f1F1F);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG6, 0x000004C4);
+	} else {/* rate = 100000000 */
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG2, 0x001f1f00);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG3, 0x00080802);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG4, 0x1C091C09);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG5, 0x031A1F1F);
+		gpmc_cs_write_reg(eth_cs, GPMC_CS_CONFIG6, 0x000003C2);
+	}
+
+	if (gpmc_cs_request(eth_cs, SZ_16M, &base) < 0) {
 		printk(KERN_ERR "Failed to request GPMC CS for smc91x\n");
 		return;
 	}
@@ -204,11 +241,11 @@ static inline void __init apollon_init_smc91x(void)
 	apollon_smc91x_resources[0].end   = base + 0x30f;
 	udelay(100);
 
-	omap_cfg_reg(W4__24XX_GPIO74);
+	omap_cfg_reg("W4__24XX_GPIO74");
 	if (omap_request_gpio(APOLLON_ETHR_GPIO_IRQ) < 0) {
 		printk(KERN_ERR "Failed to request GPIO%d for smc91x IRQ\n",
 			APOLLON_ETHR_GPIO_IRQ);
-		gpmc_cs_free(APOLLON_ETH_CS);
+		gpmc_cs_free(eth_cs);
 		return;
 	}
 	omap_set_gpio_direction(APOLLON_ETHR_GPIO_IRQ, 1);
@@ -230,8 +267,11 @@ static struct omap_mmc_config apollon_mmc_config __initdata = {
 	.mmc [0] = {
 		.enabled 	= 1,
 		.wire4		= 1,
+	/* Use internal loop-back in MMC/SDIO Module Input Clock selection */
+		.internal_clock	= 1,
 		.wp_pin		= -1,
 		.power_pin	= -1,
+	/* Note: If you want to detect card feature, please assign 37 */
 		.switch_pin	= -1,
 	},
 };
@@ -247,7 +287,7 @@ static struct omap_lcd_config apollon_lcd_config __initdata = {
 	.ctrl_name	= "internal",
 };
 
-static struct omap_board_config_kernel apollon_config[] = {
+static struct omap_board_config_kernel apollon_config[] __initdata = {
 	{ OMAP_TAG_UART,	&apollon_uart_config },
 	{ OMAP_TAG_MMC,		&apollon_mmc_config },
 	{ OMAP_TAG_USB,		&apollon_usb_config },
@@ -257,73 +297,39 @@ static struct omap_board_config_kernel apollon_config[] = {
 static void __init apollon_led_init(void)
 {
 	/* LED0 - AA10 */
-	omap_cfg_reg(AA10_242X_GPIO13);
+	omap_cfg_reg("AA10_242X_GPIO13");
 	omap_request_gpio(LED0_GPIO13);
 	omap_set_gpio_direction(LED0_GPIO13, 0);
 	omap_set_gpio_dataout(LED0_GPIO13, 0);
 	/* LED1  - AA6 */
-	omap_cfg_reg(AA6_242X_GPIO14);
+	omap_cfg_reg("AA6_242X_GPIO14");
 	omap_request_gpio(LED1_GPIO14);
 	omap_set_gpio_direction(LED1_GPIO14, 0);
 	omap_set_gpio_dataout(LED1_GPIO14, 0);
 	/* LED2  - AA4 */
-	omap_cfg_reg(AA4_242X_GPIO15);
+	omap_cfg_reg("AA4_242X_GPIO15");
 	omap_request_gpio(LED2_GPIO15);
 	omap_set_gpio_direction(LED2_GPIO15, 0);
 	omap_set_gpio_dataout(LED2_GPIO15, 0);
-}
-
-static irqreturn_t apollon_sw_interrupt(int irq, void *ignored)
-{
-	static unsigned int led0, led1, led2;
-
-	if (irq == OMAP_GPIO_IRQ(SW_ENTER_GPIO16))
-		omap_set_gpio_dataout(LED0_GPIO13, led0 ^= 1);
-	else if (irq == OMAP_GPIO_IRQ(SW_UP_GPIO17))
-		omap_set_gpio_dataout(LED1_GPIO14, led1 ^= 1);
-	else if (irq == OMAP_GPIO_IRQ(SW_DOWN_GPIO58))
-		omap_set_gpio_dataout(LED2_GPIO15, led2 ^= 1);
-
-	return IRQ_HANDLED;
-}
-
-static void __init apollon_sw_init(void)
-{
-	/* Enter SW - Y11 */
-	omap_cfg_reg(Y11_242X_GPIO16);
-	omap_request_gpio(SW_ENTER_GPIO16);
-	omap_set_gpio_direction(SW_ENTER_GPIO16, 1);
-	/* Up SW - AA12 */
-	omap_cfg_reg(AA12_242X_GPIO17);
-	omap_request_gpio(SW_UP_GPIO17);
-	omap_set_gpio_direction(SW_UP_GPIO17, 1);
-	/* Down SW - AA8 */
-	omap_cfg_reg(AA8_242X_GPIO58);
-	omap_request_gpio(SW_DOWN_GPIO58);
-	omap_set_gpio_direction(SW_DOWN_GPIO58, 1);
-
-	set_irq_type(OMAP_GPIO_IRQ(SW_ENTER_GPIO16), IRQT_RISING);
-	if (request_irq(OMAP_GPIO_IRQ(SW_ENTER_GPIO16), &apollon_sw_interrupt,
-				IRQF_SHARED, "enter sw",
-				&apollon_sw_interrupt))
-		return;
-	set_irq_type(OMAP_GPIO_IRQ(SW_UP_GPIO17), IRQT_RISING);
-	if (request_irq(OMAP_GPIO_IRQ(SW_UP_GPIO17), &apollon_sw_interrupt,
-				IRQF_SHARED, "up sw",
-				&apollon_sw_interrupt))
-		return;
-	set_irq_type(OMAP_GPIO_IRQ(SW_DOWN_GPIO58), IRQT_RISING);
-	if (request_irq(OMAP_GPIO_IRQ(SW_DOWN_GPIO58), &apollon_sw_interrupt,
-				IRQF_SHARED, "down sw",
-				&apollon_sw_interrupt))
-		return;
+#ifdef CONFIG_MACH_OMAP_APOLLON_PLUS
+	/* LED3 - M15 */
+	omap_cfg_reg("M15_24XX_GPIO92");
+	omap_request_gpio(LED3_GPIO92);
+	omap_set_gpio_direction(LED3_GPIO92, 0);
+	omap_set_gpio_dataout(LED3_GPIO92, 0);
+	/* LED4 - P20 */
+	omap_cfg_reg("P20_24XX_GPIO93");
+	omap_request_gpio(LED4_GPIO93);
+	omap_set_gpio_direction(LED4_GPIO93, 0);
+	omap_set_gpio_dataout(LED4_GPIO93, 0);
+#endif
 }
 
 static void __init apollon_usb_init(void)
 {
 	/* USB device */
 	/* DEVICE_SUSPEND */
-	omap_cfg_reg(P21_242X_GPIO12);
+	omap_cfg_reg("P21_242X_GPIO12");
 	omap_request_gpio(12);
 	omap_set_gpio_direction(12, 0);		/* OUT */
 	omap_set_gpio_dataout(12, 0);
@@ -332,15 +338,8 @@ static void __init apollon_usb_init(void)
 static void __init omap_apollon_init(void)
 {
 	apollon_led_init();
-	apollon_sw_init();
 	apollon_flash_init();
 	apollon_usb_init();
-
-	/* REVISIT: where's the correct place */
-	omap_cfg_reg(W19_24XX_SYS_NIRQ);
-
-	/* Use Interal loop-back in MMC/SDIO Module Input Clock selection */
-	CONTROL_DEVCONF |= (1 << 24);
 
 	/*
  	 * Make sure the serial ports are muxed on at this point.

@@ -7,6 +7,7 @@ comment "USB Host Controller Drivers"
 config USB_EHCI_HCD
 	tristate "EHCI HCD (USB 2.0) support"
 	depends on USB && USB_ARCH_HAS_EHCI
+#	select USB_OHCI_HCD if ARCH_OMAP3430
 	---help---
 	  The Enhanced Host Controller Interface (EHCI) is standard for USB 2.0
 	  "high speed" (480 Mbit/sec, 60 Mbyte/sec) host controller hardware.
@@ -28,6 +29,25 @@ config USB_EHCI_HCD
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ehci-hcd.
+choice
+	prompt "PHY/TLL mode"
+	depends on USB_EHCI_HCD && EXPERIMENTAL 
+	help
+	Choose PHY or TLL mode of operation
+
+config OMAP_EHCI_PHY_MODE
+	bool "PHY mode: ISP1504 on Port1/2 (NEW 3430ES2.0)"
+	depends on USB_EHCI_HCD && EXPERIMENTAL
+	---help---
+	  OHCI PHY mode. Port1 and Port2 are connected to ISP1504 transcievers
+
+config OMAP_EHCI_TLL_MODE
+	bool "TLL mode: (EXPERIMENTAL)"
+	depends on USB_EHCI_HCD && EXPERIMENTAL
+	---help---
+	EHCI OMAP controller has TLL mode of operation for all 3 ports.
+	Use this mode when no transciever is present.
+endchoice
 
 config USB_EHCI_SPLIT_ISO
 	bool "Full speed ISO transactions (EXPERIMENTAL)"
@@ -99,8 +119,10 @@ config USB_ISP116X_HCD
 config USB_OHCI_HCD
 	tristate "OHCI HCD support"
 	depends on USB && USB_ARCH_HAS_OHCI
-	select ISP1301_OMAP if MACH_OMAP_H2 || MACH_OMAP_H3
+#	select ISP1301_OMAP if MACH_OMAP_H2 || MACH_OMAP_H3 || ARCH_OMAP3430
+	select OMAP_OHCI_PHY_MODE_PINS if ARCH_OMAP3430
 	select I2C if ARCH_PNX4008
+	default n
 	---help---
 	  The Open Host Controller Interface (OHCI) is a standard for accessing
 	  USB 1.1 host controller hardware.  It does more in hardware than Intel's
@@ -113,6 +135,63 @@ config USB_OHCI_HCD
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ohci-hcd.
+
+choice
+	prompt "PHY/TLL mode"
+	depends on USB_OHCI_HCD
+	help
+	Choose PHY or TLL mode of operation
+
+config OMAP_OHCI_PHY_MODE
+	bool "PHY mode: ISP1301 on Port1/3 (NEW 3430ES2.0)"
+	depends on USB_OHCI_HCD
+	---help---
+	  OHCI PHY mode or TLL mode of operation to be chosen
+
+config OMAP_OHCI_PHY_MODE_PINS
+	bool "OHCI PHY mode Pins"
+	depends on OMAP_OHCI_PHY_MODE && USB_OHCI_HCD
+	---help---
+	  OHCI PHY mode Number of pins
+
+config OMAP_OHCI_PHY_MODE_6PIN_DAT_SE0
+	bool "phy 6-pin dat/se0: (NEW 3430ES2.0)"
+	depends on OMAP_OHCI_PHY_MODE_PINS
+	default y
+	---help---
+	  OHCI PHY 6-pin dat/se0
+
+config OMAP_OHCI_PHY_MODE_6PIN_DP_DM
+	bool "phy 6-pin dp/dm"
+	depends on OMAP_OHCI_PHY_MODE_PINS
+	---help---
+	  OHCI PHY 6-pin dp/dm
+
+config OMAP_OHCI_PHY_MODE_4PIN
+	bool "phy 4-pin"
+	depends on OMAP_OHCI_PHY_MODE_PINS
+	---help---
+	  OHCI PHY 4-pin
+
+config OMAP_OHCI_PHY_MODE_3PIN
+	bool "phy 3-pin"
+	depends on OMAP_OHCI_PHY_MODE_PINS
+	---help---
+	  OHCI PHY 3-pin
+
+config OMAP_OHCI_TLL_MODE
+	bool "OHCI TLL mode"
+	depends on USB_OHCI_HCD
+	---help---
+	  OHCI PHY mode or TLL mode of operation to be chosen
+
+config OMAP_OHCI_TLL_MODE_PINS
+	int "OHCI TLL mode Pins"
+	depends on OMAP_OHCI_TLL_MODE
+	default 4
+	---help---
+	  OHCI TLL mode Number of pins
+endchoice
 
 config USB_OHCI_HCD_PPC_SOC
 	bool "OHCI support for on-chip PPC USB controller"

@@ -136,12 +136,33 @@ struct tag_acorn {
 	__u8 adfsdrives;
 };
 
+/* TI OMAP specific information */
+#define ATAG_BOARD       0x414f4d50
+
+struct tag_omap {
+	u8 data[0];
+};
+
 /* footbridge memory clock, see arch/arm/mach-footbridge/arch.c */
 #define ATAG_MEMCLK	0x41000402
 
 struct tag_memclk {
 	__u32 fmemclk;
 };
+
+#ifdef CONFIG_MACH_BRISKET
+#define ATAG_MACHINFO               0x4f000002
+
+struct tag_machinfo {
+    u8 triton_version_token;
+	u8 triton_version_idcode;
+/* twl4030 version IDCODE register values */
+#    define    TWL_VERSION_ES1_0        0x0
+#    define    TWL_VERSION_ES2_X        0x1
+#    define    TWL_VERSION_ES3_0        0x4
+#    define    TWL_VERSION_ES3_1        0x5
+};
+#endif
 
 struct tag {
 	struct tag_header hdr;
@@ -155,11 +176,19 @@ struct tag {
 		struct tag_revision	revision;
 		struct tag_videolfb	videolfb;
 		struct tag_cmdline	cmdline;
+#ifdef CONFIG_MACH_BRISKET
+		struct tag_machinfo	mach;
+#endif
 
 		/*
 		 * Acorn specific
 		 */
 		struct tag_acorn	acorn;
+
+		/*
+		 * OMAP specific
+                 */
+                struct tag_omap         omap;
 
 		/*
 		 * DC21285 specific

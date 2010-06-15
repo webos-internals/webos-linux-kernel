@@ -181,4 +181,7 @@ config USB_DABUSB
 	  module will be called dabusb.
 endif # DAB
 
+config VIDEO_SMIA10
+	tristate
+
 endmenu

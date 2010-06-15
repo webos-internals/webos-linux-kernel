@@ -54,9 +54,15 @@
 1510:
 		.endm
 
-#elif defined(CONFIG_ARCH_OMAP24XX)
+#endif
+#if defined(CONFIG_ARCH_OMAP24XX) || defined(CONFIG_ARCH_OMAP34XX)
 
+#if defined(CONFIG_ARCH_OMAP24XX)
 #include <asm/arch/omap24xx.h>
+#endif
+#if defined(CONFIG_ARCH_OMAP34XX)
+#include <asm/arch/omap34xx.h>
+#endif
 
 		.macro	disable_fiq
 		.endm
@@ -68,7 +74,7 @@
 		.endm
 
 		.macro	get_irqnr_and_base, irqnr, irqstat, base, tmp
-		ldr	\base, =VA_IC_BASE
+		ldr	\base, =OMAP2_VA_IC_BASE
 		ldr	\irqnr, [\base, #0x98] /* IRQ pending reg 1 */
 		cmp	\irqnr, #0x0
 		bne	2222f

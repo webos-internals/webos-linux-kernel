@@ -33,9 +33,16 @@ static int object_path_length(struct sysfs_dirent * sd)
 {
 	int length = 1;
 
-	for (; sd->s_parent; sd = sd->s_parent)
-		length += strlen(sd->s_name) + 1;
+	for (; sd->s_parent; sd = sd->s_parent){
 
+        	if ( sd->s_name == NULL )
+		{
+			printk( KERN_ERR "object_path_length sd->s_name is NULL\n");
+			return -1;		
+		}
+
+		length += strlen(sd->s_name) + 1;  
+	}
 	return length;
 }
 
@@ -131,7 +138,15 @@ static int sysfs_get_target_path(struct sysfs_dirent * parent_sd,
 	int depth, size;
 
 	depth = object_depth(parent_sd);
-	size = object_path_length(target_sd) + depth * 3 - 1;
+	size = object_path_length(target_sd);
+
+	if ( size == (-1 ) )
+	{
+		return -ENOENT;
+	}
+
+	size += depth * 3 - 1;
+
 	if (size > PATH_MAX)
 		return -ENAMETOOLONG;
 
