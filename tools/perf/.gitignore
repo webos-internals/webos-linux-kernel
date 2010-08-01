@@ -12,6 +12,9 @@ perf*.1
 perf*.xml
 perf*.html
 common-cmds.h
+perf.data
+perf.data.old
+perf-archive
 tags
 TAGS
 cscope*

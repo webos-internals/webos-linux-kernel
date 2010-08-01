@@ -30,8 +30,8 @@
 #include <linux/isa.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-pca.h>
+#include <linux/io.h>
 
-#include <asm/io.h>
 #include <asm/irq.h>
 
 #define DRIVER "i2c-pca-isa"
@@ -75,7 +75,7 @@ static int pca_isa_waitforcompletion(void *pd)
 	unsigned long timeout;
 
 	if (irq > -1) {
-		ret = wait_event_interruptible_timeout(pca_wait,
+		ret = wait_event_timeout(pca_wait,
 				pca_isa_readbyte(pd, I2C_PCA_CON)
 				& I2C_PCA_CON_SI, pca_isa_ops.timeout);
 	} else {
@@ -96,7 +96,7 @@ static void pca_isa_resetchip(void *pd)
 }
 
 static irqreturn_t pca_handler(int this_irq, void *dev_id) {
-	wake_up_interruptible(&pca_wait);
+	wake_up(&pca_wait);
 	return IRQ_HANDLED;
 }
 

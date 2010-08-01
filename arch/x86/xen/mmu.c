@@ -43,6 +43,7 @@
 #include <linux/debugfs.h>
 #include <linux/bug.h>
 #include <linux/module.h>
+#include <linux/gfp.h>
 
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
@@ -185,7 +186,7 @@ static inline unsigned p2m_index(unsigned long pfn)
 }
 
 /* Build the parallel p2m_top_mfn structures */
-static void __init xen_build_mfn_list_list(void)
+void xen_build_mfn_list_list(void)
 {
 	unsigned pfn, idx;
 
@@ -1427,23 +1428,6 @@ static void xen_pgd_free(struct mm_struct *mm, pgd_t *pgd)
 #endif
 }
 
-#ifdef CONFIG_HIGHPTE
-static void *xen_kmap_atomic_pte(struct page *page, enum km_type type)
-{
-	pgprot_t prot = PAGE_KERNEL;
-
-	if (PagePinned(page))
-		prot = PAGE_KERNEL_RO;
-
-	if (0 && PageHighMem(page))
-		printk("mapping highpte %lx type %d prot %s\n",
-		       page_to_pfn(page), type,
-		       (unsigned long)pgprot_val(prot) & _PAGE_RW ? "WRITE" : "READ");
-
-	return kmap_atomic_prot(page, type, prot);
-}
-#endif
-
 #ifdef CONFIG_X86_32
 static __init pte_t mask_rw_pte(pte_t *ptep, pte_t pte)
 {
@@ -1901,10 +1885,6 @@ static const struct pv_mmu_ops xen_mmu_ops __initdata = {
 	.alloc_pmd = xen_alloc_pmd_init,
 	.alloc_pmd_clone = paravirt_nop,
 	.release_pmd = xen_release_pmd_init,
-
-#ifdef CONFIG_HIGHPTE
-	.kmap_atomic_pte = xen_kmap_atomic_pte,
-#endif
 
 #ifdef CONFIG_X86_64
 	.set_pte = xen_set_pte,

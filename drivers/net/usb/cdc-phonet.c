@@ -22,6 +22,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/gfp.h>
 #include <linux/usb.h>
 #include <linux/usb/cdc.h>
 #include <linux/netdevice.h>
@@ -372,12 +373,12 @@ int usbpn_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	/* Data interface has one inactive and one active setting */
 	if (data_intf->num_altsetting != 2)
 		return -EINVAL;
-	if (data_intf->altsetting[0].desc.bNumEndpoints == 0
-	 && data_intf->altsetting[1].desc.bNumEndpoints == 2)
+	if (data_intf->altsetting[0].desc.bNumEndpoints == 0 &&
+	    data_intf->altsetting[1].desc.bNumEndpoints == 2)
 		data_desc = data_intf->altsetting + 1;
 	else
-	if (data_intf->altsetting[0].desc.bNumEndpoints == 2
-	 && data_intf->altsetting[1].desc.bNumEndpoints == 0)
+	if (data_intf->altsetting[0].desc.bNumEndpoints == 2 &&
+	    data_intf->altsetting[1].desc.bNumEndpoints == 0)
 		data_desc = data_intf->altsetting;
 	else
 		return -EINVAL;

@@ -5,6 +5,12 @@
 menu "Graphics support"
 	depends on HAS_IOMEM
 
+config HAVE_FB_ATMEL
+	bool
+
+config HAVE_FB_IMX
+	bool
+
 source "drivers/char/agp/Kconfig"
 
 source "drivers/gpu/vga/Kconfig"
@@ -399,7 +405,7 @@ config FB_SA1100
 
 config FB_IMX
 	tristate "Motorola i.MX LCD support"
-	depends on FB && (ARCH_MX1 || ARCH_MX2)
+	depends on FB && (HAVE_FB_IMX || ARCH_MX1 || ARCH_MX2)
 	select FB_CFB_FILLRECT
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT
@@ -611,6 +617,21 @@ config FB_BFIN_T350MCQB
 	 This display is a QVGA 320x240 24-bit RGB display interfaced by an 8-bit wide PPI
 	 It uses PPI[0..7] PPI_FS1, PPI_FS2 and PPI_CLK.
 
+config FB_BFIN_LQ035Q1
+	tristate "SHARP LQ035Q1DH02 TFT LCD"
+	depends on FB && BLACKFIN && SPI
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	select BFIN_GPTIMERS
+	help
+	  This is the framebuffer device driver for a SHARP LQ035Q1DH02 TFT display found on
+	  the Blackfin Landscape LCD EZ-Extender Card.
+	  This display is a QVGA 320x240 18-bit RGB display interfaced by an 16-bit wide PPI
+	  It uses PPI[0..15] PPI_FS1, PPI_FS2 and PPI_CLK.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called bfin-lq035q1-fb.
 
 config FB_STI
 	tristate "HP STI frame buffer device support"
@@ -891,6 +912,18 @@ config FB_XVR2500
 	  mostly initialized the card already.  It is treated as a
 	  completely dumb framebuffer device.
 
+config FB_XVR1000
+	bool "Sun XVR-1000 support"
+	depends on (FB = y) && SPARC64
+	select FB_CFB_FILLRECT
+	select FB_CFB_COPYAREA
+	select FB_CFB_IMAGEBLIT
+	help
+	  This is the framebuffer device for the Sun XVR-1000 and similar
+	  graphics cards.  The driver only works on sparc64 systems where
+	  the system firmware has mostly initialized the card already.  It
+	  is treated as a completely dumb framebuffer device.
+
 config FB_PVR2
 	tristate "NEC PowerVR 2 display support"
 	depends on FB && SH_DREAMCAST
@@ -937,7 +970,7 @@ config FB_S1D13XXX
 
 config FB_ATMEL
 	tristate "AT91/AT32 LCD Controller support"
-	depends on FB && (ARCH_AT91SAM9261 || ARCH_AT91SAM9G10 || ARCH_AT91SAM9263 || ARCH_AT91SAM9RL || ARCH_AT91SAM9G45 || ARCH_AT91CAP9 || AVR32)
+	depends on FB && HAVE_FB_ATMEL
 	select FB_CFB_FILLRECT
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT
@@ -1476,9 +1509,9 @@ config FB_VIA
        select FB_CFB_FILLRECT
        select FB_CFB_COPYAREA
        select FB_CFB_IMAGEBLIT
-       select FB_SOFT_CURSOR
        select I2C_ALGOBIT
        select I2C
+       select GPIOLIB
        help
 	  This is the frame buffer device driver for Graphics chips of VIA
 	  UniChrome (Pro) Family (CLE266,PM800/CN400,P4M800CE/P4M800Pro/
@@ -1488,6 +1521,21 @@ config FB_VIA
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called viafb.
+
+if FB_VIA
+
+config FB_VIA_DIRECT_PROCFS
+	bool "direct hardware access via procfs (DEPRECATED)(DANGEROUS)"
+	depends on FB_VIA
+	default n
+	help
+	  Allow direct hardware access to some output registers via procfs.
+	  This is dangerous but may provide the only chance to get the
+	  correct output device configuration.
+	  Its use is strongly discouraged.
+
+endif
+
 config FB_NEOMAGIC
 	tristate "NeoMagic display support"
 	depends on FB && PCI
@@ -1849,7 +1897,7 @@ config FB_W100
 
 config FB_SH_MOBILE_LCDC
 	tristate "SuperH Mobile LCDC framebuffer support"
-	depends on FB && SUPERH && HAVE_CLK
+	depends on FB && (SUPERH || ARCH_SHMOBILE) && HAVE_CLK
 	select FB_SYS_FILLRECT
 	select FB_SYS_COPYAREA
 	select FB_SYS_IMAGEBLIT
@@ -1926,6 +1974,27 @@ config FB_S3C2410_DEBUG
 	help
 	  Turn on debugging messages. Note that you can set/unset at run time
 	  through sysfs
+
+config FB_NUC900
+        bool "NUC900 LCD framebuffer support"
+        depends on FB && ARCH_W90X900
+        select FB_CFB_FILLRECT
+        select FB_CFB_COPYAREA
+        select FB_CFB_IMAGEBLIT
+        ---help---
+          Frame buffer driver for the built-in LCD controller in the Nuvoton
+          NUC900 processor
+
+config GPM1040A0_320X240
+        bool "Giantplus Technology GPM1040A0 320x240 Color TFT LCD"
+        depends on FB_NUC900
+
+config FB_NUC900_DEBUG
+        bool "NUC900 lcd debug messages"
+        depends on FB_NUC900
+        help
+          Turn on debugging messages. Note that you can set/unset at run time
+          through sysfs
 
 config FB_SM501
 	tristate "Silicon Motion SM501 framebuffer support"
@@ -2063,6 +2132,7 @@ config XEN_FBDEV_FRONTEND
 	select FB_SYS_IMAGEBLIT
 	select FB_SYS_FOPS
 	select FB_DEFERRED_IO
+	select XEN_XENBUS_FRONTEND
 	default y
 	help
 	  This driver implements the front-end of the Xen virtual
@@ -2127,12 +2197,11 @@ config FB_PRE_INIT_FB
 	  the bootloader.
 
 config FB_MSM
-	tristate
+	tristate "MSM Framebuffer support"
 	depends on FB && ARCH_MSM
 	select FB_CFB_FILLRECT
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT
-	default y
 
 config FB_MX3
 	tristate "MX3 Framebuffer support"
@@ -2161,6 +2230,7 @@ config FB_BROADSHEET
 	  a bridge adapter.
 
 source "drivers/video/omap/Kconfig"
+source "drivers/video/omap2/Kconfig"
 
 source "drivers/video/backlight/Kconfig"
 source "drivers/video/display/Kconfig"

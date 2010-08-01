@@ -26,8 +26,6 @@
 # define B43_DEBUG	0
 #endif
 
-#define B43_RX_MAX_SSI			60
-
 /* MMIO offsets */
 #define B43_MMIO_DMA0_REASON		0x20
 #define B43_MMIO_DMA0_IRQ_MASK		0x24
@@ -106,6 +104,7 @@
 #define B43_MMIO_MACFILTER_CONTROL	0x420
 #define B43_MMIO_MACFILTER_DATA		0x422
 #define B43_MMIO_RCMTA_COUNT		0x43C
+#define B43_MMIO_PSM_PHY_HDR		0x492
 #define B43_MMIO_RADIO_HWENABLED_LO	0x49A
 #define B43_MMIO_GPIO_CONTROL		0x49C
 #define B43_MMIO_GPIO_MASK		0x49E
@@ -117,6 +116,7 @@
 #define B43_MMIO_TSF_2			0x636	/* core rev < 3 only */
 #define B43_MMIO_TSF_3			0x638	/* core rev < 3 only */
 #define B43_MMIO_RNG			0x65A
+#define B43_MMIO_IFSSLOT		0x684	/* Interframe slot time */
 #define B43_MMIO_IFSCTL			0x688 /* Interframe space control */
 #define  B43_MMIO_IFSCTL_USE_EDCF	0x0004
 #define B43_MMIO_POWERUP_DELAY		0x6A8
@@ -255,6 +255,14 @@ enum {
 #define B43_SHM_SH_MAXBFRAMES		0x0080	/* Maximum number of frames in a burst */
 #define B43_SHM_SH_SPUWKUP		0x0094	/* pre-wakeup for synth PU in us */
 #define B43_SHM_SH_PRETBTT		0x0096	/* pre-TBTT in us */
+/* SHM_SHARED tx iq workarounds */
+#define B43_SHM_SH_NPHY_TXIQW0		0x0700
+#define B43_SHM_SH_NPHY_TXIQW1		0x0702
+#define B43_SHM_SH_NPHY_TXIQW2		0x0704
+#define B43_SHM_SH_NPHY_TXIQW3		0x0706
+/* SHM_SHARED tx pwr ctrl */
+#define B43_SHM_SH_NPHY_TXPWR_INDX0	0x0708
+#define B43_SHM_SH_NPHY_TXPWR_INDX1	0x070E
 
 /* SHM_SCRATCH offsets */
 #define B43_SHM_SC_MINCONT		0x0003	/* Minimum contention window */
@@ -695,6 +703,7 @@ struct b43_wldev {
 	bool radio_hw_enable;	/* saved state of radio hardware enabled state */
 	bool qos_enabled;		/* TRUE, if QoS is used. */
 	bool hwcrypto_enabled;		/* TRUE, if HW crypto acceleration is enabled. */
+	bool use_pio;			/* TRUE if next init should use PIO */
 
 	/* PHY/Radio device. */
 	struct b43_phy phy;
@@ -748,12 +757,6 @@ struct b43_wldev {
 	unsigned int rx_count;
 #endif
 };
-
-/*
- * Include goes here to avoid a dependency problem.
- * A better fix would be to integrate xmit.h into b43.h.
- */
-#include "xmit.h"
 
 /* Data structure for the WLAN parts (802.11 cores) of the b43 chip. */
 struct b43_wl {
@@ -829,15 +832,9 @@ struct b43_wl {
 	/* The device LEDs. */
 	struct b43_leds leds;
 
-#ifdef CONFIG_B43_PIO
-	/*
-	 * RX/TX header/tail buffers used by the frame transmit functions.
-	 */
-	struct b43_rxhdr_fw4 rxhdr;
-	struct b43_txhdr txhdr;
-	u8 rx_tail[4];
-	u8 tx_tail[4];
-#endif /* CONFIG_B43_PIO */
+	/* Kmalloc'ed scratch space for PIO TX/RX. Protected by wl->mutex. */
+	u8 pio_scratchspace[110] __attribute__((__aligned__(8)));
+	u8 pio_tailspace[4] __attribute__((__aligned__(8)));
 };
 
 static inline struct b43_wl *hw_to_b43_wl(struct ieee80211_hw *hw)
@@ -888,19 +885,14 @@ static inline void b43_write32(struct b43_wldev *dev, u16 offset, u32 value)
 
 static inline bool b43_using_pio_transfers(struct b43_wldev *dev)
 {
-#ifdef CONFIG_B43_PIO
 	return dev->__using_pio_transfers;
-#else
-	return 0;
-#endif
 }
 
 #ifdef CONFIG_B43_FORCE_PIO
-# define B43_FORCE_PIO	1
+# define B43_PIO_DEFAULT 1
 #else
-# define B43_FORCE_PIO	0
+# define B43_PIO_DEFAULT 0
 #endif
-
 
 /* Message printing */
 void b43info(struct b43_wl *wl, const char *fmt, ...)

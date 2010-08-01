@@ -49,7 +49,6 @@ static const int slow_work_max_vslow = 99;
 
 ctl_table slow_work_sysctls[] = {
 	{
-		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "min-threads",
 		.data		= &slow_work_min_threads,
 		.maxlen		= sizeof(unsigned),
@@ -59,7 +58,6 @@ ctl_table slow_work_sysctls[] = {
 		.extra2		= &slow_work_max_threads,
 	},
 	{
-		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "max-threads",
 		.data		= &slow_work_max_threads,
 		.maxlen		= sizeof(unsigned),
@@ -69,16 +67,15 @@ ctl_table slow_work_sysctls[] = {
 		.extra2		= (void *) &slow_work_max_max_threads,
 	},
 	{
-		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "vslow-percentage",
 		.data		= &vslow_work_proportion,
 		.maxlen		= sizeof(unsigned),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec_minmax,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= (void *) &slow_work_min_vslow,
 		.extra2		= (void *) &slow_work_max_vslow,
 	},
-	{ .ctl_name = 0 }
+	{}
 };
 #endif
 
@@ -640,7 +637,7 @@ int delayed_slow_work_enqueue(struct delayed_slow_work *dwork,
 			goto cancelled;
 
 		/* the timer holds a reference whilst it is pending */
-		ret = work->ops->get_ref(work);
+		ret = slow_work_get_ref(work);
 		if (ret < 0)
 			goto cant_get_ref;
 

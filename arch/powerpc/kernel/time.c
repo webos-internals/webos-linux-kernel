@@ -54,6 +54,7 @@
 #include <linux/irq.h>
 #include <linux/delay.h>
 #include <linux/perf_event.h>
+#include <asm/trace.h>
 
 #include <asm/io.h>
 #include <asm/processor.h>
@@ -264,10 +265,11 @@ void account_system_vtime(struct task_struct *tsk)
 		account_system_time(tsk, 0, delta, deltascaled);
 	else
 		account_idle_time(delta);
-	per_cpu(cputime_last_delta, smp_processor_id()) = delta;
-	per_cpu(cputime_scaled_last_delta, smp_processor_id()) = deltascaled;
+	__get_cpu_var(cputime_last_delta) = delta;
+	__get_cpu_var(cputime_scaled_last_delta) = deltascaled;
 	local_irq_restore(flags);
 }
+EXPORT_SYMBOL_GPL(account_system_vtime);
 
 /*
  * Transfer the user and system times accumulated in the paca
@@ -530,25 +532,60 @@ void __init iSeries_time_init_early(void)
 }
 #endif /* CONFIG_PPC_ISERIES */
 
-#if defined(CONFIG_PERF_EVENTS) && defined(CONFIG_PPC32)
-DEFINE_PER_CPU(u8, perf_event_pending);
+#ifdef CONFIG_PERF_EVENTS
 
-void set_perf_event_pending(void)
+/*
+ * 64-bit uses a byte in the PACA, 32-bit uses a per-cpu variable...
+ */
+#ifdef CONFIG_PPC64
+static inline unsigned long test_perf_event_pending(void)
 {
-	get_cpu_var(perf_event_pending) = 1;
-	set_dec(1);
-	put_cpu_var(perf_event_pending);
+	unsigned long x;
+
+	asm volatile("lbz %0,%1(13)"
+		: "=r" (x)
+		: "i" (offsetof(struct paca_struct, perf_event_pending)));
+	return x;
 }
 
+static inline void set_perf_event_pending_flag(void)
+{
+	asm volatile("stb %0,%1(13)" : :
+		"r" (1),
+		"i" (offsetof(struct paca_struct, perf_event_pending)));
+}
+
+static inline void clear_perf_event_pending(void)
+{
+	asm volatile("stb %0,%1(13)" : :
+		"r" (0),
+		"i" (offsetof(struct paca_struct, perf_event_pending)));
+}
+
+#else /* 32-bit */
+
+DEFINE_PER_CPU(u8, perf_event_pending);
+
+#define set_perf_event_pending_flag()	__get_cpu_var(perf_event_pending) = 1
 #define test_perf_event_pending()	__get_cpu_var(perf_event_pending)
 #define clear_perf_event_pending()	__get_cpu_var(perf_event_pending) = 0
 
-#else  /* CONFIG_PERF_EVENTS && CONFIG_PPC32 */
+#endif /* 32 vs 64 bit */
+
+void set_perf_event_pending(void)
+{
+	preempt_disable();
+	set_perf_event_pending_flag();
+	set_dec(1);
+	preempt_enable();
+}
+
+#else  /* CONFIG_PERF_EVENTS */
 
 #define test_perf_event_pending()	0
 #define clear_perf_event_pending()
 
-#endif /* CONFIG_PERF_EVENTS && CONFIG_PPC32 */
+#endif /* CONFIG_PERF_EVENTS */
 
 /*
  * For iSeries shared processors, we have to let the hypervisor
@@ -571,15 +608,15 @@ void timer_interrupt(struct pt_regs * regs)
 	struct clock_event_device *evt = &decrementer->event;
 	u64 now;
 
+	trace_timer_interrupt_entry(regs);
+
+	__get_cpu_var(irq_stat).timer_irqs++;
+
 	/* Ensure a positive value is written to the decrementer, or else
 	 * some CPUs will continuue to take decrementer exceptions */
 	set_dec(DECREMENTER_MAX);
 
 #ifdef CONFIG_PPC32
-	if (test_perf_event_pending()) {
-		clear_perf_event_pending();
-		perf_event_do_pending();
-	}
 	if (atomic_read(&ppc_n_lost_interrupts) != 0)
 		do_IRQ(regs);
 #endif
@@ -590,12 +627,18 @@ void timer_interrupt(struct pt_regs * regs)
 		now = decrementer->next_tb - now;
 		if (now <= DECREMENTER_MAX)
 			set_dec((int)now);
+		trace_timer_interrupt_exit(regs);
 		return;
 	}
 	old_regs = set_irq_regs(regs);
 	irq_enter();
 
 	calculate_steal_time();
+
+	if (test_perf_event_pending()) {
+		clear_perf_event_pending();
+		perf_event_do_pending();
+	}
 
 #ifdef CONFIG_PPC_ISERIES
 	if (firmware_has_feature(FW_FEATURE_ISERIES))
@@ -620,6 +663,8 @@ void timer_interrupt(struct pt_regs * regs)
 
 	irq_exit();
 	set_irq_regs(old_regs);
+
+	trace_timer_interrupt_exit(regs);
 }
 
 void wakeup_decrementer(void)
@@ -828,7 +873,8 @@ static cycle_t timebase_read(struct clocksource *cs)
 	return (cycle_t)get_tb();
 }
 
-void update_vsyscall(struct timespec *wall_time, struct clocksource *clock)
+void update_vsyscall(struct timespec *wall_time, struct clocksource *clock,
+		     u32 mult)
 {
 	u64 t2x, stamp_xsec;
 
@@ -841,7 +887,7 @@ void update_vsyscall(struct timespec *wall_time, struct clocksource *clock)
 
 	/* XXX this assumes clock->shift == 22 */
 	/* 4611686018 ~= 2^(20+64-22) / 1e9 */
-	t2x = (u64) clock->mult * 4611686018ULL;
+	t2x = (u64) mult * 4611686018ULL;
 	stamp_xsec = (u64) xtime.tv_nsec * XSEC_PER_SEC;
 	do_div(stamp_xsec, 1000000000);
 	stamp_xsec += (u64) xtime.tv_sec * XSEC_PER_SEC;
@@ -895,12 +941,21 @@ static void decrementer_set_mode(enum clock_event_mode mode,
 		decrementer_set_next_event(DECREMENTER_MAX, dev);
 }
 
+static inline uint64_t div_sc64(unsigned long ticks, unsigned long nsec,
+				int shift)
+{
+	uint64_t tmp = ((uint64_t)ticks) << shift;
+
+	do_div(tmp, nsec);
+	return tmp;
+}
+
 static void __init setup_clockevent_multiplier(unsigned long hz)
 {
 	u64 mult, shift = 32;
 
 	while (1) {
-		mult = div_sc(hz, NSEC_PER_SEC, shift);
+		mult = div_sc64(hz, NSEC_PER_SEC, shift);
 		if (mult && (mult >> 32UL) == 0UL)
 			break;
 
@@ -918,8 +973,8 @@ static void register_decrementer_clockevent(int cpu)
 	*dec = decrementer_clockevent;
 	dec->cpumask = cpumask_of(cpu);
 
-	printk(KERN_DEBUG "clockevent: %s mult[%lx] shift[%d] cpu[%d]\n",
-	       dec->name, dec->mult, dec->shift, cpu);
+	printk_once(KERN_DEBUG "clockevent: %s mult[%x] shift[%d] cpu[%d]\n",
+		    dec->name, dec->mult, dec->shift, cpu);
 
 	clockevents_register_device(dec);
 }

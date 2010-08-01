@@ -17,6 +17,7 @@
  * USA.
  */
 
+#include <linux/slab.h>
 
 #include "usbip_common.h"
 #include "vhci.h"
@@ -56,7 +57,7 @@ static void vhci_stop(struct usb_hcd *hcd);
 static int vhci_get_frame_number(struct usb_hcd *hcd);
 
 static const char driver_name[] = "vhci_hcd";
-static const char driver_desc[] = "USB/IP Virtual Host Contoroller";
+static const char driver_desc[] = "USB/IP Virtual Host Controller";
 
 struct vhci_hcd *the_controller;
 
@@ -1071,7 +1072,7 @@ static struct hc_driver vhci_hc_driver = {
 	.flags		= HCD_USB2,
 
 	.start		= vhci_start,
-	.stop 		= vhci_stop,
+	.stop		= vhci_stop,
 
 	.urb_enqueue	= vhci_urb_enqueue,
 	.urb_dequeue	= vhci_urb_dequeue,

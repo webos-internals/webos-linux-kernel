@@ -21,6 +21,8 @@
 * EEPROM access functions and helpers *
 \*************************************/
 
+#include <linux/slab.h>
+
 #include "ath5k.h"
 #include "reg.h"
 #include "debug.h"
@@ -97,6 +99,7 @@ ath5k_eeprom_init_header(struct ath5k_hw *ah)
 	struct ath5k_eeprom_info *ee = &ah->ah_capabilities.cap_eeprom;
 	int ret;
 	u16 val;
+	u32 cksum, offset, eep_max = AR5K_EEPROM_INFO_MAX;
 
 	/*
 	 * Read values from EEPROM and store them in the capability structure
@@ -111,20 +114,44 @@ ath5k_eeprom_init_header(struct ath5k_hw *ah)
 	if (ah->ah_ee_version < AR5K_EEPROM_VERSION_3_0)
 		return 0;
 
-#ifdef notyet
 	/*
 	 * Validate the checksum of the EEPROM date. There are some
 	 * devices with invalid EEPROMs.
 	 */
-	for (cksum = 0, offset = 0; offset < AR5K_EEPROM_INFO_MAX; offset++) {
+	AR5K_EEPROM_READ(AR5K_EEPROM_SIZE_UPPER, val);
+	if (val) {
+		eep_max = (val & AR5K_EEPROM_SIZE_UPPER_MASK) <<
+			   AR5K_EEPROM_SIZE_ENDLOC_SHIFT;
+		AR5K_EEPROM_READ(AR5K_EEPROM_SIZE_LOWER, val);
+		eep_max = (eep_max | val) - AR5K_EEPROM_INFO_BASE;
+
+		/*
+		 * Fail safe check to prevent stupid loops due
+		 * to busted EEPROMs. XXX: This value is likely too
+		 * big still, waiting on a better value.
+		 */
+		if (eep_max > (3 * AR5K_EEPROM_INFO_MAX)) {
+			ATH5K_ERR(ah->ah_sc, "Invalid max custom EEPROM size: "
+				  "%d (0x%04x) max expected: %d (0x%04x)\n",
+				  eep_max, eep_max,
+				  3 * AR5K_EEPROM_INFO_MAX,
+				  3 * AR5K_EEPROM_INFO_MAX);
+			return -EIO;
+		}
+	}
+
+	for (cksum = 0, offset = 0; offset < eep_max; offset++) {
 		AR5K_EEPROM_READ(AR5K_EEPROM_INFO(offset), val);
 		cksum ^= val;
 	}
 	if (cksum != AR5K_EEPROM_INFO_CKSUM) {
-		ATH5K_ERR(ah->ah_sc, "Invalid EEPROM checksum 0x%04x\n", cksum);
+		ATH5K_ERR(ah->ah_sc, "Invalid EEPROM "
+			  "checksum: 0x%04x eep_max: 0x%04x (%s)\n",
+			  cksum, eep_max,
+			  eep_max == AR5K_EEPROM_INFO_MAX ?
+				"default size" : "custom size");
 		return -EIO;
 	}
-#endif
 
 	AR5K_EEPROM_READ_HDR(AR5K_EEPROM_ANT_GAIN(ah->ah_ee_version),
 	    ee_ant_gain);
@@ -304,7 +331,8 @@ static int ath5k_eeprom_read_modes(struct ath5k_hw *ah, u32 *offset,
 	ee->ee_x_gain[mode]		= (val >> 1) & 0xf;
 	ee->ee_xpd[mode]		= val & 0x1;
 
-	if (ah->ah_ee_version >= AR5K_EEPROM_VERSION_4_0)
+	if (ah->ah_ee_version >= AR5K_EEPROM_VERSION_4_0 &&
+	    mode != AR5K_EEPROM_MODE_11B)
 		ee->ee_fixed_bias[mode] = (val >> 13) & 0x1;
 
 	if (ah->ah_ee_version >= AR5K_EEPROM_VERSION_3_3) {
@@ -314,6 +342,7 @@ static int ath5k_eeprom_read_modes(struct ath5k_hw *ah, u32 *offset,
 		if (mode == AR5K_EEPROM_MODE_11A)
 			ee->ee_xr_power[mode] = val & 0x3f;
 		else {
+			/* b_DB_11[bg] and b_OB_11[bg] */
 			ee->ee_ob[mode][0] = val & 0x7;
 			ee->ee_db[mode][0] = (val >> 3) & 0x7;
 		}
@@ -404,8 +433,8 @@ static int ath5k_eeprom_read_modes(struct ath5k_hw *ah, u32 *offset,
 			ee->ee_margin_tx_rx[mode] = (val >> 8) & 0x3f;
 
 		AR5K_EEPROM_READ(o++, val);
-		ee->ee_i_cal[mode] = (val >> 8) & 0x3f;
-		ee->ee_q_cal[mode] = (val >> 3) & 0x1f;
+		ee->ee_i_cal[mode] = (val >> 5) & 0x3f;
+		ee->ee_q_cal[mode] = val & 0x1f;
 
 		if (ah->ah_ee_version >= AR5K_EEPROM_VERSION_4_2) {
 			AR5K_EEPROM_READ(o++, val);
@@ -1492,7 +1521,7 @@ ath5k_eeprom_read_target_rate_pwr_info(struct ath5k_hw *ah, unsigned int mode)
  * This info is used to calibrate the baseband power table. Imagine
  * that for each channel there is a power curve that's hw specific
  * (depends on amplifier etc) and we try to "correct" this curve using
- * offests we pass on to phy chip (baseband -> before amplifier) so that
+ * offsets we pass on to phy chip (baseband -> before amplifier) so that
  * it can use accurate power values when setting tx power (takes amplifier's
  * performance on each channel into account).
  *

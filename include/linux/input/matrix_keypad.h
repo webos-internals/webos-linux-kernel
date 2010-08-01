@@ -41,6 +41,10 @@ struct matrix_keymap_data {
  * @col_scan_delay_us: delay, measured in microseconds, that is
  *	needed before we can keypad after activating column gpio
  * @debounce_ms: debounce interval in milliseconds
+ * @active_low: gpio polarity
+ * @wakeup: controls whether the device should be set up as wakeup
+ *	source
+ * @no_autorepeat: disable key autorepeat
  *
  * This structure represents platform-specific data that use used by
  * matrix_keypad driver to perform proper initialization.
@@ -61,6 +65,7 @@ struct matrix_keypad_platform_data {
 
 	bool		active_low;
 	bool		wakeup;
+	bool		no_autorepeat;
 };
 
 /**

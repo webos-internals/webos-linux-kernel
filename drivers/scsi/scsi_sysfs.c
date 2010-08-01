@@ -7,6 +7,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/device.h>
@@ -473,7 +474,7 @@ static DEVICE_ATTR(field, S_IRUGO, sdev_show_##field, NULL);
 
 
 /*
- * sdev_rd_attr: create a function and attribute variable for a
+ * sdev_rw_attr: create a function and attribute variable for a
  * read/write field.
  */
 #define sdev_rw_attr(field, format_string)				\
@@ -485,7 +486,7 @@ sdev_store_##field (struct device *dev, struct device_attribute *attr,	\
 {									\
 	struct scsi_device *sdev;					\
 	sdev = to_scsi_device(dev);					\
-	snscanf (buf, 20, format_string, &sdev->field);			\
+	sscanf (buf, format_string, &sdev->field);			\
 	return count;							\
 }									\
 static DEVICE_ATTR(field, S_IRUGO | S_IWUSR, sdev_show_##field, sdev_store_##field);
@@ -766,9 +767,12 @@ sdev_store_queue_depth_rw(struct device *dev, struct device_attribute *attr,
 	if (depth < 1)
 		return -EINVAL;
 
-	retval = sht->change_queue_depth(sdev, depth);
+	retval = sht->change_queue_depth(sdev, depth,
+					 SCSI_QDEPTH_DEFAULT);
 	if (retval < 0)
 		return retval;
+
+	sdev->max_queue_depth = sdev->queue_depth;
 
 	return count;
 }
@@ -776,6 +780,37 @@ sdev_store_queue_depth_rw(struct device *dev, struct device_attribute *attr,
 static struct device_attribute sdev_attr_queue_depth_rw =
 	__ATTR(queue_depth, S_IRUGO | S_IWUSR, sdev_show_queue_depth,
 	       sdev_store_queue_depth_rw);
+
+static ssize_t
+sdev_show_queue_ramp_up_period(struct device *dev,
+			       struct device_attribute *attr,
+			       char *buf)
+{
+	struct scsi_device *sdev;
+	sdev = to_scsi_device(dev);
+	return snprintf(buf, 20, "%u\n",
+			jiffies_to_msecs(sdev->queue_ramp_up_period));
+}
+
+static ssize_t
+sdev_store_queue_ramp_up_period(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct scsi_device *sdev = to_scsi_device(dev);
+	unsigned long period;
+
+	if (strict_strtoul(buf, 10, &period))
+		return -EINVAL;
+
+	sdev->queue_ramp_up_period = msecs_to_jiffies(period);
+	return period;
+}
+
+static struct device_attribute sdev_attr_queue_ramp_up_period =
+	__ATTR(queue_ramp_up_period, S_IRUGO | S_IWUSR,
+	       sdev_show_queue_ramp_up_period,
+	       sdev_store_queue_ramp_up_period);
 
 static ssize_t
 sdev_store_queue_type_rw(struct device *dev, struct device_attribute *attr,
@@ -813,12 +848,11 @@ static int scsi_target_add(struct scsi_target *starget)
 	if (starget->state != STARGET_CREATED)
 		return 0;
 
+	device_enable_async_suspend(&starget->dev);
+
 	error = device_add(&starget->dev);
 	if (error) {
 		dev_err(&starget->dev, "target device_add failed, error %d\n", error);
-		get_device(&starget->dev);
-		scsi_target_reap(starget);
-		put_device(&starget->dev);
 		return error;
 	}
 	transport_add_device(&starget->dev);
@@ -844,7 +878,8 @@ int scsi_sysfs_add_sdev(struct scsi_device *sdev)
 	struct request_queue *rq = sdev->request_queue;
 	struct scsi_target *starget = sdev->sdev_target;
 
-	if ((error = scsi_device_set_state(sdev, SDEV_RUNNING)) != 0)
+	error = scsi_device_set_state(sdev, SDEV_RUNNING);
+	if (error)
 		return error;
 
 	error = scsi_target_add(starget);
@@ -852,34 +887,40 @@ int scsi_sysfs_add_sdev(struct scsi_device *sdev)
 		return error;
 
 	transport_configure_device(&starget->dev);
+	device_enable_async_suspend(&sdev->sdev_gendev);
 	error = device_add(&sdev->sdev_gendev);
 	if (error) {
 		printk(KERN_INFO "error 1\n");
-		goto out_remove;
+		return error;
 	}
+	device_enable_async_suspend(&sdev->sdev_dev);
 	error = device_add(&sdev->sdev_dev);
 	if (error) {
 		printk(KERN_INFO "error 2\n");
 		device_del(&sdev->sdev_gendev);
-		goto out_remove;
+		return error;
 	}
 	transport_add_device(&sdev->sdev_gendev);
 	sdev->is_visible = 1;
 
 	/* create queue files, which may be writable, depending on the host */
-	if (sdev->host->hostt->change_queue_depth)
-		error = device_create_file(&sdev->sdev_gendev, &sdev_attr_queue_depth_rw);
+	if (sdev->host->hostt->change_queue_depth) {
+		error = device_create_file(&sdev->sdev_gendev,
+					   &sdev_attr_queue_depth_rw);
+		error = device_create_file(&sdev->sdev_gendev,
+					   &sdev_attr_queue_ramp_up_period);
+	}
 	else
 		error = device_create_file(&sdev->sdev_gendev, &dev_attr_queue_depth);
 	if (error)
-		goto out_remove;
+		return error;
 
 	if (sdev->host->hostt->change_queue_type)
 		error = device_create_file(&sdev->sdev_gendev, &sdev_attr_queue_type_rw);
 	else
 		error = device_create_file(&sdev->sdev_gendev, &dev_attr_queue_type);
 	if (error)
-		goto out_remove;
+		return error;
 
 	error = bsg_register_queue(rq, &sdev->sdev_gendev, NULL, NULL);
 
@@ -895,16 +936,11 @@ int scsi_sysfs_add_sdev(struct scsi_device *sdev)
 			error = device_create_file(&sdev->sdev_gendev,
 					sdev->host->hostt->sdev_attrs[i]);
 			if (error)
-				goto out_remove;
+				return error;
 		}
 	}
 
-	return 0;
-
- out_remove:
-	__scsi_remove_device(sdev);
 	return error;
-
 }
 
 void __scsi_remove_device(struct scsi_device *sdev)

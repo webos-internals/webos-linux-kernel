@@ -24,6 +24,7 @@
 #include <linux/module.h>
 #include <linux/blkdev.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/kthread.h>
 #include <linux/string.h>
 #include <linux/mm.h>
@@ -180,14 +181,20 @@ void scsi_remove_host(struct Scsi_Host *shost)
 EXPORT_SYMBOL(scsi_remove_host);
 
 /**
- * scsi_add_host - add a scsi host
+ * scsi_add_host_with_dma - add a scsi host with dma device
  * @shost:	scsi host pointer to add
  * @dev:	a struct device of type scsi class
+ * @dma_dev:	dma device for the host
+ *
+ * Note: You rarely need to worry about this unless you're in a
+ * virtualised host environments, so use the simpler scsi_add_host()
+ * function instead.
  *
  * Return value: 
  * 	0 on success / != 0 for error
  **/
-int scsi_add_host(struct Scsi_Host *shost, struct device *dev)
+int scsi_add_host_with_dma(struct Scsi_Host *shost, struct device *dev,
+			   struct device *dma_dev)
 {
 	struct scsi_host_template *sht = shost->hostt;
 	int error = -EINVAL;
@@ -207,6 +214,9 @@ int scsi_add_host(struct Scsi_Host *shost, struct device *dev)
 
 	if (!shost->shost_gendev.parent)
 		shost->shost_gendev.parent = dev ? dev : &platform_bus;
+	shost->dma_dev = dma_dev;
+
+	device_enable_async_suspend(&shost->shost_gendev);
 
 	error = device_add(&shost->shost_gendev);
 	if (error)
@@ -214,6 +224,8 @@ int scsi_add_host(struct Scsi_Host *shost, struct device *dev)
 
 	scsi_host_set_state(shost, SHOST_RUNNING);
 	get_device(shost->shost_gendev.parent);
+
+	device_enable_async_suspend(&shost->shost_dev);
 
 	error = device_add(&shost->shost_dev);
 	if (error)
@@ -262,7 +274,7 @@ int scsi_add_host(struct Scsi_Host *shost, struct device *dev)
  fail:
 	return error;
 }
-EXPORT_SYMBOL(scsi_add_host);
+EXPORT_SYMBOL(scsi_add_host_with_dma);
 
 static void scsi_host_dev_release(struct device *dev)
 {

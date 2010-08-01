@@ -9,6 +9,7 @@
 #include <net/genetlink.h>
 #include <linux/dlm.h>
 #include <linux/dlm_netlink.h>
+#include <linux/gfp.h>
 
 #include "dlm_internal.h"
 
@@ -26,7 +27,7 @@ static int prepare_data(u8 cmd, struct sk_buff **skbp, size_t size)
 	struct sk_buff *skb;
 	void *data;
 
-	skb = genlmsg_new(size, GFP_KERNEL);
+	skb = genlmsg_new(size, GFP_NOFS);
 	if (!skb)
 		return -ENOMEM;
 

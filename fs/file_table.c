@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/security.h>
-#include <linux/ima.h>
 #include <linux/eventpoll.h>
 #include <linux/rcupdate.h>
 #include <linux/mount.h>
@@ -22,8 +21,11 @@
 #include <linux/fsnotify.h>
 #include <linux/sysctl.h>
 #include <linux/percpu_counter.h>
+#include <linux/ima.h>
 
 #include <asm/atomic.h>
+
+#include "internal.h"
 
 /* sysctl tunables... */
 struct files_stat_struct files_stat = {
@@ -148,8 +150,6 @@ fail:
 	return NULL;
 }
 
-EXPORT_SYMBOL(get_empty_filp);
-
 /**
  * alloc_file - allocate and initialize a 'struct file'
  * @mnt: the vfsmount on which the file will reside
@@ -165,8 +165,8 @@ EXPORT_SYMBOL(get_empty_filp);
  * If all the callers of init_file() are eliminated, its
  * code should be moved into this function.
  */
-struct file *alloc_file(struct vfsmount *mnt, struct dentry *dentry,
-		fmode_t mode, const struct file_operations *fop)
+struct file *alloc_file(struct path *path, fmode_t mode,
+		const struct file_operations *fop)
 {
 	struct file *file;
 
@@ -174,35 +174,8 @@ struct file *alloc_file(struct vfsmount *mnt, struct dentry *dentry,
 	if (!file)
 		return NULL;
 
-	init_file(file, mnt, dentry, mode, fop);
-	return file;
-}
-EXPORT_SYMBOL(alloc_file);
-
-/**
- * init_file - initialize a 'struct file'
- * @file: the already allocated 'struct file' to initialized
- * @mnt: the vfsmount on which the file resides
- * @dentry: the dentry representing this file
- * @mode: the mode the file is opened with
- * @fop: the 'struct file_operations' for this file
- *
- * Use this instead of setting the members directly.  Doing so
- * avoids making mistakes like forgetting the mntget() or
- * forgetting to take a write on the mnt.
- *
- * Note: This is a crappy interface.  It is here to make
- * merging with the existing users of get_empty_filp()
- * who have complex failure logic easier.  All users
- * of this should be moving to alloc_file().
- */
-int init_file(struct file *file, struct vfsmount *mnt, struct dentry *dentry,
-	   fmode_t mode, const struct file_operations *fop)
-{
-	int error = 0;
-	file->f_path.dentry = dentry;
-	file->f_path.mnt = mntget(mnt);
-	file->f_mapping = dentry->d_inode->i_mapping;
+	file->f_path = *path;
+	file->f_mapping = path->dentry->d_inode->i_mapping;
 	file->f_mode = mode;
 	file->f_op = fop;
 
@@ -212,22 +185,14 @@ int init_file(struct file *file, struct vfsmount *mnt, struct dentry *dentry,
 	 * visible.  We do this for consistency, and so
 	 * that we can do debugging checks at __fput()
 	 */
-	if ((mode & FMODE_WRITE) && !special_file(dentry->d_inode->i_mode)) {
+	if ((mode & FMODE_WRITE) && !special_file(path->dentry->d_inode->i_mode)) {
 		file_take_write(file);
-		error = mnt_clone_write(mnt);
-		WARN_ON(error);
+		WARN_ON(mnt_clone_write(path->mnt));
 	}
-	return error;
+	ima_counts_get(file);
+	return file;
 }
-EXPORT_SYMBOL(init_file);
-
-void fput(struct file *file)
-{
-	if (atomic_long_dec_and_test(&file->f_count))
-		__fput(file);
-}
-
-EXPORT_SYMBOL(fput);
+EXPORT_SYMBOL(alloc_file);
 
 /**
  * drop_file_write_access - give up ability to write to a file
@@ -254,10 +219,9 @@ void drop_file_write_access(struct file *file)
 }
 EXPORT_SYMBOL_GPL(drop_file_write_access);
 
-/* __fput is called from task context when aio completion releases the last
- * last use of a struct file *.  Do not use otherwise.
+/* the real guts of fput() - releasing the last reference to file
  */
-void __fput(struct file *file)
+static void __fput(struct file *file)
 {
 	struct dentry *dentry = file->f_path.dentry;
 	struct vfsmount *mnt = file->f_path.mnt;
@@ -294,6 +258,14 @@ void __fput(struct file *file)
 	dput(dentry);
 	mntput(mnt);
 }
+
+void fput(struct file *file)
+{
+	if (atomic_long_dec_and_test(&file->f_count))
+		__fput(file);
+}
+
+EXPORT_SYMBOL(fput);
 
 struct file *fget(unsigned int fd)
 {
@@ -420,7 +392,9 @@ retry:
 			continue;
 		if (!(f->f_mode & FMODE_WRITE))
 			continue;
+		spin_lock(&f->f_lock);
 		f->f_mode &= ~FMODE_WRITE;
+		spin_unlock(&f->f_lock);
 		if (file_check_writeable(f) != 0)
 			continue;
 		file_release_write(f);

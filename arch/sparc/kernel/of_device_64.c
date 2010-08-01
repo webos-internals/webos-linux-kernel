@@ -104,9 +104,19 @@ static int of_bus_pci_map(u32 *addr, const u32 *range,
 	int i;
 
 	/* Check address type match */
-	if ((addr[0] ^ range[0]) & 0x03000000)
-		return -EINVAL;
+	if (!((addr[0] ^ range[0]) & 0x03000000))
+		goto type_match;
 
+	/* Special exception, we can map a 64-bit address into
+	 * a 32-bit range.
+	 */
+	if ((addr[0] & 0x03000000) == 0x03000000 &&
+	    (range[0] & 0x03000000) == 0x02000000)
+		goto type_match;
+
+	return -EINVAL;
+
+type_match:
 	if (of_out_of_range(addr + 1, range + 1, range + na + pna,
 			    na - 1, ns))
 		return -EINVAL;
@@ -313,10 +323,10 @@ static void __init build_device_resources(struct of_device *op,
 		return;
 
 	p_op = to_of_device(parent);
-	bus = of_match_bus(p_op->node);
-	bus->count_cells(op->node, &na, &ns);
+	bus = of_match_bus(p_op->dev.of_node);
+	bus->count_cells(op->dev.of_node, &na, &ns);
 
-	preg = of_get_property(op->node, bus->addr_prop_name, &num_reg);
+	preg = of_get_property(op->dev.of_node, bus->addr_prop_name, &num_reg);
 	if (!preg || num_reg == 0)
 		return;
 
@@ -330,7 +340,7 @@ static void __init build_device_resources(struct of_device *op,
 	if (num_reg > PROMREG_MAX) {
 		printk(KERN_WARNING "%s: Too many regs (%d), "
 		       "limiting to %d.\n",
-		       op->node->full_name, num_reg, PROMREG_MAX);
+		       op->dev.of_node->full_name, num_reg, PROMREG_MAX);
 		num_reg = PROMREG_MAX;
 	}
 
@@ -338,8 +348,8 @@ static void __init build_device_resources(struct of_device *op,
 		struct resource *r = &op->resource[index];
 		u32 addr[OF_MAX_ADDR_CELLS];
 		const u32 *reg = (preg + (index * ((na + ns) * 4)));
-		struct device_node *dp = op->node;
-		struct device_node *pp = p_op->node;
+		struct device_node *dp = op->dev.of_node;
+		struct device_node *pp = p_op->dev.of_node;
 		struct of_bus *pbus, *dbus;
 		u64 size, result = OF_BAD_ADDR;
 		unsigned long flags;
@@ -387,7 +397,7 @@ static void __init build_device_resources(struct of_device *op,
 
 		if (of_resource_verbose)
 			printk("%s reg[%d] -> %llx\n",
-			       op->node->full_name, index,
+			       op->dev.of_node->full_name, index,
 			       result);
 
 		if (result != OF_BAD_ADDR) {
@@ -398,7 +408,7 @@ static void __init build_device_resources(struct of_device *op,
 			r->end = result + size - 1;
 			r->flags = flags;
 		}
-		r->name = op->node->name;
+		r->name = op->dev.of_node->name;
 	}
 }
 
@@ -520,7 +530,7 @@ static unsigned int __init build_one_device_irq(struct of_device *op,
 						struct device *parent,
 						unsigned int irq)
 {
-	struct device_node *dp = op->node;
+	struct device_node *dp = op->dev.of_node;
 	struct device_node *pp, *ip;
 	unsigned int orig_irq = irq;
 	int nid;
@@ -565,7 +575,7 @@ static unsigned int __init build_one_device_irq(struct of_device *op,
 
 			if (of_irq_verbose)
 				printk("%s: Apply [%s:%x] imap --> [%s:%x]\n",
-				       op->node->full_name,
+				       op->dev.of_node->full_name,
 				       pp->full_name, this_orig_irq,
 				       (iret ? iret->full_name : "NULL"), irq);
 
@@ -584,7 +594,7 @@ static unsigned int __init build_one_device_irq(struct of_device *op,
 				if (of_irq_verbose)
 					printk("%s: PCI swizzle [%s] "
 					       "%x --> %x\n",
-					       op->node->full_name,
+					       op->dev.of_node->full_name,
 					       pp->full_name, this_orig_irq,
 					       irq);
 
@@ -601,11 +611,11 @@ static unsigned int __init build_one_device_irq(struct of_device *op,
 	if (!ip)
 		return orig_irq;
 
-	irq = ip->irq_trans->irq_build(op->node, irq,
+	irq = ip->irq_trans->irq_build(op->dev.of_node, irq,
 				       ip->irq_trans->data);
 	if (of_irq_verbose)
 		printk("%s: Apply IRQ trans [%s] %x --> %x\n",
-		       op->node->full_name, ip->full_name, orig_irq, irq);
+		      op->dev.of_node->full_name, ip->full_name, orig_irq, irq);
 
 out:
 	nid = of_node_to_nid(dp);
@@ -630,10 +640,9 @@ static struct of_device * __init scan_one_device(struct device_node *dp,
 		return NULL;
 
 	sd = &op->dev.archdata;
-	sd->prom_node = dp;
 	sd->op = op;
 
-	op->node = dp;
+	op->dev.of_node = dp;
 
 	op->clock_freq = of_getintprop_default(dp, "clock-frequency",
 					       (25*1000*1000));
@@ -666,7 +675,7 @@ static struct of_device * __init scan_one_device(struct device_node *dp,
 	if (!parent)
 		dev_set_name(&op->dev, "root");
 	else
-		dev_set_name(&op->dev, "%08x", dp->node);
+		dev_set_name(&op->dev, "%08x", dp->phandle);
 
 	if (of_device_register(op)) {
 		printk("%s: Could not register of device.\n",

@@ -38,6 +38,7 @@
 #include <linux/dmapool.h>
 #include <linux/dma-mapping.h>
 #include <linux/usb.h>
+#include <linux/usb/hcd.h>
 #include <linux/bitops.h>
 #include <linux/dmi.h>
 
@@ -46,7 +47,6 @@
 #include <asm/irq.h>
 #include <asm/system.h>
 
-#include "../core/hcd.h"
 #include "uhci-hcd.h"
 #include "pci-quirks.h"
 
@@ -735,6 +735,7 @@ static void uhci_stop(struct usb_hcd *hcd)
 		uhci_hc_died(uhci);
 	uhci_scan_schedule(uhci);
 	spin_unlock_irq(&uhci->lock);
+	synchronize_irq(hcd->irq);
 
 	del_timer_sync(&uhci->fsbr_timer);
 	release_uhci(uhci);
@@ -749,7 +750,20 @@ static int uhci_rh_suspend(struct usb_hcd *hcd)
 	spin_lock_irq(&uhci->lock);
 	if (!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags))
 		rc = -ESHUTDOWN;
-	else if (!uhci->dead)
+	else if (uhci->dead)
+		;		/* Dead controllers tell no tales */
+
+	/* Once the controller is stopped, port resumes that are already
+	 * in progress won't complete.  Hence if remote wakeup is enabled
+	 * for the root hub and any ports are in the middle of a resume or
+	 * remote wakeup, we must fail the suspend.
+	 */
+	else if (hcd->self.root_hub->do_remote_wakeup &&
+			uhci->resuming_ports) {
+		dev_dbg(uhci_dev(uhci), "suspend failed because a port "
+				"is resuming\n");
+		rc = -EBUSY;
+	} else
 		suspend_rh(uhci, UHCI_RH_SUSPENDED);
 	spin_unlock_irq(&uhci->lock);
 	return rc;

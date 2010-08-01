@@ -159,15 +159,16 @@ ENDPROC(v6_coherent_user_range)
 ENDPROC(v6_coherent_kern_range)
 
 /*
- *	v6_flush_kern_dcache_page(kaddr)
+ *	v6_flush_kern_dcache_area(void *addr, size_t size)
  *
  *	Ensure that the data held in the page kaddr is written back
  *	to the page in question.
  *
- *	- kaddr   - kernel address (guaranteed to be page aligned)
+ *	- addr	- kernel address
+ *	- size	- region size
  */
-ENTRY(v6_flush_kern_dcache_page)
-	add	r1, r0, #PAGE_SZ
+ENTRY(v6_flush_kern_dcache_area)
+	add	r1, r0, r1
 1:
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c14, 1		@ clean & invalidate D line
@@ -194,7 +195,7 @@ ENTRY(v6_flush_kern_dcache_page)
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
  */
-ENTRY(v6_dma_inv_range)
+v6_dma_inv_range:
 	tst	r0, #D_CACHE_LINE_SIZE - 1
 	bic	r0, r0, #D_CACHE_LINE_SIZE - 1
 #ifdef HARVARD_CACHE
@@ -210,6 +211,10 @@ ENTRY(v6_dma_inv_range)
 	mcrne	p15, 0, r1, c7, c15, 1		@ clean & invalidate unified line
 #endif
 1:
+#ifdef CONFIG_DMA_CACHE_RWFO
+	ldr	r2, [r0]			@ read for ownership
+	str	r2, [r0]			@ write for ownership
+#endif
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c6, 1		@ invalidate D line
 #else
@@ -227,9 +232,12 @@ ENTRY(v6_dma_inv_range)
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
  */
-ENTRY(v6_dma_clean_range)
+v6_dma_clean_range:
 	bic	r0, r0, #D_CACHE_LINE_SIZE - 1
 1:
+#ifdef CONFIG_DMA_CACHE_RWFO
+	ldr	r2, [r0]			@ read for ownership
+#endif
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c10, 1		@ clean D line
 #else
@@ -250,6 +258,10 @@ ENTRY(v6_dma_clean_range)
 ENTRY(v6_dma_flush_range)
 	bic	r0, r0, #D_CACHE_LINE_SIZE - 1
 1:
+#ifdef CONFIG_DMA_CACHE_RWFO
+	ldr	r2, [r0]			@ read for ownership
+	str	r2, [r0]			@ write for ownership
+#endif
 #ifdef HARVARD_CACHE
 	mcr	p15, 0, r0, c7, c14, 1		@ clean & invalidate D line
 #else
@@ -262,6 +274,40 @@ ENTRY(v6_dma_flush_range)
 	mcr	p15, 0, r0, c7, c10, 4		@ drain write buffer
 	mov	pc, lr
 
+/*
+ *	dma_map_area(start, size, dir)
+ *	- start	- kernel virtual start address
+ *	- size	- size of region
+ *	- dir	- DMA direction
+ */
+ENTRY(v6_dma_map_area)
+	add	r1, r1, r0
+	teq	r2, #DMA_FROM_DEVICE
+	beq	v6_dma_inv_range
+#ifndef CONFIG_DMA_CACHE_RWFO
+	b	v6_dma_clean_range
+#else
+	teq	r2, #DMA_TO_DEVICE
+	beq	v6_dma_clean_range
+	b	v6_dma_flush_range
+#endif
+ENDPROC(v6_dma_map_area)
+
+/*
+ *	dma_unmap_area(start, size, dir)
+ *	- start	- kernel virtual start address
+ *	- size	- size of region
+ *	- dir	- DMA direction
+ */
+ENTRY(v6_dma_unmap_area)
+#ifndef CONFIG_DMA_CACHE_RWFO
+	add	r1, r1, r0
+	teq	r2, #DMA_TO_DEVICE
+	bne	v6_dma_inv_range
+#endif
+	mov	pc, lr
+ENDPROC(v6_dma_unmap_area)
+
 	__INITDATA
 
 	.type	v6_cache_fns, #object
@@ -271,8 +317,8 @@ ENTRY(v6_cache_fns)
 	.long	v6_flush_user_cache_range
 	.long	v6_coherent_kern_range
 	.long	v6_coherent_user_range
-	.long	v6_flush_kern_dcache_page
-	.long	v6_dma_inv_range
-	.long	v6_dma_clean_range
+	.long	v6_flush_kern_dcache_area
+	.long	v6_dma_map_area
+	.long	v6_dma_unmap_area
 	.long	v6_dma_flush_range
 	.size	v6_cache_fns, . - v6_cache_fns
