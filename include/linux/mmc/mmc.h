@@ -62,6 +62,7 @@
 #define MMC_SET_WRITE_PROT       28   /* ac   [31:0] data addr   R1b */
 #define MMC_CLR_WRITE_PROT       29   /* ac   [31:0] data addr   R1b */
 #define MMC_SEND_WRITE_PROT      30   /* adtc [31:0] wpdata addr R1  */
+#define MMC_SEND_WRITE_PROT_TYPE 31   /* adtc [31:0] wpdata addr R1  */
 
   /* class 5 */
 #define MMC_ERASE_GROUP_START    35   /* ac   [31:0] data addr   R1  */
@@ -249,6 +250,19 @@ struct _mmc_csd {
  * EXT_CSD fields
  */
 
+#define EXT_CSD_USER_WP		171
+#define EXT_CSD_BOOT_WP		173
+#define EXT_CSD_ERASE_GROUP_DEF	175 /* R/W */
+#define EXT_CSD_BOOT_CONFIG	179 /* R/W */
+#define EXT_CSD_BUS_WIDTH	    183	/* R/W */
+#define EXT_CSD_HS_TIMING	    185	/* R/W */
+#define EXT_CSD_CARD_TYPE	    196	/* RO */
+#define EXT_CSD_REV		        192	/* RO */
+#define EXT_CSD_SEC_CNT		    212	/* RO, 4 bytes */
+#define EXT_CSD_HC_WP_GRP_SIZE		221	/* RO */
+#define EXT_CSD_HC_ERASE_GRP_SIZE	224	/* RO, unit = 512Kb */
+#define EXT_CSD_BOOT_SIZE_MULT  226 /* RO */
+
 #define EXT_CSD_BUS_WIDTH	183	/* R/W */
 #define EXT_CSD_HS_TIMING	185	/* R/W */
 #define EXT_CSD_CARD_TYPE	196	/* RO */
@@ -269,6 +283,13 @@ struct _mmc_csd {
 #define EXT_CSD_BUS_WIDTH_1	0	/* Card is in 1 bit mode */
 #define EXT_CSD_BUS_WIDTH_4	1	/* Card is in 4 bit mode */
 #define EXT_CSD_BUS_WIDTH_8	2	/* Card is in 8 bit mode */
+
+#define EXT_CSD_USER_WP_PERM_PSWD_DIS   0x80    /* r/w, disable pwd protection */
+#define EXT_CSD_USER_WP_CD_PERM_WP_DIS  0x40    /* r/w, dis CSD.PERM_WP_PROTECT */
+#define EXT_CSD_USER_WP_US_PERM_WP_DIS  0x10    /* r/w, perm dis perm wp */
+#define EXT_CSD_USER_WP_US_PWR_WP_DIS   0x08    /* r/w/c_p, disable power-on wp */
+#define EXT_CSD_USER_WP_US_PERM_WP_EN   0x04    /* r/w/e_p, enable permanent wp */
+#define EXT_CSD_USER_WP_US_PWR_WP_EN    0x01    /* r/w/e_p, enable power-on wp */
 
 /*
  * MMC_SWITCH access modes

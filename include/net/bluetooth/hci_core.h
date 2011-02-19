@@ -1,6 +1,6 @@
-/* 
+/*
    BlueZ - Bluetooth protocol stack for Linux
-   Copyright (C) 2000-2001 Qualcomm Incorporated
+   Copyright (c) 2000-2001, 2010, Code Aurora Forum. All rights reserved.
 
    Written 2000,2001 by Maxim Krasnyansky <maxk@qualcomm.com>
 
@@ -12,13 +12,13 @@
    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY RIGHTS.
    IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) AND AUTHOR(S) BE LIABLE FOR ANY
-   CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES, OR ANY DAMAGES 
-   WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN 
-   ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF 
+   CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES, OR ANY DAMAGES
+   WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+   ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-   ALL LIABILITY, INCLUDING LIABILITY FOR INFRINGEMENT OF ANY PATENTS, 
-   COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS, RELATING TO USE OF THIS 
+   ALL LIABILITY, INCLUDING LIABILITY FOR INFRINGEMENT OF ANY PATENTS,
+   COPYRIGHTS, TRADEMARKS OR OTHER RIGHTS, RELATING TO USE OF THIS
    SOFTWARE IS DISCLAIMED.
 */
 
@@ -90,6 +90,7 @@ struct hci_dev {
 	__u32		idle_timeout;
 	__u16		sniff_min_interval;
 	__u16		sniff_max_interval;
+	__u16		link_supervision_timeout;
 
 	unsigned long	quirks;
 
@@ -169,6 +170,7 @@ struct hci_conn {
 	__u16            link_policy;
 	__u32		 link_mode;
 	__u8             auth_type;
+	__u8             sec_level;
 	__u8             power_save;
 	unsigned long	 pend;
 
@@ -239,6 +241,7 @@ enum {
 	HCI_CONN_ENCRYPT_PEND,
 	HCI_CONN_RSWITCH_PEND,
 	HCI_CONN_MODE_CHANGE_PEND,
+	HCI_CONN_SCO_PEND,
 };
 
 static inline void hci_conn_hash_init(struct hci_dev *hdev)
@@ -325,12 +328,11 @@ int hci_conn_del(struct hci_conn *conn);
 void hci_conn_hash_flush(struct hci_dev *hdev);
 void hci_conn_check_pending(struct hci_dev *hdev);
 
-struct hci_conn *hci_connect(struct hci_dev *hdev, int type, bdaddr_t *dst, __u8 auth_type);
+struct hci_conn *hci_connect(struct hci_dev *hdev, int type, bdaddr_t *dst, __u8 sec_level, __u8 auth_type);
 int hci_conn_check_link_mode(struct hci_conn *conn);
-int hci_conn_auth(struct hci_conn *conn);
-int hci_conn_encrypt(struct hci_conn *conn);
+int hci_conn_security(struct hci_conn *conn, __u8 sec_level, __u8 auth_type);
 int hci_conn_change_link_key(struct hci_conn *conn);
-int hci_conn_switch_role(struct hci_conn *conn, uint8_t role);
+int hci_conn_switch_role(struct hci_conn *conn, __u8 role);
 
 void hci_conn_enter_active_mode(struct hci_conn *conn);
 void hci_conn_enter_sniff_mode(struct hci_conn *conn);
@@ -383,7 +385,7 @@ static inline void __hci_dev_put(struct hci_dev *d)
 }
 
 static inline void hci_dev_put(struct hci_dev *d)
-{ 
+{
 	__hci_dev_put(d);
 	module_put(d->owner);
 }
@@ -433,7 +435,7 @@ void hci_event_packet(struct hci_dev *hdev, struct sk_buff *skb);
 static inline int hci_recv_frame(struct sk_buff *skb)
 {
 	struct hci_dev *hdev = (struct hci_dev *) skb->dev;
-	if (!hdev || (!test_bit(HCI_UP, &hdev->flags) 
+	if (!hdev || (!test_bit(HCI_UP, &hdev->flags)
 			&& !test_bit(HCI_INIT, &hdev->flags))) {
 		kfree_skb(skb);
 		return -ENXIO;
@@ -470,26 +472,26 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
 
 /* ----- HCI protocols ----- */
 struct hci_proto {
-	char 		*name;
+	char		*name;
 	unsigned int	id;
 	unsigned long	flags;
 
 	void		*priv;
 
-	int (*connect_ind) 	(struct hci_dev *hdev, bdaddr_t *bdaddr, __u8 type);
+	int (*connect_ind)	(struct hci_dev *hdev, bdaddr_t *bdaddr, __u8 type);
 	int (*connect_cfm)	(struct hci_conn *conn, __u8 status);
-	int (*disconn_ind)	(struct hci_conn *conn, __u8 reason);
+	int (*disconn_ind)	(struct hci_conn *conn);
+	int (*disconn_cfm)	(struct hci_conn *conn, __u8 reason);
 	int (*recv_acldata)	(struct hci_conn *conn, struct sk_buff *skb, __u16 flags);
 	int (*recv_scodata)	(struct hci_conn *conn, struct sk_buff *skb);
-	int (*auth_cfm)		(struct hci_conn *conn, __u8 status);
-	int (*encrypt_cfm)	(struct hci_conn *conn, __u8 status, __u8 encrypt);
+	int (*security_cfm)	(struct hci_conn *conn, __u8 status, __u8 encrypt);
 };
 
 static inline int hci_proto_connect_ind(struct hci_dev *hdev, bdaddr_t *bdaddr, __u8 type)
 {
 	register struct hci_proto *hp;
 	int mask = 0;
-	
+
 	hp = hci_proto[HCI_PROTO_L2CAP];
 	if (hp && hp->connect_ind)
 		mask |= hp->connect_ind(hdev, bdaddr, type);
@@ -514,30 +516,52 @@ static inline void hci_proto_connect_cfm(struct hci_conn *conn, __u8 status)
 		hp->connect_cfm(conn, status);
 }
 
-static inline void hci_proto_disconn_ind(struct hci_conn *conn, __u8 reason)
+static inline int hci_proto_disconn_ind(struct hci_conn *conn)
+{
+	register struct hci_proto *hp;
+	int reason = 0x13;
+
+	hp = hci_proto[HCI_PROTO_L2CAP];
+	if (hp && hp->disconn_ind)
+		reason = hp->disconn_ind(conn);
+
+	hp = hci_proto[HCI_PROTO_SCO];
+	if (hp && hp->disconn_ind)
+		reason = hp->disconn_ind(conn);
+
+	return reason;
+}
+
+static inline void hci_proto_disconn_cfm(struct hci_conn *conn, __u8 reason)
 {
 	register struct hci_proto *hp;
 
 	hp = hci_proto[HCI_PROTO_L2CAP];
-	if (hp && hp->disconn_ind)
-		hp->disconn_ind(conn, reason);
+	if (hp && hp->disconn_cfm)
+		hp->disconn_cfm(conn, reason);
 
 	hp = hci_proto[HCI_PROTO_SCO];
-	if (hp && hp->disconn_ind)
-		hp->disconn_ind(conn, reason);
+	if (hp && hp->disconn_cfm)
+		hp->disconn_cfm(conn, reason);
 }
 
 static inline void hci_proto_auth_cfm(struct hci_conn *conn, __u8 status)
 {
 	register struct hci_proto *hp;
+	__u8 encrypt;
+
+	if (test_bit(HCI_CONN_ENCRYPT_PEND, &conn->pend))
+		return;
+
+	encrypt = (conn->link_mode & HCI_LM_ENCRYPT) ? 0x01 : 0x00;
 
 	hp = hci_proto[HCI_PROTO_L2CAP];
-	if (hp && hp->auth_cfm)
-		hp->auth_cfm(conn, status);
+	if (hp && hp->security_cfm)
+		hp->security_cfm(conn, status, encrypt);
 
 	hp = hci_proto[HCI_PROTO_SCO];
-	if (hp && hp->auth_cfm)
-		hp->auth_cfm(conn, status);
+	if (hp && hp->security_cfm)
+		hp->security_cfm(conn, status, encrypt);
 }
 
 static inline void hci_proto_encrypt_cfm(struct hci_conn *conn, __u8 status, __u8 encrypt)
@@ -545,12 +569,12 @@ static inline void hci_proto_encrypt_cfm(struct hci_conn *conn, __u8 status, __u
 	register struct hci_proto *hp;
 
 	hp = hci_proto[HCI_PROTO_L2CAP];
-	if (hp && hp->encrypt_cfm)
-		hp->encrypt_cfm(conn, status, encrypt);
+	if (hp && hp->security_cfm)
+		hp->security_cfm(conn, status, encrypt);
 
 	hp = hci_proto[HCI_PROTO_SCO];
-	if (hp && hp->encrypt_cfm)
-		hp->encrypt_cfm(conn, status, encrypt);
+	if (hp && hp->security_cfm)
+		hp->security_cfm(conn, status, encrypt);
 }
 
 int hci_register_proto(struct hci_proto *hproto);
@@ -562,8 +586,7 @@ struct hci_cb {
 
 	char *name;
 
-	void (*auth_cfm)	(struct hci_conn *conn, __u8 status);
-	void (*encrypt_cfm)	(struct hci_conn *conn, __u8 status, __u8 encrypt);
+	void (*security_cfm)	(struct hci_conn *conn, __u8 status, __u8 encrypt);
 	void (*key_change_cfm)	(struct hci_conn *conn, __u8 status);
 	void (*role_switch_cfm)	(struct hci_conn *conn, __u8 status, __u8 role);
 };
@@ -571,14 +594,20 @@ struct hci_cb {
 static inline void hci_auth_cfm(struct hci_conn *conn, __u8 status)
 {
 	struct list_head *p;
+	__u8 encrypt;
 
 	hci_proto_auth_cfm(conn, status);
+
+	if (test_bit(HCI_CONN_ENCRYPT_PEND, &conn->pend))
+		return;
+
+	encrypt = (conn->link_mode & HCI_LM_ENCRYPT) ? 0x01 : 0x00;
 
 	read_lock_bh(&hci_cb_list_lock);
 	list_for_each(p, &hci_cb_list) {
 		struct hci_cb *cb = list_entry(p, struct hci_cb, list);
-		if (cb->auth_cfm)
-			cb->auth_cfm(conn, status);
+		if (cb->security_cfm)
+			cb->security_cfm(conn, status, encrypt);
 	}
 	read_unlock_bh(&hci_cb_list_lock);
 }
@@ -587,13 +616,16 @@ static inline void hci_encrypt_cfm(struct hci_conn *conn, __u8 status, __u8 encr
 {
 	struct list_head *p;
 
+	if (conn->sec_level == BT_SECURITY_SDP)
+		conn->sec_level = BT_SECURITY_LOW;
+
 	hci_proto_encrypt_cfm(conn, status, encrypt);
 
 	read_lock_bh(&hci_cb_list_lock);
 	list_for_each(p, &hci_cb_list) {
 		struct hci_cb *cb = list_entry(p, struct hci_cb, list);
-		if (cb->encrypt_cfm)
-			cb->encrypt_cfm(conn, status, encrypt);
+		if (cb->security_cfm)
+			cb->security_cfm(conn, status, encrypt);
 	}
 	read_unlock_bh(&hci_cb_list_lock);
 }

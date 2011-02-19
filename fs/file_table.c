@@ -293,6 +293,18 @@ void __fput(struct file *file)
 	mntput(mnt);
 }
 
+#ifdef CONFIG_FORCED_UNMOUNT
+
+void fput_light(struct file *file, int fput_needed)
+{
+	if (unlikely(fput_needed))
+		fput(file);
+	else
+		clear_f_light(file);
+}
+
+#endif
+
 struct file *fget(unsigned int fd)
 {
 	struct file *file;
@@ -329,6 +341,7 @@ struct file *fget_light(unsigned int fd, int *fput_needed)
 	*fput_needed = 0;
 	if (likely((atomic_read(&files->count) == 1))) {
 		file = fcheck_files(files, fd);
+		set_f_light(file);
 	} else {
 		rcu_read_lock();
 		file = fcheck_files(files, fd);

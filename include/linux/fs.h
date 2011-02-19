@@ -868,6 +868,9 @@ struct file {
 	struct list_head	f_ep_links;
 	spinlock_t		f_ep_lock;
 #endif /* #ifdef CONFIG_EPOLL */
+#ifdef CONFIG_FORCED_UNMOUNT
+	int			f_light;
+#endif /* #ifdef CONFIG_FORCED_UNMOUNT */
 	struct address_space	*f_mapping;
 #ifdef CONFIG_DEBUG_WRITECOUNT
 	unsigned long f_mnt_write_state;
@@ -2256,6 +2259,8 @@ int proc_nr_files(struct ctl_table *table, int write, struct file *filp,
 		  void __user *buffer, size_t *lenp, loff_t *ppos);
 
 int get_filesystem_list(char * buf);
+
+void quiesce_filesystem(struct vfsmount *mnt);
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_FS_H */

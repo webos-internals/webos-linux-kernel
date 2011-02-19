@@ -7,6 +7,7 @@
  *	Developed by Simple Network Magic Corporation
  * Copyright (C) 2003 Monta Vista Software, Inc.
  *	Unified SMC91x driver by Nicolas Pitre
+ * Copyright (c) 2009, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -89,6 +90,10 @@ static const char version[] =
 #include <asm/io.h>
 
 #include "smc91x.h"
+
+#ifdef CONFIG_SMC91X_POLL
+struct timer_list smc_poll_timer;
+#endif
 
 #ifndef SMC_NOWAIT
 # define SMC_NOWAIT		0
@@ -1291,7 +1296,7 @@ static irqreturn_t smc_interrupt(int irq, void *dev_id)
 	SMC_SET_INT_MASK(lp, mask);
 	spin_unlock(&lp->lock);
 
-#ifndef CONFIG_NET_POLL_CONTROLLER
+#if !defined(CONFIG_NET_POLL_CONTROLLER) && !defined(CONFIG_SMC91X_POLL)
 	if (timeout == MAX_IRQ_LOOPS)
 		PRINTK("%s: spurious interrupt (mask = 0x%02x)\n",
 		       dev->name, mask);
@@ -1310,7 +1315,7 @@ static irqreturn_t smc_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-#ifdef CONFIG_NET_POLL_CONTROLLER
+#if defined(CONFIG_NET_POLL_CONTROLLER) || defined(CONFIG_SMC91X_POLL)
 /*
  * Polling receive - used by netconsole and other diagnostic tools
  * to allow network i/o with interrupts disabled.
@@ -1320,6 +1325,18 @@ static void smc_poll_controller(struct net_device *dev)
 	disable_irq(dev->irq);
 	smc_interrupt(dev->irq, dev);
 	enable_irq(dev->irq);
+}
+#endif
+
+#ifdef CONFIG_SMC91X_POLL
+static void smc_poll_timer_cb(unsigned long data)
+{
+	struct net_device *dev = (struct net_device *)data;
+
+	smc_poll_controller(dev);
+
+	smc_poll_timer.expires = jiffies + 10;
+	add_timer(&smc_poll_timer);
 }
 #endif
 
@@ -1860,7 +1877,14 @@ static int __devinit smc_probe(struct net_device *dev, void __iomem *ioaddr,
 		retval = -ENODEV;
 		goto err_out;
 	}
+
+#ifdef CONFIG_SMC91X_POLL
+	setup_timer(&smc_poll_timer, smc_poll_timer_cb, (unsigned long)dev);
+	smc_poll_timer.expires = jiffies + 1;
+	add_timer(&smc_poll_timer);
+#else
 	dev->irq = irq_canonicalize(dev->irq);
+#endif
 
 	/* Fill in the fields of the device structure with ethernet values. */
 	ether_setup(dev);
@@ -1908,9 +1932,12 @@ static int __devinit smc_probe(struct net_device *dev, void __iomem *ioaddr,
 	}
 
 	/* Grab the IRQ */
-	retval = request_irq(dev->irq, &smc_interrupt, irq_flags, dev->name, dev);
-      	if (retval)
-      		goto err_out;
+#ifndef CONFIG_SMC91X_POLL
+	retval = request_irq(dev->irq, &smc_interrupt, irq_flags,
+			     dev->name, dev);
+	if (retval)
+		goto err_out;
+#endif
 
 #ifdef CONFIG_ARCH_PXA
 #  ifdef SMC_USE_PXA_DMA
@@ -2221,7 +2248,11 @@ static int __devexit smc_drv_remove(struct platform_device *pdev)
 
 	unregister_netdev(ndev);
 
+#ifdef CONFIG_SMC91X_POLL
+	del_timer(&smc_poll_timer);
+#else
 	free_irq(ndev->irq, ndev);
+#endif
 
 #ifdef CONFIG_ARCH_PXA
 	if (ndev->dma != (unsigned char)-1)

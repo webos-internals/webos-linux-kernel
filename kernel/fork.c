@@ -869,6 +869,8 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 
 	tty_audit_fork(sig);
 
+	sig->oom_adj = current->signal->oom_adj;
+
 	return 0;
 }
 
@@ -1027,6 +1029,10 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 #endif /* #ifdef CONFIG_PREEMPT_RCU */
 	p->vfork_done = NULL;
 	spin_lock_init(&p->alloc_lock);
+
+#ifdef CONFIG_MINI_CORE
+    p->ptrace_attach_done = NULL;
+#endif
 
 	clear_tsk_thread_flag(p, TIF_SIGPENDING);
 	init_sigpending(&p->pending);

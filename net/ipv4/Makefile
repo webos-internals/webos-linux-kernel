@@ -13,7 +13,16 @@ obj-y     := route.o inetpeer.o protocol.o \
 	     fib_frontend.o fib_semantics.o \
 	     inet_fragment.o
 
+ifeq ($(CONFIG_ARM),y)
+# Warnings are produced by the current arm cross compiler (v4.2.1) causing
+# build abort. Version 4.3.1 of the compiler does not create this warning.
+# So, remove the -Werror until the compiler can be updated for all build
+# platforms to v4.3.1
+CFLAGS_REMOVE_af_inet.o = -Werror
+endif
+
 obj-$(CONFIG_SYSCTL) += sysctl_net_ipv4.o
+obj-$(CONFIG_SYSFS) += sysfs_net_ipv4.o
 obj-$(CONFIG_IP_FIB_HASH) += fib_hash.o
 obj-$(CONFIG_IP_FIB_TRIE) += fib_trie.o
 obj-$(CONFIG_PROC_FS) += proc.o

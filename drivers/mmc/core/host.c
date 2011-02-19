@@ -16,11 +16,19 @@
 #include <linux/idr.h>
 #include <linux/pagemap.h>
 #include <linux/leds.h>
+#include <linux/moduleparam.h>
 
 #include <linux/mmc/host.h>
 
 #include "core.h"
 #include "host.h"
+
+#ifdef	CONFIG_MMC_AUTO_SUSPEND
+/* Default idle timeout in seconds */
+static int mmc_idle_timeout = 20;
+module_param_named(idle_timeout, mmc_idle_timeout, int, 0644);
+MODULE_PARM_DESC(idle_timeout, "default idle timeout in secs");
+#endif
 
 #define cls_dev_to_mmc_host(d)	container_of(d, struct mmc_host, class_dev)
 
@@ -84,6 +92,11 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	init_waitqueue_head(&host->wq);
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
 
+#ifdef CONFIG_MMC_AUTO_SUSPEND
+	mutex_init(&host->auto_suspend_mutex);
+	INIT_DELAYED_WORK(&host->auto_suspend, mmc_auto_suspend_work);
+	host->idle_timeout = mmc_idle_timeout * HZ;
+#endif
 	/*
 	 * By default, hosts do not support SGIO or large requests.
 	 * They have to set these according to their abilities.
@@ -104,6 +117,46 @@ free:
 }
 
 EXPORT_SYMBOL(mmc_alloc_host);
+
+#ifdef CONFIG_MMC_AUTO_SUSPEND
+static ssize_t
+show_idle_timeout(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct mmc_host *host = dev_get_drvdata(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d sec\n", host->idle_timeout/HZ);
+}
+
+static ssize_t
+set_idle_timeout(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	struct mmc_host *host = dev_get_drvdata(dev);
+	int value;
+
+	if (sscanf(buf, "%d", &value) != 1 || value >= INT_MAX/HZ ||
+			value <= -INT_MAX/HZ)
+		return -EINVAL;
+
+	host->idle_timeout = value * HZ;
+	if (value < 0)
+		mmc_auto_suspend(host, 0); /* Resume the host */
+	else
+		mmc_auto_suspend(host, 1); /* Try suspending the host */
+
+	return count;
+}
+
+static DEVICE_ATTR(idle_timeout, S_IRUGO | S_IWUSR,
+		show_idle_timeout, set_idle_timeout);
+static struct attribute *dev_attrs[] = {
+	&dev_attr_idle_timeout.attr,
+	NULL,
+};
+static struct attribute_group dev_attr_grp = {
+	.attrs = dev_attrs,
+};
+#endif
 
 /**
  *	mmc_add_host - initialise host hardware
@@ -130,6 +183,11 @@ int mmc_add_host(struct mmc_host *host)
 	mmc_add_host_debugfs(host);
 #endif
 
+#ifdef CONFIG_MMC_AUTO_SUSPEND
+	err = sysfs_create_group(&host->parent->kobj, &dev_attr_grp);
+	if (err)
+		return err;
+#endif
 	mmc_start_host(host);
 
 	return 0;
@@ -153,6 +211,9 @@ void mmc_remove_host(struct mmc_host *host)
 	mmc_remove_host_debugfs(host);
 #endif
 
+#ifdef CONFIG_MMC_AUTO_SUSPEND
+	sysfs_remove_group(&host->parent->kobj, &dev_attr_grp);
+#endif
 	device_del(&host->class_dev);
 
 	led_trigger_unregister_simple(host->led);

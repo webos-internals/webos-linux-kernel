@@ -2,6 +2,7 @@
  *  linux/arch/arm/kernel/signal.c
  *
  *  Copyright (C) 1995-2002 Russell King
+ *  Copyright (c) 2009, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -17,6 +18,10 @@
 #include <asm/cacheflush.h>
 #include <asm/ucontext.h>
 #include <asm/unistd.h>
+
+#ifdef CONFIG_VFP
+#include <asm/vfp.h>
+#endif
 
 #include "ptrace.h"
 #include "signal.h"
@@ -100,7 +105,7 @@ sys_rt_sigsuspend(sigset_t __user *unewset, size_t sigsetsize, struct pt_regs *r
 	}
 }
 
-asmlinkage int 
+asmlinkage int
 sys_sigaction(int sig, const struct old_sigaction __user *act,
 	      struct old_sigaction __user *oact)
 {
@@ -196,6 +201,51 @@ static int restore_iwmmxt_context(struct iwmmxt_sigframe *frame)
 
 #endif
 
+#ifdef CONFIG_VFP
+static int preserve_vfp_context(struct vfp_sigframe *frame)
+{
+	int err = 0;
+	struct thread_info *ti = current_thread_info();
+
+	/* Save HW state to thread info structure */
+	vfp_flush_context();
+
+	__put_user_error(VFP_MAGIC, &frame->magic, err);
+	__put_user_error(VFP_STORAGE_SIZE, &frame->size, err);
+	err |= __copy_to_user(&frame->storage, &ti->vfpstate,
+		sizeof(union vfp_state));
+
+	/* Give signal handler a clean vfp context */
+	memset(&ti->vfpstate, 0, sizeof(union vfp_state));
+	ti->vfpstate.hard.fpscr = FPSCR_ROUND_NEAREST;
+
+	return err;
+}
+
+static int restore_vfp_context(struct vfp_sigframe *frame)
+{
+	int err = 0;
+	unsigned long magic;
+	unsigned long size;
+	struct thread_info *ti = current_thread_info();
+
+	/* Sanity check */
+	__get_user_error(magic, &frame->magic, err);
+	__get_user_error(size, &frame->size, err);
+	if (err || magic != VFP_MAGIC || size != VFP_STORAGE_SIZE)
+		return -1;
+
+	/* Save HW state to thread info structure */
+	vfp_flush_context();
+
+	/* restore caller context */
+	err = __copy_from_user(&ti->vfpstate, &frame->storage,
+		sizeof(union vfp_state));
+
+	return err;
+}
+#endif
+
 /*
  * Do a signal return; undo the signal stack.  These are aligned to 64-bit.
  */
@@ -254,8 +304,8 @@ static int restore_sigframe(struct pt_regs *regs, struct sigframe __user *sf)
 		err |= restore_iwmmxt_context(&aux->iwmmxt);
 #endif
 #ifdef CONFIG_VFP
-//	if (err == 0)
-//		err |= vfp_restore_state(&sf->aux.vfp);
+	if (err == 0)
+		err |= restore_vfp_context(&aux->vfp);
 #endif
 
 	return err;
@@ -369,8 +419,8 @@ setup_sigframe(struct sigframe __user *sf, struct pt_regs *regs, sigset_t *set)
 		err |= preserve_iwmmxt_context(&aux->iwmmxt);
 #endif
 #ifdef CONFIG_VFP
-//	if (err == 0)
-//		err |= vfp_save_state(&sf->aux.vfp);
+	if (err == 0)
+		err |= preserve_vfp_context(&aux->vfp);
 #endif
 	__put_user_error(0, &aux->end_magic, err);
 
@@ -534,13 +584,21 @@ setup_rt_frame(int usig, struct k_sigaction *ka, siginfo_t *info,
 
 static inline void restart_syscall(struct pt_regs *regs)
 {
+	if (regs->ARM_ORIG_r0 == -ERESTARTNOHAND ||
+	    regs->ARM_ORIG_r0 == -ERESTARTSYS ||
+	    regs->ARM_ORIG_r0 == -ERESTARTNOINTR ||
+	    regs->ARM_ORIG_r0 == -ERESTART_RESTARTBLOCK) {
+		/* the syscall cannot be safely restarted, return -EINTR instead */
+		regs->ARM_r0 = -EINTR;
+		return;
+	}
 	regs->ARM_r0 = regs->ARM_ORIG_r0;
 	regs->ARM_pc -= thumb_mode(regs) ? 2 : 4;
 }
 
 /*
  * OK, we're invoking a handler
- */	
+ */
 static void
 handle_signal(unsigned long sig, struct k_sigaction *ka,
 	      siginfo_t *info, sigset_t *oldset,
@@ -650,6 +708,7 @@ static int do_signal(sigset_t *oldset, struct pt_regs *regs, int syscall)
 	 */
 	if (syscall) {
 		if (regs->ARM_r0 == -ERESTART_RESTARTBLOCK) {
+			regs->ARM_r0 = -EAGAIN; /* prevent multiple restarts */
 			if (thumb_mode(regs)) {
 				regs->ARM_r7 = __NR_restart_syscall - __NR_SYSCALL_BASE;
 				regs->ARM_pc -= 2;

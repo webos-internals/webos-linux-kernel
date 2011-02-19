@@ -104,6 +104,10 @@ static const struct trans_ctl_table trans_kern_table[] = {
 	{ KERN_MAX_LOCK_DEPTH,		"max_lock_depth" },
 	{ KERN_NMI_WATCHDOG,		"nmi_watchdog" },
 	{ KERN_PANIC_ON_NMI,		"panic_on_unrecovered_nmi" },
+#ifdef CONFIG_MINI_CORE
+	{ KERN_MINICORE_PATTERN,	"minicore_pattern" },
+	{ KERN_MINICORE_TIMEOUT,	"minicore_timeout" },
+#endif
 	{}
 };
 

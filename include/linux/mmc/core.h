@@ -136,9 +136,16 @@ extern int mmc_wait_for_app_cmd(struct mmc_host *, struct mmc_card *,
 
 extern void mmc_set_data_timeout(struct mmc_data *, const struct mmc_card *);
 extern unsigned int mmc_align_data_size(struct mmc_card *, unsigned int);
+extern int mmc_execute_switch(struct mmc_card *card, u8 set, u8 index, u8 value);
 
 extern int __mmc_claim_host(struct mmc_host *host, atomic_t *abort);
 extern void mmc_release_host(struct mmc_host *host);
+
+extern int mmc_send_ext_csd(struct mmc_card *card, u8 *ext_csd);
+extern int mmc_send_write_prot(struct mmc_card *, u32 start, u32 *write_prot);
+extern int mmc_send_write_prot_type(struct mmc_card *, u32 start, u8 *types);
+extern int mmc_set_write_prot(struct mmc_card *, u32 start, int type);
+
 
 /**
  *	mmc_claim_host - exclusively claim a host
@@ -152,5 +159,9 @@ static inline void mmc_claim_host(struct mmc_host *host)
 }
 
 extern u32 mmc_vddrange_to_ocrmask(int vdd_min, int vdd_max);
+
+#ifdef CONFIG_MMC_AUTO_SUSPEND
+extern int mmc_auto_suspend(struct mmc_host *, int);
+#endif
 
 #endif

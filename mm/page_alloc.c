@@ -46,10 +46,15 @@
 #include <linux/page-isolation.h>
 #include <linux/page_cgroup.h>
 #include <linux/debugobjects.h>
+#include <linux/mem_notify.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
 #include "internal.h"
+
+#ifdef CONFIG_LOW_MEMORY_NOTIFY
+#include <linux/lowmemnotify.h>
+#endif
 
 /*
  * Array of node states.
@@ -119,6 +124,7 @@ static char * const zone_names[MAX_NR_ZONES] = {
 };
 
 int min_free_kbytes = 1024;
+int min_free_order_shift = 1;
 
 unsigned long __meminitdata nr_kernel_pages;
 unsigned long __meminitdata nr_all_pages;
@@ -456,6 +462,8 @@ static inline void __free_one_page(struct page *page,
 	unsigned long page_idx;
 	int order_size = 1 << order;
 	int migratetype = get_pageblock_migratetype(page);
+	unsigned long prev_free;
+	unsigned long notify_threshold;
 
 	if (unlikely(PageCompound(page)))
 		if (unlikely(destroy_compound_page(page, order)))
@@ -466,6 +474,7 @@ static inline void __free_one_page(struct page *page,
 	VM_BUG_ON(page_idx & (order_size - 1));
 	VM_BUG_ON(bad_range(zone, page));
 
+	prev_free = zone_page_state(zone, NR_FREE_PAGES);
 	__mod_zone_page_state(zone, NR_FREE_PAGES, order_size);
 	while (order < MAX_ORDER-1) {
 		unsigned long combined_idx;
@@ -488,6 +497,14 @@ static inline void __free_one_page(struct page *page,
 	list_add(&page->lru,
 		&zone->free_area[order].free_list[migratetype]);
 	zone->free_area[order].nr_free++;
+
+	notify_threshold = (zone->pages_high +
+			    zone->lowmem_reserve[MAX_NR_ZONES-1]) * 2;
+
+	if (unlikely((zone->mem_notify_status == 1) &&
+		     (prev_free <= notify_threshold) &&
+		     (zone_page_state(zone, NR_FREE_PAGES) > notify_threshold)))
+		memory_pressure_notify(zone, 0);
 }
 
 static inline int free_pages_check(struct page *page)
@@ -1256,7 +1273,7 @@ int zone_watermark_ok(struct zone *z, int order, unsigned long mark,
 		free_pages -= z->free_area[o].nr_free << o;
 
 		/* Require fewer higher order pages to be free */
-		min >>= 1;
+		min >>= min_free_order_shift;
 
 		if (free_pages <= min)
 			return 0;
@@ -1483,6 +1500,10 @@ __alloc_pages_internal(gfp_t gfp_mask, unsigned int order,
 
 	if (should_fail_alloc_page(gfp_mask, order))
 		return NULL;
+
+#ifdef CONFIG_LOW_MEMORY_NOTIFY
+	memnotify_threshold();
+#endif
 
 restart:
 	z = zonelist->_zonerefs;  /* the list of zones suitable for gfp_mask */
@@ -2550,6 +2571,20 @@ static inline unsigned long wait_table_bits(unsigned long size)
 #define LONG_ALIGN(x) (((x)+(sizeof(long))-1)&~((sizeof(long))-1))
 
 /*
+ * Check if a pageblock contains reserved pages
+ */
+static int pageblock_is_reserved(unsigned long start_pfn)
+{
+	unsigned long end_pfn = start_pfn + pageblock_nr_pages;
+	unsigned long pfn;
+
+	for (pfn = start_pfn; pfn < end_pfn; pfn++)
+		if (PageReserved(pfn_to_page(pfn)))
+			return 1;
+	return 0;
+}
+
+/*
  * Mark a number of pageblocks as MIGRATE_RESERVE. The number
  * of blocks reserved is based on zone->pages_min. The memory within the
  * reserve will tend to store contiguous free pages. Setting min_free_kbytes
@@ -2562,12 +2597,14 @@ static void setup_zone_migrate_reserve(struct zone *zone)
 	struct page *page;
 	unsigned long reserve, block_migratetype;
 
+#ifdef CONFIG_DONT_RESERVE_FROM_MOVABLE_ZONE
+	return;
+#endif
 	/* Get the start pfn, end pfn and the number of blocks to reserve */
 	start_pfn = zone->zone_start_pfn;
 	end_pfn = start_pfn + zone->spanned_pages;
 	reserve = roundup(zone->pages_min, pageblock_nr_pages) >>
 							pageblock_order;
-
 	for (pfn = start_pfn; pfn < end_pfn; pfn += pageblock_nr_pages) {
 		if (!pfn_valid(pfn))
 			continue;
@@ -2578,7 +2615,7 @@ static void setup_zone_migrate_reserve(struct zone *zone)
 			continue;
 
 		/* Blocks with reserved pages will never free, skip them. */
-		if (PageReserved(page))
+		if (pageblock_is_reserved(pfn))
 			continue;
 
 		block_migratetype = get_pageblock_migratetype(page);
@@ -3540,6 +3577,11 @@ static void __paginginit free_area_init_core(struct pglist_data *pgdat,
 		zone->zone_pgdat = pgdat;
 
 		zone->prev_priority = DEF_PRIORITY;
+
+		if (zone->present_pages < (pgdat->node_present_pages / 10))
+			zone->mem_notify_status = -1;
+		else
+			zone->mem_notify_status = 0;
 
 		zone_pcp_init(zone);
 		for_each_lru(l) {

@@ -33,6 +33,9 @@ struct mmc_csd {
 	unsigned int		read_blkbits;
 	unsigned int		write_blkbits;
 	unsigned int		capacity;
+	unsigned int		erase_grp_size;
+	unsigned int		wp_grp_size;
+	unsigned char		wp_grp_enable;
 	unsigned int		read_partial:1,
 				read_misalign:1,
 				write_partial:1,
@@ -40,8 +43,10 @@ struct mmc_csd {
 };
 
 struct mmc_ext_csd {
+	unsigned char		ext_csd_rev;
 	unsigned int		hs_max_dtr;
 	unsigned int		sectors;
+	uint32_t		wp_size;	/* sectors */
 };
 
 struct sd_scr {

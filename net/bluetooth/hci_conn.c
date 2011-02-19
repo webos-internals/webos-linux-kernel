@@ -1,6 +1,6 @@
 /*
    BlueZ - Bluetooth protocol stack for Linux
-   Copyright (C) 2000-2001 Qualcomm Incorporated
+   Copyright (c) 2000-2001, 2010, Code Aurora Forum. All rights reserved.
 
    Written 2000,2001 by Maxim Krasnyansky <maxk@qualcomm.com>
 
@@ -117,11 +117,22 @@ void hci_add_sco(struct hci_conn *conn, __u16 handle)
 {
 	struct hci_dev *hdev = conn->hdev;
 	struct hci_cp_add_sco cp;
+	struct hci_conn *acl = conn->link;
 
 	BT_DBG("%p", conn);
 
+	if (acl->mode == HCI_CM_SNIFF &&
+		test_bit(HCI_CONN_MODE_CHANGE_PEND, &acl->pend)) {
+		set_bit(HCI_CONN_SCO_PEND, &conn->pend);
+		return;
+	}
+
+	clear_bit(HCI_CONN_SCO_PEND, &conn->pend);
+
 	conn->state = BT_CONNECT;
 	conn->out = 1;
+
+	conn->attempt++;
 
 	cp.handle   = cpu_to_le16(handle);
 	cp.pkt_type = cpu_to_le16(conn->pkt_type);
@@ -133,11 +144,22 @@ void hci_setup_sync(struct hci_conn *conn, __u16 handle)
 {
 	struct hci_dev *hdev = conn->hdev;
 	struct hci_cp_setup_sync_conn cp;
+	struct hci_conn *acl = conn->link;
 
 	BT_DBG("%p", conn);
 
+	if (acl->mode == HCI_CM_SNIFF &&
+		test_bit(HCI_CONN_MODE_CHANGE_PEND, &acl->pend)) {
+		set_bit(HCI_CONN_SCO_PEND, &conn->pend);
+		return;
+	}
+
+	clear_bit(HCI_CONN_SCO_PEND, &conn->pend);
+
 	conn->state = BT_CONNECT;
 	conn->out = 1;
+
+	conn->attempt++;
 
 	cp.handle   = cpu_to_le16(handle);
 	cp.pkt_type = cpu_to_le16(conn->pkt_type);
@@ -155,6 +177,7 @@ static void hci_conn_timeout(unsigned long arg)
 {
 	struct hci_conn *conn = (void *) arg;
 	struct hci_dev *hdev = conn->hdev;
+	__u8 reason;
 
 	BT_DBG("conn %p state %d", conn, conn->state);
 
@@ -173,7 +196,8 @@ static void hci_conn_timeout(unsigned long arg)
 		break;
 	case BT_CONFIG:
 	case BT_CONNECTED:
-		hci_acl_disconn(conn, 0x13);
+		reason = hci_proto_disconn_ind(conn);
+		hci_acl_disconn(conn, reason);
 		break;
 	default:
 		conn->state = BT_CLOSED;
@@ -207,6 +231,7 @@ struct hci_conn *hci_conn_add(struct hci_dev *hdev, int type, bdaddr_t *dst)
 	conn->type  = type;
 	conn->mode  = HCI_CM_ACTIVE;
 	conn->state = BT_OPEN;
+	conn->auth_type = HCI_AT_GENERAL_BONDING;
 
 	conn->power_save = 1;
 
@@ -216,12 +241,13 @@ struct hci_conn *hci_conn_add(struct hci_dev *hdev, int type, bdaddr_t *dst)
 		break;
 	case SCO_LINK:
 		if (lmp_esco_capable(hdev))
-			conn->pkt_type = hdev->esco_type & SCO_ESCO_MASK;
+			conn->pkt_type = (hdev->esco_type & SCO_ESCO_MASK) |
+					(hdev->esco_type & EDR_ESCO_MASK);
 		else
 			conn->pkt_type = hdev->pkt_type & SCO_PTYPE_MASK;
 		break;
 	case ESCO_LINK:
-		conn->pkt_type = hdev->esco_type;
+		conn->pkt_type = hdev->esco_type & ~EDR_ESCO_MASK;
 		break;
 	}
 
@@ -280,6 +306,8 @@ int hci_conn_del(struct hci_conn *conn)
 
 	skb_queue_purge(&conn->data_q);
 
+	hci_conn_del_sysfs(conn);
+
 	return 0;
 }
 
@@ -325,7 +353,7 @@ EXPORT_SYMBOL(hci_get_route);
 
 /* Create SCO or ACL connection.
  * Device _must_ be locked */
-struct hci_conn *hci_connect(struct hci_dev *hdev, int type, bdaddr_t *dst, __u8 auth_type)
+struct hci_conn *hci_connect(struct hci_dev *hdev, int type, bdaddr_t *dst, __u8 sec_level, __u8 auth_type)
 {
 	struct hci_conn *acl;
 	struct hci_conn *sco;
@@ -340,6 +368,7 @@ struct hci_conn *hci_connect(struct hci_dev *hdev, int type, bdaddr_t *dst, __u8
 	hci_conn_hold(acl);
 
 	if (acl->state == BT_OPEN || acl->state == BT_CLOSED) {
+		acl->sec_level = sec_level;
 		acl->auth_type = auth_type;
 		hci_acl_connect(acl);
 	}
@@ -361,6 +390,9 @@ struct hci_conn *hci_connect(struct hci_dev *hdev, int type, bdaddr_t *dst, __u8
 
 	if (acl->state == BT_CONNECTED &&
 			(sco->state == BT_OPEN || sco->state == BT_CLOSED)) {
+		acl->power_save = 1;
+		hci_conn_enter_active_mode(acl);
+
 		if (lmp_esco_capable(hdev))
 			hci_setup_sync(sco, acl->handle);
 		else
@@ -385,19 +417,16 @@ int hci_conn_check_link_mode(struct hci_conn *conn)
 EXPORT_SYMBOL(hci_conn_check_link_mode);
 
 /* Authenticate remote device */
-int hci_conn_auth(struct hci_conn *conn)
+static int hci_conn_auth(struct hci_conn *conn, __u8 sec_level, __u8 auth_type)
 {
 	BT_DBG("conn %p", conn);
 
-	if (conn->ssp_mode > 0 && conn->hdev->ssp_mode > 0) {
-		if (!(conn->auth_type & 0x01)) {
-			conn->auth_type |= 0x01;
-			conn->link_mode &= ~HCI_LM_AUTH;
-		}
-	}
-
-	if (conn->link_mode & HCI_LM_AUTH)
+	if (sec_level > conn->sec_level)
+		conn->sec_level = sec_level;
+	else if (conn->link_mode & HCI_LM_AUTH)
 		return 1;
+
+	conn->auth_type = auth_type;
 
 	if (!test_and_set_bit(HCI_CONN_AUTH_PEND, &conn->pend)) {
 		struct hci_cp_auth_requested cp;
@@ -405,31 +434,39 @@ int hci_conn_auth(struct hci_conn *conn)
 		hci_send_cmd(conn->hdev, HCI_OP_AUTH_REQUESTED,
 							sizeof(cp), &cp);
 	}
+
 	return 0;
 }
-EXPORT_SYMBOL(hci_conn_auth);
 
-/* Enable encryption */
-int hci_conn_encrypt(struct hci_conn *conn)
+/* Enable security */
+int hci_conn_security(struct hci_conn *conn, __u8 sec_level, __u8 auth_type)
 {
 	BT_DBG("conn %p", conn);
 
+	if (sec_level == BT_SECURITY_SDP)
+		return 1;
+
+	if (sec_level == BT_SECURITY_LOW &&
+				(!conn->ssp_mode || !conn->hdev->ssp_mode))
+		return 1;
+
 	if (conn->link_mode & HCI_LM_ENCRYPT)
-		return hci_conn_auth(conn);
+		return hci_conn_auth(conn, sec_level, auth_type);
 
 	if (test_and_set_bit(HCI_CONN_ENCRYPT_PEND, &conn->pend))
 		return 0;
 
-	if (hci_conn_auth(conn)) {
+	if (hci_conn_auth(conn, sec_level, auth_type)) {
 		struct hci_cp_set_conn_encrypt cp;
 		cp.handle  = cpu_to_le16(conn->handle);
 		cp.encrypt = 1;
 		hci_send_cmd(conn->hdev, HCI_OP_SET_CONN_ENCRYPT,
 							sizeof(cp), &cp);
 	}
+
 	return 0;
 }
-EXPORT_SYMBOL(hci_conn_encrypt);
+EXPORT_SYMBOL(hci_conn_security);
 
 /* Change link key */
 int hci_conn_change_link_key(struct hci_conn *conn)
@@ -442,12 +479,13 @@ int hci_conn_change_link_key(struct hci_conn *conn)
 		hci_send_cmd(conn->hdev, HCI_OP_CHANGE_CONN_LINK_KEY,
 							sizeof(cp), &cp);
 	}
+
 	return 0;
 }
 EXPORT_SYMBOL(hci_conn_change_link_key);
 
 /* Switch role */
-int hci_conn_switch_role(struct hci_conn *conn, uint8_t role)
+int hci_conn_switch_role(struct hci_conn *conn, __u8 role)
 {
 	BT_DBG("conn %p", conn);
 
@@ -460,6 +498,7 @@ int hci_conn_switch_role(struct hci_conn *conn, uint8_t role)
 		cp.role = role;
 		hci_send_cmd(conn->hdev, HCI_OP_SWITCH_ROLE, sizeof(cp), &cp);
 	}
+
 	return 0;
 }
 EXPORT_SYMBOL(hci_conn_switch_role);
@@ -474,7 +513,7 @@ void hci_conn_enter_active_mode(struct hci_conn *conn)
 	if (test_bit(HCI_RAW, &hdev->flags))
 		return;
 
-	if (conn->mode != HCI_CM_SNIFF || !conn->power_save)
+	if (conn->mode != HCI_CM_SNIFF /* || !conn->power_save */)
 		goto timer;
 
 	if (!test_and_set_bit(HCI_CONN_MODE_CHANGE_PEND, &conn->pend)) {
@@ -542,9 +581,7 @@ void hci_conn_hash_flush(struct hci_dev *hdev)
 
 		c->state = BT_CLOSED;
 
-		hci_conn_del_sysfs(c);
-
-		hci_proto_disconn_ind(c, 0x16);
+		hci_proto_disconn_cfm(c, 0x16);
 		hci_conn_del(c);
 	}
 }

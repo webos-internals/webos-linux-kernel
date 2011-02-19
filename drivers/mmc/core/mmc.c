@@ -121,7 +121,7 @@ static int mmc_decode_csd(struct mmc_card *card)
 	 * v1.2 has extra information in bits 15, 11 and 10.
 	 */
 	csd_struct = UNSTUFF_BITS(resp, 126, 2);
-	if (csd_struct != 1 && csd_struct != 2) {
+	if (csd_struct != 1 && csd_struct != 2 && csd_struct != 3) {
 		printk(KERN_ERR "%s: unrecognised CSD structure version %d\n",
 			mmc_hostname(card->host), csd_struct);
 		return -EINVAL;
@@ -142,6 +142,14 @@ static int mmc_decode_csd(struct mmc_card *card)
 	m = UNSTUFF_BITS(resp, 62, 12);
 	csd->capacity	  = (1 + m) << (e + 2);
 
+	e = UNSTUFF_BITS(resp, 42, 5);
+	m = UNSTUFF_BITS(resp, 37, 5);
+	csd->erase_grp_size = (e + 1) * (m + 1);
+	e = UNSTUFF_BITS(resp, 32, 5);
+	/* TODO: documentation is ambiguous; get confirmation somehow */
+	csd->wp_grp_size = (e + 1) * csd->erase_grp_size;
+	csd->wp_grp_enable = UNSTUFF_BITS(resp, 31, 1);
+
 	csd->read_blkbits = UNSTUFF_BITS(resp, 80, 4);
 	csd->read_partial = UNSTUFF_BITS(resp, 79, 1);
 	csd->write_misalign = UNSTUFF_BITS(resp, 78, 1);
@@ -160,7 +168,6 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 {
 	int err;
 	u8 *ext_csd;
-	unsigned int ext_csd_struct;
 
 	BUG_ON(!card);
 
@@ -207,16 +214,17 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 		goto out;
 	}
 
-	ext_csd_struct = ext_csd[EXT_CSD_REV];
-	if (ext_csd_struct > 2) {
+	card->ext_csd.ext_csd_rev = ext_csd[EXT_CSD_REV];
+
+	if (card->ext_csd.ext_csd_rev > 5) {
 		printk(KERN_ERR "%s: unrecognised EXT_CSD structure "
 			"version %d\n", mmc_hostname(card->host),
-			ext_csd_struct);
+			(int)card->ext_csd.ext_csd_rev);
 		err = -EINVAL;
 		goto out;
 	}
 
-	if (ext_csd_struct >= 2) {
+	if (card->ext_csd.ext_csd_rev >= 2) {
 		card->ext_csd.sectors =
 			ext_csd[EXT_CSD_SEC_CNT + 0] << 0 |
 			ext_csd[EXT_CSD_SEC_CNT + 1] << 8 |
@@ -226,7 +234,8 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 			mmc_card_set_blockaddr(card);
 	}
 
-	switch (ext_csd[EXT_CSD_CARD_TYPE]) {
+	switch (ext_csd[EXT_CSD_CARD_TYPE] &
+			(EXT_CSD_CARD_TYPE_52 | EXT_CSD_CARD_TYPE_26)) {
 	case EXT_CSD_CARD_TYPE_52 | EXT_CSD_CARD_TYPE_26:
 		card->ext_csd.hs_max_dtr = 52000000;
 		break;
@@ -240,6 +249,20 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 			mmc_hostname(card->host));
 		goto out;
 	}
+
+	/* TODO: this value in EXT_CSD_ERASE_GROUP_DEF could be changed
+	 * (if someone writes an ioctl to do it).  If it changes, then
+	 * this value would become invalid.
+	 */
+	if ( (ext_csd[EXT_CSD_ERASE_GROUP_DEF] == 0) ||
+			(ext_csd[EXT_CSD_HC_WP_GRP_SIZE]) == 0 ) {
+		card->ext_csd.wp_size = card->csd.wp_grp_size;	//sectors
+	} else {
+		card->ext_csd.wp_size = 1024 *
+			ext_csd[EXT_CSD_HC_WP_GRP_SIZE] *
+			ext_csd[EXT_CSD_HC_ERASE_GRP_SIZE];	//sectors
+	}
+
 
 out:
 	kfree(ext_csd);
@@ -258,10 +281,33 @@ MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
 MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
 MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
+MMC_DEV_ATTR(wp_size, "%d\n", card->ext_csd.wp_size);
+
+static ssize_t mmc_ext_csd_show (struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mmc_card *card = container_of(dev, struct mmc_card, dev);
+	uint8_t ext_csd[512];
+	int i, j, k=0;
+	mmc_claim_host(card->host);
+	i = mmc_send_ext_csd(card, ext_csd);
+	mmc_release_host(card->host);
+	if (i != 0)
+		return 0;
+	for (i=0; i<512 && k < PAGE_SIZE; i+=16) {
+		for (j=0; j<16 && k < PAGE_SIZE; ++j)
+			k += snprintf(buf+k, PAGE_SIZE-k,
+				" %2.2x", ext_csd[i+j]);
+		k += snprintf(buf+k, PAGE_SIZE-k, "\n");
+	}
+	return k;
+}
+static DEVICE_ATTR(ext_csd, S_IRUGO, mmc_ext_csd_show, NULL);
 
 static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_cid.attr,
 	&dev_attr_csd.attr,
+	&dev_attr_ext_csd.attr,
 	&dev_attr_date.attr,
 	&dev_attr_fwrev.attr,
 	&dev_attr_hwrev.attr,
@@ -269,6 +315,7 @@ static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_oemid.attr,
 	&dev_attr_serial.attr,
+	&dev_attr_wp_size.attr,
 	NULL,
 };
 
@@ -284,6 +331,58 @@ static struct attribute_group *mmc_attr_groups[] = {
 static struct device_type mmc_type = {
 	.groups = mmc_attr_groups,
 };
+
+/*
+ * Wait for the card to exit the busy state
+ */
+static int mmc_wait_not_busy(struct mmc_card *card,u32 retries, u32 retry_polling_ms)
+{
+	u32 status = 0;
+	int err = -ETIMEDOUT;
+
+	for(;retries > 0; retries--) {
+		err = mmc_send_status(card, &status);
+
+		if (err)
+			goto err;
+
+		if ( status & R1_READY_FOR_DATA )
+			break;
+
+		msleep(retry_polling_ms);
+	}
+
+	if ( !retries ) {
+		err = -ETIMEDOUT;
+	}
+err:
+	return err;
+}
+
+/*
+ * Execute switch cmd and wait for the card to exit the busy state
+ */
+int mmc_execute_switch(struct mmc_card *card, u8 set, u8 index, u8 value)
+{
+	int err;
+
+	err = mmc_switch(card, set, index, value);
+
+	if (err)
+		goto err;
+
+	//Workaround for Sandisk cards issue - need 1 ms delay
+	//between CMD6 and the following commands
+	if ( card->cid.manfid == 0x02 ) {
+		mdelay(1);
+	}
+
+	//:TODO: Replace the magic numbers with defines
+	err = mmc_wait_not_busy(card, 100 , 1);
+err :
+
+	return err;
+}
 
 /*
  * Handle the detection and initialisation of a card.
@@ -406,7 +505,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	 */
 	if ((card->ext_csd.hs_max_dtr != 0) &&
 		(host->caps & MMC_CAP_MMC_HIGHSPEED)) {
-		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+		err = mmc_execute_switch(card, EXT_CSD_CMD_SET_NORMAL,
 			EXT_CSD_HS_TIMING, 1);
 		if (err)
 			goto free_card;
@@ -445,7 +544,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 			bus_width = MMC_BUS_WIDTH_4;
 		}
 
-		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+		err = mmc_execute_switch(card, EXT_CSD_CMD_SET_NORMAL,
 				 EXT_CSD_BUS_WIDTH, ext_csd_bit);
 
 		if (err)

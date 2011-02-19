@@ -76,11 +76,13 @@ int hci_register_notifier(struct notifier_block *nb)
 {
 	return atomic_notifier_chain_register(&hci_notifier, nb);
 }
+EXPORT_SYMBOL(hci_register_notifier);
 
 int hci_unregister_notifier(struct notifier_block *nb)
 {
 	return atomic_notifier_chain_unregister(&hci_notifier, nb);
 }
+EXPORT_SYMBOL(hci_unregister_notifier);
 
 static void hci_notify(struct hci_dev *hdev, int event)
 {
@@ -871,6 +873,7 @@ int hci_register_dev(struct hci_dev *hdev)
 	hdev->link_mode = (HCI_LM_ACCEPT);
 
 	hdev->idle_timeout = 0;
+	hdev->link_supervision_timeout = 0x7d00;
 	hdev->sniff_max_interval = 800;
 	hdev->sniff_min_interval = 80;
 
@@ -1125,6 +1128,7 @@ static int hci_send_frame(struct sk_buff *skb)
 	/* Get rid of skb owner, prior to sending to the driver. */
 	skb_orphan(skb);
 
+	hci_notify(hdev, HCI_DEV_WRITE);
 	return hdev->send(skb);
 }
 
@@ -1565,8 +1569,7 @@ static void hci_cmd_task(unsigned long arg)
 
 	/* Send queued commands */
 	if (atomic_read(&hdev->cmd_cnt) && (skb = skb_dequeue(&hdev->cmd_q))) {
-		if (hdev->sent_cmd)
-			kfree_skb(hdev->sent_cmd);
+		kfree_skb(hdev->sent_cmd);
 
 		if ((hdev->sent_cmd = skb_clone(skb, GFP_ATOMIC))) {
 			atomic_dec(&hdev->cmd_cnt);

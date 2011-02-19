@@ -1,7 +1,7 @@
 /* arch/arm/mach-msm/clock.c
  *
  * Copyright (C) 2007 Google, Inc.
- * Copyright (c) 2007 QUALCOMM Incorporated
+ * Copyright (c) 2007-2010, Code Aurora Forum. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -22,68 +22,29 @@
 #include <linux/err.h>
 #include <linux/clk.h>
 #include <linux/spinlock.h>
+#include <linux/debugfs.h>
+#include <linux/ctype.h>
+#include <linux/pm_qos_params.h>
+#include <mach/clk.h>
 
 #include "clock.h"
 #include "proc_comm.h"
+#include "socinfo.h"
 
 static DEFINE_MUTEX(clocks_mutex);
 static DEFINE_SPINLOCK(clocks_lock);
+static DEFINE_SPINLOCK(ebi1_vote_lock);
 static LIST_HEAD(clocks);
+struct clk *msm_clocks;
+unsigned msm_num_clocks;
 
 /*
- * glue for the proc_comm interface
+ * Bitmap of enabled clocks, excluding ACPU which is always
+ * enabled
  */
-static inline int pc_clk_enable(unsigned id)
-{
-	return msm_proc_comm(PCOM_CLKCTL_RPC_ENABLE, &id, NULL);
-}
-
-static inline void pc_clk_disable(unsigned id)
-{
-	msm_proc_comm(PCOM_CLKCTL_RPC_DISABLE, &id, NULL);
-}
-
-static inline int pc_clk_set_rate(unsigned id, unsigned rate)
-{
-	return msm_proc_comm(PCOM_CLKCTL_RPC_SET_RATE, &id, &rate);
-}
-
-static inline int pc_clk_set_min_rate(unsigned id, unsigned rate)
-{
-	return msm_proc_comm(PCOM_CLKCTL_RPC_MIN_RATE, &id, &rate);
-}
-
-static inline int pc_clk_set_max_rate(unsigned id, unsigned rate)
-{
-	return msm_proc_comm(PCOM_CLKCTL_RPC_MAX_RATE, &id, &rate);
-}
-
-static inline int pc_clk_set_flags(unsigned id, unsigned flags)
-{
-	return msm_proc_comm(PCOM_CLKCTL_RPC_SET_FLAGS, &id, &flags);
-}
-
-static inline unsigned pc_clk_get_rate(unsigned id)
-{
-	if (msm_proc_comm(PCOM_CLKCTL_RPC_RATE, &id, NULL))
-		return 0;
-	else
-		return id;
-}
-
-static inline unsigned pc_clk_is_enabled(unsigned id)
-{
-	if (msm_proc_comm(PCOM_CLKCTL_RPC_ENABLED, &id, NULL))
-		return 0;
-	else
-		return id;
-}
-
-static inline int pc_pll_request(unsigned id, unsigned on)
-{
-	on = !!on;
-	return msm_proc_comm(PCOM_CLKCTL_RPC_PLL_REQUEST, &id, &on);
-}
+static DECLARE_BITMAP(clock_map_enabled, NR_CLKS);
+static DEFINE_SPINLOCK(clock_map_lock);
+static struct notifier_block axi_freq_notifier_block;
 
 /*
  * Standard clock functions defined in include/linux/clk.h
@@ -119,8 +80,12 @@ int clk_enable(struct clk *clk)
 	unsigned long flags;
 	spin_lock_irqsave(&clocks_lock, flags);
 	clk->count++;
-	if (clk->count == 1)
-		pc_clk_enable(clk->id);
+	if (clk->count == 1) {
+		clk->ops->enable(clk->id);
+		spin_lock(&clock_map_lock);
+		clock_map_enabled[BIT_WORD(clk->id)] |= BIT_MASK(clk->id);
+		spin_unlock(&clock_map_lock);
+	}
 	spin_unlock_irqrestore(&clocks_lock, flags);
 	return 0;
 }
@@ -132,30 +97,53 @@ void clk_disable(struct clk *clk)
 	spin_lock_irqsave(&clocks_lock, flags);
 	BUG_ON(clk->count == 0);
 	clk->count--;
-	if (clk->count == 0)
-		pc_clk_disable(clk->id);
+	if (clk->count == 0) {
+		clk->ops->disable(clk->id);
+		spin_lock(&clock_map_lock);
+		clock_map_enabled[BIT_WORD(clk->id)] &= ~BIT_MASK(clk->id);
+		spin_unlock(&clock_map_lock);
+	}
 	spin_unlock_irqrestore(&clocks_lock, flags);
 }
 EXPORT_SYMBOL(clk_disable);
 
+int clk_reset(struct clk *clk, enum clk_reset_action action)
+{
+	if (!clk->ops->reset)
+		clk->ops->reset = &pc_clk_reset;
+	return clk->ops->reset(clk->remote_id, action);
+}
+EXPORT_SYMBOL(clk_reset);
+
 unsigned long clk_get_rate(struct clk *clk)
 {
-	return pc_clk_get_rate(clk->id);
+	return clk->ops->get_rate(clk->id);
 }
 EXPORT_SYMBOL(clk_get_rate);
 
 int clk_set_rate(struct clk *clk, unsigned long rate)
 {
-	int ret;
-	if (clk->flags & CLKFLAG_USE_MIN_MAX_TO_SET) {
-		ret = pc_clk_set_max_rate(clk->id, rate);
-		if (ret)
-			return ret;
-		return pc_clk_set_min_rate(clk->id, rate);
-	}
-	return pc_clk_set_rate(clk->id, rate);
+	return clk->ops->set_rate(clk->id, rate);
 }
 EXPORT_SYMBOL(clk_set_rate);
+
+long clk_round_rate(struct clk *clk, unsigned long rate)
+{
+	return clk->ops->round_rate(clk->id, rate);
+}
+EXPORT_SYMBOL(clk_round_rate);
+
+int clk_set_min_rate(struct clk *clk, unsigned long rate)
+{
+	return clk->ops->set_min_rate(clk->id, rate);
+}
+EXPORT_SYMBOL(clk_set_min_rate);
+
+int clk_set_max_rate(struct clk *clk, unsigned long rate)
+{
+	return clk->ops->set_max_rate(clk->id, rate);
+}
+EXPORT_SYMBOL(clk_set_max_rate);
 
 int clk_set_parent(struct clk *clk, struct clk *parent)
 {
@@ -173,21 +161,313 @@ int clk_set_flags(struct clk *clk, unsigned long flags)
 {
 	if (clk == NULL || IS_ERR(clk))
 		return -EINVAL;
-	return pc_clk_set_flags(clk->id, flags);
+	return clk->ops->set_flags(clk->id, flags);
 }
 EXPORT_SYMBOL(clk_set_flags);
 
+/* EBI1 is the only shared clock that several clients want to vote on as of
+ * this commit. If this changes in the future, then it might be better to
+ * make clk_min_rate handle the voting or make ebi1_clk_set_min_rate more
+ * generic to support different clocks.
+ */
+static unsigned long ebi1_min_rate[CLKVOTE_MAX];
+static struct clk *ebi1_clk;
+static struct clk *pbus_clk;
 
-void __init msm_clock_init(void)
+/* Rate is in Hz to be consistent with the other clk APIs. */
+int ebi1_clk_set_min_rate(enum clkvote_client client, unsigned long rate)
+{
+	static unsigned long last_set_val = -1;
+	unsigned long new_val;
+	unsigned long flags;
+	int ret = 0, i;
+
+	spin_lock_irqsave(&ebi1_vote_lock, flags);
+
+	ebi1_min_rate[client] = (rate == MSM_AXI_MAX_FREQ) ?
+				(clk_get_max_axi_khz() * 1000) : rate;
+
+	new_val = ebi1_min_rate[0];
+	for (i = 1; i < CLKVOTE_MAX; i++)
+		if (ebi1_min_rate[i] > new_val)
+			new_val = ebi1_min_rate[i];
+
+	/* This check is to save a proc_comm call. */
+	if (last_set_val != new_val) {
+		ret = clk_set_min_rate(ebi1_clk, new_val);
+		if (ret < 0) {
+			pr_err("Setting EBI1 min rate to %lu Hz failed!\n",
+				new_val);
+			pr_err("Last successful value was %lu Hz.\n",
+				last_set_val);
+		} else {
+			last_set_val = new_val;
+		}
+	}
+
+	spin_unlock_irqrestore(&ebi1_vote_lock, flags);
+
+	return ret;
+}
+
+static int axi_freq_notifier_handler(struct notifier_block *block,
+				unsigned long min_freq, void *v)
+{
+	/* convert min_freq from KHz to Hz, unless it's a magic value */
+	if (min_freq != MSM_AXI_MAX_FREQ)
+		min_freq *= 1000;
+
+	/* On 7x30, ebi1_clk votes are dropped during power collapse, but
+	 * pbus_clk votes are not. Use pbus_clk to implicitly request ebi1
+	 * and AXI rates. */
+	if (cpu_is_msm7x30() || cpu_is_msm8x55())
+		return clk_set_min_rate(pbus_clk, min_freq/2);
+	else
+		return ebi1_clk_set_min_rate(CLKVOTE_PMQOS, min_freq);
+}
+
+/*
+ * Find out whether any clock is enabled that needs the TCXO clock.
+ *
+ * On exit, the buffer 'reason' holds a bitmap of ids of all enabled
+ * clocks found that require TCXO.
+ *
+ * reason: buffer to hold the bitmap; must be compatible with
+ *         linux/bitmap.h
+ * nbits: number of bits that the buffer can hold; 0 is ok
+ *
+ * Return value:
+ *      0: does not require the TCXO clock
+ *      1: requires the TCXO clock
+ */
+int msm_clock_require_tcxo(unsigned long *reason, int nbits)
+{
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&clock_map_lock, flags);
+	ret = !bitmap_empty(clock_map_enabled, NR_CLKS);
+	if (nbits > 0)
+		bitmap_copy(reason, clock_map_enabled, min(nbits, NR_CLKS));
+	spin_unlock_irqrestore(&clock_map_lock, flags);
+
+	return ret;
+}
+
+/*
+ * Find the clock matching the given id and copy its name to the
+ * provided buffer.
+ *
+ * Return value:
+ * -ENODEV: there is no clock matching the given id
+ *       0: success
+ */
+int msm_clock_get_name(uint32_t id, char *name, uint32_t size)
+{
+	struct clk *c_clk;
+	int ret = -ENODEV;
+
+	mutex_lock(&clocks_mutex);
+	list_for_each_entry(c_clk, &clocks, list) {
+		if (id == c_clk->id) {
+			strlcpy(name, c_clk->name, size);
+			ret = 0;
+			break;
+		}
+	}
+	mutex_unlock(&clocks_mutex);
+
+	return ret;
+}
+
+static unsigned __initdata local_count;
+
+static void __init set_clock_ops(struct clk *clk)
+{
+	if (!clk->ops) {
+		struct clk_ops *ops = clk_7x30_is_local(clk->id);
+		if (ops) {
+			clk->ops = ops;
+			local_count++;
+		} else {
+			clk->ops = &clk_ops_pcom;
+			clk->id = clk->remote_id;
+		}
+	}
+}
+
+void __init msm_clock_init(struct clk *clock_tbl, unsigned num_clocks)
 {
 	unsigned n;
 
+	clk_7x30_init();
+
 	spin_lock_init(&clocks_lock);
 	mutex_lock(&clocks_mutex);
-	for (n = 0; n < msm_num_clocks; n++)
+	msm_clocks = clock_tbl;
+	msm_num_clocks = num_clocks;
+	for (n = 0; n < msm_num_clocks; n++) {
+		set_clock_ops(&msm_clocks[n]);
 		list_add_tail(&msm_clocks[n].list, &clocks);
+	}
 	mutex_unlock(&clocks_mutex);
+	if (local_count)
+		pr_info("%u clock%s locally owned\n", local_count,
+			local_count > 1 ? "s are" : " is");
+
+	ebi1_clk = clk_get(NULL, "ebi1_clk");
+	BUG_ON(IS_ERR(ebi1_clk));
+	if (cpu_is_msm7x30() || cpu_is_msm8x55()) {
+		pbus_clk = clk_get(NULL, "pbus_clk");
+		BUG_ON(IS_ERR(pbus_clk));
+	}
+
+	axi_freq_notifier_block.notifier_call = axi_freq_notifier_handler;
+	pm_qos_add_notifier(PM_QOS_SYSTEM_BUS_FREQ, &axi_freq_notifier_block);
+
 }
+
+#if defined(CONFIG_DEBUG_FS)
+static struct clk *msm_clock_get_nth(unsigned index)
+{
+	if (index < msm_num_clocks)
+		return msm_clocks + index;
+	else
+		return 0;
+}
+
+static int clock_debug_rate_set(void *data, u64 val)
+{
+	struct clk *clock = data;
+	int ret;
+
+	/* Only increases to max rate will succeed, but that's actually good
+	 * for debugging purposes. So we don't check for error. */
+	if (clock->flags & CLK_MAX)
+		clk_set_max_rate(clock, val);
+	if (clock->flags & CLK_MIN)
+		ret = clk_set_min_rate(clock, val);
+	else
+		ret = clk_set_rate(clock, val);
+	if (ret != 0)
+		printk(KERN_ERR "clk_set%s_rate failed (%d)\n",
+			(clock->flags & CLK_MIN) ? "_min" : "", ret);
+	return ret;
+}
+
+static int clock_debug_rate_get(void *data, u64 *val)
+{
+	struct clk *clock = data;
+	*val = clk_get_rate(clock);
+	return 0;
+}
+
+static int clock_debug_enable_set(void *data, u64 val)
+{
+	struct clk *clock = data;
+	int rc = 0;
+
+	if (val)
+		rc = clock->ops->enable(clock->id);
+	else
+		clock->ops->disable(clock->id);
+
+	return rc;
+}
+
+static int clock_debug_enable_get(void *data, u64 *val)
+{
+	struct clk *clock = data;
+
+	*val = clock->ops->is_enabled(clock->id);
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(clock_rate_fops, clock_debug_rate_get,
+			clock_debug_rate_set, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(clock_enable_fops, clock_debug_enable_get,
+			clock_debug_enable_set, "%llu\n");
+
+static int clock_get_stats(char *buffer, const int bufmax)
+{
+	struct clk *c_clk;
+	int n = 0;
+
+	mutex_lock(&clocks_mutex);
+	list_for_each_entry(c_clk, &clocks, list) {
+
+		bool enabled = c_clk->ops->is_enabled(c_clk->id);
+		if (enabled || c_clk->count) {
+			n += scnprintf(buffer + n, bufmax - n, "  %s [%s] apps_count %d\n",
+				c_clk->name,
+				enabled ? "enabled" : "disabled",
+				c_clk->count);
+		}
+	}
+	mutex_unlock(&clocks_mutex);
+
+	n++;
+	buffer[n] = 0;
+	return n;
+}
+
+void clock_print_stats(void)
+{
+	int n;
+	char buffer[4096];
+	n = clock_get_stats(buffer, ARRAY_SIZE(buffer));
+
+	printk("%s", buffer);
+}
+
+static int clock_stats_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+{
+	int n;
+	char buffer[4096];
+	n = clock_get_stats(buffer, ARRAY_SIZE(buffer));
+
+	return simple_read_from_buffer(buf, count, ppos, buffer, n);
+}
+
+static const struct file_operations clock_stats_fops = {
+	.read = clock_stats_read,
+	.open = NULL,
+};
+
+static int __init clock_debug_init(void)
+{
+	struct dentry *dent_rate;
+	struct dentry *dent_enable;
+	struct clk *clock;
+	unsigned n = 0;
+	char temp[50], *ptr;
+
+	dent_rate = debugfs_create_dir("clk_rate", 0);
+	if (IS_ERR(dent_rate))
+		return PTR_ERR(dent_rate);
+
+	dent_enable = debugfs_create_dir("clk_enable", 0);
+	if (IS_ERR(dent_enable))
+		return PTR_ERR(dent_enable);
+
+	debugfs_create_file("stats", 0644, dent_enable,
+			NULL, &clock_stats_fops);
+
+	while ((clock = msm_clock_get_nth(n++)) != 0) {
+		strncpy(temp, clock->dbg_name, ARRAY_SIZE(temp)-1);
+		for (ptr = temp; *ptr; ptr++)
+			*ptr = tolower(*ptr);
+		debugfs_create_file(temp, 0644, dent_rate,
+				    clock, &clock_rate_fops);
+		debugfs_create_file(temp, 0644, dent_enable,
+				    clock, &clock_enable_fops);
+	}
+	return 0;
+}
+
+device_initcall(clock_debug_init);
+#endif
 
 /* The bootloader and/or AMSS may have left various clocks enabled.
  * Disable any clocks that belong to us (CLKFLAG_AUTO_OFF) but have
@@ -205,7 +485,7 @@ static int __init clock_late_init(void)
 			spin_lock_irqsave(&clocks_lock, flags);
 			if (!clk->count) {
 				count++;
-				pc_clk_disable(clk->id);
+				clk->ops->auto_off(clk->id);
 			}
 			spin_unlock_irqrestore(&clocks_lock, flags);
 		}

@@ -22,10 +22,22 @@ CFLAGS_REMOVE_cgroup-debug.o = -pg
 CFLAGS_REMOVE_sched_clock.o = -pg
 endif
 
+ifeq ($(CONFIG_ARM),y)
+# Warnings are produced by the current arm cross compiler (v4.2.1) causing
+# build abort. Version 4.3.1 of the compiler does not create this warning.
+# So, remove the -Werror until the compiler can be updated for all build
+# platforms to v4.3.1
+CFLAGS_REMOVE_workqueue.o = -Werror
+CFLAGS_REMOVE_srcu.o = -Werror
+CFLAGS_REMOVE_cred.o = -Werror
+CFLAGS_REMOVE_kexec.o = -Werror
+endif
+
 obj-$(CONFIG_FREEZER) += freezer.o
 obj-$(CONFIG_PROFILING) += profile.o
 obj-$(CONFIG_SYSCTL_SYSCALL_CHECK) += sysctl_check.o
 obj-$(CONFIG_STACKTRACE) += stacktrace.o
+obj-$(CONFIG_MINI_CORE)  += minicore2.o
 obj-y += time/
 obj-$(CONFIG_DEBUG_MUTEXES) += mutex-debug.o
 obj-$(CONFIG_LOCKDEP) += lockdep.o

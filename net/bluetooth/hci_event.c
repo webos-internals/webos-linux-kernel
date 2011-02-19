@@ -1,6 +1,6 @@
 /*
    BlueZ - Bluetooth protocol stack for Linux
-   Copyright (C) 2000-2001 Qualcomm Incorporated
+   Copyright (c) 2000-2001, 2010, Code Aurora Forum. All rights reserved.
 
    Written 2000,2001 by Maxim Krasnyansky <maxk@qualcomm.com>
 
@@ -484,6 +484,15 @@ static void hci_cc_read_local_features(struct hci_dev *hdev, struct sk_buff *skb
 	if (hdev->features[4] & LMP_EV5)
 		hdev->esco_type |= (ESCO_EV5);
 
+	if (hdev->features[5] & LMP_EDR_ESCO_2M)
+		hdev->esco_type |= (ESCO_2EV3);
+
+	if (hdev->features[5] & LMP_EDR_ESCO_3M)
+		hdev->esco_type |= (ESCO_3EV3);
+
+	if (hdev->features[5] & LMP_EDR_3S_ESCO)
+		hdev->esco_type |= (ESCO_2EV5 | ESCO_3EV5);
+
 	BT_DBG("%s features 0x%.2x%.2x%.2x%.2x%.2x%.2x%.2x%.2x", hdev->name,
 					hdev->features[0], hdev->features[1],
 					hdev->features[2], hdev->features[3],
@@ -606,6 +615,7 @@ static void hci_cs_add_sco(struct hci_dev *hdev, __u8 status)
 	acl = hci_conn_hash_lookup_handle(hdev, handle);
 	if (acl && (sco = acl->link)) {
 		sco->state = BT_CLOSED;
+		clear_bit(HCI_CONN_SCO_PEND, &sco->pend);
 
 		hci_proto_connect_cfm(sco, status);
 		hci_conn_del(sco);
@@ -751,6 +761,7 @@ static void hci_cs_setup_sync_conn(struct hci_dev *hdev, __u8 status)
 	acl = hci_conn_hash_lookup_handle(hdev, handle);
 	if (acl && (sco = acl->link)) {
 		sco->state = BT_CLOSED;
+		clear_bit(HCI_CONN_SCO_PEND, &sco->pend);
 
 		hci_proto_connect_cfm(sco, status);
 		hci_conn_del(sco);
@@ -786,6 +797,7 @@ static void hci_cs_exit_sniff_mode(struct hci_dev *hdev, __u8 status)
 {
 	struct hci_cp_exit_sniff_mode *cp;
 	struct hci_conn *conn;
+	struct hci_conn *sco;
 
 	BT_DBG("%s status 0x%x", hdev->name, status);
 
@@ -799,8 +811,17 @@ static void hci_cs_exit_sniff_mode(struct hci_dev *hdev, __u8 status)
 	hci_dev_lock(hdev);
 
 	conn = hci_conn_hash_lookup_handle(hdev, __le16_to_cpu(cp->handle));
-	if (conn)
+	if (conn) {
 		clear_bit(HCI_CONN_MODE_CHANGE_PEND, &conn->pend);
+
+		sco = conn->link;
+		if (sco) {
+			if (test_and_clear_bit(HCI_CONN_SCO_PEND, &sco->pend)) {
+				hci_proto_connect_cfm(sco, status);
+				hci_conn_del(sco);
+			}
+		}
+	}
 
 	hci_dev_unlock(hdev);
 }
@@ -893,6 +914,19 @@ static inline void hci_conn_complete_evt(struct hci_dev *hdev, struct sk_buff *s
 			hci_send_cmd(hdev, HCI_OP_CHANGE_CONN_PTYPE,
 							sizeof(cp), &cp);
 		}
+
+		/* Set non-default link supervision timeout */
+		if ((conn->type == ACL_LINK) &&
+				(hdev->link_supervision_timeout != 0x7d00) &&
+				(conn->link_mode == HCI_LM_MASTER)) {
+			struct hci_cp_write_link_supervision_timeout cp;
+			cp.handle = ev->handle;
+			cp.link_supervision_timeout =
+				hdev->link_supervision_timeout;
+			hci_send_cmd(hdev,
+					HCI_OP_WRITE_LINK_SUPERVISION_TIMEOUT,
+					sizeof(cp), &cp);
+		}
 	} else
 		conn->state = BT_CLOSED;
 
@@ -914,7 +948,8 @@ static inline void hci_conn_complete_evt(struct hci_dev *hdev, struct sk_buff *s
 	if (ev->status) {
 		hci_proto_connect_cfm(conn, ev->status);
 		hci_conn_del(conn);
-	}
+	} else if (ev->link_type != ACL_LINK)
+		hci_proto_connect_cfm(conn, ev->status);
 
 unlock:
 	hci_dev_unlock(hdev);
@@ -1009,9 +1044,7 @@ static inline void hci_disconn_complete_evt(struct hci_dev *hdev, struct sk_buff
 	if (conn) {
 		conn->state = BT_CLOSED;
 
-		hci_conn_del_sysfs(conn);
-
-		hci_proto_disconn_ind(conn, ev->reason);
+		hci_proto_disconn_cfm(conn, ev->reason);
 		hci_conn_del(conn);
 	}
 
@@ -1440,6 +1473,7 @@ static inline void hci_mode_change_evt(struct hci_dev *hdev, struct sk_buff *skb
 {
 	struct hci_ev_mode_change *ev = (void *) skb->data;
 	struct hci_conn *conn;
+	struct hci_conn *sco;
 
 	BT_DBG("%s status %d", hdev->name, ev->status);
 
@@ -1455,6 +1489,15 @@ static inline void hci_mode_change_evt(struct hci_dev *hdev, struct sk_buff *skb
 				conn->power_save = 1;
 			else
 				conn->power_save = 0;
+		} else {
+			sco = conn->link;
+			if (sco && test_and_clear_bit(HCI_CONN_SCO_PEND,
+					&sco->pend)) {
+				if (lmp_esco_capable(hdev))
+					hci_setup_sync(sco, conn->handle);
+				else
+					hci_add_sco(sco, conn->handle);
+			}
 		}
 	}
 
@@ -1600,7 +1643,8 @@ static inline void hci_remote_ext_features_evt(struct hci_dev *hdev, struct sk_b
 
 		if (conn->state == BT_CONFIG) {
 			if (!ev->status && hdev->ssp_mode > 0 &&
-					conn->ssp_mode > 0 && conn->out) {
+					conn->ssp_mode > 0 && conn->out &&
+					conn->sec_level != BT_SECURITY_SDP) {
 				struct hci_cp_auth_requested cp;
 				cp.handle = ev->handle;
 				hci_send_cmd(hdev, HCI_OP_AUTH_REQUESTED,
@@ -1635,6 +1679,14 @@ static inline void hci_sync_conn_complete_evt(struct hci_dev *hdev, struct sk_bu
 			goto unlock;
 
 		conn->type = SCO_LINK;
+	}
+
+	if (conn->out && (ev->status == 0x1c || ev->status == 0x1f) &&
+			conn->attempt < 2) {
+		conn->pkt_type = (hdev->esco_type & SCO_ESCO_MASK) |
+					(hdev->esco_type & EDR_ESCO_MASK);
+		hci_setup_sync(conn, conn->link->handle);
+		goto unlock;
 	}
 
 	if (!ev->status) {

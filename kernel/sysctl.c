@@ -74,8 +74,13 @@ extern int max_threads;
 extern int core_uses_pid;
 extern int suid_dumpable;
 extern char core_pattern[];
+#ifdef CONFIG_MINI_CORE
+extern char minicore_pattern[];
+extern int minicore_timeout;
+#endif
 extern int pid_max;
 extern int min_free_kbytes;
+extern int min_free_order_shift;
 extern int pid_max_min, pid_max_max;
 extern int sysctl_drop_caches;
 extern int percpu_pagelist_fraction;
@@ -95,12 +100,15 @@ static int sixty = 60;
 static int neg_one = -1;
 #endif
 
+#if defined(CONFIG_DETECT_SOFTLOCKUP) || defined(CONFIG_HIGHMEM)
+static int one = 1;
+#endif
+
 #if defined(CONFIG_MMU) && defined(CONFIG_FILE_LOCKING)
 static int two = 2;
 #endif
 
 static int zero;
-static int one = 1;
 static unsigned long one_ul = 1;
 static int one_hundred = 100;
 
@@ -401,6 +409,25 @@ static struct ctl_table kern_table[] = {
 		.maxlen 	= sizeof(long),
 		.mode		= 0644,
 		.proc_handler	= &proc_taint,
+	},
+#endif
+#ifdef CONFIG_MINI_CORE
+	{
+		.ctl_name	= KERN_MINICORE_PATTERN,
+		.procname	= "minicore_pattern",
+		.data		= minicore_pattern,
+		.maxlen		= 64,
+		.mode		= 0644,
+		.proc_handler	= &proc_dostring,
+		.strategy	= &sysctl_string,
+	},
+	{
+		.ctl_name	= KERN_MINICORE_TIMEOUT,
+		.procname	= "minicore_timeout",
+		.data		= &minicore_timeout,
+		.maxlen		= sizeof(minicore_timeout),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
 	},
 #endif
 #ifdef CONFIG_LATENCYTOP
@@ -1097,6 +1124,14 @@ static struct ctl_table vm_table[] = {
 		.extra1		= &zero,
 	},
 	{
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "min_free_order_shift",
+		.data		= &min_free_order_shift,
+		.maxlen		= sizeof(min_free_order_shift),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec
+	},
+	{
 		.ctl_name	= VM_PERCPU_PAGELIST_FRACTION,
 		.procname	= "percpu_pagelist_fraction",
 		.data		= &percpu_pagelist_fraction,
@@ -1213,7 +1248,6 @@ static struct ctl_table vm_table[] = {
 		.strategy	= &sysctl_jiffies,
 	},
 #endif
-#ifdef CONFIG_SECURITY
 	{
 		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "mmap_min_addr",
@@ -1222,7 +1256,6 @@ static struct ctl_table vm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_doulongvec_minmax,
 	},
-#endif
 #ifdef CONFIG_NUMA
 	{
 		.ctl_name	= CTL_UNNUMBERED,

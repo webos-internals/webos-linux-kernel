@@ -61,6 +61,12 @@ source "net/netlabel/Kconfig"
 
 endif # if INET
 
+config ANDROID_PARANOID_NETWORK
+	bool "Only allow certain groups to create sockets"
+	default y
+	help
+		none
+
 config NETWORK_SECMARK
 	bool "Security Marking"
 	help
@@ -146,6 +152,10 @@ config NETFILTER_ADVANCED
 	  basic ones needed by most people will default to 'M'.
 
 	  If unsure, say Y.
+
+config INTSOCK_NETFILTER
+        bool "Destroy socket when Interface down"
+        default y
 
 config BRIDGE_NETFILTER
 	bool "Bridged IP/ARP packets filtering"

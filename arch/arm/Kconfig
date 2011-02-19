@@ -574,14 +574,22 @@ config ARCH_OMAP
 
 config ARCH_MSM
 	bool "Qualcomm MSM"
-	select CPU_V6
+	select GENERIC_GPIO
+	select HAVE_CLK
 	select GENERIC_TIME
 	select GENERIC_CLOCKEVENTS
+
+#	select ARCH_SPARSEMEM_ENABLE
+#	select MEMORY_HOTPLUG
+#	select MEMORY_HOTREMOVE
+#	select MIGRATION
+#	select DONT_RESERVE_FROM_MOVABLE_ZONE
 	help
-	  Support for Qualcomm MSM7K based systems.  This runs on the ARM11
-	  apps processor of the MSM7K and depends on a shared memory
-	  interface to the ARM9 modem processor which runs the baseband stack
-	  and controls some vital subsystems (clock and power control, etc).
+	  Support for Qualcomm MSM/QSD based systems.  This runs on the
+	  apps processor of the MSM/QSD and depends on a shared memory
+	  interface to the modem processor which runs the baseband
+	  stack and controls some vital subsystems
+	  (clock and power control, etc).
 
 config ARCH_W90X900
 	bool "Nuvoton W90X900 CPU"
@@ -688,6 +696,10 @@ config PLAT_ORION
 
 source arch/arm/mm/Kconfig
 
+#config DONT_RESERVE_FROM_MOVABLE_ZONE
+#	def_bool y
+#	depends on MEMORY_HOTPLUG
+
 config IWMMXT
 	bool "Enable iWMMXt support"
 	depends on CPU_XSCALE || CPU_XSC3
@@ -705,6 +717,18 @@ config XSCALE_PMU
 if !MMU
 source "arch/arm/Kconfig-nommu"
 endif
+
+config KSAPI
+        tristate "KSAPI support (EXPERIMENTAL)"
+	depends on ARCH_MSM_SCORPION
+        default m
+        help
+          KSAPI: Performance monitoring tool for linux.
+          KSAPI records performance statistics for Snapdragon linux platform.
+          It uses the /proc FS as a means to exchange configuration data and
+          counter statistics. It can monitor the counter statistics for
+          Scorpion processor supported hardware performace counters on a per
+          thread basis or AXI counters on an overall system basis.
 
 endmenu
 
@@ -876,7 +900,7 @@ config AEABI
 
 config OABI_COMPAT
 	bool "Allow old ABI binaries to run with this kernel (EXPERIMENTAL)"
-	depends on AEABI && EXPERIMENTAL
+	depends on AEABI && EXPERIMENTAL  && (!MMU || BROKEN)
 	default y
 	help
 	  This option preserves the old syscall interface along with the
@@ -895,6 +919,20 @@ config ARCH_FLATMEM_HAS_HOLES
 	bool
 	default y
 	depends on FLATMEM
+
+config HOLES_IN_ZONE
+	bool "Memory map has holes ending within MAX_ORDER_NR_PAGES"
+	default n
+	depends on FLATMEM
+	help
+	  Say 'y' here if you have multiple memory banks where the bank
+	  end addresses coresponding to the holes are not MAX_ORDER_NR_PAGES
+	  aligned. Failure to enable this in those circumstances will result
+	  in the VM code assuming ownership of pages with no memmap memory
+	  allocated for them. This option could impact performance as it
+	  performs extra checks in the VM code. As alternative, consider
+	  aligning end addresses to MAX_ORDER_NR_PAGES or changing MAX_ORDER
+	  to compensate for your alignment requirements.
 
 # Discontigmem is deprecated
 config ARCH_DISCONTIGMEM_ENABLE
@@ -916,6 +954,17 @@ config NODES_SHIFT
 	depends on NEED_MULTIPLE_NODES
 
 source "mm/Kconfig"
+
+config ARCH_MEMORY_PROBE
+	def_bool y
+	depends on MEMORY_HOTPLUG
+
+config ARCH_MEMORY_REMOVE
+	def_bool y
+	depends on MEMORY_HOTPLUG
+
+config DONT_RESERVE_FROM_MOVABLE_ZONE
+	def_bool y
 
 config LEDS
 	bool "Timer and CPU usage LEDs"
@@ -1086,7 +1135,7 @@ endmenu
 
 menu "CPU Power Management"
 
-if (ARCH_SA1100 || ARCH_INTEGRATOR || ARCH_OMAP || ARCH_IMX || ARCH_PXA)
+if (ARCH_SA1100 || ARCH_INTEGRATOR || ARCH_OMAP || ARCH_IMX || ARCH_PXA || ARCH_MSM)
 
 source "drivers/cpufreq/Kconfig"
 
@@ -1131,6 +1180,14 @@ endif
 source "drivers/cpuidle/Kconfig"
 
 endmenu
+
+config CPU_FREQ_MSM
+	bool
+	depends on CPU_FREQ && ARCH_MSM
+	default y
+	help
+	  This enables the CPUFreq driver for Qualcomm CPUs.
+	  If in doubt, say Y.
 
 menu "Floating point emulation"
 
@@ -1312,6 +1369,10 @@ source "drivers/memstick/Kconfig"
 source "drivers/accessibility/Kconfig"
 
 source "drivers/leds/Kconfig"
+
+source "drivers/haptic/Kconfig"
+
+source "drivers/switch/Kconfig"
 
 source "drivers/rtc/Kconfig"
 

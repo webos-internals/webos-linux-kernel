@@ -1720,6 +1720,31 @@ static void udp4_format_sock(struct sock *sp, struct seq_file *f,
 		atomic_read(&sp->sk_drops), len);
 }
 
+static void udp4_idle_format_sock(struct sock *sp, struct seq_file *f,
+		int bucket, int *len)
+{
+
+	struct inet_sock *inet = inet_sk(sp);
+        __be32 dest = inet->daddr;
+        __be32 src  = inet->rcv_saddr;
+        __u16 destp       = ntohs(inet->dport);
+        __u16 srcp        = ntohs(inet->sport);
+        struct timespec ts_curr, ts;
+        unsigned int idle_time=0;
+
+        ts=ktime_to_timespec(sp->sk_stamp);
+        ktime_get_ts(&ts_curr);
+        idle_time=(ts_curr.tv_sec-ts.tv_sec);
+
+        seq_printf(f, "%4d: %08X:%04X %08X:%04X"
+                " %02X %08X:%08X %02X:%08lX %08X %5d %8d %lu %d %p %u%n",
+                bucket, src, srcp, dest, destp, sp->sk_state,
+                atomic_read(&sp->sk_wmem_alloc),
+                atomic_read(&sp->sk_rmem_alloc),
+                0, 0L, 0, sock_i_uid(sp), 0, sock_i_ino(sp),
+                atomic_read(&sp->sk_refcnt), sp, idle_time,len);
+}
+
 int udp4_seq_show(struct seq_file *seq, void *v)
 {
 	if (v == SEQ_START_TOKEN)
@@ -1732,6 +1757,23 @@ int udp4_seq_show(struct seq_file *seq, void *v)
 		int len;
 
 		udp4_format_sock(v, seq, state->bucket, &len);
+		seq_printf(seq, "%*s\n", 127 - len ,"");
+	}
+	return 0;
+}
+
+int udp4_idle_seq_show(struct seq_file *seq, void *v)
+{
+	if (v == SEQ_START_TOKEN)
+		seq_printf(seq, "%-127s\n",
+			   "  sl  local_address rem_address   st tx_queue "
+			   "rx_queue tr tm->when retrnsmt   uid  timeout "
+			   "inode ref pointer drops");
+	else {
+		struct udp_iter_state *state = seq->private;
+		int len;
+
+		udp4_idle_format_sock(v, seq, state->bucket, &len);
 		seq_printf(seq, "%*s\n", 127 - len ,"");
 	}
 	return 0;
@@ -1750,14 +1792,30 @@ static struct udp_seq_afinfo udp4_seq_afinfo = {
 	},
 };
 
+static struct udp_seq_afinfo udp4_idle_seq_afinfo = {
+	.name		= "udp_idle",
+	.family		= AF_INET,
+	.udp_table	= &udp_table,
+	.seq_fops	= {
+		.owner	=	THIS_MODULE,
+	},
+	.seq_ops	= {
+		.show		= udp4_idle_seq_show,
+	},
+};
 static int udp4_proc_init_net(struct net *net)
 {
-	return udp_proc_register(net, &udp4_seq_afinfo);
+	int ret = 0;
+	ret = udp_proc_register(net, &udp4_seq_afinfo);
+	if(ret < 0)
+		return ret;
+	return udp_proc_register(net, &udp4_idle_seq_afinfo);
 }
 
 static void udp4_proc_exit_net(struct net *net)
 {
 	udp_proc_unregister(net, &udp4_seq_afinfo);
+	udp_proc_unregister(net, &udp4_idle_seq_afinfo);
 }
 
 static struct pernet_operations udp4_net_ops = {

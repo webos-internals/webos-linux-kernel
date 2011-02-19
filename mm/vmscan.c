@@ -38,6 +38,7 @@
 #include <linux/kthread.h>
 #include <linux/freezer.h>
 #include <linux/memcontrol.h>
+#include <linux/mem_notify.h>
 #include <linux/delayacct.h>
 #include <linux/sysctl.h>
 
@@ -129,6 +130,8 @@ static DECLARE_RWSEM(shrinker_rwsem);
 #else
 #define scanning_global_lru(sc)	(1)
 #endif
+
+static int inactive_anon_is_low(struct zone *zone, struct scan_control *sc);
 
 static struct zone_reclaim_stat *get_reclaim_stat(struct zone *zone,
 						  struct scan_control *sc)
@@ -1218,6 +1221,11 @@ static void shrink_active_list(unsigned long nr_pages, struct zone *zone,
 	struct pagevec pvec;
 	enum lru_list lru;
 	struct zone_reclaim_stat *reclaim_stat = get_reclaim_stat(zone, sc);
+	int mem_notify = 0;
+
+	/* Are we low on system memory ? */
+	if (!inactive_anon_is_low(zone, sc))
+		memory_pressure_notify(zone, 0);
 
 	lru_add_drain();
 	spin_lock_irq(&zone->lru_lock);
@@ -1255,8 +1263,14 @@ static void shrink_active_list(unsigned long nr_pages, struct zone *zone,
 		    page_referenced(page, 0, sc->mem_cgroup))
 			pgmoved++;
 
+		if (PageAnon(page))
+			mem_notify = 1;
+
 		list_add(&page->lru, &l_inactive);
 	}
+
+	if (mem_notify)
+		memory_pressure_notify(zone, 1);
 
 	/*
 	 * Move the pages to the [file or anon] inactive list.
@@ -1303,6 +1317,11 @@ static void shrink_active_list(unsigned long nr_pages, struct zone *zone,
 		pagevec_strip(&pvec);
 		spin_lock_irq(&zone->lru_lock);
 	}
+
+	/* Are we low on system memory ? */
+	if (!inactive_anon_is_low(zone, sc))
+		memory_pressure_notify(zone, 0);
+
 	__count_zone_vm_events(PGREFILL, zone, pgscanned);
 	__count_vm_events(PGDEACTIVATE, pgdeactivate);
 	spin_unlock_irq(&zone->lru_lock);
@@ -1936,6 +1955,15 @@ out:
 			order = sc.order = 0;
 
 		goto loop_again;
+	}
+
+	for (i = pgdat->nr_zones - 1; i >= 0; i--) {
+		struct zone *zone = pgdat->node_zones + i;
+
+		if (!populated_zone(zone))
+			continue;
+
+		memory_pressure_notify(zone, 0);
 	}
 
 	return sc.nr_reclaimed;

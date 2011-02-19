@@ -186,6 +186,10 @@ typedef unsigned long pgprot_t;
 
 typedef struct page *pgtable_t;
 
+#ifndef CONFIG_SPARSEMEM
+extern int pfn_valid(unsigned long);
+#endif
+
 #include <asm/memory.h>
 
 #endif /* !__ASSEMBLY__ */
@@ -193,13 +197,6 @@ typedef struct page *pgtable_t;
 #define VM_DATA_DEFAULT_FLAGS \
 	(((current->personality & READ_IMPLIES_EXEC) ? VM_EXEC : 0) | \
 	 VM_READ | VM_WRITE | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
-
-/*
- * With EABI on ARMv5 and above we must have 64-bit aligned slab pointers.
- */
-#if defined(CONFIG_AEABI) && (__LINUX_ARM_ARCH__ >= 5)
-#define ARCH_SLAB_MINALIGN 8
-#endif
 
 #include <asm-generic/page.h>
 

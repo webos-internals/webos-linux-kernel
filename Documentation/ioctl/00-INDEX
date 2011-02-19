@@ -4,6 +4,8 @@ cdrom.txt
 	- summary of CDROM ioctl calls
 hdio.txt
 	- summary of HDIO_ ioctl calls
+mmcio.txt
+	- summary of MMC ioctl calls
 ioctl-decoding.txt
 	- how to decode the bits of an IOCTL code
 ioctl-number.txt

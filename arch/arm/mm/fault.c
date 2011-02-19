@@ -2,6 +2,7 @@
  *  linux/arch/arm/mm/fault.c
  *
  *  Copyright (C) 1995  Linus Torvalds
+ *  Copyright (c) 2009, Code Aurora Forum. All rights reserved.
  *  Modifications for ARM processor (c) 1995-2004 Russell King
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,6 +21,10 @@
 #include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
+
+#ifdef CONFIG_EMULATE_DOMAIN_MANAGER_V7
+#include <asm/domain.h>
+#endif /* CONFIG_EMULATE_DOMAIN_MANAGER_V7 */
 
 #include "fault.h"
 
@@ -399,6 +404,39 @@ do_bad(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	return 1;
 }
 
+static int
+do_imprecise_ext(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
+{
+#ifdef CONFIG_ARCH_MSM_SCORPION
+	unsigned int regval;
+	static unsigned char flush_toggle;
+
+	asm("mrc p15, 0, %0, c5, c1, 0\n" /* read adfsr for fault status */
+	    : "=r" (regval));
+	if (regval == 0x2) {
+		/* Fault was caused by icache parity error. Alternate
+		 * simply retrying the access and flushing the icache. */
+		flush_toggle ^= 1;
+		if (flush_toggle)
+			asm("mcr p15, 0, %0, c7, c5, 0\n"
+			    :
+			    : "r" (regval)); /* input value is ignored */
+		/* Clear fault in EFSR. */
+		asm("mcr p15, 7, %0, c15, c0, 1\n"
+		    :
+		    : "r" (regval));
+		/* Clear fault in ADFSR. */
+		regval = 0;
+		asm("mcr p15, 0, %0, c5, c1, 0\n"
+		    :
+		    : "r" (regval));
+		return 0;
+	}
+#endif
+
+	return 1;
+}
+
 static struct fsr_info {
 	int	(*fn)(unsigned long addr, unsigned int fsr, struct pt_regs *regs);
 	int	sig;
@@ -436,7 +474,7 @@ static struct fsr_info {
 	{ do_bad,		SIGBUS,  0,		"unknown 19"			   },
 	{ do_bad,		SIGBUS,  0,		"lock abort"			   }, /* xscale */
 	{ do_bad,		SIGBUS,  0,		"unknown 21"			   },
-	{ do_bad,		SIGBUS,  BUS_OBJERR,	"imprecise external abort"	   }, /* xscale */
+	{ do_imprecise_ext,	SIGBUS,  BUS_OBJERR,	"imprecise external abort"	   }, /* xscale */
 	{ do_bad,		SIGBUS,  0,		"unknown 23"			   },
 	{ do_bad,		SIGBUS,  0,		"dcache parity error"		   }, /* xscale */
 	{ do_bad,		SIGBUS,  0,		"unknown 25"			   },
@@ -468,6 +506,11 @@ do_DataAbort(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	const struct fsr_info *inf = fsr_info + (fsr & 15) + ((fsr & (1 << 10)) >> 6);
 	struct siginfo info;
 
+#ifdef CONFIG_EMULATE_DOMAIN_MANAGER_V7
+	if (emulate_domain_manager_data_abort(fsr, addr))
+		return;
+#endif
+
 	if (!inf->fn(addr, fsr, regs))
 		return;
 
@@ -478,12 +521,35 @@ do_DataAbort(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	info.si_errno = 0;
 	info.si_code  = inf->code;
 	info.si_addr  = (void __user *)addr;
-	arm_notify_die("", regs, &info, fsr, 0);
+	arm_notify_die("Oops - unhandled data abort", regs, &info, fsr, 0);
 }
 
 asmlinkage void __exception
-do_PrefetchAbort(unsigned long addr, struct pt_regs *regs)
+do_PrefetchAbort(unsigned long addr, unsigned int ifsr, struct pt_regs *regs)
 {
+	struct vm_area_struct *vma;
+	struct siginfo info;
+
+#ifdef CONFIG_EMULATE_DOMAIN_MANAGER_V7
+	if (emulate_domain_manager_prefetch_abort(ifsr, addr))
+		return;
+#endif
+
 	do_translation_fault(addr, 0, regs);
+
+	/*
+	 * Handle execution permission fault
+	 */
+	if ((ifsr & 0x40D) == 0x00D) {
+		vma = find_vma(current->mm, addr);
+		if (vma && !(vma->vm_flags & VM_EXEC)) {
+			info.si_signo = SIGSEGV;
+			info.si_errno = 0;
+			info.si_code  = SEGV_ACCERR;
+			info.si_addr  = (void __user *)addr;
+			arm_notify_die("Oops - execution permission fault",
+				       regs, &info, ifsr, 0);
+		}
+	}
 }
 

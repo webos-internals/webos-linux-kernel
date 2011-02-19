@@ -1909,6 +1909,13 @@ L:	gigaset307x-common@lists.sourceforge.net
 W:	http://gigaset307x.sourceforge.net/
 S:	Maintained
 
+HAPTIC SUBSYSTEM
+M:	Kyungmin Park <kyungmin.park@samsung.com>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	drivers/haptic/
+F:	include/linux/haptic.h
+
 HARD DRIVE ACTIVE PROTECTION SYSTEM (HDAPS) DRIVER
 P:	Frank Seidel
 M:	frank@f-seidel.de

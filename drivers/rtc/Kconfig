@@ -109,6 +109,16 @@ config RTC_INTF_DEV_UIE_EMUL
 	  clock several times per second, please enable this option
 	  only if you know that you really need it.
 
+config RTC_INTF_ALARM
+	bool "Android alarm driver"
+	depends on RTC_CLASS
+	default y
+	help
+	  Provides non-wakeup and rtc backed wakeup alarms based on rtc or
+	  elapsed realtime, and a non-wakeup alarm on the monotonic clock.
+	  Also provides an ioctl to set the wall time which must be used
+	  for elapsed realtime to work.
+
 config RTC_DRV_TEST
 	tristate "Test driver/device"
 	help
@@ -516,6 +526,21 @@ config RTC_DRV_PCF50633
 	  NXP PCF50633 used in embedded systems.
 
 comment "on-CPU RTC drivers"
+
+config RTC_DRV_MSM
+	tristate "RTC on Qualcomm Chipsets"
+	depends on ARCH_MSM
+	default y
+	help
+	  RTC driver for Qualcomm chipsets
+
+config RTC_SECURE_TIME_SUPPORT
+	bool "Support for secure time on Qualcomm Chipsets"
+	depends on RTC_DRV_MSM = y
+	default y
+	help
+	  Say yes here to have additional handle for reading secure time
+	  maintained by ARM9.
 
 config RTC_DRV_OMAP
 	tristate "TI OMAP1"

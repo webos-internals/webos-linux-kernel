@@ -55,3 +55,4 @@ obj-$(CONFIG_ATH5K)	+= ath5k/
 obj-$(CONFIG_ATH9K)	+= ath9k/
 
 obj-$(CONFIG_MAC80211_HWSIM)	+= mac80211_hwsim.o
+obj-$(CONFIG_LIBRA_SDIOIF)	+= libra/

@@ -29,6 +29,10 @@
 #include <linux/nsproxy.h>
 #include <trace/sched.h>
 
+#ifdef CONFIG_MINI_CORE
+#include <linux/minicore2.h>
+#endif
+
 #include <asm/param.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -1538,7 +1542,7 @@ static int sigkill_pending(struct task_struct *tsk)
  * If we actually decide not to stop at all because the tracer
  * is gone, we keep current->exit_code unless clear_code.
  */
-static void ptrace_stop(int exit_code, int clear_code, siginfo_t *info)
+void ptrace_stop(int exit_code, int clear_code, siginfo_t *info)
 {
 	if (arch_ptrace_stop_needed(exit_code, info)) {
 		/*
@@ -1884,6 +1888,29 @@ relock:
 		}
 
 		spin_unlock_irq(&sighand->siglock);
+
+#ifdef CONFIG_MINI_CORE
+        /**
+         * Dump a minicore for dangerous signals like SIGSEGV, etc
+         * _even_ if the program has registered a signal handler for it.
+         *
+         * We be sure to avoid this path if the program is already being
+         * ptraced.
+         */
+        if (sig_kernel_coredump(signr) && !(current->ptrace & PT_PTRACED)
+            && signr != SIGQUIT && signr != SIGKILL)
+        {
+            int ret;
+
+            ret = minicore_launch(signr, info);
+
+            /**
+             * FIXME there is a race of threads coming out of minicore detach.
+             * To see this race, move this ahead of userspace sighandlers
+             * above, and run threads_abort_sighandler.
+             */
+        }
+#endif
 
 		/*
 		 * Anything else is fatal, maybe with a core dump.

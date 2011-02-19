@@ -888,8 +888,23 @@ static struct sock *sk_prot_alloc(struct proto *prot, gfp_t priority,
 	struct kmem_cache *slab;
 
 	slab = prot->slab;
-	if (slab != NULL)
-		sk = kmem_cache_alloc(slab, priority);
+	if (slab != NULL) {
+		sk = kmem_cache_alloc(slab, priority & ~__GFP_ZERO);
+		if (!sk)
+			return sk;
+		if (priority & __GFP_ZERO) {
+			/*
+			 * caches using SLAB_DESTROY_BY_RCU should let
+			 * sk_node.next un-modified. Special care is taken
+			 * when initializing object to zero.
+			 */
+			if (offsetof(struct sock, sk_node.next) != 0)
+				memset(sk, 0, offsetof(struct sock, sk_node.next));
+			memset(&sk->sk_node.pprev, 0,
+			       prot->obj_size - offsetof(struct sock,
+							 sk_node.pprev));
+		}
+	}
 	else
 		sk = kmalloc(prot->obj_size, priority);
 
@@ -1620,6 +1635,8 @@ ssize_t sock_no_sendpage(struct socket *sock, struct page *page, int offset, siz
 static void sock_def_wakeup(struct sock *sk)
 {
 	read_lock(&sk->sk_callback_lock);
+	if(sk->sk_family == AF_INET && (sk->sk_state == TCP_ESTABLISHED))   // both TCP as well as UDP ... 
+                sk->sk_stamp=ktime_get();
 	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
 		wake_up_interruptible_all(sk->sk_sleep);
 	read_unlock(&sk->sk_callback_lock);
@@ -1637,6 +1654,11 @@ static void sock_def_error_report(struct sock *sk)
 static void sock_def_readable(struct sock *sk, int len)
 {
 	read_lock(&sk->sk_callback_lock);
+	
+	// sk_stamp for every socket updated to current time to reflect correct idle time settings 
+	if(sk->sk_family == AF_INET)
+        sk->sk_stamp=ktime_get();
+
 	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
 		wake_up_interruptible_sync(sk->sk_sleep);
 	sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_IN);
@@ -1742,7 +1764,9 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	sk->sk_rcvtimeo		=	MAX_SCHEDULE_TIMEOUT;
 	sk->sk_sndtimeo		=	MAX_SCHEDULE_TIMEOUT;
 
-	sk->sk_stamp = ktime_set(-1L, 0);
+//	sk->sk_stamp = ktime_set(-1L, 0);
+	if(sk->sk_family == AF_INET)
+		sk->sk_stamp = ktime_get();
 
 	atomic_set(&sk->sk_refcnt, 1);
 	atomic_set(&sk->sk_drops, 0);
@@ -1790,7 +1814,7 @@ int sock_get_timestamp(struct sock *sk, struct timeval __user *userstamp)
 	tv = ktime_to_timeval(sk->sk_stamp);
 	if (tv.tv_sec == -1)
 		return -ENOENT;
-	if (tv.tv_sec == 0) {
+	if (sk->sk_family == AF_PACKET || tv.tv_sec == 0) {
 		sk->sk_stamp = ktime_get_real();
 		tv = ktime_to_timeval(sk->sk_stamp);
 	}

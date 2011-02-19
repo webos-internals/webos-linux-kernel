@@ -1330,6 +1330,14 @@ and is between 256 and 4096 characters. It is defined in the file
 	min_addr=nn[KMG]	[KNL,BOOT,ia64] All physical memory below this
 			physical address is ignored.
 
+	mmc_core.idle_timeout=
+			[MMC] The idle timeout (in seconds) determines if
+			a device can be autosuspended (if the device is idle
+			for specified amount of time).  The default value is set
+			to 20.  If the timeout value is set to a negative
+			value, the device will be resumed from autosuspend and
+			will never be suspended again.
+
 	mminit_loglevel=
 			[KNL] When CONFIG_DEBUG_MEMORY_INIT is set, this
 			parameter allows control of the logging verbosity for

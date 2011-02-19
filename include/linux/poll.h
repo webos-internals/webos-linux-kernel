@@ -28,7 +28,8 @@ struct poll_table_struct;
 /* 
  * structures and helpers for f_op->poll implementations
  */
-typedef void (*poll_queue_proc)(struct file *, wait_queue_head_t *, struct poll_table_struct *);
+typedef void (*poll_queue_proc)(struct file *, wait_queue_head_t *,
+				struct poll_table_struct *, int);
 
 typedef struct poll_table_struct {
 	poll_queue_proc qproc;
@@ -37,7 +38,15 @@ typedef struct poll_table_struct {
 static inline void poll_wait(struct file * filp, wait_queue_head_t * wait_address, poll_table *p)
 {
 	if (p && wait_address)
-		p->qproc(filp, wait_address, p);
+		p->qproc(filp, wait_address, p, 0);
+}
+
+static inline void poll_wait_exclusive(struct file *filp,
+					wait_queue_head_t *wait_address,
+					poll_table *p)
+{
+	if (p && wait_address)
+		p->qproc(filp, wait_address, p, 0);
 }
 
 static inline void init_poll_funcptr(poll_table *pt, poll_queue_proc qproc)

@@ -109,6 +109,15 @@ cat << EOF
 #define __IGNORE_getpmsg
 #define __IGNORE_putpmsg
 #define __IGNORE_vserver
+
+#ifdef __LINUX_ARM_ARCH__
+#define __IGNORE_fadvise64
+#define __IGNORE_migrate_pages
+#define __IGNORE_pselect6
+#define __IGNORE_ppoll
+#define __IGNORE_epoll_pwait
+#endif
+
 EOF
 }
 

@@ -1043,6 +1043,11 @@ static int do_umount(struct vfsmount *mnt, int flags)
 	if (retval)
 		return retval;
 
+#ifdef CONFIG_FORCED_UNMOUNT
+	if (flags & MNT_FORCE)
+		quiesce_filesystem(mnt);
+#endif
+
 	/*
 	 * Allow userspace to request a mountpoint be expired rather than
 	 * unmounting unconditionally. Unmount only happens if:

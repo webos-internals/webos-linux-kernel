@@ -30,9 +30,11 @@
 #include <linux/mutex.h>
 #include <linux/scatterlist.h>
 #include <linux/string_helpers.h>
+#include <linux/delay.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
+#include <linux/mmc/ioctl.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
 
@@ -41,10 +43,12 @@
 
 #include "queue.h"
 
+MODULE_ALIAS("mmc:block");
+
 /*
- * max 8 partitions per card
+ * max 16 partitions per card
  */
-#define MMC_SHIFT	3
+#define MMC_SHIFT	4
 #define MMC_NUM_MINORS	(256 >> MMC_SHIFT)
 
 static DECLARE_BITMAP(dev_use, MMC_NUM_MINORS);
@@ -62,6 +66,8 @@ struct mmc_blk_data {
 };
 
 static DEFINE_MUTEX(open_lock);
+static DEFINE_MUTEX(ioctl_lock);
+static int get_card_status(struct mmc_card *card, u32 retries, u32 *status);
 
 static struct mmc_blk_data *mmc_blk_get(struct gendisk *disk)
 {
@@ -83,7 +89,14 @@ static void mmc_blk_put(struct mmc_blk_data *md)
 	mutex_lock(&open_lock);
 	md->usage--;
 	if (md->usage == 0) {
+		int devmaj = MAJOR(disk_devt(md->disk));
 		int devidx = MINOR(disk_devt(md->disk)) >> MMC_SHIFT;
+
+		if (!devmaj)
+			devidx = md->disk->first_minor >> MMC_SHIFT;
+
+		blk_cleanup_queue(md->queue.queue);
+
 		__clear_bit(devidx, dev_use);
 
 		put_disk(md->disk);
@@ -119,6 +132,250 @@ static int mmc_blk_release(struct gendisk *disk, fmode_t mode)
 	return 0;
 }
 
+/*
+ * Wait for the card to finish the busy state
+ */
+static int mmc_blk_wait_busy(struct mmc_card *card, u32 retries, u32 delay)
+{
+	int ret;
+	u32 status;
+
+	do {
+		ret = get_card_status(card, 3, &status);
+		if (ret)
+			break;
+
+		if (retries) {
+			--retries;
+			if ( retries == 0) {
+				ret = - ETIMEDOUT;
+				break;
+			}
+		}
+
+		if (delay)
+			msleep(delay);
+
+	} while ( !(status & R1_READY_FOR_DATA) || 
+			(R1_CURRENT_STATE(status) == 7));
+
+	return ret;
+}
+
+/**
+ * Called by mmc_blk_ioctl(); set or clear write protection.
+ */
+static int mmc_write_protect(struct mmc_card *card, mmc_set_write_prot_t *prot)
+{
+	uint32_t wp_size = card->ext_csd.wp_size;	/* sectors */
+	uint32_t start = prot->start;
+	int i,n;
+	int rc = 0;
+	uint8_t ext_csd[512];
+	uint8_t user_wp = 0, mask_wp = 0; 
+
+	if(card->csd.wp_grp_enable == 0) {
+		printk(KERN_ERR "Write protect group feature disabled\n");
+		return -EPERM;
+	} else if (start % wp_size != 0 || prot->len % wp_size != 0) {
+		printk(KERN_WARNING
+		  "Unaligned values passed to MMCIO_SET_WRITE_PROT\n");
+		return -EINVAL;
+	} else if (start + prot->len > card->ext_csd.sectors) {
+		printk(KERN_WARNING
+		  "Out-of-bounds values passed to MMCIO_SET_WRITE_PROT\n");
+		return -EINVAL;
+	} else if (prot->type > MMC_WRITE_PROT_PERMANENT) {
+		printk(KERN_ERR
+		  "MMCIO_SET_WRITE_PROT: Invalid protection type passed(%d)\n",
+		  prot->type);
+		return -EINVAL;
+	}
+
+	mmc_claim_host(card->host);
+
+	/* Confirm that USER_WP is safe.  TODO: set it for
+	* permanent write-protect.  For now, only support temporary
+	* and power-on write protect.
+	*/
+	if ((rc = mmc_send_ext_csd(card, ext_csd)) != 0) {
+		printk(KERN_WARNING
+		  "Unable to set write protect, can't read ext_csd, rc=%d\n",
+			rc);
+		goto out;
+	}
+
+	/* check if possible to apply WP */
+	user_wp = ext_csd[EXT_CSD_USER_WP];
+	if (user_wp & EXT_CSD_USER_WP_US_PERM_WP_DIS) {
+		printk(KERN_WARNING
+				"Unable to set write protect, USER_WP=%x\n",
+				ext_csd[EXT_CSD_USER_WP]);
+		rc = -EPERM;
+		goto out;
+	}
+
+	/* check protection type */
+	mask_wp = user_wp;
+	switch (prot->type) {
+		case MMC_WRITE_PROT_OFF: /* Unprotect */
+			break;
+		case MMC_WRITE_PROT_TEMPORARY: /* Temporary protect */
+			mask_wp &= ~(EXT_CSD_USER_WP_US_PERM_WP_EN |
+					EXT_CSD_USER_WP_US_PWR_WP_EN);
+			break;
+		case MMC_WRITE_PROT_POWERON: /* Power-on protect */
+			mask_wp &= ~EXT_CSD_USER_WP_US_PERM_WP_EN;
+			mask_wp |= EXT_CSD_USER_WP_US_PWR_WP_EN;
+			break;
+		case MMC_WRITE_PROT_PERMANENT: /* Permanent protect (not supported) */
+			printk(KERN_WARNING "Permanent write-protect not supported\n");
+			rc = -EPERM;
+			goto out;
+			break;
+	}
+
+	/* apply WP permission bits if required */
+	if ( user_wp != mask_wp) {
+		rc = mmc_execute_switch(card, EXT_CSD_CMD_SET_NORMAL,
+				EXT_CSD_USER_WP, mask_wp);
+		if (rc) {
+			printk(KERN_ERR "Unable to set USER_WP bits (%d)\n", rc);
+			goto out;
+		}
+	}
+
+	/* 2Gig (4M sectors) or less, write protect regions are
+	 * addressed in bytes, not sectors.
+	 */
+	if (card->ext_csd.sectors <= 4*1024*1024) {
+		start *= 512;
+		prot->len *= 512;
+		wp_size *= 512;
+	}
+	n = prot->len / wp_size;
+
+	for (i=0; i<n; ++i) {
+		rc = mmc_set_write_prot(card, start, prot->type);
+		if (rc) {
+			printk(KERN_ERR "Unable to set write-protect (%d)\n", rc);
+			goto outwp;
+		}
+		start += wp_size;
+
+		/* wait until busy */
+		rc = mmc_blk_wait_busy(card, 100, 1);
+		if (rc) {
+			printk(KERN_ERR "Wait busy failed(%d)\n", rc);
+			goto outwp;
+		}
+	}
+
+outwp:
+	/* restore USER_WP */
+	if ( user_wp != mask_wp) {
+		if (mmc_execute_switch(card, EXT_CSD_CMD_SET_NORMAL,
+				EXT_CSD_USER_WP, user_wp) != 0) {
+			printk(KERN_ERR "Unable to restore USER_WP bits\n");
+			rc = -ENXIO;
+		}
+	}
+out:
+	mmc_release_host(card->host);
+
+	return rc;
+}
+
+/**
+ * Special ioctl calls for mmc devices.
+ */
+static int mmc_blk_ioctl(struct block_device *bdev, fmode_t mode,
+		unsigned int cmd, unsigned long _arg)
+{
+	struct mmc_blk_data *md = mmc_blk_get(bdev->bd_disk);
+	struct mmc_card *card = md->queue.card;
+	uint32_t __user *arg = (uint32_t __user *)_arg;
+	int rc = 0;
+
+	mutex_lock(&ioctl_lock);
+	switch (cmd) {
+		case MMCIO_GET_EXT_CSD:
+		{
+			mmcio_ext_csd_t info;
+			mmc_claim_host(card->host);
+			rc = mmc_send_ext_csd(card, info.ext_csd);
+			mmc_release_host(card->host);
+			if (copy_to_user((void *)_arg, &info, sizeof(info)))
+				rc = -EFAULT;
+			break;
+		}
+		case MMCIO_WRITE_PROT_INFO:
+		{
+			mmc_write_prot_info_t info;
+			if ((card->csd.cmdclass & CCC_WRITE_PROT) == 0) {
+				rc = -ENXIO;
+				break;
+			}
+			info.group_size = card->ext_csd.wp_size;
+			if (copy_to_user((void *)_arg, &info, sizeof(info)))
+				rc = -EFAULT;
+			break;
+		}
+		case MMCIO_GET_WRITE_PROT:
+		{
+			mmc_get_write_prot_t info;
+			uint32_t start;
+			if ((card->csd.cmdclass & CCC_WRITE_PROT) == 0) {
+				rc = -ENXIO;
+				break;
+			}
+			if (copy_from_user(&info, (void *)_arg, sizeof(info))) {
+				rc = -EFAULT;
+				break;
+			}
+			start = info.start;
+			/* TODO: documentation does say what units the start
+			 * address is in.  Assume that it's the same as for
+			 * SET_WRITE_PROT, that is, sectors for cards with
+			 * more than 2GB space, else bytes.  TODO: confirm
+			 * this.
+			 */
+			if (card->ext_csd.sectors <= 4*1024*1024)
+				start *= 512;
+			memset(&info.protect, 0, sizeof(info.protect));
+			memset(info.types, 0, sizeof(info.types));
+			mmc_claim_host(card->host);
+			rc = mmc_send_write_prot(card, start, &info.protect);
+			if (!rc && card->ext_csd.ext_csd_rev > 3) {
+				rc = mmc_send_write_prot_type(card, start, info.types);
+			}
+			mmc_release_host(card->host);
+			if (copy_to_user((void *)_arg, &info, sizeof(info)))
+				rc = -EFAULT;
+			break;
+		}
+		case MMCIO_SET_WRITE_PROT:
+		{
+			mmc_set_write_prot_t prot;
+			if ((card->csd.cmdclass & CCC_WRITE_PROT) == 0) {
+				rc = -ENXIO;
+				break;
+			}
+			if (copy_from_user(&prot, (void *)_arg, sizeof(prot))) {
+				rc = -EFAULT;
+				break;
+			}
+			rc = mmc_write_protect(card, &prot);
+			break;
+		}
+		default:
+			rc = -EINVAL;
+	}
+	mutex_unlock(&ioctl_lock);
+
+	return rc;
+}
+
 static int
 mmc_blk_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 {
@@ -131,6 +388,7 @@ mmc_blk_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 static struct block_device_operations mmc_bdops = {
 	.open			= mmc_blk_open,
 	.release		= mmc_blk_release,
+	.locked_ioctl   = mmc_blk_ioctl,
 	.getgeo			= mmc_blk_getgeo,
 	.owner			= THIS_MODULE,
 };
@@ -145,7 +403,8 @@ struct mmc_blk_request {
 static u32 mmc_sd_num_wr_blocks(struct mmc_card *card)
 {
 	int err;
-	__be32 blocks;
+	u32 result;
+	__be32 *blocks;
 
 	struct mmc_request mrq;
 	struct mmc_command cmd;
@@ -197,32 +456,66 @@ static u32 mmc_sd_num_wr_blocks(struct mmc_card *card)
 	mrq.cmd = &cmd;
 	mrq.data = &data;
 
-	sg_init_one(&sg, &blocks, 4);
+	blocks = kmalloc(4, GFP_KERNEL);
+	if (!blocks)
+		return (u32)-1;
+
+	sg_init_one(&sg, blocks, 4);
 
 	mmc_wait_for_req(card->host, &mrq);
 
-	if (cmd.error || data.error)
-		return (u32)-1;
+	result = ntohl(*blocks);
+	kfree(blocks);
 
-	return ntohl(blocks);
+	if (cmd.error || data.error)
+		result = (u32)-1;
+
+	return result;
 }
 
-static u32 get_card_status(struct mmc_card *card, struct request *req)
+static int get_card_status(struct mmc_card *card, u32 retries, u32 *status)
 {
-	struct mmc_command cmd;
 	int err;
+	struct mmc_command cmd;
 
 	memset(&cmd, 0, sizeof(struct mmc_command));
 	cmd.opcode = MMC_SEND_STATUS;
 	if (!mmc_host_is_spi(card->host))
 		cmd.arg = card->rca << 16;
 	cmd.flags = MMC_RSP_SPI_R2 | MMC_RSP_R1 | MMC_CMD_AC;
-	err = mmc_wait_for_cmd(card->host, &cmd, 0);
-	if (err)
-		printk(KERN_ERR "%s: error %d sending status comand",
-		       req->rq_disk->disk_name, err);
-	return cmd.resp[0];
+	err = mmc_wait_for_cmd(card->host, &cmd, retries);
+
+	if (status)
+		*status = cmd.resp[0];
+	return err;
 }
+
+static int
+mmc_blk_set_blksize(struct mmc_blk_data *md, struct mmc_card *card)
+{
+	struct mmc_command cmd;
+	int err;
+
+	/* Block-addressed cards ignore MMC_SET_BLOCKLEN. */
+	if (mmc_card_blockaddr(card))
+		return 0;
+
+	mmc_claim_host(card->host);
+	cmd.opcode = MMC_SET_BLOCKLEN;
+	cmd.arg = 512;
+	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+	err = mmc_wait_for_cmd(card->host, &cmd, 5);
+	mmc_release_host(card->host);
+
+	if (err) {
+		printk(KERN_ERR "%s: unable to set block size to %d: %d\n",
+			md->disk->disk_name, cmd.arg, err);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 
 static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 {
@@ -230,6 +523,13 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 	struct mmc_card *card = md->queue.card;
 	struct mmc_blk_request brq;
 	int ret = 1, disable_multi = 0;
+
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
+	if (mmc_bus_needs_resume(card->host)) {
+		mmc_resume_bus(card->host);
+		mmc_blk_set_blksize(md, card);
+	}
+#endif
 
 	mmc_claim_host(card->host);
 
@@ -246,10 +546,20 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 			brq.cmd.arg <<= 9;
 		brq.cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
 		brq.data.blksz = 512;
-		brq.stop.opcode = MMC_STOP_TRANSMISSION;
-		brq.stop.arg = 0;
-		brq.stop.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+		if (!mmc_card_mmc(card)) {
+			brq.stop.opcode = MMC_STOP_TRANSMISSION;
+			brq.stop.arg = 0;
+			brq.stop.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+		}
 		brq.data.blocks = req->nr_sectors;
+
+		/*
+		 * The block layer doesn't support all sector count
+		 * restrictions, so we need to be prepared for too big
+		 * requests.
+		 */
+		if (brq.data.blocks > card->host->max_blk_count)
+			brq.data.blocks = card->host->max_blk_count;
 
 		/*
 		 * After a read error, we redo the request one sector at a time
@@ -262,9 +572,11 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		if (brq.data.blocks > 1) {
 			/* SPI multiblock writes terminate using a special
 			 * token, not a STOP_TRANSMISSION request.
+			 *
+			 * MMC closed ended writes do not have a stop request at all.
 			 */
-			if (!mmc_host_is_spi(card->host)
-					|| rq_data_dir(req) == READ)
+			if (!mmc_card_mmc(card) &&
+					(!mmc_host_is_spi(card->host) || rq_data_dir(req) == READ))
 				brq.mrq.stop = &brq.stop;
 			readcmd = MMC_READ_MULTIPLE_BLOCK;
 			writecmd = MMC_WRITE_MULTIPLE_BLOCK;
@@ -280,6 +592,29 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		} else {
 			brq.cmd.opcode = writecmd;
 			brq.data.flags |= MMC_DATA_WRITE;
+		}
+
+		/* mmc closed ended writes start with a SET_BLOCK_COUNT command */
+		if (mmc_card_mmc(card) && brq.data.blocks > 1) {
+			int err;
+
+			cmd.opcode = MMC_SET_BLOCK_COUNT;
+			cmd.arg = brq.data.blocks;
+			cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+			err = mmc_wait_for_cmd(card->host, &cmd, 0);
+			if (err) {
+				int rc;
+				printk(KERN_ERR "%s: error %d setting mmc block length\n",
+					   req->rq_disk->disk_name, err);
+
+				/* check card status */
+				rc = get_card_status(card, 3, &status);
+				if (!rc)
+					printk(KERN_ERR "%s: card status %#x\n",
+						req->rq_disk->disk_name, status);
+
+				goto cmd_err;
+			}
 		}
 
 		mmc_set_data_timeout(&brq.data, card);
@@ -318,6 +653,7 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		 * programming mode even when things go wrong.
 		 */
 		if (brq.cmd.error || brq.data.error || brq.stop.error) {
+			int err;
 			if (brq.data.blocks > 1 && rq_data_dir(req) == READ) {
 				/* Redo read one sector at a time */
 				printk(KERN_WARNING "%s: retrying using single "
@@ -325,7 +661,13 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 				disable_multi = 1;
 				continue;
 			}
-			status = get_card_status(card, req);
+
+			err = get_card_status(card, 0, &status);
+			if (err)
+				printk(KERN_ERR "%s: error %d sending status comand",
+				       req->rq_disk->disk_name, err);
+		} else if (disable_multi == 1) {
+			disable_multi = 0;
 		}
 
 		if (brq.cmd.error) {
@@ -384,6 +726,26 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		}
 
 		if (brq.cmd.error || brq.stop.error || brq.data.error) {
+			int err;
+			/* mmc close-ended requires stop_transmission in case of error */
+			if (mmc_card_mmc(card) && brq.data.blocks > 1) {
+				cmd.opcode = MMC_STOP_TRANSMISSION;
+				cmd.arg = 0;
+				if (rq_data_dir(req) == READ)
+					cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+				else
+					cmd.flags = MMC_RSP_R1B | MMC_CMD_AC;
+				err = mmc_wait_for_cmd(card->host, &cmd, 0);
+				if (err) {
+					printk(KERN_ERR "%s: error %d sending STOP_TRANSMISSION\n",
+					       req->rq_disk->disk_name, err);
+					goto cmd_err;
+				} else {
+					printk(KERN_ERR "%s: sent STOP_TRANSMISSION\n",
+					       req->rq_disk->disk_name);
+				}
+			}
+
 			if (rq_data_dir(req) == READ) {
 				/*
 				 * After an error, we redo I/O one sector at a
@@ -411,10 +773,10 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 	return 1;
 
  cmd_err:
- 	/*
- 	 * If this is an SD card and we're writing, we can first
- 	 * mark the known good sectors as ok.
- 	 *
+	/*
+	 * If this is an SD card and we're writing, we can first
+	 * mark the known good sectors as ok.
+	 *
 	 * If the card is not SD, we can still ok written sectors
 	 * as reported by the controller (which might be less than
 	 * the real number of written sectors, but never more).
@@ -537,31 +899,6 @@ static struct mmc_blk_data *mmc_blk_alloc(struct mmc_card *card)
 	return ERR_PTR(ret);
 }
 
-static int
-mmc_blk_set_blksize(struct mmc_blk_data *md, struct mmc_card *card)
-{
-	struct mmc_command cmd;
-	int err;
-
-	/* Block-addressed cards ignore MMC_SET_BLOCKLEN. */
-	if (mmc_card_blockaddr(card))
-		return 0;
-
-	mmc_claim_host(card->host);
-	cmd.opcode = MMC_SET_BLOCKLEN;
-	cmd.arg = 512;
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
-	err = mmc_wait_for_cmd(card->host, &cmd, 5);
-	mmc_release_host(card->host);
-
-	if (err) {
-		printk(KERN_ERR "%s: unable to set block size to %d: %d\n",
-			md->disk->disk_name, cmd.arg, err);
-		return -EINVAL;
-	}
-
-	return 0;
-}
 
 static int mmc_blk_probe(struct mmc_card *card)
 {
@@ -591,10 +928,14 @@ static int mmc_blk_probe(struct mmc_card *card)
 		cap_str, md->read_only ? "(ro)" : "");
 
 	mmc_set_drvdata(card, md);
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
+	mmc_set_bus_resume_policy(card->host, 1);
+#endif
 	add_disk(md->disk);
 	return 0;
 
  out:
+	mmc_cleanup_queue(&md->queue);
 	mmc_blk_put(md);
 
 	return err;
@@ -614,6 +955,9 @@ static void mmc_blk_remove(struct mmc_card *card)
 		mmc_blk_put(md);
 	}
 	mmc_set_drvdata(card, NULL);
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
+	mmc_set_bus_resume_policy(card->host, 0);
+#endif
 }
 
 #ifdef CONFIG_PM
@@ -632,7 +976,13 @@ static int mmc_blk_resume(struct mmc_card *card)
 	struct mmc_blk_data *md = mmc_get_drvdata(card);
 
 	if (md) {
+#ifndef CONFIG_MMC_BLOCK_DEFERRED_RESUME
 		mmc_blk_set_blksize(md, card);
+#endif
+
+#ifdef CONFIG_MMC_BLOCK_PARANOID_RESUME
+		md->queue.check_status = 1;
+#endif
 		mmc_queue_resume(&md->queue);
 	}
 	return 0;

@@ -191,6 +191,12 @@ static struct mem_type mem_types[] = {
 		.prot_sect	= PROT_SECT_DEVICE | PMD_SECT_S,
 		.domain		= DOMAIN_IO,
 	},
+	[MT_DEVICE_STRONGLY_ORDERED] = {  /* Guaranteed strongly ordered */
+		.prot_pte       = PROT_PTE_DEVICE,
+		.prot_l1        = PMD_TYPE_TABLE,
+		.prot_sect      = PROT_SECT_DEVICE | PMD_SECT_UNCACHED,
+		.domain         = DOMAIN_IO,
+	},
 	[MT_DEVICE_NONSHARED] = { /* ARMv6 non-shared device */
 		.prot_pte	= PROT_PTE_DEVICE | L_PTE_MT_DEV_NONSHARED,
 		.prot_l1	= PMD_TYPE_TABLE,
@@ -323,6 +329,8 @@ static void __init build_mem_type_table(void)
 			mem_types[MT_DEVICE_NONSHARED].prot_sect |= PMD_SECT_XN;
 			mem_types[MT_DEVICE_CACHED].prot_sect |= PMD_SECT_XN;
 			mem_types[MT_DEVICE_WC].prot_sect |= PMD_SECT_XN;
+			mem_types[MT_DEVICE_STRONGLY_ORDERED].prot_sect |=
+								PMD_SECT_XN;
 		}
 		if (cpu_arch >= CPU_ARCH_ARMv7 && (cr & CR_TRE)) {
 			/*
@@ -694,7 +702,7 @@ static void __init sanity_check_meminfo(void)
 		 * the vmalloc area.
 		 */
 		if (__va(bank->start) >= VMALLOC_MIN ||
-		    __va(bank->start) < PAGE_OFFSET) {
+		    __va(bank->start) < (void *)PAGE_OFFSET) {
 			printk(KERN_NOTICE "Ignoring RAM at %.8lx-%.8lx "
 			       "(vmalloc region overlap).\n",
 			       bank->start, bank->start + bank->size - 1);
@@ -806,6 +814,11 @@ void __init reserve_node_zero(pg_data_t *pgdat)
 	 */
 	res_size = __pa(swapper_pg_dir) - PHYS_OFFSET;
 #endif
+
+#ifdef CONFIG_ARCH_MSM_SCORPION
+	res_size = PAGE_SIZE;
+#endif
+
 	if (res_size)
 		reserve_bootmem_node(pgdat, PHYS_OFFSET, res_size,
 				BOOTMEM_DEFAULT);

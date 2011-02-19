@@ -61,10 +61,14 @@ struct input_absinfo {
 #define EVIOCSREP		_IOW('E', 0x03, int[2])			/* set repeat settings */
 #define EVIOCGKEYCODE		_IOR('E', 0x04, int[2])			/* get keycode */
 #define EVIOCSKEYCODE		_IOW('E', 0x04, int[2])			/* set keycode */
+#define EVIOCGMONO		_IOR('E', 0x05, int)			/* get monotonic time setting */
+#define EVIOCSMONO		_IOW('E', 0x05, int)			/* set monotonic time */
 
 #define EVIOCGNAME(len)		_IOC(_IOC_READ, 'E', 0x06, len)		/* get device name */
 #define EVIOCGPHYS(len)		_IOC(_IOC_READ, 'E', 0x07, len)		/* get physical location */
 #define EVIOCGUNIQ(len)		_IOC(_IOC_READ, 'E', 0x08, len)		/* get unique identifier */
+#define EVIOCGCOUNTRY		_IOR('E', 0x09, unsigned int)		/* get country code */
+#define EVIOCSCOUNTRY		_IOW('E', 0x09, unsigned int)		/* set country code */
 
 #define EVIOCGKEY(len)		_IOC(_IOC_READ, 'E', 0x18, len)		/* get global keystate */
 #define EVIOCGLED(len)		_IOC(_IOC_READ, 'E', 0x19, len)		/* get all LEDs */
@@ -106,6 +110,7 @@ struct input_absinfo {
 
 #define SYN_REPORT		0
 #define SYN_CONFIG		1
+#define SYN_MT_REPORT		2
 
 /*
  * Keys and buttons
@@ -375,6 +380,12 @@ struct input_absinfo {
 
 #define KEY_WIMAX		246
 
+/* Palm added keys */
+#define KEY_CENTER	 232
+#define KEY_ALT          246
+#define KEY_SLIDER_OPEN  247
+#define KEY_SLIDER_CLOSE 248
+
 /* Range 248 - 255 is reserved for special needs of AT keyboard driver */
 
 #define BTN_MISC		0x100
@@ -594,6 +605,11 @@ struct input_absinfo {
 
 /* We avoid low common keys in module aliases so they don't get huge. */
 #define KEY_MIN_INTERESTING	KEY_MUTE
+
+/* REVISIT: keys for camera related functions */
+#define KEY_CAMERA_FOCUS	0x210
+#define KEY_CAMERA_SNAPSHOT	0x2fe
+
 #define KEY_MAX			0x2ff
 #define KEY_CNT			(KEY_MAX+1)
 
@@ -644,6 +660,18 @@ struct input_absinfo {
 #define ABS_TOOL_WIDTH		0x1c
 #define ABS_VOLUME		0x20
 #define ABS_MISC		0x28
+
+#define ABS_MT_TOUCH_MAJOR	0x30	/* Major axis of touching ellipse */
+#define ABS_MT_TOUCH_MINOR	0x31	/* Minor axis (omit if circular) */
+#define ABS_MT_WIDTH_MAJOR	0x32	/* Major axis of approaching ellipse */
+#define ABS_MT_WIDTH_MINOR	0x33	/* Minor axis (omit if circular) */
+#define ABS_MT_ORIENTATION	0x34	/* Ellipse orientation */
+#define ABS_MT_POSITION_X	0x35	/* Center X ellipse position */
+#define ABS_MT_POSITION_Y	0x36	/* Center Y ellipse position */
+#define ABS_MT_TOOL_TYPE	0x37	/* Type of touching device */
+#define ABS_MT_BLOB_ID		0x38	/* Group a set of packets as a blob */
+#define ABS_MT_TRACKING_ID	0x39	/* Unique ID of initiated contact */
+
 #define ABS_MAX			0x3f
 #define ABS_CNT			(ABS_MAX+1)
 
@@ -663,6 +691,20 @@ struct input_absinfo {
 #define SW_JACK_PHYSICAL_INSERT 0x07  /* set = mechanical switch set */
 #define SW_MAX			0x0f
 #define SW_CNT			(SW_MAX+1)
+
+/* 
+ * Palm added switch events
+ */
+
+#define SW_RINGER         0x05
+
+/* Additional keys for bt avrcp 1.3 */
+#define KEY_REPEAT_ALL		0x1a5
+#define KEY_REPEAT_TRACK	0x1a6
+#define KEY_REPEAT_NONE		0x1a7
+#define KEY_SHUFFLE_ON		0x1a8
+#define KEY_SHUFFLE_OFF		0x1a9
+
 
 /*
  * Misc events
@@ -740,6 +782,12 @@ struct input_absinfo {
 #define BUS_HOST		0x19
 #define BUS_GSC			0x1A
 #define BUS_ATARI		0x1B
+
+/*
+ * MT_TOOL types
+ */
+#define MT_TOOL_FINGER		0
+#define MT_TOOL_PEN		1
 
 /*
  * Values describing the status of a force-feedback effect
@@ -980,6 +1028,7 @@ struct ff_effect {
  * @phys: physical path to the device in the system hierarchy
  * @uniq: unique identification code for the device (if device has it)
  * @id: id of the device (struct input_id)
+ * @country: country code (if device has it)
  * @evbit: bitmap of types of events supported by the device (EV_KEY,
  *	EV_REL, etc.)
  * @keybit: bitmap of keys/buttons this device has
@@ -1052,6 +1101,8 @@ struct input_dev {
 	const char *phys;
 	const char *uniq;
 	struct input_id id;
+
+	unsigned int country;
 
 	unsigned long evbit[BITS_TO_LONGS(EV_CNT)];
 	unsigned long keybit[BITS_TO_LONGS(KEY_CNT)];
@@ -1308,6 +1359,11 @@ static inline void input_report_switch(struct input_dev *dev, unsigned int code,
 static inline void input_sync(struct input_dev *dev)
 {
 	input_event(dev, EV_SYN, SYN_REPORT, 0);
+}
+
+static inline void input_mt_sync(struct input_dev *dev)
+{
+	input_event(dev, EV_SYN, SYN_MT_REPORT, 0);
 }
 
 void input_set_capability(struct input_dev *dev, unsigned int type, unsigned int code);

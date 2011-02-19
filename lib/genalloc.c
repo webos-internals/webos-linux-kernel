@@ -96,6 +96,7 @@ void gen_pool_destroy(struct gen_pool *pool)
 
 		kfree(chunk);
 	}
+	write_unlock(&pool->lock);
 	kfree(pool);
 	return;
 }

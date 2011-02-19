@@ -13,6 +13,15 @@ obj-y :=	open.o read_write.o file_table.o super.o \
 		pnode.o drop_caches.o splice.o sync.o utimes.o \
 		stack.o
 
+
+ifeq ($(CONFIG_ARM),y)
+# Warnings are produced by the current arm cross compiler (v4.2.1) causing
+# build abort. Version 4.3.1 of the compiler does not create this warning.
+# So, remove the -Werror until the compiler can be updated for all build
+# platforms to v4.3.1
+CFLAGS_REMOVE_file_table.o = -Werror
+endif
+
 ifeq ($(CONFIG_BLOCK),y)
 obj-y +=	buffer.o bio.o block_dev.o direct-io.o mpage.o ioprio.o
 else
@@ -121,6 +130,10 @@ obj-$(CONFIG_BEFS_FS)		+= befs/
 obj-$(CONFIG_HOSTFS)		+= hostfs/
 obj-$(CONFIG_HPPFS)		+= hppfs/
 obj-$(CONFIG_DEBUG_FS)		+= debugfs/
+obj-$(CONFIG_FORCED_UNMOUNT)	+= badfs/
 obj-$(CONFIG_OCFS2_FS)		+= ocfs2/
 obj-$(CONFIG_BTRFS_FS)		+= btrfs/
 obj-$(CONFIG_GFS2_FS)           += gfs2/
+
+# Patched by YAFFS
+obj-$(CONFIG_YAFFS_FS)		+= yaffs2/

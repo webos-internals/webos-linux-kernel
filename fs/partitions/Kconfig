@@ -105,7 +105,8 @@ config MAC_PARTITION
 	  were partitioned on a Macintosh.
 
 config MSDOS_PARTITION
-	bool "PC BIOS (MSDOS partition tables) support" if PARTITION_ADVANCED
+	bool "PC BIOS (MSDOS partition tables) support"
+	depends on PARTITION_ADVANCED
 	default y
 	help
 	  Say Y here.

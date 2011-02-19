@@ -120,6 +120,16 @@ config GENERIC_ACL
 	bool
 	select FS_POSIX_ACL
 
+config FORCED_UNMOUNT
+	bool "Forced filesystem unmounting support"
+	default n
+	help
+	  If you say Y here, then you will be able to forcibly unmount
+	  busy filesystems with the MNT_FORCE flag (-f to userspace
+	  umount).  Any open file handles will be replaced with dummy
+	  file objects (in fs/badfs) that return an error for all
+	  operations.
+
 if BLOCK
 menu "CD-ROM/DVD Filesystems"
 
@@ -209,6 +219,10 @@ source "fs/hfsplus/Kconfig"
 source "fs/befs/Kconfig"
 source "fs/bfs/Kconfig"
 source "fs/efs/Kconfig"
+
+# Patched by YAFFS
+source "fs/yaffs2/Kconfig"
+
 source "fs/jffs2/Kconfig"
 # UBIFS File system configuration
 source "fs/ubifs/Kconfig"

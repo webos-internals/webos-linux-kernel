@@ -15,6 +15,10 @@
 #include <linux/mman.h>
 #include <linux/nodemask.h>
 #include <linux/initrd.h>
+#ifdef CONFIG_MEMORY_HOTPLUG
+#include <linux/memory_hotplug.h>
+#endif
+#include <linux/sort.h>
 
 #include <asm/mach-types.h>
 #include <asm/sections.h>
@@ -229,6 +233,24 @@ static unsigned long __init bootmem_init_node(int node, struct meminfo *mi)
 		start = bank_pfn_start(bank);
 		end = bank_pfn_end(bank);
 
+#if defined(CONFIG_FLATMEM) && !defined(CONFIG_HOLES_IN_ZONE)
+		/*
+		 * The VM code assumes that hole end addresses are aligned if
+		 * CONFIG_HOLES_IN_ZONE is not enabled. This results in
+		 * panics since we free unused memmap entries on ARM.
+		 * This check shouldn't be necessary for the last bank's end
+		 * address, since the VM code accounts for the total zone size.
+		 */
+		if ((i < (mi->nr_banks - 1)) &&
+		    (end & (MAX_ORDER_NR_PAGES - 1))) {
+			pr_err("Memory bank[%d] not aligned to 0x%x bytes.\n"
+			       "\tMake bank end address align with MAX_ORDER\n"
+			       "\tor enable option CONFIG_HOLES_IN_ZONE.\n",
+			       i, __pfn_to_phys(MAX_ORDER_NR_PAGES));
+			BUG();
+		}
+#endif
+
 		if (start_pfn > start)
 			start_pfn = start;
 		if (end_pfn < end)
@@ -333,11 +355,56 @@ static void __init bootmem_free_node(int node, struct meminfo *mi)
 	free_area_init_node(node, zone_size, start_pfn, zhole_size);
 }
 
+#ifdef CONFIG_MEMORY_HOTPLUG
+static void map_reserved_memory(void)
+{
+	struct map_desc map;
+
+	map.pfn = (movable_reserved_start >> PAGE_SHIFT);
+	map.virtual = __phys_to_virt(movable_reserved_start);
+	map.length = movable_reserved_size;
+	map.type = MT_MEMORY;
+
+	create_mapping(&map);
+}
+#endif
+
+#ifndef CONFIG_SPARSEMEM
+int pfn_valid(unsigned long pfn)
+{
+	struct meminfo *mi = &meminfo;
+	unsigned int left = 0, right = mi->nr_banks;
+
+	do {
+		unsigned int mid = (right + left) / 2;
+		struct membank *bank = &mi->bank[mid];
+
+		if (pfn < bank_pfn_start(bank))
+			right = mid;
+		else if (pfn >= bank_pfn_end(bank))
+			left = mid + 1;
+		else
+			return 1;
+	} while (left < right);
+	return 0;
+}
+EXPORT_SYMBOL(pfn_valid);
+#endif
+
+static int __init meminfo_cmp(const void *_a, const void *_b)
+{
+	const struct membank *a = _a, *b = _b;
+	long cmp = bank_pfn_start(a) - bank_pfn_start(b);
+	return cmp < 0 ? -1 : cmp > 0 ? 1 : 0;
+}
+
 void __init bootmem_init(void)
 {
 	struct meminfo *mi = &meminfo;
 	unsigned long memend_pfn = 0;
 	int node, initrd_node;
+
+	sort(&mi->bank, mi->nr_banks, sizeof(mi->bank[0]), meminfo_cmp, NULL);
 
 	/*
 	 * Locate which node contains the ramdisk image, if any.
@@ -382,6 +449,13 @@ void __init bootmem_init(void)
 	for_each_node(node)
 		bootmem_free_node(node, mi);
 
+#ifdef CONFIG_MEMORY_HOTPLUG
+	if (movable_reserved_size) {
+		memend_pfn = (movable_reserved_start + movable_reserved_size)
+			>> PAGE_SHIFT;
+		map_reserved_memory();
+	}
+#endif
 	high_memory = __va((memend_pfn << PAGE_SHIFT) - 1) + 1;
 
 	/*
@@ -449,9 +523,8 @@ static void __init free_unused_memmap_node(int node, struct meminfo *mi)
 	unsigned int i;
 
 	/*
-	 * [FIXME] This relies on each bank being in address order.  This
-	 * may not be the case, especially if the user has provided the
-	 * information on the command line.
+	 * This relies on each bank being in address order. The banks
+	 * are sorted previously in bootmem_init().
 	 */
 	for_each_nodebank(i, mi, node) {
 		struct membank *bank = &mi->bank[i];
@@ -543,6 +616,46 @@ void free_initmem(void)
 					    __phys_to_pfn(__pa(__init_end)),
 					    "init");
 }
+
+#ifdef CONFIG_MEMORY_HOTPLUG
+int arch_add_memory(int nid, u64 start, u64 size)
+{
+	struct pglist_data *pgdata = NODE_DATA(nid);
+	struct zone *zone = pgdata->node_zones + ZONE_MOVABLE;
+	unsigned long start_pfn = start >> PAGE_SHIFT;
+	unsigned long nr_pages = size >> PAGE_SHIFT;
+	int ret;
+
+	ret = __add_pages(nid, zone, start_pfn, nr_pages);
+	if (ret)
+		return ret;
+	return platform_physical_active_pages(start_pfn, nr_pages);
+}
+
+int arch_physical_active_memory(u64 start, u64 size)
+{
+	unsigned long start_pfn = start >> PAGE_SHIFT;
+	unsigned long nr_pages = size >> PAGE_SHIFT;
+
+	return platform_physical_active_pages(start_pfn, nr_pages);
+}
+
+int arch_physical_remove_memory(u64 start, u64 size)
+{
+	unsigned long start_pfn = start >> PAGE_SHIFT;
+	unsigned long nr_pages = size >> PAGE_SHIFT;
+
+	return platform_physical_remove_pages(start_pfn, nr_pages);
+}
+
+int arch_physical_low_power_memory(u64 start, u64 size)
+{
+	unsigned long start_pfn = start >> PAGE_SHIFT;
+	unsigned long nr_pages = size >> PAGE_SHIFT;
+
+	return platform_physical_low_power_pages(start_pfn, nr_pages);
+}
+#endif
 
 #ifdef CONFIG_BLK_DEV_INITRD
 

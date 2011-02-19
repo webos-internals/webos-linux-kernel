@@ -207,8 +207,8 @@ mmc_send_cxd_native(struct mmc_host *host, u32 arg, u32 *cxd, int opcode)
 }
 
 static int
-mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
-		u32 opcode, void *buf, unsigned len)
+mmc_send_cxd_arg_data(struct mmc_card *card, struct mmc_host *host,
+		u32 opcode, u32 arg, void *buf, unsigned len)
 {
 	struct mmc_request mrq;
 	struct mmc_command cmd;
@@ -231,7 +231,7 @@ mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
 	mrq.data = &data;
 
 	cmd.opcode = opcode;
-	cmd.arg = 0;
+	cmd.arg = arg;
 
 	/* NOTE HACK:  the MMC_RSP_SPI_R1 is always correct here, but we
 	 * rely on callers to never use this with "native" calls for reading
@@ -269,6 +269,13 @@ mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
 		return data.error;
 
 	return 0;
+}
+
+static int
+mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
+		u32 opcode, void *buf, unsigned len)
+{
+	return mmc_send_cxd_arg_data(card, host, opcode, 0, buf, len);
 }
 
 int mmc_send_csd(struct mmc_card *card, u32 *csd)
@@ -370,7 +377,7 @@ int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value)
 	err = mmc_wait_for_cmd(card->host, &cmd, MMC_CMD_RETRIES);
 	if (err)
 		return err;
-
+	mmc_delay(1);
 	return 0;
 }
 
@@ -402,3 +409,67 @@ int mmc_send_status(struct mmc_card *card, u32 *status)
 	return 0;
 }
 
+
+int mmc_send_write_prot(struct mmc_card *card, u32 start, u32 *write_prot)
+{
+	int rc;
+	u32 buffer;
+	rc = mmc_send_cxd_arg_data(card, card->host, MMC_SEND_WRITE_PROT,
+			start, &buffer, 4);
+	/* TODO: special treatment for SPI? */
+	*write_prot = be32_to_cpu(buffer);
+	return rc;
+}
+
+int mmc_send_write_prot_type(struct mmc_card *card, u32 start, u8 *types)
+{
+	int rc;
+	uint8_t buffer[512];
+	int i = 8;
+
+	//workaround: SanDisk sends 512 bytes as reply
+	if ( card->cid.manfid == 0x02 ) {
+		i = 512;
+	}
+
+	rc = mmc_send_cxd_arg_data(card, card->host,
+		MMC_SEND_WRITE_PROT_TYPE, start, buffer, i);
+
+	/* Results are returned high-to-low.  Let's switch to little-endian */
+	/* TODO: Even for SPI? */
+	for (i=0; i<8; ++i)
+		types[7-i] = buffer[i];
+	return rc;
+}
+
+int
+mmc_set_write_prot(struct mmc_card *card, u32 start, int type)
+{
+	/* Protocol is ac, response is R1b.  Send either
+	 * SET_WRITE_PROT or CLR_WRITE_PROT depending on
+	 * type.  TODO: implement power-on and permanent
+	 * write protect which entails setting flags in
+	 * EXT_CSD.USER_WP before executing SET_WRITE_PROT.
+	 */
+	int err;
+	struct mmc_command cmd;
+
+	BUG_ON(!card);
+	BUG_ON(!card->host);
+
+	memset(&cmd, 0, sizeof(cmd));
+
+	cmd.opcode = type ? MMC_SET_WRITE_PROT : MMC_CLR_WRITE_PROT;
+	cmd.arg = start;
+	cmd.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+
+	err = mmc_wait_for_cmd(card->host, &cmd, MMC_CMD_RETRIES);
+
+	/* Check for address out of range error */
+	if (!err && (cmd.resp[0] & R1_OUT_OF_RANGE)) {
+		printk(KERN_ERR "mmc%d: address %#x out of range\n",
+		    card->host->index, start);
+		err = -EINVAL;
+	}
+	return err;
+}

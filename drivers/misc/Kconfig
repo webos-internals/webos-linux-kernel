@@ -13,6 +13,20 @@ menuconfig MISC_DEVICES
 
 if MISC_DEVICES
 
+config ANDROID_PMEM
+	bool "Android pmem allocator"
+	default y
+
+config ANDROID_PMEM_DEBUG
+	bool "Android pmem debug"
+	depends on ANDROID_PMEM
+	default n
+
+config ANDROID_PMEM_KAPI_TEST
+	tristate "Simple module to test Android pmem kernel API"
+	depends on ANDROID_PMEM
+	default m
+
 config ATMEL_PWM
 	tristate "Atmel AT32/AT91 PWM support"
 	depends on AVR32 || ARCH_AT91SAM9263 || ARCH_AT91SAM9RL || ARCH_AT91CAP9
@@ -150,6 +164,12 @@ config ATMEL_SSC
 
 	  If unsure, say N.
 
+config HSUART
+	bool "High Speed UART engine"
+	default n
+	---help---
+	  Generic HSUART engine, which calls platform specific code to facilitate High speed UART driver".
+
 config ENCLOSURE_SERVICES
 	tristate "Enclosure Services"
 	default n
@@ -158,6 +178,13 @@ config ENCLOSURE_SERVICES
 	  contain storage devices).  You also need either a host
 	  driver (SCSI/ATA) which supports enclosures
 	  or a SCSI enclosure device (SES) to use these services.
+
+config KERNEL_DEBUGGER_CORE
+	bool "Kernel Debugger Core"
+	default n
+	---help---
+	  Generic kernel debugging command processor used by low level
+	  (interrupt context) platform-specific debuggers.
 
 config SGI_XP
 	tristate "Support communication between SGI SSIs"
@@ -223,7 +250,121 @@ config DELL_LAPTOP
 	This driver adds support for rfkill and backlight control to Dell
 	laptops.
 
+config UID_STAT
+	bool "UID based statistics tracking exported to /proc/uid_stat"
+	default n
+
+config TSIF
+	depends on ARCH_MSM
+	tristate "TSIF (Transport Stream InterFace) support"
+	default n
+	---help---
+	  This driver supports low level TSIF interface. It provides API
+	  for upper layer drivers. If you have a TSIF hardware, say
+	  Y here and read <file:Documentation/arm/msm/tsif.txt>.
+
+	  To compile this driver as module, choose M here: the
+	  module will be called msm_tsif.
+
+config TSIF_CHRDEV
+	tristate "TSIF character device"
+	depends on TSIF
+	default n
+	---help---
+	  This driver uses low level TSIF interface. It provides character
+	  device useable from user space programs: one can read TSIF stream
+	  from this device.
+
+	  This driver may be used as example for TSIF API usage.
+
+	  To compile this driver as module, choose M here: the
+	  module will be called tsif_chrdev.
+
+config PMIC8058_PWM
+	tristate "Qualcomm PM8058 PWM support"
+	depends on PMIC8058
+	default y
+	help
+	  This option enables device driver support for the PWM channels
+	  on Qualcomm PM8058 chip. Pulse Width Modulation is used for
+	  purposes including software controlled brightness of backlight,
+	  motor control, and waveform generation.
+
+config PMIC8058_NFC
+	tristate "Qualcomm PM8058 support for Near Field Communication"
+	depends on PMIC8058
+	default y
+	help
+	  Qualcomm PM8058 chip has a module to support NFC (Near Field
+	  Communication). This option enables the driver to support it.
+
+config HRES_COUNTER
+	tristate "High resolution counter"
+	---help---
+	  Select Y if you want to enable High resolution counter.
+
+config NDUID
+	bool "Nova Device ID"
+	default n
+	---help---
+	This option exports the Nova Device ID to /proc/nduid.
+
+config USER_PINS
+	tristate "Sysfs GPIO pins control"
+	depends on PINMUX
+	---help---
+		Select Y if you want to expose some gpio pins through sysfs.
+
+config PINMUX
+	tristate "Pinmux APIs"
+	---help---
+		Select Y if you want to enable simple pinmux API usage.
+
+config KERNEL_LOG
+	bool "Kernel ram log"
+	---help---
+		Select Y for support for keeping kernel logs in physical memory
+
+config LOW_MEMORY_NOTIFY
+	bool "Low Memory Notify"
+	---help---
+		Provide interface to register for low memory notifications.
+
+config BLUETOOTH_POWER_STATE
+	bool "Bluetooth power state"
+	default y
+	---help---
+		Select Y for the user space to indicate the current bluetooth power state to the kernel
+
+config OMAP_VIBRATOR
+        tristate "OMAP34xx Vibrator driver."
+        depends on ARCH_OMAP3430
+        default n
+        ---help---
+          Say Y here if you want to use the Vibrator driver on the OMAP34xx-based reference platform.
+
+config MSM_VIBRATOR
+        tristate "MSM Vibrator driver"
+        depends on ARCH_MSM
+        default n
+        ---help---
+          Say Y here if you want to use the Vibrator driver on the MSM-based reference platform
+
+config CHARGER_SMB339
+        bool "Current Control Support SMB339"
+        ---help---
+          Build support for the Summit Microelectronics SMB339 Current Chip
+
+config HARDKEY_DIAG
+   tristate "Hard keys diagnostic"
+    depends on GPIO_KEYS_DIAG_TRIGGER
+    ---help---
+        Select Y if you want to be able to perform diagnostics by holding
+        gpio keys.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
+source "drivers/misc/video_core/720p/Kconfig"
+source "drivers/misc/a6/Kconfig"
 
 endif # MISC_DEVICES

@@ -1,0 +1,19 @@
+menuconfig A6_SUPPORT
+	tristate "Palm A6 support"
+	depends on I2C
+	default y
+	help
+	  This option enables support for Palm A6 controller.
+
+	  To compile this driver as a module, choose M here.
+
+if A6_SUPPORT
+
+config A6
+	tristate "Palm A6 charging controller"
+	depends on I2C
+	default y
+	help
+	 Say Y to include support for the Palm A6 charging controller.
+
+endif # POWER_SUPPLY

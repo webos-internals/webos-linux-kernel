@@ -1,0 +1,216 @@
+		Summary of MMC ioctl calls.
+		============================
+
+		Edward A. Falk <Edward.Falk@palm.com>
+
+		Feb, 2010
+
+This document attempts to describe the ioctl(2) calls supported by
+the MMC block device.  These are in addition to the standard
+ioctl calls supported by block devices.  These are implemented in
+drivers/mmc/card/block.c
+
+ioctl values are listed in <linux/mmc/ioctl.h>.  As of this writing, they
+are as follows:
+
+	MMCBOOTMULT		return boot block size multiplier
+	MMCBOOTSEL		select boot something
+	MMCIO_GET_EXT_CSD	return raw EXT_CSD register
+	MMCIO_WRITE_PROT_INFO	return write-protect information
+	MMCIO_GET_WRITE_PROT	return write-protect information
+	MMCIO_SET_WRITE_PROT	set (or clear) write-protect of a region
+	MMCIO_EN_PERM_WRITE_PROT	allow permanent write-protect
+
+
+The information that follows was determined from reading kernel source
+code.  It is likely that some corrections will be made over time.
+
+
+
+
+General:
+
+	Unless otherwise specified, all ioctl calls return 0 on success
+	and -1 with errno set to an appropriate value on error.
+
+	Unless otherwise specified, all ioctl calls return -1 and set
+	errno to EFAULT on a failed attempt to copy data to or from user
+	address space.
+
+	Unless otherwise specified, all data structures and constants
+	are defined in <linux/mmc/ioctl.h>
+
+
+
+MMCBOOTMULT			Return boot multiplier size
+
+	usage:
+
+	  uint32_t bootmult;
+	  ioctl(fd, MMCBOOTMULT, &bootmult);
+
+
+	inputs:		none
+
+	outputs:
+
+	  MMC boot multiplier size.  See MMC EXT_CSD register, byte 226.
+	  This is the size of the device boot partition size in 128Kb
+	  units.  Zero if the device does not have boot partitions.
+
+
+	error returns:
+	  ENOTSUPP	if the device is a boot partition
+
+
+
+
+MMCBOOTSEL		Set the boot_unlocked flag
+
+	usage:
+
+	  uint32_t flag = x;
+	  ioctl(fd, HDIO_GET_UNMASKINTR, &flag);
+
+	inputs:		none
+
+	outputs:
+	  The value of the drive's current unmask setting
+
+	error returns:
+	  ENOTSUPP	if the device is a boot partition
+
+
+MMCIO_GET_EXT_CSD		Return raw EXT_CSD register
+
+	usage:
+
+	  mmcio_ext_csd_t ext_csd;
+	  ioctl(fd, MMCIO_GET_EXT_CSD, &ext_csd)
+
+	inputs:		none
+
+	outputs:
+	  mmcio_ext_csd_t structure containing 512-byte EXT_CSD register.
+
+
+
+MMCIO_WRITE_PROT_INFO		Return write-protect information
+
+	usage:
+
+	  mmc_write_prot_info info;
+	  ioctl(fd, MMCIO_WRITE_PROT_INFO, &info);
+
+	inputs:		pointer to mmc_get_write_prot_t structure.
+
+	outputs:
+	  mmc_get_write_prot_t structure is filled in with the
+	  "group_size" value, which is the size, in sectors, of
+	  the write protect group size.  Write protection is
+	  controlled in units of this size.
+
+	errors:
+	  ENXIO:		Device does not support write-protect.
+
+
+MMCIO_GET_WRITE_PROT		Return write-protect information
+
+	usage:
+
+	  mmc_get_write_prot_t info;
+	  info.start = <start block>;
+	  ioctl(fd, MMCIO_GET_WRITE_PROT, &info);
+
+	inputs:
+	  The starting address of the memory to query, in sectors, is
+	  placed in info.start.  This must be aligned to the value
+	  returned by MMCIO_WRITE_PROT_INFO.
+
+	outputs:
+	  info.protect contains a 32-bit list of protection flags
+	  for 32 memory blocks, starting with the addressed block.
+	  The low-order bit corresponds to the first block.
+
+	  info.types contains 8 bytes representing 32 2-bit protection
+	  types for 32 memory blocks, starting with the addressed block.
+	  Data is returned in little-endian order.  That is, the low-order
+	  two bits of the first byte correspond to the first block.
+
+	  Protection types are:
+	    00  not protected
+	    01  temporary protection
+	    10  power-on
+	    11  permanent
+
+	If there are less than 32 blocks between the addressed block
+	and the end of MMC memory, the corresponding high-order bits
+	will be zero.
+
+	errors:
+	  ENXIO:		Device does not support write-protect.
+
+
+MMCIO_SET_WRITE_PROT		Set write-protect for a block of memory
+
+	usage:
+
+	  mmc_set_write_prot_t prot;
+	  prot.start = <start block>;
+	  prot.len = <length>;
+	  prot.type = <type>;
+	  ioctl(fd, MMC_SET_WRITE_PROT, &prot);
+
+	inputs:
+	  info.start is the sector of the start of the
+	  region to be protected.  info.len is the length of the
+	  region.  Both values must be multiples of the size
+	  returned by MMCIO_WRITE_PROT_INFO.
+
+	  info.type is the protection type for the block:
+	    0  not protected
+	    1  temporary protection
+	    2  power-on
+	    3  permanent
+
+	    Temporary protection means that the write-protect state can
+	    be turned back off, allowing the memory to be written again.
+
+	    Power-on protection remains in place until the MMC memory is
+	    power-cycled or receives a hardware reset, at which time
+	    it reverts to temporary protection.
+
+	    Permanent protection is permanent.	The specified region
+	    becomes permanently read-only and can never be made writable
+	    again.  Because this state is irreversible, caller must call
+	    MMCIO_EN_PERM_WRITE_PROT first, to ensure that this function
+	    is not accidentally invoked.
+
+
+	outputs:		none
+
+	errors:
+	  ENXIO:		Device does not support write-protect or
+	  			write-protect disabled.
+	  EPERM:		MMCIO_EN_PERM_WRITE_PROT was not called before
+				attempting to permanently write-protect
+	  EBADF:		fd is not a valid file descriptor or is
+	  			not open for writing.
+
+
+
+MMCIO_EN_PERM_WRITE_PROT		Enable permanent write protection
+
+	usage:
+
+	  mmc_set_write_prot_t prot;
+	  prot.block = <start block>;
+	  prot.type = 3;
+	  ioctl(fd, MMCIO_EN_PERM_WRITE_PROT, 0);
+	  ioctl(fd, MMCIO_SET_WRITE_PROT, &prot);
+
+	inputs:		none
+	outputs:	none
+
+	This ioctl "arms" the MMCIO_SET_WRITE_PROT ioctl, permitting
+	permanent write protection to be selected.

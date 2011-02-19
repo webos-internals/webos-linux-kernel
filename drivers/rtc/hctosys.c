@@ -22,7 +22,7 @@
  * the best guess is to add 0.5s.
  */
 
-static int __init rtc_hctosys(void)
+int rtc_hctosys(void)
 {
 	int err;
 	struct rtc_time tm;
@@ -46,12 +46,14 @@ static int __init rtc_hctosys(void)
 
 			do_settimeofday(&tv);
 
+#if 0
 			dev_info(rtc->dev.parent,
 				"setting system clock to "
 				"%d-%02d-%02d %02d:%02d:%02d UTC (%u)\n",
 				tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 				tm.tm_hour, tm.tm_min, tm.tm_sec,
 				(unsigned int) tv.tv_sec);
+#endif				
 		}
 		else
 			dev_err(rtc->dev.parent,

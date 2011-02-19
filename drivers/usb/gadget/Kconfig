@@ -464,6 +464,25 @@ config USB_GOKU
 # LAST -- dummy/emulated controller
 #
 
+config USB_GADGET_MSM_72K
+	boolean "MSM 72K Device Controller"
+	depends on ARCH_MSM
+	select USB_GADGET_SELECTED
+	select USB_GADGET_DUALSPEED
+	select SWITCH
+	help
+	   USB gadget driver for Qualcomm MSM 72K architecture.
+
+	   Say "y" to link the driver statically, or "m" to build a
+	   dynamically linked module called "msm72k" and force all
+	   gadget drivers to also be dynamically linked.
+
+config USB_MSM_72K
+	tristate
+	depends on USB_GADGET_MSM_72K
+	default USB_GADGET
+	select USB_GADGET_SELECTED
+
 config USB_GADGET_DUMMY_HCD
 	boolean "Dummy HCD (DEVELOPMENT)"
 	depends on USB=y || (USB=m && USB_GADGET=m)
@@ -505,6 +524,12 @@ config USB_GADGET_DUALSPEED
 	help
 	  Means that gadget drivers should include extra descriptors
 	  and code to handle dual-speed controllers.
+
+config USB_GADGET_EVENT
+	boolean "Gadget Event support"
+	depends on USB_GADGET
+	help
+	  This driver is for sending the USB gadget events
 
 #
 # USB Gadget Drivers
@@ -699,6 +724,94 @@ config USB_G_PRINTER
 	  For more information, see Documentation/usb/gadget_printer.txt
 	  which includes sample code for accessing the device file.
 
+config USB_ANDROID
+	tristate "Android Gadget"
+	help
+	  The Android gadget provides mass storage and adb transport.
+
+	  Say "y" to link the driver statically, or "m" to build a
+	  dynamically linked module called "g_android".
+
+config USB_ANDROID_DIAG
+	tristate "diag function driver"
+	depends on USB_ANDROID
+	default n
+	help
+	  Say "y" to link the driver statically, or "m" to build
+	  as a part of "g_android"
+
+config USB_ANDROID_CDC_ECM
+	tristate "cdc ecm function driver"
+	depends on USB_ANDROID
+	default n
+	help
+	  enabling this option adds CDC-ECM support to the
+	  android gadget.
+	  Say "y" to link the CDC-ECM as a part of android gadget
+
+config USB_ANDROID_RNDIS
+	bool "RNDIS function driver"
+	depends on USB_ANDROID
+	default n
+	help
+	  enabling this option adds RNDIS support to the
+	  android gadget.
+
+config USB_ANDROID_RMNET
+	bool "RmNet function driver"
+	depends on USB_ANDROID
+	default n
+	help
+	  Enabling this option adds rmnet support to the
+	  android gadget. Rmnet is an alternative to CDC-ECM
+	  and Windows RNDIS. It uses QUALCOMM MSM Interface
+	  for control transfers. It acts like a bridge between
+	  Host and modem found in MSM chipsets.
+
+config RMNET_SMD_CTL_CHANNEL
+	string "control SMD channel name"
+	depends on USB_ANDROID_RMNET
+	default ""
+	help
+	  Control SMD channel for transferring QMI messages
+
+config RMNET_SMD_DATA_CHANNEL
+	string "Data SMD channel name"
+	depends on USB_ANDROID_RMNET
+	default ""
+	help
+	  Data SMD channel for transferring network data
+
+config USB_F_SERIAL
+	tristate "generic serial function driver"
+	depends on USB_ANDROID
+	default n
+	help
+	  Say "y" to link the driver statically, or "m" to build
+	  as a part of "g_android"
+
+config MODEM_SUPPORT
+	tristate "modem support in generic serial function driver"
+	depends on USB_F_SERIAL
+	default n
+	help
+          This feature enables the modem functionality in the
+	  generic serial.
+	  adds interrupt endpoint support to send modem notifications
+	  to host.
+	  adds CDC descriptors to enumerate the generic serial as MODEM.
+	  adds CDC class requests to configure MODEM line settings.
+	  Say "y" to enable MODEM support in the generic serial driver.
+
+config USB_CSW_HACK
+	boolean "USB Mass storage csw hack Feature"
+	depends on USB_ANDROID
+	help
+	 This csw hack feature is for increasing the performance of the mass
+	 storage
+
+	default y
+
 config USB_CDC_COMPOSITE
 	tristate "CDC Composite Device (Ethernet and ACM)"
 	depends on NET
@@ -713,11 +826,65 @@ config USB_CDC_COMPOSITE
 	  Say "y" to link the driver statically, or "m" to build a
 	  dynamically linked module.
 
+config USB_ROCKHOPPER
+	tristate "Rockhopper Gadget"
+	help
+	  The Rockhopper gadget provides ethernet, mass storage,
+	  novacom transport and pass-through.
+
+	  Say "y" to link the driver statically, or "m" to build a
+	  dynamically linked module called "g_rockhopper".
+
 # put drivers that need isochronous transfer support (for audio
 # or video class gadget drivers), or specific hardware, here.
 
 # - none yet
 
 endchoice
+
+config	USB_ROCKHOPPER_MANUFACTURER_STRING
+	string "USB Manufacturer String"
+	default "Palm Inc."
+	depends on USB_ROCKHOPPER
+	help
+	  Enter the USB Manufacturer ID (String) for Rockhopper Gadget
+
+config	USB_ROCKHOPPER_PRODUCT_STRING
+	string "USB Product String"
+	default "Rockhopper Device"
+	depends on USB_ROCKHOPPER
+	help
+	  Enter the USB Product ID (String) for Rockhopper Gadget
+
+config	USB_ROCKHOPPER_VID
+	hex "USB Vendor ID"
+	default 0x830
+	depends on USB_ROCKHOPPER
+	help
+	  Enter the USB Vendor ID for Rockhopper Gadget
+
+config	USB_ROCKHOPPER_PID_BASE
+	hex "USB Product ID Base (e.g. 0x8000)"
+	default 0x8000
+	depends on USB_ROCKHOPPER
+	help
+	  Enter the USB Product ID Base, which is used to calculate
+	  the product id for each configuration. For example,
+	  if the USB Product ID Base is 0x8000 and the USB Product ID
+	  Shift is 8, the product id for "ums" configuration is
+	  0x8000 + (4 << 8) = 0x8400. "ums+novacom" configuration is
+	  0x8000 + (2 << 8) = 0x8200, etc.
+
+config	USB_ROCKHOPPER_PID_SHIFT
+	int "USB Product ID Shift (Palm style: 0, HP style: 8)"
+	default 0
+	depends on USB_ROCKHOPPER
+	help
+	  Enter the USB Product ID Shift, which is used to calculate
+	  the product id for each configuration. For example,
+	  if the USB Product ID Base is 0x8000 and the USB Product ID
+	  Shift is 8, the product id for "ums" configuration is
+	  0x8000 + (4 << 8) = 0x8400. "ums+novacom" configuration is
+	  0x8000 + (2 << 8) = 0x8200, etc.
 
 endif # USB_GADGET

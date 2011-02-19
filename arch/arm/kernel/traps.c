@@ -2,6 +2,7 @@
  *  linux/arch/arm/kernel/traps.c
  *
  *  Copyright (C) 1995-2002 Russell King
+ *  Copyright (c) 2009, Code Aurora Forum. All rights reserved.
  *  Fragments that appear the same as linux/arch/i386/kernel/traps.c (C) Linus Torvalds
  *
  * This program is free software; you can redistribute it and/or modify
@@ -401,12 +402,57 @@ static int bad_syscall(int n, struct pt_regs *regs)
 	return regs->ARM_r0;
 }
 
+#ifdef CONFIG_ARCH_MSM_ARM11
+#define CACHE_LINE_SIZE 32
+void flush_axi_bus_buffer(void);
+
+static inline void
+clean_and_invalidate_user_range(unsigned long start, unsigned long end)
+{
+	unsigned long addr;
+
+	for (addr = start; addr < end; addr += CACHE_LINE_SIZE)
+		asm ("mcr p15, 0, %0, c7, c14, 1" : : "r" (addr));
+	asm ("mcr p15, 0, %0, c7, c10, 4" : : "r" (0));
+	asm ("mcr p15, 0, %0, c7, c5, 0" : : "r" (0));
+
+	flush_axi_bus_buffer();
+}
+#endif
+
+#define  MAGIC_CACHE_INVALIDATE   0x50414C4D
+
+#ifdef CONFIG_MSM_KGSL_MMU
+void kgsl_palm_cache_inv_range(unsigned long addr, int size);
+#endif
+
 static inline void
 do_cache_op(unsigned long start, unsigned long end, int flags)
 {
 	struct vm_area_struct *vma;
 
-	if (end < start || flags)
+	if (end < start)
+		return;
+    
+	if (flags == MAGIC_CACHE_INVALIDATE) {
+#ifdef CONFIG_MSM_KGSL_MMU
+		start &= PAGE_MASK;
+		kgsl_palm_cache_inv_range(start, PAGE_ALIGN(end - start));
+#else
+		printk(KERN_WARNING "do_cache_op: MAGIC_CACHE_INVALIDATE not implemented\n");
+#endif
+		return;
+	}
+    
+#ifdef CONFIG_ARCH_MSM_ARM11
+	if (flags == 1) {
+		clean_and_invalidate_user_range(start & PAGE_MASK,
+						PAGE_ALIGN(end));
+		return;
+	}
+#endif
+
+	if (flags)
 		return;
 
 	vma = find_vma(current->active_mm, start);
@@ -482,7 +528,10 @@ asmlinkage int arm_syscall(int no, struct pt_regs *regs)
 		thread->tp_value = regs->ARM_r0;
 #if defined(CONFIG_HAS_TLS_REG)
 		asm ("mcr p15, 0, %0, c13, c0, 3" : : "r" (regs->ARM_r0) );
-#elif !defined(CONFIG_TLS_REG_EMUL)
+#endif
+
+#if (!defined(CONFIG_HAS_TLS_REG) && !defined(CONFIG_TLS_REG_EMUL)) || \
+      defined(CONFIG_ARCH_MSM_SCORPION)
 		/*
 		 * User space must never try to access this directly.
 		 * Expect your app to break eventually if you do so.

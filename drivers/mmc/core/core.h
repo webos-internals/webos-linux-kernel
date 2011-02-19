@@ -45,6 +45,9 @@ static inline void mmc_delay(unsigned int ms)
 void mmc_rescan(struct work_struct *work);
 void mmc_start_host(struct mmc_host *host);
 void mmc_stop_host(struct mmc_host *host);
+#ifdef CONFIG_MMC_AUTO_SUSPEND
+void mmc_auto_suspend_work(struct work_struct *work);
+#endif
 
 int mmc_attach_mmc(struct mmc_host *host, u32 ocr);
 int mmc_attach_sd(struct mmc_host *host, u32 ocr);

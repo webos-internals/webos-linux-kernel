@@ -14,7 +14,9 @@
 #include <linux/freezer.h>
 #include <linux/kthread.h>
 #include <linux/scatterlist.h>
+#include <linux/delay.h>
 
+#include <linux/mmc/mmc.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
 #include "queue.h"
@@ -45,12 +47,13 @@ static int mmc_queue_thread(void *d)
 {
 	struct mmc_queue *mq = d;
 	struct request_queue *q = mq->queue;
+	struct request *req;
 
 	current->flags |= PF_MEMALLOC;
 
 	down(&mq->thread_sem);
 	do {
-		struct request *req = NULL;
+		req = NULL;	/* Must be set to NULL at each iteration */
 
 		spin_lock_irq(q->queue_lock);
 		set_current_state(TASK_INTERRUPTIBLE);
@@ -70,7 +73,39 @@ static int mmc_queue_thread(void *d)
 			continue;
 		}
 		set_current_state(TASK_RUNNING);
+#ifdef CONFIG_MMC_AUTO_SUSPEND
+		mmc_auto_suspend(mq->card->host, 0);
+#endif
+#ifdef CONFIG_MMC_BLOCK_PARANOID_RESUME
+		if (mq->check_status) {
+			struct mmc_command cmd;
+			int retries = 3;
 
+			do {
+				int err;
+
+				cmd.opcode = MMC_SEND_STATUS;
+				cmd.arg = mq->card->rca << 16;
+				cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+
+				mmc_claim_host(mq->card->host);
+				err = mmc_wait_for_cmd(mq->card->host, &cmd, 5);
+				mmc_release_host(mq->card->host);
+
+				if (err) {
+					printk(KERN_ERR "%s: failed to get status (%d)\n",
+					       __func__, err);
+					msleep(5);
+					retries--;
+					continue;
+				}
+				printk(KERN_DEBUG "%s: status 0x%.8x\n", __func__, cmd.resp[0]);
+			} while (retries &&
+				(!(cmd.resp[0] & R1_READY_FOR_DATA) ||
+				(R1_CURRENT_STATE(cmd.resp[0]) == 7)));
+			mq->check_status = 0;
+                }
+#endif
 		mq->issue_fn(mq, req);
 	} while (1);
 	up(&mq->thread_sem);
@@ -91,9 +126,9 @@ static void mmc_request(struct request_queue *q)
 	int ret;
 
 	if (!mq) {
-		printk(KERN_ERR "MMC: killing requests for dead queue\n");
 		while ((req = elv_next_request(q)) != NULL) {
 			do {
+				req->cmd_flags |= REQ_QUIET;
 				ret = __blk_end_request(req, -EIO,
 							blk_rq_cur_bytes(req));
 			} while (ret);
@@ -228,16 +263,17 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	struct request_queue *q = mq->queue;
 	unsigned long flags;
 
-	/* Mark that we should start throwing out stragglers */
-	spin_lock_irqsave(q->queue_lock, flags);
-	q->queuedata = NULL;
-	spin_unlock_irqrestore(q->queue_lock, flags);
-
 	/* Make sure the queue isn't suspended, as that will deadlock */
 	mmc_queue_resume(mq);
 
 	/* Then terminate our worker thread */
 	kthread_stop(mq->thread);
+
+	/* Empty the queue */
+	spin_lock_irqsave(q->queue_lock, flags);
+	q->queuedata = NULL;
+	blk_start_queue(q);
+	spin_unlock_irqrestore(q->queue_lock, flags);
 
  	if (mq->bounce_sg)
  		kfree(mq->bounce_sg);
@@ -249,8 +285,6 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	if (mq->bounce_buf)
 		kfree(mq->bounce_buf);
 	mq->bounce_buf = NULL;
-
-	blk_cleanup_queue(mq->queue);
 
 	mq->card = NULL;
 }

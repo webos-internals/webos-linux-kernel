@@ -279,6 +279,15 @@ static void rx_complete(struct usb_ep *ep, struct usb_request *req)
 	struct eth_dev	*dev = ep->driver_data;
 	int		status = req->status;
 
+	/* REVISIT */
+	if (dev == NULL) {
+		printk("u_ether: rx_complete: dev=NULL skb=%p status=%d\n",
+		       skb, status);
+		if (skb)
+			dev_kfree_skb_any(skb);
+		return;
+	}
+
 	switch (status) {
 
 	/* normal completion */
@@ -334,10 +343,11 @@ quiesce:
 	if (skb)
 		dev_kfree_skb_any(skb);
 	if (!netif_running(dev->net)) {
+		unsigned long flags;
 clean:
-		spin_lock(&dev->req_lock);
+		spin_lock_irqsave(&dev->req_lock, flags);
 		list_add(&req->list, &dev->rx_reqs);
-		spin_unlock(&dev->req_lock);
+		spin_unlock_irqrestore(&dev->req_lock, flags);
 		req = NULL;
 	}
 	if (req)
@@ -683,7 +693,7 @@ module_param(host_addr, charp, S_IRUGO);
 MODULE_PARM_DESC(host_addr, "Host Ethernet Address");
 
 
-static u8 __init nibble(unsigned char c)
+static u8 nibble(unsigned char c)
 {
 	if (isdigit(c))
 		return c - '0';
@@ -693,7 +703,7 @@ static u8 __init nibble(unsigned char c)
 	return 0;
 }
 
-static int __init get_ether_addr(const char *str, u8 *dev_addr)
+static int get_ether_addr(const char *str, u8 *dev_addr)
 {
 	if (str) {
 		unsigned	i;
@@ -738,7 +748,7 @@ static const struct net_device_ops eth_netdev_ops = {
  *
  * Returns negative errno, or zero on success
  */
-int __init gether_setup(struct usb_gadget *g, u8 ethaddr[ETH_ALEN])
+int gether_setup(struct usb_gadget *g, u8 ethaddr[ETH_ALEN])
 {
 	struct eth_dev		*dev;
 	struct net_device	*net;
@@ -947,6 +957,8 @@ void gether_disconnect(struct gether *link)
 	link->in = NULL;
 
 	usb_ep_disable(link->out_ep);
+	usb_ep_fifo_flush(link->in_ep);
+	usb_ep_fifo_flush(link->out_ep);
 	spin_lock(&dev->req_lock);
 	while (!list_empty(&dev->rx_reqs)) {
 		req = container_of(dev->rx_reqs.next,

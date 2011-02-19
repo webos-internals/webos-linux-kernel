@@ -186,7 +186,7 @@ int ptrace_attach(struct task_struct *task)
 	/* Protect exec's credential calculations against our interference;
 	 * SUID, SGID and LSM creds get determined differently under ptrace.
 	 */
-	retval = mutex_lock_interruptible(&current->cred_exec_mutex);
+	retval = mutex_lock_interruptible(&task->cred_exec_mutex);
 	if (retval  < 0)
 		goto out;
 
@@ -226,11 +226,22 @@ repeat:
 
 	__ptrace_link(task, current);
 
+#ifdef CONFIG_MINI_CORE
+    if (task->ptrace_attach_done)
+    {
+        complete(task->ptrace_attach_done);
+
+        /* not really an error case, but we definitely
+         * want to skip the SIGSTOP */
+        goto bad;
+    }
+#endif
+
 	send_sig_info(SIGSTOP, SEND_SIG_FORCED, task);
 bad:
 	write_unlock_irqrestore(&tasklist_lock, flags);
 	task_unlock(task);
-	mutex_unlock(&current->cred_exec_mutex);
+	mutex_unlock(&task->cred_exec_mutex);
 out:
 	return retval;
 }

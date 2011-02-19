@@ -155,6 +155,7 @@
 #define PORT_MN10300_CTS	81
 
 #define PORT_SC26XX	82
+#define PORT_MSM	83
 
 /* SH-SCI */
 #define PORT_SCIFA	83
@@ -203,6 +204,7 @@ struct uart_ops {
 	void		(*pm)(struct uart_port *, unsigned int state,
 			      unsigned int oldstate);
 	int		(*set_wake)(struct uart_port *, unsigned int state);
+	void		(*wake_peer)(struct uart_port *);
 
 	/*
 	 * Return a string describing the type of the port

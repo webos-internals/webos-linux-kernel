@@ -80,7 +80,9 @@ static void clocksource_forward_now(void)
 	timespec_add_ns(&xtime, nsec);
 
 	nsec = ((s64)cycle_delta * clock->mult_orig) >> clock->shift;
-	clock->raw_time.tv_nsec += nsec;
+
+	timespec_add_ns(&clock->raw_time, nsec);
+
 }
 
 /**
@@ -507,11 +509,7 @@ void update_wall_time(void)
 			second_overflow();
 		}
 
-		clock->raw_time.tv_nsec += clock->raw_interval;
-		if (clock->raw_time.tv_nsec >= NSEC_PER_SEC) {
-			clock->raw_time.tv_nsec -= NSEC_PER_SEC;
-			clock->raw_time.tv_sec++;
-		}
+		timespec_add_ns(&clock->raw_time, clock->raw_interval);
 
 		/* accumulate error between NTP and clock interval */
 		clock->error += tick_length;

@@ -580,6 +580,13 @@ config MAC80211_HWSIM
 	  To compile this driver as a module, choose M here: the module will be
 	  called mac80211_hwsim.  If unsure, say N.
 
+config LIBRA_SDIOIF
+	tristate "Qualcomm libra wlan SDIO driver"
+	depends on MMC_MSM
+	default m
+	---help---
+	  A driver for Qualcomm WLAN SDIO Libra chipset.
+
 source "drivers/net/wireless/p54/Kconfig"
 source "drivers/net/wireless/ath5k/Kconfig"
 source "drivers/net/wireless/ath9k/Kconfig"
