@@ -219,6 +219,16 @@ config THINKPAD_ACPI_BAY
 
 	  If you are not sure, say Y here.
 
+config LOW_MEMORY_KILLER
+    tristate "Low Memory Killer"
+	depends on LOW_MEMORY_NOTIFY
+	  ---help---
+	  Register processes to be killed when memory is low.
+
+config LOW_MEMORY_NOTIFY
+    bool "Low Memory Notify"
+	  ---help---
+	  Provide interface to register for low memory notifications.
 
 config ATMEL_SSC
 	tristate "Device driver for Atmel SSC peripheral"
@@ -232,4 +242,137 @@ config ATMEL_SSC
 
 	  If unsure, say N.
 
+config TWL4030_RTC
+	bool "TWL4030 RTC Driver"
+	depends on TWL4030_CORE
+
+config OMAP_BCI_BATTERY
+	bool "OMAP243x/34xx Battery driver"
+	depends on (MACH_OMAP_2430SDP || MACH_OMAP_3430SDP) && TWL4030_CORE
+	default y
+	---help---
+	  Support for OMAP243x/34xx Battery driver. This driver can give support for TWL4030 Battery Charge Interface.
+
+config OMAP_TWL4030_BATTERY_EVENTS
+	bool "TWL4030 Battery monitoring and event notification"
+	depends on OMAP_BCI_BATTERY
+	default y
+	---help---
+	  Support for Battery driver's TWL4030 event handler registration and notification capabilities
+
+config OMAP_BQ27000_BATTERY
+	bool "BQ Battery monitoring and charge support"
+	depends on OMAP_HDQ
+	default y
+	---help---
+	  Support for battery driver's BQ27000 fuel gauge chip, battery monitoring capabilities.
+
+config OMAP_BQ27000_BATTERY_EVENTS
+	bool "BQ Battery monitoring and event notification"
+	depends on OMAP_BQ27000_BATTERY
+	default y
+	---help---
+	  Support for Battery driver's event handler registration and notification capabilities
+
+config OMAP_BATTERY_SYSFS
+	bool "OMAP243x/343x  Battery driver Sysfs"
+	depends on OMAP_BCI_BATTERY || OMAP_BQ27000_BATTERY
+	default y
+	---help---
+	  OMAP243x/34xx Battery driver sysfs entries.
+
+config OMAP_VIBRATOR
+	tristate "OMAP34xx Vibrator driver."
+	depends on ARCH_OMAP3430
+	default y
+	---help---
+	  Say Y here if you want to use the Vibrator driver on the OMAP34xx-based reference platform.
+
+config PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	bool "Qualcomm Modem Handshaking support on Palm devices"
+	default y
+	help
+	  Enable this option if you want support for Qualcomm Modem Handshaking on Palm
+	  devices.
+
+config OMAP_MISC_HSUART
+	tristate "OMAP High speed UART device driver"
+	depends on ARCH_OMAP2 || ARCH_OMAP3
+	depends on HS_SERIAL_SUPPORT
+	---help---
+	  Select Y if you want to expose High speed UART as a non-tty (misc) device
+
+config HSUART_LOG_EVENTS
+	bool "Enable event logging (debug) for High speed UART device driver"
+	depends on OMAP_MISC_HSUART
+	default n
+	---help---
+	  Select Y if you want to enable events logging (debug) for High speed UART driver
+
+config USER_PINS
+	tristate "Sysfs GPIO pins control"
+	depends on ARCH_OMAP2 || ARCH_OMAP3
+	---help---
+	   Support Select Y if you want to expose some gpio pins through sysfs. 
+
+config HRES_COUNTER
+	tristate "OMAP High resolution counter"
+	depends on ARCH_OMAP2 || ARCH_OMAP3
+	---help---
+	  Select Y if you want to enable High resolution counter for OMAP platform.
+
+config HRES_COUNTER_TIMER32K
+	bool "Use 32K sync timer for time stamps"
+	depends on HRES_COUNTER
+	default n
+	---help---
+	  Select Y if you want to use 32K clock for timestamps.
+
+config PALM_NDUID
+	tristate "Nova Device UID"
+	depends on MACH_SIRLOIN || MACH_BRISKET || MACH_FLANK
+	depends on PROC_FS
+	depends on CRYPTO_SHA1
+	---help---
+		Select Y if you want to export Nova Device UID in /proc and /dev
+
+config HARDKEY_REBOOT
+   tristate "Hard keys emergency reboot"
+	depends on MACH_SIRLOIN || MACH_BRISKET || MACH_FLANK
+	depends on GPIO_KEYS_REBOOT_TRIGGER
+	---help---
+		Select Y if you want to be able to perform emergency reboot by holding 
+		gpio keys.
+	
+config KERNEL_LOG
+	bool "Kernel ram log"
+	---help---
+		Select Y for support for keeping kernel logs in physical memory
+
+config BATTERY_SIMPLE
+	bool "Simple battery interface"	
+	help
+	  Say Y to enable a simple battery interface.
+
+config MODEM_POWER_ON_NOTIFY
+	bool "Modem power-on notification"
+	help
+	  Say Y to enable the modem power-on notification
+
+config HRES_COUNTER
+	tristate "OMAP High resolution counter"
+	depends on ARCH_OMAP2 || ARCH_OMAP3
+	---help---
+	  Select Y if you want to enable High resolution counter for OMAP platform.
+
+config HRES_COUNTER_TIMER32K
+	bool "Use 32K sync timer for time stamps"
+	depends on HRES_COUNTER
+	default n
+	---help---
+	  Select Y if you want to use 32K clock for timestamps.
+
+
 endif # MISC_DEVICES
+
+

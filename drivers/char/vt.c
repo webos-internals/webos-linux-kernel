@@ -174,6 +174,16 @@ int console_blanked;
 static int vesa_blank_mode; /* 0:none 1:suspendV 2:suspendH 3:powerdown */
 static int blankinterval = 10*60*HZ;
 static int vesa_off_interval;
+extern int fb_timeout_val;
+void set_blank_interval(int fb_timeout_val)
+{
+	acquire_console_sem();
+	blankinterval = fb_timeout_val * HZ;
+	poke_blanked_console();
+	release_console_sem();
+}
+
+EXPORT_SYMBOL (set_blank_interval);
 
 static DECLARE_WORK(console_work, console_callback);
 

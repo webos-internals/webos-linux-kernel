@@ -131,6 +131,7 @@
 #include <net/tcp.h>
 #endif
 
+#include <linux/gen_timer.h>
 /*
  * Each address family might have different locking rules, so we have
  * one slock key per address family:
@@ -1486,6 +1487,10 @@ ssize_t sock_no_sendpage(struct socket *sock, struct page *page, int offset, siz
 static void sock_def_wakeup(struct sock *sk)
 {
 	read_lock(&sk->sk_callback_lock);
+#ifdef CONFIG_INTSOCK_NETFILTER
+	if(sk->sk_family == AF_INET && (sk->sk_state == TCP_ESTABLISHED))	// both TCP as well as UDP ... 
+		sk->sk_stamp=ktime_get_uptime();
+#endif
 	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
 		wake_up_interruptible_all(sk->sk_sleep);
 	read_unlock(&sk->sk_callback_lock);
@@ -1503,6 +1508,12 @@ static void sock_def_error_report(struct sock *sk)
 static void sock_def_readable(struct sock *sk, int len)
 {
 	read_lock(&sk->sk_callback_lock);
+	
+#ifdef CONFIG_INTSOCK_NETFILTER
+	// sk_stamp for every socket updated to current time to reflect correct idle time settings
+	if(sk->sk_family == AF_INET) 
+		sk->sk_stamp=ktime_get_uptime();
+#endif
 	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
 		wake_up_interruptible(sk->sk_sleep);
 	sk_wake_async(sk,1,POLL_IN);
@@ -1543,16 +1554,26 @@ void sk_send_sigurg(struct sock *sk)
 void sk_reset_timer(struct sock *sk, struct timer_list* timer,
 		    unsigned long expires)
 {
-	if (!mod_timer(timer, expires))
+#ifdef CONFIG_TCP_FASTPATH
+	if(!mod_gen_timer(timer, expires))
+#else	
+	if(!mod_timer(timer, expires))
+#endif	
 		sock_hold(sk);
+	
 }
 
 EXPORT_SYMBOL(sk_reset_timer);
 
 void sk_stop_timer(struct sock *sk, struct timer_list* timer)
 {
+#ifdef CONFIG_TCP_FASTPATH
+	if (timer_pending(timer) && del_gen_timer(timer))
+#else
 	if (timer_pending(timer) && del_timer(timer))
+#endif
 		__sock_put(sk);
+	
 }
 
 EXPORT_SYMBOL(sk_stop_timer);
@@ -1608,8 +1629,12 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	sk->sk_rcvtimeo		=	MAX_SCHEDULE_TIMEOUT;
 	sk->sk_sndtimeo		=	MAX_SCHEDULE_TIMEOUT;
 
+#ifndef CONFIG_INTSOCK_NETFILTER
 	sk->sk_stamp = ktime_set(-1L, -1L);
-
+#else
+	if(sk->sk_family == AF_INET) 
+		sk->sk_stamp = ktime_get_uptime();
+#endif
 	atomic_set(&sk->sk_refcnt, 1);
 }
 
@@ -1655,7 +1680,12 @@ int sock_get_timestamp(struct sock *sk, struct timeval __user *userstamp)
 	tv = ktime_to_timeval(sk->sk_stamp);
 	if (tv.tv_sec == -1)
 		return -ENOENT;
+	
+#ifdef CONFIG_INTSOCK_NETFILTER
+	if(sk->sk_family == AF_PACKET || tv.tv_sec == 0) {
+#else
 	if (tv.tv_sec == 0) {
+#endif
 		sk->sk_stamp = ktime_get_real();
 		tv = ktime_to_timeval(sk->sk_stamp);
 	}

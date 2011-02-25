@@ -126,10 +126,16 @@ $(obj)/defkeymap.o:  $(obj)/defkeymap.c
 # loadkeys version for the map. By default, we'll use the shipped
 # versions.
 # GENERATE_KEYMAP := 1
+# KEYMAP := defkeymap.map
+
+ifeq ($(CONFIG_MACH_SIRLOIN),y)
+KEYMAP := defkeymap_joplin
+GENERATE_KEYMAP := 1
+endif
 
 ifdef GENERATE_KEYMAP
 
-$(obj)/defkeymap.c: $(obj)/%.c: $(src)/%.map
+$(obj)/defkeymap.c : $(src)/$(KEYMAP).map
 	loadkeys --mktable $< > $@.tmp
 	sed -e 's/^static *//' $@.tmp > $@
 	rm $@.tmp

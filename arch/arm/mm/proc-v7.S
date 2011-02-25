@@ -182,11 +182,97 @@ __v7_setup:
 	mov	r10, #0x1f			@ domains 0, 1 = manager
 	mcr	p15, 0, r10, c3, c0, 0		@ load domain access register
 #endif
+
+	@ set up for allowing performance counting registers in user space
+	mov r10, #1
+	mcr p15, 0, r10, c9, c14, 0		@ allow user access in the USEREN reg
+	mrc p15, 0, r10, c9, c12, 0
+
+	@ The following conflicts with oprofile.  We'll leave it out
+	@ as you can set these in userspace.
+/**	bic r10, #(1<<3)				@ cycle count every cycle
+	orr r10, #(1<<2)|(1<<0)			@ clear and enable cycle counter
+	mcr p15, 0, r10, c9, c12, 0		@ PMNC
+	mov	r10, #(1<<31)
+	mcr p15, 0, r10, c9, c12, 1		@ enable cycle counter
+ **/
+
+#if defined(CONFIG_ARCH_OMAP3)
+	@ L2 cache is enabled in the aux control register
+	mrc	p15, 0, r0, c1, c0, 1
+	orr	r0, r0, #0x11		@ speculative+no-alais protection
+#ifdef CONFIG_CPU_L2CACHE_DISABLE
+	bic	r0, r0, #0x2		@ disable L2 Cache.
+#else
+	orr	r0, r0, #0x2		@ enaable L2 Cache.
+#endif
+
+/* On 3430 ES2.0 ZeBu and silicon, Aux Ctrl Reg can be written outside
+ * Secure mode also
+ */
+#if defined(CONFIG_TRUST_ZONE_OFF) || defined(CONFIG_OMAP_VIRTIO) || \
+    defined(CONFIG_OMAP_ZEBU)      || defined(CONFIG_ARCH_OMAP34XX)
+	mcr     p15, 0, r0, c1, c0, 1
+#else
+	mov r10, r12		@ r12 is this function's sp. back it up.
+
+	mov r12, #0x3           @ AUXCR service
+	.word 0xE1600070        @ Call OMAP SMI monitor service
+
+	mov r12, r10		@ restore r12. 
+#endif
+
+#ifdef ARCH_OMAP34XX
+#ifdef CONFIG_CPU_LOCKDOWN_TO_64K_L2
+	mov	r10, #0xfc
+	mcr     p15, 1, r10, c9, c0, 0
+#endif
+
+#ifdef CONFIG_CPU_LOCKDOWN_TO_128K_L2
+	mov	r10, #0xf0
+	mcr     p15, 1, r10, c9, c0, 0
+#endif
+
+#ifdef CONFIG_CPU_LOCKDOWN_TO_256K_L2
+	mov	r10, #0x00
+	mcr     p15, 1, r10, c9, c0, 0
+#endif
+#endif
+
 	adr	r5, v7_crval
 	ldmia	r5, {r5, r6}
    	mrc	p15, 0, r0, c1, c0, 0		@ read control register
 	bic	r0, r0, r5			@ clear bits them
 	orr	r0, r0, r6			@ set them
+	mov	pc, lr			@ return to head.S:__ret
+
+	/*
+	 *  TAT N EV   F	H   R
+	 * .EFR M.EE .UI. ..A. .RVI Z... B... .CAM
+	 * 0xxx x0xx 11x0 01x1 0xxx x000 0111 1xxx < forced typical
+	 * r	rr   rr r rr r r	 rrr rrrr r	< always read only
+	 * .000 ..00 ..0. ..0. .011 1... .... .101 < we want
+	 */
+	.type   v7_crval, #object
+v7_crval:
+	crval   clear=0x7322f006, mmuset=0x00003805, ucset=0x00001804
+#else
+
+#ifndef CONFIG_CPU_L2CACHE_DISABLE
+	@ L2 cache configuration in the L2 aux control register
+	mrc	p15, 1, r10, c9, c0, 2
+	bic	r10, r10, #(1 << 16)		@ L2 outer cache
+	mcr	p15, 1, r10, c9, c0, 2
+	@ L2 cache is enabled in the aux control register
+	mrc	p15, 0, r10, c1, c0, 1
+	orr	r10, r10, #2
+	mcr	p15, 0, r10, c1, c0, 1
+#endif
+	mrc	p15, 0, r0, c1, c0, 0		@ read control register
+	ldr	r10, cr1_clear			@ get mask for bits to clear
+	bic	r0, r0, r10			@ clear bits them
+	ldr	r10, cr1_set			@ get mask for bits to set
+	orr	r0, r0, r10			@ set them
 	mov	pc, lr				@ return to head.S:__ret
 
 	/*
@@ -195,9 +281,13 @@ __v7_setup:
 	 * rrrr rrrx xxx0 0101 xxxx xxxx x111 xxxx < forced
 	 *         0 110       0011 1.00 .111 1101 < we want
 	 */
-	.type	v7_crval, #object
-v7_crval:
-	crval	clear=0x0120c302, mmuset=0x00c0387d, ucset=0x00c0187c
+	.type	cr1_clear, #object
+	.type	cr1_set, #object
+cr1_clear:
+	.word	0x0120c302
+cr1_set:
+	.word	0x00c0387d
+#endif
 
 __v7_setup_stack:
 	.space	4 * 11				@ 11 registers
@@ -212,6 +302,7 @@ ENTRY(v7_processor_functions)
 	.word	cpu_v7_dcache_clean_area
 	.word	cpu_v7_switch_mm
 	.word	cpu_v7_set_pte_ext
+	.word	pabort_ifar
 	.size	v7_processor_functions, . - v7_processor_functions
 
 	.type	cpu_arch_name, #object

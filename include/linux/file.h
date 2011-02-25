@@ -71,11 +71,33 @@ extern int init_file(struct file *, struct vfsmount *mnt,
 extern struct file *alloc_file(struct vfsmount *, struct dentry *dentry,
 		mode_t mode, const struct file_operations *fop);
 
+#ifdef CONFIG_FORCED_UNMOUNT
+
+#define clear_f_light(file)			\
+	do {					\
+		(file)->f_light = 0;		\
+	} while (0)				\
+
+#define set_f_light(file)			\
+	do {					\
+		if (file)			\
+			(file)->f_light = 1;	\
+	} while (0)				\
+
+extern void FASTCALL(fput_light(struct file *file, int fput_needed));
+
+#else
+
+#define clear_f_light(file)	do { } while (0)
+#define set_f_light(file)	do { } while (0)
+
 static inline void fput_light(struct file *file, int fput_needed)
 {
 	if (unlikely(fput_needed))
 		fput(file);
 }
+
+#endif
 
 extern struct file * FASTCALL(fget(unsigned int fd));
 extern struct file * FASTCALL(fget_light(unsigned int fd, int *fput_needed));

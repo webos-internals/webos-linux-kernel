@@ -42,5 +42,35 @@ config W1_MASTER_DS1WM
 	  in HP iPAQ devices like h5xxx, h2200, and ASIC3-based like
 	  hx4700.
 
+config W1_MASTER_OMAP
+	tristate "OMAP3430 HDQ and 1-wire busmaster"
+	depends on W1 && (ARCH_OMAP3430 || ARCH_OMAP24XX)
+	help
+	  Say Y here to enable the OMAP 3430 HDQ/1-wire driver for 
+	  OMAP 3430 communications with 1-wire or HDQ devices such i
+	  as battery monitor (gas gauge) IC's
+
+config OMAP3430_HDQ_SYSFS
+	depends on W1_MASTER_OMAP
+	bool "HDQ driver sysfs support"
+	default y
+	---help---
+	  Say Y here if you want sysfs support for the HDQ port on OMAP 3430
+
+config OMAP3430_HDQ_PROTOCOL
+	depends on W1_MASTER_OMAP
+	bool "HDQ protocol support on OMAP"
+	---help---
+	  Say Y here if you want support for the HDQ Interface instead 
+	  of the 1-wire interface on the OMAP processor.
+
+config OMAP3430_1WIRE_PROTOCOL
+	depends on W1_MASTER_OMAP
+	bool "One wire support on OMAP"
+        default y
+        ---help---
+          Say Y here if you want to use the 1-wire protocol 
+          on the OMAP processor instead of the HDQ protocol
+
 endmenu
 

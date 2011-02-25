@@ -607,9 +607,9 @@ error_inode:
 		sinfo.bh = NULL;
 	}
 	if (corrupt < 0) {
-		fat_fs_panic(new_dir->i_sb,
+		fat_fs_error(new_dir->i_sb,
 			     "%s: Filesystem corrupted (i_pos %lld)",
-			     __FUNCTION__, sinfo.i_pos);
+			     __func__, sinfo.i_pos);
 	}
 	goto out;
 }

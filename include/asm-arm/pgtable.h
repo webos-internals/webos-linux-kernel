@@ -249,7 +249,7 @@ extern struct page *empty_zero_page;
 #define set_pte_ext(ptep,pte,ext) cpu_set_pte_ext(ptep,pte,ext)
 
 #define set_pte_at(mm,addr,ptep,pteval) do { \
-	set_pte_ext(ptep, pteval, (addr) >= TASK_SIZE ? 0 : PTE_EXT_NG); \
+	set_pte_ext(ptep, pteval, (addr) >= MODULE_START ? 0 : PTE_EXT_NG); \
  } while (0)
 
 /*
@@ -285,10 +285,12 @@ PTE_BIT_FUNC(mkyoung,   |= L_PTE_YOUNG);
  */
 #define pgprot_noncached(prot)	__pgprot(pgprot_val(prot) & ~(L_PTE_CACHEABLE | L_PTE_BUFFERABLE))
 #define pgprot_writecombine(prot) __pgprot(pgprot_val(prot) & ~L_PTE_CACHEABLE)
+#define pgprot_writethrough(prot) __pgprot(pgprot_val(prot) & ~L_PTE_BUFFERABLE)
 
 #define pmd_none(pmd)		(!pmd_val(pmd))
 #define pmd_present(pmd)	(pmd_val(pmd))
 #define pmd_bad(pmd)		(pmd_val(pmd) & 2)
+#define pmd_table(pmd)		((pmd_val(pmd) & PMD_TYPE_MASK) == PMD_TYPE_TABLE)
 
 #define copy_pmd(pmdpd,pmdps)		\
 	do {				\

@@ -7,8 +7,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  *
  * These are the low level assembler for performing cache and TLB
@@ -442,6 +442,7 @@ arm1022_processor_functions:
 	.word	cpu_arm1022_dcache_clean_area
 	.word	cpu_arm1022_switch_mm
 	.word	cpu_arm1022_set_pte_ext
+	.word	pabort_noifar
 	.size	arm1022_processor_functions, . - arm1022_processor_functions
 
 	.section ".rodata"

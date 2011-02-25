@@ -183,4 +183,14 @@ config HP_SDC_RTC
 	  Say Y here if you want to support the built-in real time clock
 	  of the HP SDC controller.
 
+config HSDL9100_PROX_SENSOR
+	tristate "HSDL9100 Proximity Sensor"
+	help
+	  Say Y here if you want to use the HSDL9100 Proximity Sensor driver.
+
+config LIGHTSENSOR_AMBIENT6200
+    tristate "Ambient 6200 Light Sensor"
+    help
+      Say Y here if you want to use Ambient 6200 Light Sensor driver.
+
 endif

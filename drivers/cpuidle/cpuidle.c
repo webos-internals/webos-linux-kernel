@@ -26,6 +26,17 @@ static void (*pm_idle_old)(void);
 
 static int enabled_devices;
 
+#if defined(CONFIG_ARCH_HAS_CPU_IDLE_WAIT)
+static void cpuidle_kick_cpus(void)
+{
+	cpu_idle_wait();
+}
+#elif defined(CONFIG_SMP)
+# error "Arch needs cpu_idle_wait() equivalent here"
+#else /* !CONFIG_ARCH_HAS_CPU_IDLE_WAIT && !CONFIG_SMP */
+static void cpuidle_kick_cpus(void) {}
+#endif
+
 /**
  * cpuidle_idle_call - the main idle loop
  *
@@ -45,17 +56,20 @@ static void cpuidle_idle_call(void)
 			local_irq_enable();
 		return;
 	}
+	if (need_resched())
+		return;
 
 	/* ask the governor for the next state */
 	next_state = cpuidle_curr_governor->select(dev);
-	if (need_resched())
-		return;
 	target_state = &dev->states[next_state];
 
 	/* enter the state and update stats */
-	dev->last_residency = target_state->enter(dev, target_state);
 	dev->last_state = target_state;
-	target_state->time += dev->last_residency;
+	dev->last_residency = target_state->enter(dev, target_state);
+	if (dev->last_state)
+		target_state = dev->last_state;
+
+	target_state->time += (unsigned long long)dev->last_residency;
 	target_state->usage++;
 
 	/* give the governor an opportunity to reflect on the outcome */
@@ -80,9 +94,9 @@ void cpuidle_install_idle_handler(void)
  */
 void cpuidle_uninstall_idle_handler(void)
 {
-	if (enabled_devices && (pm_idle != pm_idle_old)) {
+	if (enabled_devices && pm_idle_old && (pm_idle != pm_idle_old)) {
 		pm_idle = pm_idle_old;
-		cpu_idle_wait();
+		cpuidle_kick_cpus();
 	}
 }
 

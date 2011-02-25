@@ -5,8 +5,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  */
 #ifndef _LINUX_SERIAL_8250_H
 #define _LINUX_SERIAL_8250_H
@@ -23,6 +23,7 @@ struct plat_serial8250_port {
 	resource_size_t	mapbase;	/* resource base */
 	unsigned int	irq;		/* interrupt number */
 	unsigned int	uartclk;	/* UART clock rate */
+	void            *private_data;
 	unsigned char	regshift;	/* register shift */
 	unsigned char	iotype;		/* UPIO_* */
 	unsigned char	hub6;
@@ -45,6 +46,7 @@ enum {
 	PLAT8250_DEV_HUB6,
 	PLAT8250_DEV_MCA,
 	PLAT8250_DEV_AU1X00,
+	PLAT8250_DEV_SM501,
 };
 
 /*
@@ -57,6 +59,9 @@ struct uart_port;
 
 int serial8250_register_port(struct uart_port *);
 void serial8250_unregister_port(int line);
+#ifdef CONFIG_KGDB_8250
+void serial8250_unregister_by_port(struct uart_port *port);
+#endif
 void serial8250_suspend_port(int line);
 void serial8250_resume_port(int line);
 

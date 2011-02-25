@@ -204,6 +204,38 @@ ENTRY(v7_dma_inv_range)
 	mov	pc, lr
 
 /*
+ *	v7_dma_inv_range_user(start,end)
+ *
+ *	Invalidate the data cache within the specified region; we will
+ *	be performing a DMA operation in this region and we want to
+ *	purge old data in the cache.
+ *
+ *	- start   - virtual start address of region
+ *	- end     - virtual end address of region
+ */
+ENTRY(v7_dma_inv_range_user)
+	dcache_line_size r2, r3
+	sub	r3, r2, #1
+	tst	r0, r3
+	bic	r0, r0, r3
+	USER(mcrne	p15, 0, r0, c7, c14, 1)		@ clean & invalidate D / U line
+
+	tst	r1, r3
+	bic	r1, r1, r3
+	USER(mcrne	p15, 0, r1, c7, c14, 1)		@ clean & invalidate D / U line
+1:
+	USER(mcr	p15, 0, r0, c7, c6, 1)		@ invalidate D / U line
+	add	r0, r0, r2
+	cmp	r0, r1
+	blo	1b
+	dsb
+	mov     r0,#0
+	mov	pc, lr
+9001:
+	mov     r0,#1
+	mov	pc, lr
+
+/*
  *	v7_dma_clean_range(start,end)
  *	- start   - virtual start address of region
  *	- end     - virtual end address of region
@@ -235,6 +267,27 @@ ENTRY(v7_dma_flush_range)
 	cmp	r0, r1
 	blo	1b
 	dsb
+	mov	pc, lr
+
+/*
+ *	v7_dma_flush_range_user(start,end)
+ *	- start   - virtual start address of region
+ *	- end     - virtual end address of region
+ */
+ENTRY(v7_dma_flush_range_user)
+	dcache_line_size r2, r3
+	sub	r3, r2, #1
+	bic	r0, r0, r3
+1:
+USER(	mcr	p15, 0, r0, c7, c14, 1)		@ clean & invalidate D / U line, May Fault
+	add	r0, r0, r2
+	cmp	r0, r1
+	blo	1b
+	dsb
+	mov     r0,#0
+	mov	pc, lr
+9001:
+	mov     r0,#1
 	mov	pc, lr
 
 	__INITDATA

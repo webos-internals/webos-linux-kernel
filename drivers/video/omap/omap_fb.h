@@ -1,0 +1,368 @@
+/*
+ * drivers/video/omap24xxfb.h
+ *
+ * Framebuffer driver for OMAP24xx display controller.
+ *
+ * Author: Andy Lowe (source@mvista.com)
+ *
+ * Copyright (C) 2004 MontaVista Software, Inc.
+ * Copyright (C) 2004 Texas Instruments.
+ *
+ * This file is licensed under the terms of the GNU General Public License 
+ * version 2. This program is licensed "as is" without any warranty of any 
+ * kind, whether express or implied.
+ */
+
+#ifndef OMAP24XXFB_H
+#define OMAP24XXFB_H
+
+/* physical memory map definitions */
+	/* display subsystem */
+#define DSS_REG_BASE		0x48050000
+#define DSS_REG_SIZE		0x00001000
+	/* display controller */
+#define DISPC_REG_OFFSET	0x00000400
+	/* remote framebuffer interface */
+#define RFBI_REG_OFFSET		0x00000800
+	/* video encoder */
+#define VENC_REG_OFFSET		0x00000C00
+
+/* define display subsystem register offsets */
+#define DSS_CONTROL			0x040
+#define DSS_PSA_LCD_REG_1		0x050
+#define DSS_PSA_LCD_REG_2		0x054
+#define DSS_PSA_VIDEO_REG		0x058
+#define DSS_STATUS			0x05C
+
+/* define display controller register offsets */
+#define DISPC_REVISION			0x000
+
+#define DISPC_SYSCONFIG			0x010
+#define DISPC_SYSSTATUS			0x014
+#define DISPC_IRQSTATUS			0x018
+#define DISPC_IRQENABLE			0x01C
+
+#define DISPC_CONTROL			0x040
+#define DISPC_CONFIG			0x044
+#define DISPC_CAPABLE			0x048
+#define DISPC_DEFAULT_COLOR0		0x04C
+#define DISPC_DEFAULT_COLOR1		0x050
+#define DISPC_TRANS_COLOR0		0x054
+#define DISPC_TRANS_COLOR1		0x058
+#define DISPC_LINE_STATUS		0x05C
+#define DISPC_LINE_NUMBER		0x060
+#define DISPC_TIMING_H			0x064
+#define DISPC_TIMING_V			0x068
+#define DISPC_POL_FREQ			0x06C
+#define DISPC_DIVISOR			0x070
+
+#define DISPC_SIZE_DIG			0x078
+#define DISPC_SIZE_LCD			0x07C
+#define DISPC_GFX_BA0			0x080
+#define DISPC_GFX_BA1			0x084
+#define DISPC_GFX_POSITION		0x088
+#define DISPC_GFX_SIZE			0x08C
+
+#define DISPC_GFX_ATTRIBUTES		0x0A0
+#define DISPC_GFX_FIFO_THRESHOLD	0x0A4
+#define DISPC_GFX_FIFO_SIZE		0x0A8
+#define DISPC_GFX_ROW_INC		0x0AC
+#define DISPC_GFX_PIXEL_INC		0x0B0
+#define DISPC_GFX_WINDOW_SKIP		0x0B4
+#define DISPC_GFX_TABLE_BA		0x0B8
+#define DISPC_VID1_BA0			0x0BC
+#define DISPC_VID1_BA1			0x0C0
+#define DISPC_VID1_POSITION		0x0C4
+#define DISPC_VID1_SIZE			0x0C8
+#define DISPC_VID1_ATTRIBUTES		0x0CC
+#define DISPC_VID1_FIFO_THRESHOLD	0x0D0
+#define DISPC_VID1_FIFO_SIZE		0x0D4
+#define DISPC_VID1_ROW_INC		0x0D8
+#define DISPC_VID1_PIXEL_INC		0x0DC
+#define DISPC_VID1_FIR			0x0E0
+#define DISPC_VID1_PICTURE_SIZE		0x0E4
+#define DISPC_VID1_ACCU0		0x0E8
+#define DISPC_VID1_ACCU1		0x0EC
+#define DISPC_VID1_FIR_COEF_H0		0x0F0
+#define DISPC_VID1_FIR_COEF_HV0		0x0F4
+#define DISPC_VID1_FIR_COEF_H1		0x0F8
+#define DISPC_VID1_FIR_COEF_HV1		0x0FC
+#define DISPC_VID1_FIR_COEF_H2		0x100
+#define DISPC_VID1_FIR_COEF_HV2		0x104
+#define DISPC_VID1_FIR_COEF_H3		0x108
+#define DISPC_VID1_FIR_COEF_HV3		0x10C
+#define DISPC_VID1_FIR_COEF_H4		0x110
+#define DISPC_VID1_FIR_COEF_HV4		0x114
+#define DISPC_VID1_FIR_COEF_H5		0x118
+#define DISPC_VID1_FIR_COEF_HV5		0x11C
+#define DISPC_VID1_FIR_COEF_H6		0x120
+#define DISPC_VID1_FIR_COEF_HV6		0x124
+#define DISPC_VID1_FIR_COEF_H7		0x128
+#define DISPC_VID1_FIR_COEF_HV7		0x12C
+#define DISPC_VID1_CONV_COEF0		0x130
+#define DISPC_VID1_CONV_COEF1		0x134
+#define DISPC_VID1_CONV_COEF2		0x138
+#define DISPC_VID1_CONV_COEF3		0x13C
+#define DISPC_VID1_CONV_COEF4		0x140
+
+#define DISPC_VID2_BA0			0x14C
+#define DISPC_VID2_BA1			0x150
+#define DISPC_VID2_POSITION		0x154
+#define DISPC_VID2_SIZE			0x158
+#define DISPC_VID2_ATTRIBUTES		0x15C
+#define DISPC_VID2_FIFO_THRESHOLD	0x160
+#define DISPC_VID2_FIFO_SIZE		0x164
+#define DISPC_VID2_ROW_INC		0x168
+#define DISPC_VID2_PIXEL_INC		0x16C
+#define DISPC_VID2_FIR			0x170
+#define DISPC_VID2_PICTURE_SIZE		0x174
+#define DISPC_VID2_ACCU0		0x178
+#define DISPC_VID2_ACCU1		0x17C
+#define DISPC_VID2_FIR_COEF_H0		0x180
+#define DISPC_VID2_FIR_COEF_HV0		0x184
+#define DISPC_VID2_FIR_COEF_H1		0x188
+#define DISPC_VID2_FIR_COEF_HV1		0x18C
+#define DISPC_VID2_FIR_COEF_H2		0x190
+#define DISPC_VID2_FIR_COEF_HV2		0x194
+#define DISPC_VID2_FIR_COEF_H3		0x198
+#define DISPC_VID2_FIR_COEF_HV3		0x19C
+#define DISPC_VID2_FIR_COEF_H4		0x1A0
+#define DISPC_VID2_FIR_COEF_HV4		0x1A4
+#define DISPC_VID2_FIR_COEF_H5		0x1A8
+#define DISPC_VID2_FIR_COEF_HV5		0x1AC
+#define DISPC_VID2_FIR_COEF_H6		0x1B0
+#define DISPC_VID2_FIR_COEF_HV6		0x1B4
+#define DISPC_VID2_FIR_COEF_H7		0x1B8
+#define DISPC_VID2_FIR_COEF_HV7		0x1BC
+#define DISPC_VID2_CONV_COEF0		0x1C0
+#define DISPC_VID2_CONV_COEF1		0x1C4
+#define DISPC_VID2_CONV_COEF2		0x1C8
+#define DISPC_VID2_CONV_COEF3		0x1CC
+#define DISPC_VID2_CONV_COEF4		0x1D0
+#define DISPC_DATA_CYCLE1		0x1D4
+#define DISPC_DATA_CYCLE2		0x1D8
+#define DISPC_DATA_CYCLE3		0x1DC
+
+/* Define bit fields within selected registers */
+#define DISPC_REVISION_MAJOR				(15 << 4)
+#define DISPC_REVISION_MAJOR_SHIFT			4
+#define DISPC_REVISION_MINOR				(15 << 0)
+#define DISPC_REVISION_MINOR_SHIFT			0
+
+#define DISPC_SYSCONFIG_MIDLEMODE			(3 << 12)
+#define DISPC_SYSCONFIG_MIDLEMODE_FSTANDBY		(0 << 12)
+#define DISPC_SYSCONFIG_MIDLEMODE_NSTANDBY		(1 << 12)
+#define DISPC_SYSCONFIG_MIDLEMODE_SSTANDBY		(2 << 12)
+#define DISPC_SYSCONFIG_SIDLEMODE			(3 <<  3)
+#define DISPC_SYSCONFIG_SIDLEMODE_FIDLE			(0 <<  3)
+#define DISPC_SYSCONFIG_SIDLEMODE_NIDLE			(1 <<  3)
+#define DISPC_SYSCONFIG_SIDLEMODE_SIDLE			(2 <<  3)
+#define DISPC_SYSCONFIG_SOFTRESET			(1 <<  1)
+#define DISPC_SYSCONFIG_AUTOIDLE			(1 <<  0)
+
+#define DISPC_SYSSTATUS_RESETDONE			(1 << 0)
+
+#define DISPC_IRQSTATUS_SYNCLOST			(1 << 14)
+#define DISPC_IRQSTATUS_VID2ENDWINDOW			(1 << 13)
+#define DISPC_IRQSTATUS_VID2FIFOUNDERFLOW		(1 << 12)
+#define DISPC_IRQSTATUS_VID1ENDWINDOW			(1 << 11)
+#define DISPC_IRQSTATUS_VID1FIFOUNDERFLOW		(1 << 10)
+#define DISPC_IRQSTATUS_OCPERROR			(1 <<  9)
+#define DISPC_IRQSTATUS_PALETTEGAMMALOADING		(1 <<  8)
+#define DISPC_IRQSTATUS_GFXENDWINDOW			(1 <<  7)
+#define DISPC_IRQSTATUS_GFXFIFOUNDERFLOW		(1 <<  6)
+#define DISPC_IRQSTATUS_PROGRAMMEDLINENUMBER		(1 <<  5)
+#define DISPC_IRQSTATUS_ACBIASCOUNTSTATUS		(1 <<  4)
+#define DISPC_IRQSTATUS_EVSYNC_ODD			(1 <<  3)
+#define DISPC_IRQSTATUS_EVSYNC_EVEN			(1 <<  2)
+#define DISPC_IRQSTATUS_VSYNC				(1 <<  1)
+#define DISPC_IRQSTATUS_FRAMEDONE			(1 <<  0)
+
+#define DISPC_IRQENABLE_SYNCLOST			(1 << 14)
+#define DISPC_IRQENABLE_VID2ENDWINDOW			(1 << 13)
+#define DISPC_IRQENABLE_VID2FIFOUNDERFLOW		(1 << 12)
+#define DISPC_IRQENABLE_VID1ENDWINDOW			(1 << 11)
+#define DISPC_IRQENABLE_VID1FIFOUNDERFLOW		(1 << 10)
+#define DISPC_IRQENABLE_OCPERROR			(1 <<  9)
+#define DISPC_IRQENABLE_PALETTEGAMMALOADING		(1 <<  8)
+#define DISPC_IRQENABLE_GFXENDWINDOW			(1 <<  7)
+#define DISPC_IRQENABLE_GFXFIFOUNDERFLOW		(1 <<  6)
+#define DISPC_IRQENABLE_PROGRAMMEDLINENUMBER		(1 <<  5)
+#define DISPC_IRQENABLE_ACBIASCOUNTSTATUS		(1 <<  4)
+#define DISPC_IRQENABLE_EVSYNC_ODD			(1 <<  3)
+#define DISPC_IRQENABLE_EVSYNC_EVEN			(1 <<  2)
+#define DISPC_IRQENABLE_VSYNC				(1 <<  1)
+#define DISPC_IRQENABLE_FRAMEDONE			(1 <<  0)
+
+#define DISPC_CONTROL_TDMUNUSEDBITS			(3 << 25)
+#define DISPC_CONTROL_TDMUNUSEDBITS_LOWLEVEL		(0 << 25)
+#define DISPC_CONTROL_TDMUNUSEDBITS_HIGHLEVEL		(1 << 25)
+#define DISPC_CONTROL_TDMUNUSEDBITS_UNCHANGED		(2 << 25)
+#define DISPC_CONTROL_TDMCYCLEFORMAT			(3 << 23)
+#define DISPC_CONTROL_TDMCYCLEFORMAT_1CYCPERPIX		(0 << 23)
+#define DISPC_CONTROL_TDMCYCLEFORMAT_2CYCPERPIX		(1 << 23)
+#define DISPC_CONTROL_TDMCYCLEFORMAT_3CYCPERPIX		(2 << 23)
+#define DISPC_CONTROL_TDMCYCLEFORMAT_3CYCPER2PIX	(3 << 23)
+#define DISPC_CONTROL_TDMPARALLELMODE			(3 << 21)
+#define DISPC_CONTROL_TDMPARALLELMODE_8BPARAINT		(0 << 21)
+#define DISPC_CONTROL_TDMPARALLELMODE_9BPARAINT		(1 << 21)
+#define DISPC_CONTROL_TDMPARALLELMODE_12BPARAINT	(2 << 21)
+#define DISPC_CONTROL_TDMPARALLELMODE_16BPARAINT	(3 << 21)
+#define DISPC_CONTROL_TDMENABLE				(1 << 20)
+#define DISPC_CONTROL_HT				(7 << 17)
+#define DISPC_CONTROL_HT_SHIFT				17
+#define DISPC_CONTROL_GPOUT1				(1 << 16)
+#define DISPC_CONTROL_GPOUT0				(1 << 15)
+#define DISPC_CONTROL_GPIN1				(1 << 14)
+#define DISPC_CONTROL_GPIN0				(1 << 13)
+#define DISPC_CONTROL_OVERLAYOPTIMIZATION		(1 << 12)
+#define DISPC_CONTROL_RFBIMODE				(1 << 11)
+#define DISPC_CONTROL_SECURE				(1 << 10)
+#define DISPC_CONTROL_TFTDATALINES			(3 <<  8)
+#define DISPC_CONTROL_TFTDATALINES_OALSB12B		(0 <<  8)
+#define DISPC_CONTROL_TFTDATALINES_OALSB16B		(1 <<  8)
+#define DISPC_CONTROL_TFTDATALINES_OALSB18B		(2 <<  8)
+#define DISPC_CONTROL_TFTDATALINES_OALSB24B		(3 <<  8)
+#define DISPC_CONTROL_TFTDITHERENABLE			(1 <<  7)
+#define DISPC_CONTROL_GODIGITAL				(1 <<  6)
+#define DISPC_CONTROL_GOLCD				(1 <<  5)
+#define DISPC_CONTROL_M8B				(1 <<  4)
+#define DISPC_CONTROL_STNTFT				(1 <<  3)
+#define DISPC_CONTROL_MONOCOLOR				(1 <<  2)
+#define DISPC_CONTROL_DIGITALENABLE			(1 <<  1)
+#define DISPC_CONTROL_LCDENABLE				(1 <<  0)
+
+#define DISPC_CONFIG_TCKDIGSELECTION			(1 << 13)
+#define DISPC_CONFIG_TCKDIGENABLE			(1 << 12)
+#define DISPC_CONFIG_TCKLCDSELECTION			(1 << 11)
+#define DISPC_CONFIG_TCKLCDENABLE			(1 << 10)
+#define DISPC_CONFIG_FUNCGATED				(1 <<  9)
+#define DISPC_CONFIG_ACBIASGATED			(1 <<  8)
+#define DISPC_CONFIG_VSYNCGATED				(1 <<  7)
+#define DISPC_CONFIG_HSYNCGATED				(1 <<  6)
+#define DISPC_CONFIG_PIXELCLOCKGATED			(1 <<  5)
+#define DISPC_CONFIG_PIXELDATAGATED			(1 <<  4)
+#define DISPC_CONFIG_PALETTEGAMMATABLE			(1 <<  3)
+#define DISPC_CONFIG_LOADMODE_FRDATLEFR			(1 <<  2)
+#define DISPC_CONFIG_LOADMODE_PGTABUSETB		(1 <<  1)
+#define DISPC_CONFIG_PIXELGATED				(1 <<  0)
+
+#define DISPC_CAPABLE_GFXGAMMATABLECAPABLE		(1 <<  9)
+#define DISPC_CAPABLE_GFXLAYERCAPABLE			(1 <<  8)
+#define DISPC_CAPABLE_GFXTRANSDSTCAPABLE		(1 <<  7)
+#define DISPC_CAPABLE_STNDITHERINGCAPABLE		(1 <<  6)
+#define DISPC_CAPABLE_TFTDITHERINGCAPABLE		(1 <<  5)
+#define DISPC_CAPABLE_VIDTRANSSRCCAPABLE		(1 <<  4)
+#define DISPC_CAPABLE_VIDLAYERCAPABLE			(1 <<  3)
+#define DISPC_CAPABLE_VIDVERTFIRCAPABLE			(1 <<  2)
+#define DISPC_CAPABLE_VIDHORFIRCAPABLE			(1 <<  1)
+#define DISPC_CAPABLE_VIDCAPABLE			(1 <<  0)
+
+#define DISPC_POL_FREQ_ONOFF				(1 << 17)
+#define DISPC_POL_FREQ_RF				(1 << 16)
+#define DISPC_POL_FREQ_IEO				(1 << 15)
+#define DISPC_POL_FREQ_IPC				(1 << 14)
+#define DISPC_POL_FREQ_IHS				(1 << 13)
+#define DISPC_POL_FREQ_IVS				(1 << 12)
+#define DISPC_POL_FREQ_ACBI				(15 << 8)
+#define DISPC_POL_FREQ_ACBI_SHIFT			8
+#define DISPC_POL_FREQ_ACB				0xFF
+#define DISPC_POL_FREQ_ACB_SHIFT			0
+
+#define DISPC_TIMING_H_HBP				(0xFF << 20)
+#define DISPC_TIMING_H_HBP_SHIFT			20
+#define DISPC_TIMING_H_HFP				(0xFF << 8)
+#define DISPC_TIMING_H_HFP_SHIFT			8
+#define DISPC_TIMING_H_HSW				(0x3F << 0)
+#define DISPC_TIMING_H_HSW_SHIFT			0
+
+#define DISPC_TIMING_V_VBP				(0xFF << 20)
+#define DISPC_TIMING_V_VBP_SHIFT			20
+#define DISPC_TIMING_V_VFP				(0xFF << 8)
+#define DISPC_TIMING_V_VFP_SHIFT			8
+#define DISPC_TIMING_V_VSW				(0x3F << 0)
+#define DISPC_TIMING_V_VSW_SHIFT			0
+
+#define DISPC_DIVISOR_LCD				(0xFF << 16)
+#define DISPC_DIVISOR_LCD_SHIFT				16
+#define DISPC_DIVISOR_PCD				0xFF
+#define DISPC_DIVISOR_PCD_SHIFT				0
+
+#define DISPC_SIZE_LCD_LPP				(0x7FF << 16)
+#define DISPC_SIZE_LCD_LPP_SHIFT			16
+#define DISPC_SIZE_LCD_PPL				0x7FF
+#define DISPC_SIZE_LCD_PPL_SHIFT			0
+
+#define DISPC_SIZE_DIG_LPP				(0x7FF << 16)
+#define DISPC_SIZE_DIG_LPP_SHIFT			16
+#define DISPC_SIZE_DIG_PPL				0x7FF
+#define DISPC_SIZE_DIG_PPL_SHIFT			0
+
+#define DISPC_GFX_POSITION_GFXPOSY			(0x7FF << 16)
+#define DISPC_GFX_POSITION_GFXPOSY_SHIFT		16
+#define DISPC_GFX_POSITION_GFXPOSX			0x7FF
+#define DISPC_GFX_POSITION_GFXPOSX_SHIFT		0
+
+#define DISPC_GFX_SIZE_GFXSIZEY				(0x7FF << 16)
+#define DISPC_GFX_SIZE_GFXSIZEY_SHIFT			16
+#define DISPC_GFX_SIZE_GFXSIZEX				0x7FF
+#define DISPC_GFX_SIZE_GFXSIZEX_SHIFT			0
+
+#define DISPC_GFX_ATTRIBUTES_GFXENDIANNESS		(1 << 10)
+#define DISPC_GFX_ATTRIBUTES_GFXNIBBLEMODE		(1 <<  9)
+#define DISPC_GFX_ATTRIBUTES_GFXCHANNELOUT		(1 <<  8)
+#define DISPC_GFX_ATTRIBUTES_GFXBURSTSIZE		(3 <<  6)
+#define DISPC_GFX_ATTRIBUTES_GFXBURSTSIZE_BURST4X32	(0 <<  6)
+#define DISPC_GFX_ATTRIBUTES_GFXBURSTSIZE_BURST8X32	(1 <<  6)
+#define DISPC_GFX_ATTRIBUTES_GFXBURSTSIZE_BURST16X32	(2 <<  6)
+#define DISPC_GFX_ATTRIBUTES_GFXREPLICATIONENABLE	(1 <<  5)
+#define DISPC_GFX_ATTRIBUTES_GFXFORMAT			(15 << 1)
+#define DISPC_GFX_ATTRIBUTES_GFXFORMAT_BITMAP1		(0 <<  1)
+#define DISPC_GFX_ATTRIBUTES_GFXFORMAT_BITMAP2		(1 <<  1)
+#define DISPC_GFX_ATTRIBUTES_GFXFORMAT_BITMAP4		(2 <<  1)
+#define DISPC_GFX_ATTRIBUTES_GFXFORMAT_BITMAP8		(3 <<  1)
+#define DISPC_GFX_ATTRIBUTES_GFXFORMAT_RGB12		(4 <<  1)
+#define DISPC_GFX_ATTRIBUTES_GFXFORMAT_RGB16		(6 <<  1)
+#define DISPC_GFX_ATTRIBUTES_GFXFORMAT_RGB24		(8 <<  1)
+#define DISPC_GFX_ATTRIBUTES_ENABLE			(1 <<  0)
+
+#define DISPC_VID_ATTRIBUTES_ENABLE			(1 <<  0)
+
+/* define the custom FBIO_WAITFORVSYNC ioctl */
+#define FBIO_WAITFORVSYNC	_IOW('F', 0x20, u_int32_t)
+/* define the custom FBIO_MIRROR ioctl */
+#define FBIO_MIRROR		_IOW('F', 0x21, u_int32_t)
+
+#define CONFIG_LCD_IOCTL		1
+#ifdef CONFIG_LCD_IOCTL
+
+/* define the custom FBIO_LCD_PUT_SCREENINFO ioctl */
+#define FBIO_LCD_PUT_SCREENINFO	_IOW('F', 0x22, struct omap_lcd_info)
+
+struct omap_lcd_info
+{
+	unsigned int	pixclock;	/* pixclocks */
+	unsigned int	left_margin;	/* pixclocks */
+	unsigned int	right_margin;	/* pixclocks */
+	unsigned int	upper_margin;	/* lineclocks */
+	unsigned int	lower_margin;	/* lineclocks */
+	unsigned int	hsync_len;	/* pixclocks */
+	unsigned int	vsync_len;	/* lineclocks */
+	unsigned int	sync;		/* hsync & vsync polarity */
+	unsigned int	acb;		/* AC-bias pin frequency */
+	unsigned int	ipc;		/* Invert pixel clock */
+	unsigned int	onoff;		/* HSYNC/VSYNC Pixel clk Control*/
+};
+
+extern int omap24xxfb_set_output_layer(int layer);
+extern int omap_lcd_init(struct omap_lcd_info *info);
+extern void omap2_dss_rgb_enable(void);
+extern void omap2_dss_rgb_disable(void);
+
+#ifndef CONFIG_MACH_FLANK
+extern int omap_lcd_init(struct omap_lcd_info *info);
+#endif
+
+#endif
+
+#endif	/* ifndef OMAP24XXFB_H */

@@ -95,6 +95,7 @@ obj-$(CONFIG_VIDEO_BTCX)  += btcx-risc.o
 obj-$(CONFIG_VIDEO_TVEEPROM) += tveeprom.o
 
 obj-$(CONFIG_VIDEO_M32R_AR_M64278) += arv.o
+obj-$(CONFIG_VIDEO_OMAPPE) += omappe/
 
 obj-$(CONFIG_VIDEO_CX25840) += cx25840/
 obj-$(CONFIG_VIDEO_UPD64031A) += upd64031a.o
@@ -105,6 +106,12 @@ obj-$(CONFIG_VIDEO_CAFE_CCIC) += cafe_ccic.o
 obj-$(CONFIG_VIDEO_OV7670) 	+= ov7670.o
 
 obj-$(CONFIG_VIDEO_TCM825X) += tcm825x.o
+
+obj-$(CONFIG_VIDEO_VX6852)	+= vx6852.o
+obj-$(CONFIG_VIDEO_VX6852_DBG)	+= vx6852-dbg.o
+
+obj-$(CONFIG_VIDEO_VX6953)	+= vx6953.o
+obj-$(CONFIG_VIDEO_VX6953_DBG)	+= vx6953-dbg.o
 
 obj-$(CONFIG_USB_DABUSB)        += dabusb.o
 obj-$(CONFIG_USB_OV511)         += ov511.o
@@ -127,5 +134,7 @@ obj-$(CONFIG_VIDEO_IVTV) += ivtv/
 
 obj-$(CONFIG_VIDEO_VIVI) += vivi.o
 obj-$(CONFIG_VIDEO_CX23885) += cx23885/
+
+obj-$(CONFIG_VIDEO_SMIA10) += smia10.o
 
 EXTRA_CFLAGS += -Idrivers/media/dvb/dvb-core

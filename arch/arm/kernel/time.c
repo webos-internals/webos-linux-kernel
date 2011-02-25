@@ -264,8 +264,8 @@ EXPORT_SYMBOL(do_gettimeofday);
 
 int do_settimeofday(struct timespec *tv)
 {
-	time_t wtm_sec, sec = tv->tv_sec;
-	long wtm_nsec, nsec = tv->tv_nsec;
+	time_t wtm_sec, wtn_sec, sec = tv->tv_sec;
+	long wtm_nsec, wtn_nsec, nsec = tv->tv_nsec;
 
 	if ((unsigned long)tv->tv_nsec >= NSEC_PER_SEC)
 		return -EINVAL;
@@ -281,9 +281,12 @@ int do_settimeofday(struct timespec *tv)
 
 	wtm_sec  = wall_to_monotonic.tv_sec + (xtime.tv_sec - sec);
 	wtm_nsec = wall_to_monotonic.tv_nsec + (xtime.tv_nsec - nsec);
+	wtn_sec  = wall_to_network.tv_sec + (xtime.tv_sec - sec);
+	wtn_nsec = wall_to_network.tv_nsec + (xtime.tv_nsec - nsec);
 
 	set_normalized_timespec(&xtime, sec, nsec);
 	set_normalized_timespec(&wall_to_monotonic, wtm_sec, wtm_nsec);
+	set_normalized_timespec(&wall_to_network,   wtn_sec, wtn_nsec);
 
 	ntp_clear();
 	write_sequnlock_irq(&xtime_lock);

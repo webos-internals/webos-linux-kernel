@@ -6,8 +6,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -45,13 +45,19 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Evgeniy Polyakov <johnpol@2ka.mipt.ru>");
 MODULE_DESCRIPTION("Driver for 1-wire Dallas network protocol.");
 
-static int w1_timeout = 10;
-static int w1_control_timeout = 1;
+/* Set default timeout between scans to 1 second so we get a fast detection of
+ * the battery at boot time. Later on userspace can adjust this value as
+ * needed.
+ */
+static int w1_timeout = 1;
 int w1_max_slave_count = 10;
 int w1_max_slave_ttl = 10;
 
+static atomic_t w1_control_nr_messages = ATOMIC_INIT(0);
+static DECLARE_WAIT_QUEUE_HEAD(w1_control_wait);
+static DECLARE_WAIT_QUEUE_HEAD(w1_process_wait);
+
 module_param_named(timeout, w1_timeout, int, 0);
-module_param_named(control_timeout, w1_control_timeout, int, 0);
 module_param_named(max_slave_count, w1_max_slave_count, int, 0);
 module_param_named(slave_ttl, w1_max_slave_ttl, int, 0);
 
@@ -255,6 +261,8 @@ static ssize_t w1_master_attribute_store_search(struct device * dev,
 	mutex_lock(&md->mutex);
 	md->search_count = simple_strtol(buf, NULL, 0);
 	mutex_unlock(&md->mutex);
+
+	wake_up_interruptible(&w1_process_wait);
 
 	return count;
 }
@@ -667,6 +675,8 @@ void w1_reconnect_slaves(struct w1_family *f)
 		set_bit(W1_MASTER_NEED_RECONNECT, &dev->flags);
 	}
 	mutex_unlock(&w1_mlock);
+
+	w1_control_thread_wakeup();
 }
 
 static void w1_slave_found(void *data, u64 rn)
@@ -794,8 +804,15 @@ void w1_search(struct w1_master *dev, u8 search_type, w1_slave_found_callback cb
 	}
 }
 
+void w1_control_thread_wakeup(void)
+{
+	atomic_inc(&w1_control_nr_messages);
+	wake_up_interruptible(&w1_control_wait);
+}
+
 static int w1_control(void *data)
 {
+	DECLARE_WAITQUEUE(wait, current);
 	struct w1_slave *sl, *sln;
 	struct w1_master *dev, *n;
 	int have_to_wait = 0;
@@ -805,7 +822,19 @@ static int w1_control(void *data)
 		have_to_wait = 0;
 
 		try_to_freeze();
-		msleep_interruptible(w1_control_timeout * 1000);
+
+		add_wait_queue(&w1_control_wait, &wait);
+		while (atomic_read(&w1_control_nr_messages) <= 0 &&
+				!kthread_should_stop()) {
+
+			try_to_freeze();
+			set_current_state(TASK_INTERRUPTIBLE);
+			schedule();
+		}
+		remove_wait_queue(&w1_control_wait, &wait);
+		set_current_state(TASK_RUNNING);
+
+		atomic_dec(&w1_control_nr_messages);
 
 		list_for_each_entry_safe(dev, n, &w1_masters, w1_master_entry) {
 			if (!kthread_should_stop() && !dev->flags)
@@ -833,6 +862,8 @@ static int w1_control(void *data)
 				w1_destroy_master_attributes(dev);
 				mutex_unlock(&dev->mutex);
 				atomic_dec(&dev->refcnt);
+
+				wake_up_interruptible(&w1_process_wait);
 				continue;
 			}
 
@@ -881,24 +912,31 @@ void w1_search_process(struct w1_master *dev, u8 search_type)
 
 int w1_process(void *data)
 {
+	DECLARE_WAITQUEUE(wait, current);
 	struct w1_master *dev = (struct w1_master *) data;
 
 	while (!kthread_should_stop() && !test_bit(W1_MASTER_NEED_EXIT, &dev->flags)) {
 		try_to_freeze();
-		msleep_interruptible(w1_timeout * 1000);
 
-		if (kthread_should_stop() || test_bit(W1_MASTER_NEED_EXIT, &dev->flags))
-			break;
+		if (dev->initialized && dev->search_count != 0) {
+			/* Search for slaves every 'w1_timeout' seconds */	
+			msleep_interruptible(w1_timeout * 1000);
 
-		if (!dev->initialized)
-			continue;
+			mutex_lock(&dev->mutex);
+			w1_search_process(dev, W1_SEARCH);
+			mutex_unlock(&dev->mutex);
+		}
 
-		if (dev->search_count == 0)
-			continue;
+		add_wait_queue(&w1_process_wait, &wait);
+		while ((!dev->initialized || dev->search_count == 0) &&
+				!kthread_should_stop()) {
 
-		mutex_lock(&dev->mutex);
-		w1_search_process(dev, W1_SEARCH);
-		mutex_unlock(&dev->mutex);
+			try_to_freeze();
+			set_current_state(TASK_INTERRUPTIBLE);
+			schedule();
+		}
+		remove_wait_queue(&w1_process_wait, &wait);
+		set_current_state(TASK_RUNNING);
 	}
 
 	atomic_dec(&dev->refcnt);

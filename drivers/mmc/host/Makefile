@@ -17,4 +17,6 @@ obj-$(CONFIG_MMC_OMAP)		+= omap.o
 obj-$(CONFIG_MMC_AT91)		+= at91_mci.o
 obj-$(CONFIG_MMC_TIFM_SD)	+= tifm_sd.o
 obj-$(CONFIG_MMC_SPI)		+= mmc_spi.o
-
+obj-$(CONFIG_MMC_OMAP2430)      += omap_hsmmc.o
+obj-$(CONFIG_MMC_OMAP3430)      += omap_hsmmc.o
+obj-$(CONFIG_MMC_HSMMC_PE)	+= omap_hsmmc_pe.o

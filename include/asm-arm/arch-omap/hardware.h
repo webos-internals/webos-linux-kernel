@@ -14,8 +14,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -226,9 +226,6 @@
 #define PU_PD_SEL_3		0xfffe10c0
 #define PU_PD_SEL_4		0xfffe10c4
 
-/* Timer32K for 1610 and 1710*/
-#define OMAP_TIMER32K_BASE	0xFFFBC400
-
 /*
  * ---------------------------------------------------------------------------
  * TIPB bus interface
@@ -283,8 +280,9 @@
 
 #include "omap730.h"
 #include "omap1510.h"
-#include "omap24xx.h"
 #include "omap16xx.h"
+#include "omap24xx.h"
+#include "omap34xx.h"
 
 #ifndef __ASSEMBLER__
 
@@ -322,6 +320,10 @@
 #include "board-2430sdp.h"
 #endif
 
+#ifdef CONFIG_MACH_OMAP_3430SDP
+#include "board-3430sdp.h"
+#endif
+
 #ifdef CONFIG_MACH_OMAP_APOLLON
 #include "board-apollon.h"
 #endif
@@ -348,6 +350,10 @@
 
 #ifdef CONFIG_MACH_SX1
 #include "board-sx1.h"
+#endif
+
+#ifdef CONFIG_MACH_SIRLOIN
+#include "board-sirloin-3430.h"
 #endif
 
 #endif /* !__ASSEMBLER__ */

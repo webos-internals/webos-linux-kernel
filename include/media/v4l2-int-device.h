@@ -30,6 +30,8 @@
 
 #define V4L2NAMESIZE 32
 
+#define V4L2_INT_SMIA10	"smia 1.0"
+
 /*
  *
  * The internal V4L2 device interface core.
@@ -104,6 +106,7 @@ enum v4l2_if_type {
 	 * on certain image sensors.
 	 */
 	V4L2_IF_TYPE_BT656,
+	V4L2_IF_TYPE_SMIA10,
 };
 
 enum v4l2_if_type_bt656_mode {
@@ -150,10 +153,28 @@ struct v4l2_if_type_bt656 {
 	u32 clock_curr;
 };
 
+enum v4l2_if_type_smia10_code {
+	V4L2_IF_TYPE_SMIA10_CODE_EMBEDDED_DATA = 0x1,
+	V4L2_IF_TYPE_SMIA10_CODE_DUMMY_PIXEL_DATA = 0x2,
+	V4L2_IF_TYPE_SMIA10_CODE_VISIBLE_PIXEL_DATA = 0x5,
+};
+
+struct v4l2_if_type_smia10_desc {
+	enum v4l2_if_type_smia10_code	code;
+	u16				nr;
+};
+
+struct v4l2_if_type_smia10 {
+	u8				nr_cols;
+	u8				nr_rows;
+	struct v4l2_if_type_smia10_desc	descs[10];
+};
+
 struct v4l2_ifparm {
 	enum v4l2_if_type if_type;
 	union {
 		struct v4l2_if_type_bt656 bt656;
+		struct v4l2_if_type_smia10 smia10;
 	} u;
 };
 
@@ -173,6 +194,8 @@ enum v4l2_int_ioctl_num {
 	vidioc_int_s_ctrl_num,
 	vidioc_int_g_parm_num,
 	vidioc_int_s_parm_num,
+	vidioc_int_streamon_num,
+	vidioc_int_streamoff_num,
 
 	/*
 	 *

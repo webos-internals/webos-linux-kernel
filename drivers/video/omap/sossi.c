@@ -6,8 +6,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -81,42 +81,42 @@ static struct {
 
 static inline u32 sossi_read_reg(int reg)
 {
-	return readl(sossi.base + reg);
+        return readl(sossi.base + reg);
 }
 
 static inline u16 sossi_read_reg16(int reg)
 {
-	return readw(sossi.base + reg);
+        return readw(sossi.base + reg);
 }
 
 static inline u8 sossi_read_reg8(int reg)
 {
-	return readb(sossi.base + reg);
+        return readb(sossi.base + reg);
 }
 
 static inline void sossi_write_reg(int reg, u32 value)
 {
-	writel(value, sossi.base + reg);
+        writel(value, sossi.base + reg);
 }
 
 static inline void sossi_write_reg16(int reg, u16 value)
 {
-	writew(value, sossi.base + reg);
+        writew(value, sossi.base + reg);
 }
 
 static inline void sossi_write_reg8(int reg, u8 value)
 {
-	writeb(value, sossi.base + reg);
+        writeb(value, sossi.base + reg);
 }
 
 static void sossi_set_bits(int reg, u32 bits)
 {
-	sossi_write_reg(reg, sossi_read_reg(reg) | bits);
+        sossi_write_reg(reg, sossi_read_reg(reg) | bits);
 }
 
 static void sossi_clear_bits(int reg, u32 bits)
 {
-	sossi_write_reg(reg, sossi_read_reg(reg) & ~bits);
+        sossi_write_reg(reg, sossi_read_reg(reg) & ~bits);
 }
 
 #define HZ_TO_PS(x)	(1000000000 / (x / 1000))

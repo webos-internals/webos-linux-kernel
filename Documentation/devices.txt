@@ -96,6 +96,8 @@ Your cooperation is appreciated.
 		 11 = /dev/kmsg		Writes to this come out as printk's
 		 12 = /dev/oldmem	Used by crashdump kernels to access
 					the memory of the kernel that crashed.
+		 13 = /dev/mem_notify   Low memory notification.
+		 14 = /dev/memchute Low memory notification (based on mem_notify).
 
   1 block	RAM disk
 		  0 = /dev/ram0		First RAM disk

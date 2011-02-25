@@ -119,7 +119,7 @@ static int fat_file_release(struct inode *inode, struct file *filp)
 	if ((filp->f_mode & FMODE_WRITE) &&
 	     MSDOS_SB(inode->i_sb)->options.flush) {
 		fat_flush_inodes(inode->i_sb, inode, NULL);
-		congestion_wait(WRITE, HZ/10);
+		congestion_wait(BLK_RW_ASYNC, HZ/10);
 	}
 	return 0;
 }
@@ -261,7 +261,7 @@ static int fat_free(struct inode *inode, int skip)
 			fatent_brelse(&fatent);
 			return 0;
 		} else if (ret == FAT_ENT_FREE) {
-			fat_fs_panic(sb,
+			fat_fs_error(sb,
 				     "%s: invalid cluster chain (i_pos %lld)",
 				     __FUNCTION__, MSDOS_I(inode)->i_pos);
 			ret = -EIO;

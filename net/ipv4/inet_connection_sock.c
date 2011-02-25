@@ -23,6 +23,7 @@
 #include <net/route.h>
 #include <net/tcp_states.h>
 #include <net/xfrm.h>
+#include <linux/gen_timer.h>
 
 #ifdef INET_CSK_DEBUG
 const char inet_csk_timer_bug_msg[] = "inet_csk BUG: unknown timer value\n";
@@ -276,11 +277,11 @@ void inet_csk_init_xmit_timers(struct sock *sk,
 			       void (*keepalive_handler)(unsigned long))
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
-
+#ifndef CONFIG_TCP_FASTPATH
 	init_timer(&icsk->icsk_retransmit_timer);
 	init_timer(&icsk->icsk_delack_timer);
 	init_timer(&sk->sk_timer);
-
+ 
 	icsk->icsk_retransmit_timer.function = retransmit_handler;
 	icsk->icsk_delack_timer.function     = delack_handler;
 	sk->sk_timer.function		     = keepalive_handler;
@@ -288,7 +289,12 @@ void inet_csk_init_xmit_timers(struct sock *sk,
 	icsk->icsk_retransmit_timer.data =
 		icsk->icsk_delack_timer.data =
 			sk->sk_timer.data  = (unsigned long)sk;
+#else
 
+	init_gen_timer(&icsk->icsk_retransmit_timer,retransmit_handler,(unsigned long)sk);
+	init_gen_timer(&icsk->icsk_delack_timer,delack_handler,(unsigned long)sk);
+	init_gen_timer(&sk->sk_timer,keepalive_handler,(unsigned long)sk);
+#endif
 	icsk->icsk_pending = icsk->icsk_ack.pending = 0;
 }
 

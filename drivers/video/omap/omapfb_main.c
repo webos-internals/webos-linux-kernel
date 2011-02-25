@@ -12,8 +12,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -52,19 +52,19 @@ static struct lcd_panel		*fbdev_panel;
 static struct omapfb_device	*omapfb_dev;
 
 struct caps_table_struct {
-	unsigned long flag;
-	const char *name;
+        unsigned long flag;
+        const char *name;
 };
 
 static struct caps_table_struct ctrl_caps[] = {
-	{ OMAPFB_CAPS_MANUAL_UPDATE,  "manual update" },
-	{ OMAPFB_CAPS_TEARSYNC,       "tearing synchronization" },
+	{ OMAPFB_CAPS_MANUAL_UPDATE, "manual update" },
+	{ OMAPFB_CAPS_TEARSYNC,      "tearing synchronization" },
 	{ OMAPFB_CAPS_PLANE_RELOCATE_MEM, "relocate plane memory" },
-	{ OMAPFB_CAPS_PLANE_SCALE,    "scale plane" },
+	{ OMAPFB_CAPS_PLANE_SCALE,   "scale plane" },
 	{ OMAPFB_CAPS_WINDOW_PIXEL_DOUBLE, "pixel double window" },
-	{ OMAPFB_CAPS_WINDOW_SCALE,   "scale window" },
-	{ OMAPFB_CAPS_WINDOW_OVERLAY, "overlay window" },
-	{ OMAPFB_CAPS_SET_BACKLIGHT,  "backlight setting" },
+	{ OMAPFB_CAPS_WINDOW_SCALE,  "scale window" },
+	{ OMAPFB_CAPS_WINDOW_OVERLAY,"overlay window" },
+	{ OMAPFB_CAPS_SET_BACKLIGHT, "backlight setting" },
 };
 
 static struct caps_table_struct color_caps[] = {
@@ -563,7 +563,7 @@ static int set_fb_var(struct fb_info *fbi,
 	} else {
 		var->red.offset	 = 11; var->red.length	 = 5;
 						var->red.msb_right   = 0;
-		var->green.offset = 5;  var->green.length = 6;
+		var->green.offset= 5;  var->green.length = 6;
 						var->green.msb_right = 0;
 		var->blue.offset = 0;  var->blue.length  = 5;
 						var->blue.msb_right  = 0;
@@ -952,8 +952,8 @@ static void omapfb_init_notifier(void)
 }
 
 int omapfb_register_client(struct omapfb_notifier_block *omapfb_nb,
-				omapfb_notifier_callback_t callback,
-				void *callback_data)
+                           omapfb_notifier_callback_t callback,
+                           void *callback_data)
 {
 	int r;
 
@@ -1716,7 +1716,7 @@ static int omapfb_do_probe(struct platform_device *pdev,
 #ifdef CONFIG_FB_OMAP_DMA_TUNE
 	/* Set DMA priority for EMIFF access to highest */
 	if (cpu_class_is_omap1())
-		omap_set_dma_priority(0, OMAP_DMA_PORT_EMIFF, 15);
+	        omap_set_dma_priority(0, OMAP_DMA_PORT_EMIFF, 15);
 #endif
 
 	r = ctrl_change_mode(fbdev->fb_info[0]);

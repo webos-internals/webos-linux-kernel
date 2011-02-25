@@ -333,15 +333,49 @@ config I2C_OCORES
 	  will be called i2c-ocores.
 
 config I2C_OMAP
-	tristate "OMAP I2C adapter"
+	tristate "OMAP I2C bus controller"
 	depends on ARCH_OMAP
-	default y if MACH_OMAP_H3 || MACH_OMAP_OSK
-	help
-	  If you say yes to this option, support will be included for the
-	  I2C interface on the Texas Instruments OMAP1/2 family of processors.
-	  Like OMAP1510/1610/1710/5912 and OMAP242x.
-	  For details see http://www.ti.com/omap.
 
+menu "OMAP2430 HS I2C buses"
+	depends on I2C_OMAP && ARCH_OMAP2430
+
+config I2C_OMAP2430_HS_BUS1
+	int "I2C Bus 1 speed"
+	default 400
+	---help---
+	  The I2C bus 1 Speed settings
+
+config I2C_OMAP2430_HS_BUS2
+	int "I2C Bus 2 speed"
+	default 2600
+	---help---
+	  The I2C bus 1 Speed settings
+endmenu
+
+menu "OMAP34XX HS I2C buses"
+	depends on I2C_OMAP && ARCH_OMAP34XX
+config I2C_OMAP34XX_HS_BUS1
+	int "I2C Bus 1 speed"
+	default 2600
+	---help---
+	  The I2C bus 1 Speed settings
+config I2C_OMAP34XX_HS_BUS2
+	int "I2C Bus 2 speed"
+	default 100
+	---help---
+	  The I2C bus 2 Speed settings
+config I2C_OMAP34XX_HS_BUS3
+	int "I2C Bus 3 speed"
+	default 400
+	---help---
+	  The I2C bus 3 Speed settings
+endmenu
+
+config OMAP_I2C_SLAVE
+	bool "OMAP I2C SLAVE SUPPORT"
+	depends on ARCH_OMAP2430 ||  ARCH_OMAP34XX
+	default y
+	
 config I2C_PARPORT
 	tristate "Parallel port adapter"
 	depends on PARPORT

@@ -15,6 +15,9 @@
 #include <linux/random.h>
 #include <linux/interrupt.h>
 #include <linux/kernel_stat.h>
+#if defined(CONFIG_ARCH_OMAP24XX) || defined(CONFIG_ARCH_OMAP34XX)
+#include <asm/io.h>
+#endif
 
 #include "internals.h"
 
@@ -30,6 +33,9 @@ handle_bad_irq(unsigned int irq, struct irq_desc *desc)
 {
 	print_irq_desc(irq, desc);
 	kstat_this_cpu.irqs[irq]++;
+#if defined(CONFIG_ARCH_OMAP24XX) || defined(CONFIG_ARCH_OMAP34XX)
+	__raw_writel(0x1, 0xd8200048);	
+#endif
 	ack_bad_irq(irq);
 }
 

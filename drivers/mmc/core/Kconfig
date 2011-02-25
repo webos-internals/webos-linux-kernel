@@ -14,3 +14,15 @@ config MMC_UNSAFE_RESUME
 	  This option is usually just for embedded systems which use
 	  a MMC/SD card for rootfs. Most people should say N here.
 
+
+config SDIO_FORCE_OPCOND_1_8V
+  bool "Force SDIO card to report 1.8V operation condition."
+  default n
+    help
+	   Select if you want to force your card to report 1.8V op condition.
+
+config SDIO_WORKAROUND_MARVELL_CIS_B1_BUG
+  bool "Enable workaround for Marvell CIS bug"
+  default n
+    help
+	   Select to enable workaround for Marvell CIS bug.

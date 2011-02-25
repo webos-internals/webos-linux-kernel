@@ -21,6 +21,10 @@
 #include <linux/device.h>
 #include <linux/compat.h>
 
+#ifdef CONFIG_INPUT_EVDEV_TRACK_QUEUE
+#include <asm/atomic.h>
+#endif
+
 struct evdev {
 	int exist;
 	int open;
@@ -33,6 +37,9 @@ struct evdev {
 	spinlock_t client_lock; /* protects client_list */
 	struct mutex mutex;
 	struct device dev;
+#ifdef CONFIG_INPUT_EVDEV_TRACK_QUEUE
+	atomic_t evq_ref;       /* non-empty queue ref count */
+#endif
 };
 
 struct evdev_client {
@@ -43,10 +50,19 @@ struct evdev_client {
 	struct fasync_struct *fasync;
 	struct evdev *evdev;
 	struct list_head node;
+	int monotonic_time;
 };
 
 static struct evdev *evdev_table[EVDEV_MINORS];
 static DEFINE_MUTEX(evdev_table_mutex);
+
+static inline void evdev_monotonic_time(struct timeval* time)
+{
+	struct timespec time_ns;
+	do_posix_clock_monotonic_gettime(&time_ns);
+	time->tv_sec = time_ns.tv_sec;
+	time->tv_usec = time_ns.tv_nsec / 1000;
+}
 
 static void evdev_pass_event(struct evdev_client *client,
 			     struct input_event *event)
@@ -55,8 +71,21 @@ static void evdev_pass_event(struct evdev_client *client,
 	 * Interrupts are disabled, just acquire the lock
 	 */
 	spin_lock(&client->buffer_lock);
+#ifdef CONFIG_INPUT_EVDEV_TRACK_QUEUE
+	if( client->head == client->tail )
+		atomic_inc(&client->evdev->evq_ref);
+#endif
 	client->buffer[client->head++] = *event;
 	client->head &= EVDEV_BUFFER_SIZE - 1;
+
+	/*
+	 * Queue is full. head == tail denotes the empty case, not full case
+	 */
+	if (client->head == client->tail) {
+		client->tail++;
+		client->tail &= EVDEV_BUFFER_SIZE - 1;
+	}
+
 	spin_unlock(&client->buffer_lock);
 
 	kill_fasync(&client->fasync, SIGIO, POLL_IN);
@@ -72,7 +101,6 @@ static void evdev_event(struct input_handle *handle,
 	struct evdev_client *client;
 	struct input_event event;
 
-	do_gettimeofday(&event.time);
 	event.type = type;
 	event.code = code;
 	event.value = value;
@@ -80,11 +108,24 @@ static void evdev_event(struct input_handle *handle,
 	rcu_read_lock();
 
 	client = rcu_dereference(evdev->grab);
-	if (client)
+	if (client) {
+		if (client->monotonic_time)
+			evdev_monotonic_time(&event.time);
+		else
+			do_gettimeofday(&event.time);
+
 		evdev_pass_event(client, &event);
-	else
-		list_for_each_entry_rcu(client, &evdev->client_list, node)
+	} else {
+		list_for_each_entry_rcu(client, &evdev->client_list, node) {
+			if (client->monotonic_time)
+				evdev_monotonic_time(&event.time);
+			else
+				do_gettimeofday(&event.time);
+
 			evdev_pass_event(client, &event);
+
+		}
+	}
 
 	rcu_read_unlock();
 
@@ -174,6 +215,10 @@ static void evdev_detach_client(struct evdev *evdev,
 {
 	spin_lock(&evdev->client_lock);
 	list_del_rcu(&client->node);
+#ifdef CONFIG_INPUT_EVDEV_TRACK_QUEUE
+	if( client->head != client->tail )
+		atomic_dec(&client->evdev->evq_ref);
+#endif
 	spin_unlock(&evdev->client_lock);
 	synchronize_rcu();
 }
@@ -439,6 +484,10 @@ static int evdev_fetch_next_event(struct evdev_client *client,
 	if (have_event) {
 		*event = client->buffer[client->tail++];
 		client->tail &= EVDEV_BUFFER_SIZE - 1;
+#ifdef CONFIG_INPUT_EVDEV_TRACK_QUEUE
+		if( client->head == client->tail )
+			atomic_dec(&client->evdev->evq_ref);
+#endif
 	}
 
 	spin_unlock_irq(&client->buffer_lock);
@@ -491,6 +540,30 @@ static unsigned int evdev_poll(struct file *file, poll_table *wait)
 	return ((client->head == client->tail) ? 0 : (POLLIN | POLLRDNORM)) |
 		(evdev->exist ? 0 : (POLLHUP | POLLERR));
 }
+
+#ifdef CONFIG_INPUT_EVDEV_TRACK_QUEUE
+int evdev_get_queue_state(struct input_dev *dev)
+{
+	int i, rc = 0;
+	struct evdev *evdev;
+
+	mutex_lock(&evdev_table_mutex);
+	for (i = 0; i < EVDEV_MINORS; i++ ) {
+		evdev = evdev_table[i];
+		if(!evdev) 
+			continue;
+		if(!evdev->exist || !evdev->open )
+			continue;
+		if( dev && evdev->handle.dev != dev )
+			continue;
+		rc += atomic_read(&evdev->evq_ref);
+	}
+	mutex_unlock(&evdev_table_mutex);
+	return rc;
+}
+EXPORT_SYMBOL(evdev_get_queue_state);
+#endif
+
 
 #ifdef CONFIG_COMPAT
 
@@ -578,7 +651,8 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 	struct input_absinfo abs;
 	struct ff_effect effect;
 	int __user *ip = (int __user *)p;
-	int i, t, u, v;
+	int i, t, u, v, m;
+	unsigned int __user *uip = (unsigned int __user *)p;
 	int error;
 
 	switch (cmd) {
@@ -631,6 +705,28 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 			return -EFAULT;
 
 		return dev->setkeycode(dev, t, v);
+
+	case EVIOCGCOUNTRY:
+		if (put_user(dev->country, uip))
+			return -EFAULT;
+		return 0;
+
+	case EVIOCSCOUNTRY:
+		dev->country = (unsigned int)p;
+		return 0;
+
+	case EVIOCGMONO:
+		if (copy_to_user(p, &client->monotonic_time, sizeof(int)))
+			return -EFAULT;
+		return 0;
+
+	case EVIOCSMONO:
+		if (copy_from_user(&m, p, sizeof(int)))
+			return -EFAULT;
+
+		client->monotonic_time = ((m == 0) ? 0 : 1);
+
+		return 0;
 
 	case EVIOCSFF:
 		if (copy_from_user(&effect, p, sizeof(effect)))

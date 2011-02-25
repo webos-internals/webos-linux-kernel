@@ -70,7 +70,7 @@ extern unsigned long mktime(const unsigned int year, const unsigned int mon,
 			    const unsigned int day, const unsigned int hour,
 			    const unsigned int min, const unsigned int sec);
 
-extern void set_normalized_timespec(struct timespec *ts, time_t sec, long nsec);
+extern void set_normalized_timespec(struct timespec *ts, time_t sec, s64 nsec);
 
 /*
  * sub = lhs - rhs, in normalized form
@@ -92,6 +92,8 @@ static inline struct timespec timespec_sub(struct timespec lhs,
 
 extern struct timespec xtime;
 extern struct timespec wall_to_monotonic;
+extern struct timespec wall_to_network;
+extern unsigned long total_sleep_time;
 extern seqlock_t xtime_lock;
 
 extern unsigned long read_persistent_clock(void);
@@ -173,6 +175,10 @@ static inline void timespec_add_ns(struct timespec *a, u64 ns)
 {
 	ns += a->tv_nsec;
 	while(unlikely(ns >= NSEC_PER_SEC)) {
+		/* The following asm() prevents the compiler from
+		 * optimising this loop into a modulo operation.  */
+		asm("" : "+r"(ns));
+
 		ns -= NSEC_PER_SEC;
 		a->tv_sec++;
 	}
@@ -208,6 +214,8 @@ struct itimerval {
 
 /*
  * The IDs of the various system clocks (for POSIX.1b interval timers):
+ *
+ * For palm-specific system clocks, see <palm/palm_time.h>.
  */
 #define CLOCK_REALTIME			0
 #define CLOCK_MONOTONIC			1

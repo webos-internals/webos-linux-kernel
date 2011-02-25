@@ -2303,6 +2303,7 @@ static void get_tcp4_sock(struct sock *sk, char *tmpbuf, int i)
 	struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	struct inet_sock *inet = inet_sk(sk);
+
 	__be32 dest = inet->daddr;
 	__be32 src = inet->rcv_saddr;
 	__u16 destp = ntohs(inet->dport);
@@ -2321,6 +2322,7 @@ static void get_tcp4_sock(struct sock *sk, char *tmpbuf, int i)
 		timer_active	= 0;
 		timer_expires = jiffies;
 	}
+
 
 	sprintf(tmpbuf, "%4d: %08X:%04X %08X:%04X %02X %08X:%08X %02X:%08lX "
 			"%08X %5d %8d %lu %d %p %u %u %u %u %d",
@@ -2341,6 +2343,64 @@ static void get_tcp4_sock(struct sock *sk, char *tmpbuf, int i)
 		tp->snd_cwnd,
 		tp->snd_ssthresh >= 0xFFFF ? -1 : tp->snd_ssthresh);
 }
+
+#ifdef CONFIG_INTSOCK_NETFILTER
+static void get_tcp4_idle_sock(struct sock *sk, char *tmpbuf, int i)
+{
+	int timer_active;
+	unsigned long timer_expires;
+	struct tcp_sock *tp = tcp_sk(sk);
+	const struct inet_connection_sock *icsk = inet_csk(sk);
+	struct inet_sock *inet = inet_sk(sk);
+   	struct timespec ts_curr, ts;
+	unsigned int idle_time=0;
+
+	__be32 dest = inet->daddr;
+	__be32 src = inet->rcv_saddr;
+	__u16 destp = ntohs(inet->dport);
+	__u16 srcp = ntohs(inet->sport);
+
+	if (icsk->icsk_pending == ICSK_TIME_RETRANS) {
+		timer_active	= 1;
+		timer_expires	= icsk->icsk_timeout;
+	} else if (icsk->icsk_pending == ICSK_TIME_PROBE0) {
+		timer_active	= 4;
+		timer_expires	= icsk->icsk_timeout;
+	} else if (timer_pending(&sk->sk_timer)) {
+		timer_active	= 2;
+		timer_expires	= sk->sk_timer.expires;
+	} else {
+		timer_active	= 0;
+		timer_expires = jiffies;
+	}
+
+
+	ts=ktime_to_timespec(sk->sk_stamp);
+	ktime_get_ts(&ts_curr);
+	monotonic_to_bootbased(&ts_curr);
+	idle_time=(ts_curr.tv_sec-ts.tv_sec);
+
+
+	sprintf(tmpbuf, "%4d: %08X:%04X %08X:%04X %02X %08X:%08X %02X:%08lX "
+			"%08X %5d %8d %lu %d %p %u %u %u %u %d %u",
+		i, src, srcp, dest, destp, sk->sk_state,
+		tp->write_seq - tp->snd_una,
+		sk->sk_state == TCP_LISTEN ? sk->sk_ack_backlog :
+					     (tp->rcv_nxt - tp->copied_seq),
+		timer_active,
+		jiffies_to_clock_t(timer_expires - jiffies),
+		icsk->icsk_retransmits,
+		sock_i_uid(sk),
+		icsk->icsk_probes_out,
+		sock_i_ino(sk),
+		atomic_read(&sk->sk_refcnt), sk,
+		icsk->icsk_rto,
+		icsk->icsk_ack.ato,
+		(icsk->icsk_ack.quick << 1) | icsk->icsk_ack.pingpong,
+		tp->snd_cwnd,
+		tp->snd_ssthresh >= 0xFFFF ? -1 : tp->snd_ssthresh,idle_time);
+}
+#endif
 
 static void get_timewait4_sock(struct inet_timewait_sock *tw,
 			       char *tmpbuf, int i)
@@ -2397,6 +2457,39 @@ out:
 	return 0;
 }
 
+#ifdef CONFIG_INTSOCK_NETFILTER
+static int tcp4_idle_seq_show(struct seq_file *seq, void *v)
+{
+	struct tcp_iter_state* st;
+	char tmpbuf[TMPSZ + 1];
+
+	if (v == SEQ_START_TOKEN) {
+		seq_printf(seq, "%-*s\n", TMPSZ - 1,
+			   "  sl  local_address rem_address   st tx_queue "
+			   "rx_queue tr tm->when retrnsmt   uid  timeout "
+			   "inode");
+		goto out;
+	}
+	st = seq->private;
+
+	switch (st->state) {
+	case TCP_SEQ_STATE_LISTENING:
+	case TCP_SEQ_STATE_ESTABLISHED:
+		get_tcp4_idle_sock(v, tmpbuf, st->num);
+		break;
+	case TCP_SEQ_STATE_OPENREQ:
+		get_openreq4(st->syn_wait_sk, v, tmpbuf, st->num, st->uid);
+		break;
+	case TCP_SEQ_STATE_TIME_WAIT:
+		get_timewait4_sock(v, tmpbuf, st->num);
+		break;
+	}
+	seq_printf(seq, "%-*s\n", TMPSZ - 1, tmpbuf);
+out:
+	return 0;
+}
+#endif
+
 static struct file_operations tcp4_seq_fops;
 static struct tcp_seq_afinfo tcp4_seq_afinfo = {
 	.owner		= THIS_MODULE,
@@ -2406,13 +2499,31 @@ static struct tcp_seq_afinfo tcp4_seq_afinfo = {
 	.seq_fops	= &tcp4_seq_fops,
 };
 
+#ifdef CONFIG_INTSOCK_NETFILTER
+static struct tcp_seq_afinfo tcp4_idle_seq_afinfo = {
+	.owner		= THIS_MODULE,
+	.name		= "tcp_idle",
+	.family		= AF_INET,
+	.seq_show	= tcp4_idle_seq_show,
+	.seq_fops	= &tcp4_seq_fops,
+};
+#endif
 int __init tcp4_proc_init(void)
 {
+#ifdef CONFIG_INTSOCK_NETFILTER
+	int ret;
+	ret = tcp_proc_register(&tcp4_idle_seq_afinfo);
+	if(ret < 0)
+		return ret;
+#endif
 	return tcp_proc_register(&tcp4_seq_afinfo);
 }
 
 void tcp4_proc_exit(void)
 {
+#ifdef CONFIG_INTSOCK_NETFILTER
+	tcp_proc_unregister(&tcp4_idle_seq_afinfo);
+#endif
 	tcp_proc_unregister(&tcp4_seq_afinfo);
 }
 #endif /* CONFIG_PROC_FS */

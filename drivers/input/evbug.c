@@ -11,8 +11,8 @@
 /*
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,8 +40,14 @@ MODULE_LICENSE("GPL");
 
 static void evbug_event(struct input_handle *handle, unsigned int type, unsigned int code, int value)
 {
-	printk(KERN_DEBUG "evbug.c: Event. Dev: %s, Type: %d, Code: %d, Value: %d\n",
-		handle->dev->phys, type, code, value);
+	struct timeval tv;
+
+	do_gettimeofday(&tv);
+    
+	printk(KERN_DEBUG "evbug.c: Event. Dev: %s, Type: %d, Code: %d, Value: %d, Timestamp: %ld.%ld\n",
+		handle->dev->phys ? handle->dev->phys : handle->dev->name,
+		type, code, value, tv.tv_sec, tv.tv_usec/1000);
+		
 }
 
 static int evbug_connect(struct input_handler *handler, struct input_dev *dev,

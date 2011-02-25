@@ -1,0 +1,10 @@
+menu "OMAP3 GCI Camera driver"
+	depends on VIDEO_DEV && (ARCH_OMAP24XX || ARCH_OMAP34XX)
+
+config VIDEO_OMAP_GCI_CAMERA
+	tristate "GCI Camera Driver"
+	depends on VIDEO_OMAP24XX_VIDEOLIB && ARCH_OMAP34XX 
+
+endmenu
+
+

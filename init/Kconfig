@@ -573,7 +573,6 @@ config SIGNALFD
 config TIMERFD
 	bool "Enable timerfd() system call" if EMBEDDED
 	select ANON_INODES
-	depends on BROKEN
 	default y
 	help
 	  Enable the timerfd() system call that allows to receive timer
@@ -601,6 +600,14 @@ config SHMEM
 	  to userspace as tmpfs if TMPFS is enabled. Disabling this
 	  option replaces shmem and tmpfs with the much simpler ramfs code,
 	  which may be appropriate on small systems without swap.
+	
+config TMPFS_ACCOUNTING
+	bool "Count tmpfs pages in use"
+	default n
+	help
+	  When shmem is used with no swap-backing store, the pages are misleadingly
+	  counted as cached and may not be swapped out.  We keep a count of shmem
+	  pages in use to allow for more accurate estimates of free memory.
 
 config VM_EVENT_COUNTERS
 	default y

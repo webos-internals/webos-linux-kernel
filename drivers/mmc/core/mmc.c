@@ -114,19 +114,8 @@ static int mmc_decode_cid(struct mmc_card *card)
 static int mmc_decode_csd(struct mmc_card *card)
 {
 	struct mmc_csd *csd = &card->csd;
-	unsigned int e, m, csd_struct;
+	unsigned int e, m;
 	u32 *resp = card->raw_csd;
-
-	/*
-	 * We only understand CSD structure v1.1 and v1.2.
-	 * v1.2 has extra information in bits 15, 11 and 10.
-	 */
-	csd_struct = UNSTUFF_BITS(resp, 126, 2);
-	if (csd_struct != 1 && csd_struct != 2) {
-		printk(KERN_ERR "%s: unrecognised CSD structure version %d\n",
-			mmc_hostname(card->host), csd_struct);
-		return -EINVAL;
-	}
 
 	csd->mmca_vsn	 = UNSTUFF_BITS(resp, 122, 4);
 	m = UNSTUFF_BITS(resp, 115, 4);
@@ -209,15 +198,13 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 	}
 
 	ext_csd_struct = ext_csd[EXT_CSD_REV];
-	if (ext_csd_struct > 2) {
-		printk(KERN_ERR "%s: unrecognised EXT_CSD structure "
-			"version %d\n", mmc_hostname(card->host),
-			ext_csd_struct);
-		err = -EINVAL;
-		goto out;
-	}
 
-	if (ext_csd_struct >= 2) {
+	// HACK: Hynix MMC reports "1" in revision field, which causes
+	// the driver to ignore EXT_CSD sector count and use
+	// 1GB size instead. Ignoring the ext_csd_struct is a temporary
+	// solution until we figure out the correct one / fix the Hynix part.
+	if (ext_csd_struct >= 2 ||
+		card->cid.manfid == 0x90) {
 		card->ext_csd.sectors =
 			ext_csd[EXT_CSD_SEC_CNT + 0] << 0 |
 			ext_csd[EXT_CSD_SEC_CNT + 1] << 8 |
@@ -244,6 +231,58 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 
 out:
 	kfree(ext_csd);
+
+	return err;
+}
+
+/*
+ * Wait for the card to exit the busy state
+ */
+static int mmc_wait_not_busy(struct mmc_card *card,u32 retries, u32 retry_polling_ms)
+{
+	u32 status = 0;
+	int err = -ETIMEDOUT;
+
+	for(;retries > 0; retries--) {
+		err = mmc_send_status(card, &status);
+		
+		if (err)
+			goto err;
+
+		if ( status & R1_READY_FOR_DATA ) 
+			break;
+		
+		msleep(retry_polling_ms);
+	}
+
+	if ( !retries ) {
+		err = -ETIMEDOUT;
+	}	
+err:
+	return err;
+}
+
+/*
+ * Execute switch cmd and wait for the card to exit the busy state
+ */
+static int mmc_execute_switch(struct mmc_card *card, u8 set, u8 index, u8 value)
+{
+	int err;
+
+	err = mmc_switch(card, set, index, value);
+
+	if (err)
+		goto err;
+
+	//Workaround for Sandisk cards issue - need 1 ms delay
+	//between CMD6 and the following commands
+	if ( card->cid.manfid == 0x02 ) {
+		mdelay(1);
+	}
+
+	//:TODO: Replace the magic numbers with defines
+	err = mmc_wait_not_busy(card, 30 , 5);
+err :
 
 	return err;
 }
@@ -315,6 +354,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		}
 
 		card->type = MMC_TYPE_MMC;
+		host->mode = MMC_MODE_MMC;
 		card->rca = 1;
 		memcpy(card->raw_cid, cid, sizeof(card->raw_cid));
 	}
@@ -369,7 +409,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	 */
 	if ((card->ext_csd.hs_max_dtr != 0) &&
 		(host->caps & MMC_CAP_MMC_HIGHSPEED)) {
-		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+		err = mmc_execute_switch(card, EXT_CSD_CMD_SET_NORMAL,
 			EXT_CSD_HS_TIMING, 1);
 		if (err)
 			goto free_card;
@@ -394,15 +434,29 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	mmc_set_clock(host, max_dtr);
 
 	/*
+	 * HACK: some devices, Hynix flash in particular, seem
+	 * to need a little pause here or it wont respond to any
+	 * further commands.
+	 */
+//	msleep(10);
+	mdelay(10);
+
+	/*
 	 * Activate wide bus (if supported).
 	 */
 	if ((card->csd.mmca_vsn >= CSD_SPEC_VER_4) &&
+		(host->caps & MMC_CAP_8_BIT_DATA)) {
+		err = mmc_execute_switch(card, EXT_CSD_CMD_SET_NORMAL,
+			EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_8);
+		if (err)
+			goto free_card;
+		mmc_set_bus_width(card->host, MMC_BUS_WIDTH_8);
+	} else if ((card->csd.mmca_vsn >= CSD_SPEC_VER_4) &&
 		(host->caps & MMC_CAP_4_BIT_DATA)) {
-		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+		err = mmc_execute_switch(card, EXT_CSD_CMD_SET_NORMAL,
 			EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_4);
 		if (err)
 			goto free_card;
-
 		mmc_set_bus_width(card->host, MMC_BUS_WIDTH_4);
 	}
 

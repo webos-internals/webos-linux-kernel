@@ -81,6 +81,11 @@ shortname=lower|win95|winnt|mixed
 			emulate the Windows 95 rule for create.
 		 Default setting is `lower'.
 
+errors=panic|continue|remount-ro
+	      -- specify FAT behavior on critical errors: panic, continue
+		 without doing anything or remount the partition in
+		 read-only mode (default behavior).
+
 <bool>: 0,1,yes,no,true,false
 
 TODO

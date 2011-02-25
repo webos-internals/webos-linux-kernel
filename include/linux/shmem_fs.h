@@ -8,6 +8,10 @@
 
 #define SHMEM_NR_DIRECT 16
 
+#ifdef CONFIG_TMPFS_ACCOUNTING
+extern atomic_t shmem_nrpages;
+#endif // CONFIG_TMPFS_ACCOUNTING
+
 struct shmem_inode_info {
 	spinlock_t		lock;
 	unsigned long		flags;

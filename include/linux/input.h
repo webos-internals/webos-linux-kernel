@@ -61,10 +61,14 @@ struct input_absinfo {
 #define EVIOCSREP		_IOW('E', 0x03, int[2])			/* set repeat settings */
 #define EVIOCGKEYCODE		_IOR('E', 0x04, int[2])			/* get keycode */
 #define EVIOCSKEYCODE		_IOW('E', 0x04, int[2])			/* set keycode */
+#define EVIOCGMONO		_IOR('E', 0x05, int)			/* get monotonic time setting */
+#define EVIOCSMONO		_IOW('E', 0x05, int)			/* set monotonic time */
 
 #define EVIOCGNAME(len)		_IOC(_IOC_READ, 'E', 0x06, len)		/* get device name */
 #define EVIOCGPHYS(len)		_IOC(_IOC_READ, 'E', 0x07, len)		/* get physical location */
 #define EVIOCGUNIQ(len)		_IOC(_IOC_READ, 'E', 0x08, len)		/* get unique identifier */
+#define EVIOCGCOUNTRY		_IOR('E', 0x09, unsigned int)		/* get country code */
+#define EVIOCSCOUNTRY		_IOW('E', 0x09, unsigned int)		/* set country code */
 
 #define EVIOCGKEY(len)		_IOC(_IOC_READ, 'E', 0x18, len)		/* get global keystate */
 #define EVIOCGLED(len)		_IOC(_IOC_READ, 'E', 0x19, len)		/* get all LEDs */
@@ -371,6 +375,14 @@ struct input_absinfo {
 #define KEY_BRIGHTNESS_ZERO	244	/* brightness off, use ambient */
 #define KEY_DISPLAY_OFF		245	/* display device to off state */
 
+/* these keys are defined for Joplin */
+#define KEY_CENTER		232
+#define KEY_LAUNCHER		245
+#define KEY_ALT			246
+#define KEY_PTT         	247
+#define KEY_PUSH_TO_TALK   	247
+#define KEY_SLIDER		248
+
 #define BTN_MISC		0x100
 #define BTN_0			0x100
 #define BTN_1			0x101
@@ -573,6 +585,13 @@ struct input_absinfo {
 #define KEY_BRL_DOT9		0x1f9
 #define KEY_BRL_DOT10		0x1fa
 
+/* define additional keys for bt avrcp 1.3 */
+#define KEY_REPEAT_ALL		0x1a5
+#define KEY_REPEAT_TRACK	0x1a6
+#define KEY_REPEAT_NONE		0x1a7
+#define KEY_SHUFFLE_ON		0x1a8
+#define KEY_SHUFFLE_OFF		0x1a9
+
 /* We avoid low common keys in module aliases so they don't get huge. */
 #define KEY_MIN_INTERESTING	KEY_MUTE
 #define KEY_MAX			0x1ff
@@ -625,6 +644,13 @@ struct input_absinfo {
 #define ABS_TOOL_WIDTH		0x1c
 #define ABS_VOLUME		0x20
 #define ABS_MISC		0x28
+#define ABS_BB_X1		0x29
+#define ABS_BB_Y1		0x2a
+#define ABS_BB_X2		0x2b
+#define ABS_BB_Y2		0x2c
+#define ABS_FINGERS		0x2d
+#define ABS_SCROLL		0x2f
+#define ABS_ORIENTATION 	0x30
 #define ABS_MAX			0x3f
 #define ABS_CNT			(ABS_MAX+1)
 
@@ -636,6 +662,10 @@ struct input_absinfo {
 #define SW_TABLET_MODE		0x01  /* set = tablet mode */
 #define SW_HEADPHONE_INSERT	0x02  /* set = inserted */
 #define SW_RADIO		0x03  /* set = radio enabled */
+#define SW_HEADPHONE_MIC_INSERT	0x04  /* set = headset w/ mic inserted */
+#define SW_RINGER		0x05  /* set = ringer switch */
+#define SW_SLIDER		0x06  /* set = slider switch */
+#define SW_OPTICAL_SLIDER 0x07  /* set = optical slider switch */
 #define SW_MAX			0x0f
 #define SW_CNT			(SW_MAX+1)
 
@@ -722,6 +752,22 @@ struct input_absinfo {
 #define FF_STATUS_STOPPED	0x00
 #define FF_STATUS_PLAYING	0x01
 #define FF_STATUS_MAX		0x01
+
+/*
+ * Orientation values for KXTE9 accelerometer
+ */
+#define ORIENTATION_UNKNOWN		0
+#define ORIENTATION_FACE_UP		1
+#define ORIENTATION_FACE_DOWN	2
+#define ORIENTATION_UP			3
+#define ORIENTATION_DOWN		4
+#define ORIENTATION_RIGHT		5
+#define ORIENTATION_LEFT		6
+
+/*
+ * Accelerometer sensitivity units per acceleration of 1G
+*/
+#define SENSITIVITY_UNITS_PER_ACCELERATION_1G	10000
 
 /*
  * Structures used in ioctls to upload effects to a device
@@ -955,6 +1001,7 @@ struct ff_effect {
  * @phys: physical path to the device in the system hierarchy
  * @uniq: unique identification code for the device (if device has it)
  * @id: id of the device (struct input_id)
+ * @country: country code (if device has it)
  * @evbit: bitmap of types of events supported by the device (EV_KEY,
  *	EV_REL, etc.)
  * @keybit: bitmap of keys/buttons this device has
@@ -1032,6 +1079,8 @@ struct input_dev {
 	const char *phys;
 	const char *uniq;
 	struct input_id id;
+
+	unsigned int country;
 
 	unsigned long evbit[BITS_TO_LONGS(EV_CNT)];
 	unsigned long keybit[BITS_TO_LONGS(KEY_CNT)];

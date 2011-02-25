@@ -16,8 +16,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -97,7 +97,6 @@ static struct subsys_attribute sleep_while_idle_attr = {
 	.store  = omap_pm_sleep_while_idle_store,
 };
 
-extern struct kset power_subsys;
 static void (*omap_sram_idle)(void) = NULL;
 static void (*omap_sram_suspend)(unsigned long r0, unsigned long r1) = NULL;
 
@@ -732,7 +731,7 @@ static int __init omap_pm_init(void)
 
 	if (cpu_is_omap16xx()) {
 		/* configure LOW_PWR pin */
-		omap_cfg_reg(T20_1610_LOW_PWR);
+		omap_cfg_reg("T20_1610_LOW_PWR");
 	}
 
 	return 0;

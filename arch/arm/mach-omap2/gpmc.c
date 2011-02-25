@@ -22,36 +22,6 @@
 
 #undef DEBUG
 
-#ifdef CONFIG_ARCH_OMAP2420
-#define GPMC_BASE		0x6800a000
-#endif
-
-#ifdef CONFIG_ARCH_OMAP2430
-#define GPMC_BASE		0x6E000000
-#endif
-
-#define GPMC_REVISION		0x00
-#define GPMC_SYSCONFIG		0x10
-#define GPMC_SYSSTATUS		0x14
-#define GPMC_IRQSTATUS		0x18
-#define GPMC_IRQENABLE		0x1c
-#define GPMC_TIMEOUT_CONTROL	0x40
-#define GPMC_ERR_ADDRESS	0x44
-#define GPMC_ERR_TYPE		0x48
-#define GPMC_CONFIG		0x50
-#define GPMC_STATUS		0x54
-#define GPMC_PREFETCH_CONFIG1	0x1e0
-#define GPMC_PREFETCH_CONFIG2	0x1e4
-#define GPMC_PREFETCH_CONTROL	0x1e8
-#define GPMC_PREFETCH_STATUS	0x1f0
-#define GPMC_ECC_CONFIG		0x1f4
-#define GPMC_ECC_CONTROL	0x1f8
-#define GPMC_ECC_SIZE_CONFIG	0x1fc
-
-#define GPMC_CS0		0x60
-#define GPMC_CS_SIZE		0x30
-
-#define GPMC_CS_NUM		8
 #define GPMC_MEM_START		0x00000000
 #define GPMC_MEM_END		0x3FFFFFFF
 #define BOOT_ROM_SPACE		0x100000	/* 1MB */
@@ -67,7 +37,7 @@ static unsigned		gpmc_cs_map;
 static void __iomem *gpmc_base =
 	(void __iomem *) IO_ADDRESS(GPMC_BASE);
 static void __iomem *gpmc_cs_base =
-	(void __iomem *) IO_ADDRESS(GPMC_BASE) + GPMC_CS0;
+	(void __iomem *) IO_ADDRESS(GPMC_BASE) + GPMC_CS0_BASE;
 
 static struct clk *gpmc_l3_clk;
 
@@ -369,6 +339,7 @@ void gpmc_cs_free(int cs)
 
 void __init gpmc_mem_init(void)
 {
+#ifndef CONFIG_OMAP_ZEBU
 	int cs;
 	unsigned long boot_rom_space = 0;
 
@@ -379,26 +350,36 @@ void __init gpmc_mem_init(void)
 	/* In apollon the CS0 is mapped as 0x0000 0000 */
 	if (machine_is_omap_apollon())
 		boot_rom_space = 0;
+	if (machine_is_flank()
+	    || machine_is_sirloin()
+	    || machine_is_brisket())
+		boot_rom_space = 0;
 	gpmc_mem_root.start = GPMC_MEM_START + boot_rom_space;
-	gpmc_mem_root.end = GPMC_MEM_END;
+	gpmc_mem_root.end   = GPMC_MEM_END;
 
 	/* Reserve all regions that has been set up by bootloader */
 	for (cs = 0; cs < GPMC_CS_NUM; cs++) {
 		u32 base, size;
 
-		if (!gpmc_cs_mem_enabled(cs))
+ 		if (!gpmc_cs_mem_enabled(cs))
 			continue;
 		gpmc_cs_get_memconf(cs, &base, &size);
-		if (gpmc_cs_insert_mem(cs, base, size) < 0)
+		if (gpmc_cs_insert_mem(cs, base, size) < 0) {
+		
 			BUG();
+		}
 	}
+#endif
 }
 
 void __init gpmc_init(void)
 {
 	u32 l;
 
-	gpmc_l3_clk = clk_get(NULL, "core_l3_ck");
+	if (cpu_is_omap34xx())
+		gpmc_l3_clk = clk_get(NULL, "l3_ck");
+	else
+		gpmc_l3_clk = clk_get(NULL, "core_l3_ck");
 	BUG_ON(IS_ERR(gpmc_l3_clk));
 
 	l = gpmc_read_reg(GPMC_REVISION);

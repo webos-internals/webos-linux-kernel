@@ -1,3 +1,4 @@
+
 /*
  * Copyright (C) 2004 Texas Instruments, Inc.
  *
@@ -18,8 +19,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -153,7 +154,7 @@ static int menelaus_write_reg(int reg, u8 value)
 	int val = i2c_smbus_write_byte_data(the_menelaus->client, reg, value);
 
 	if (val < 0) {
-		pr_err(DRIVER_NAME ": write error");
+		dev_err(&the_menelaus->client->dev, "write error");
 		return val;
 	}
 
@@ -165,7 +166,7 @@ static int menelaus_read_reg(int reg)
 	int val = i2c_smbus_read_byte_data(the_menelaus->client, reg);
 
 	if (val < 0)
-		pr_err(DRIVER_NAME ": read error");
+		dev_err(&the_menelaus->client->dev, "read error");
 
 	return val;
 }
@@ -313,6 +314,34 @@ out:
 }
 EXPORT_SYMBOL(menelaus_set_slot_sel);
 
+int menelaus_enable_slot(int slot, int enable)
+{
+	int ret, val;
+
+	mutex_lock(&the_menelaus->lock);
+	ret = menelaus_read_reg(MENELAUS_MCT_CTRL3);
+	if (ret < 0)
+		goto out;
+	val = ret;
+	if (slot == 1) {
+		if (enable)
+			val |= 1 << 0;
+		else
+			val &= ~(1 << 0);
+	} else {
+		if (enable)
+			val |= 1 << 1;
+		else
+			val &= ~(1 << 1);
+	}
+	ret = menelaus_write_reg(MENELAUS_MCT_CTRL3, val);
+
+out:
+	mutex_unlock(&the_menelaus->lock);
+	return ret;
+}
+EXPORT_SYMBOL(menelaus_enable_slot);
+
 int menelaus_set_mmc_slot(int slot, int enable, int power, int cd_en)
 {
 	int ret, val;
@@ -356,9 +385,9 @@ int menelaus_set_mmc_slot(int slot, int enable, int power, int cd_en)
 		int b;
 
 		if (enable)
-			ret |= 1 << 1;
+			val |= 1 << 1;
 		else
-			ret &= ~(1 << 1);
+			val &= ~(1 << 1);
 		b = menelaus_read_reg(MENELAUS_MCT_CTRL2);
 		b &= ~0x03;
 		b |= power;
@@ -930,7 +959,7 @@ static int menelaus_set_time(struct device *dev, struct rtc_time *t)
 		return status;
 	status = menelaus_write_reg(MENELAUS_RTC_WKDAY, BIN2BCD(t->tm_wday));
 	if (status < 0) {
-		dev_err(&the_menelaus->client->dev, "rtc write reg %02x "
+		dev_err(&the_menelaus->client->dev, "rtc write reg %02x"
 				"err %d\n", MENELAUS_RTC_WKDAY, status);
 		return status;
 	}
@@ -1175,7 +1204,7 @@ static int menelaus_probe(struct i2c_client *client)
 	/* If a true probe check the device */
 	rev = menelaus_read_reg(MENELAUS_REV);
 	if (rev < 0) {
-		pr_err(DRIVER_NAME ": device not found");
+		dev_err(&client->dev, "device not found");
 		err = -ENODEV;
 		goto fail1;
 	}
@@ -1195,7 +1224,7 @@ static int menelaus_probe(struct i2c_client *client)
 		err = request_irq(client->irq, menelaus_irq, IRQF_DISABLED,
 				  DRIVER_NAME, menelaus);
 		if (err) {
-			dev_dbg(&client->dev,  "can't get IRQ %d, err %d\n",
+			dev_dbg(&client->dev,  "can't get IRQ %d, err %d",
 					client->irq, err);
 			goto fail1;
 		}
@@ -1204,7 +1233,7 @@ static int menelaus_probe(struct i2c_client *client)
 	mutex_init(&menelaus->lock);
 	INIT_WORK(&menelaus->work, menelaus_work);
 
-	pr_info("Menelaus rev %d.%d\n", rev >> 4, rev & 0x0f);
+	dev_info(&client->dev, "Menelaus rev %d.%d\n", rev >> 4, rev & 0x0f);
 
 	val = menelaus_read_reg(MENELAUS_VCORE_CTRL1);
 	if (val < 0)
@@ -1256,7 +1285,7 @@ static int __init menelaus_init(void)
 
 	res = i2c_add_driver(&menelaus_i2c_driver);
 	if (res < 0) {
-		pr_err(DRIVER_NAME ": driver registration failed\n");
+		dev_err(&the_menelaus->client->dev, "driver registration failed\n");
 		return res;
 	}
 

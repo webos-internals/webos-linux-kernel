@@ -209,6 +209,8 @@ int kobject_add(struct kobject * kobj)
 		else
 			printk(KERN_ERR "kobject_add failed for %s (%d)\n",
 			       kobject_name(kobj), error);
+		/* REVISIT qc modem always causes this error - tk */
+		if (strncmp(kobject_name(kobj), "usbdev", 6) != 0)
 		dump_stack();
 	}
 

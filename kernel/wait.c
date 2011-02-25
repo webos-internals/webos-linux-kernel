@@ -22,6 +22,12 @@ void fastcall add_wait_queue(wait_queue_head_t *q, wait_queue_t *wait)
 {
 	unsigned long flags;
 
+	if ((0x23092300 == ((u32) wait->flags   & 0xFFFFFFF0)) ||
+	    (0x23092300 == ((u32) wait->private & 0xFFFFFFF0)) ||
+	    (0x23092300 == ((u32) wait->func    & 0xFFFFFFF0))) {
+		dump_stack();
+		BUG();
+	}
 	wait->flags &= ~WQ_FLAG_EXCLUSIVE;
 	spin_lock_irqsave(&q->lock, flags);
 	__add_wait_queue(q, wait);
@@ -33,6 +39,12 @@ void fastcall add_wait_queue_exclusive(wait_queue_head_t *q, wait_queue_t *wait)
 {
 	unsigned long flags;
 
+	if ((0x23092300 == ((u32) wait->flags   & 0xFFFFFFF0)) ||
+	    (0x23092300 == ((u32) wait->private & 0xFFFFFFF0)) ||
+	    (0x23092300 == ((u32) wait->func    & 0xFFFFFFF0))) {
+		dump_stack();
+		BUG();
+	}
 	wait->flags |= WQ_FLAG_EXCLUSIVE;
 	spin_lock_irqsave(&q->lock, flags);
 	__add_wait_queue_tail(q, wait);

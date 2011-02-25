@@ -16,6 +16,9 @@ NAME = Arr Matey! A Hairy Bilge Rat!
 # o  print "Entering directory ...";
 MAKEFLAGS += -rR --no-print-directory
 
+# Add custom flags here to avoid conflict with updates
+EXTRAVERSION := $(EXTRAVERSION)-palm
+
 # We are using a recursive build, so we need to do a little thinking
 # to get the ordering right.
 #
@@ -171,6 +174,8 @@ SUBARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ \
 				  -e s/ppc.*/powerpc/ -e s/mips.*/mips/ \
 				  -e s/sh[234].*/sh/ )
 
+SUBARCH := arm
+
 # Cross compiling and selecting different set of gcc/bin-utils
 # ---------------------------------------------------------------------------
 #
@@ -191,7 +196,7 @@ SUBARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ \
 # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
 
 ARCH		?= $(SUBARCH)
-CROSS_COMPILE	?=
+CROSS_COMPILE	?= arm-none-linux-gnueabi-
 
 # Architecture as present in compile.h
 UTS_MACHINE 	:= $(ARCH)
@@ -299,7 +304,7 @@ include $(srctree)/scripts/Kbuild.include
 
 AS		= $(CROSS_COMPILE)as
 LD		= $(CROSS_COMPILE)ld
-CC		= $(CROSS_COMPILE)gcc
+CC		= $(DISTCC) $(CROSS_COMPILE)gcc
 CPP		= $(CC) -E
 AR		= $(CROSS_COMPILE)ar
 NM		= $(CROSS_COMPILE)nm
@@ -317,7 +322,7 @@ CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ -Wbitwise $(C
 MODFLAGS	= -DMODULE
 CFLAGS_MODULE   = $(MODFLAGS)
 AFLAGS_MODULE   = $(MODFLAGS)
-LDFLAGS_MODULE  =
+LDFLAGS_MODULE  = -r
 CFLAGS_KERNEL	=
 AFLAGS_KERNEL	=
 
@@ -502,10 +507,14 @@ endif # $(dot-config)
 all: vmlinux
 
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
-KBUILD_CFLAGS	+= -Os
+COPTIMIZE	= -Os
 else
-KBUILD_CFLAGS	+= -O2
+COPTIMIZE	= -O2
 endif
+# COPTIMIZE may be overridden on the make command line with
+# 	make ... COPTIMIZE=""
+# The resulting object may be easier to debug with KGDB
+KBUILD_CFLAGS	+= $(COPTIMIZE)
 
 include $(srctree)/arch/$(SRCARCH)/Makefile
 

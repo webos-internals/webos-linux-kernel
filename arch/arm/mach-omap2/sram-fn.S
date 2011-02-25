@@ -9,8 +9,8 @@
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of
- * the License, or (at your option) any later version.
+ * published by the Free Software Foundation; version 2 of
+ * that License.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -27,19 +27,17 @@
 #include <asm/arch/io.h>
 #include <asm/hardware.h>
 
-#include "prcm-regs.h"
+#define TIMER_32KSYNCT_CR_V	IO_ADDRESS(OMAP2_32KSYNCT_BASE + 0x010)
 
-#define TIMER_32KSYNCT_CR_V	IO_ADDRESS(OMAP24XX_32KSYNCT_BASE + 0x010)
+#define CM_CLKSEL2_PLL_V	IO_ADDRESS(OMAP2_CM_BASE + 0x544)
+#define PRCM_VOLTCTRL_V		IO_ADDRESS(OMAP2_PRM_BASE + 0x050)
+#define PRCM_CLKCFG_CTRL_V	IO_ADDRESS(OMAP2_PRM_BASE + 0x080)
+#define CM_CLKEN_PLL_V		IO_ADDRESS(OMAP2_CM_BASE + 0x500)
+#define CM_IDLEST_CKGEN_V	IO_ADDRESS(OMAP2_CM_BASE + 0x520)
+#define CM_CLKSEL1_PLL_V	IO_ADDRESS(OMAP2_CM_BASE + 0x540)
 
-#define CM_CLKSEL2_PLL_V	IO_ADDRESS(OMAP24XX_PRCM_BASE + 0x544)
-#define PRCM_VOLTCTRL_V		IO_ADDRESS(OMAP24XX_PRCM_BASE + 0x050)
-#define PRCM_CLKCFG_CTRL_V	IO_ADDRESS(OMAP24XX_PRCM_BASE + 0x080)
-#define CM_CLKEN_PLL_V		IO_ADDRESS(OMAP24XX_PRCM_BASE + 0x500)
-#define CM_IDLEST_CKGEN_V	IO_ADDRESS(OMAP24XX_PRCM_BASE + 0x520)
-#define CM_CLKSEL1_PLL_V	IO_ADDRESS(OMAP24XX_PRCM_BASE + 0x540)
-
-#define SDRC_DLLA_CTRL_V	IO_ADDRESS(OMAP24XX_SDRC_BASE + 0x060)
-#define SDRC_RFR_CTRL_V		IO_ADDRESS(OMAP24XX_SDRC_BASE + 0x0a4)
+#define SDRC_DLLA_CTRL_V	IO_ADDRESS(OMAP2_SDRC_BASE + 0x060)
+#define SDRC_RFR_CTRL_V		IO_ADDRESS(OMAP2_SDRC_BASE + 0x0a4)
 
 	.text
 

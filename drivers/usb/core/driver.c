@@ -982,7 +982,12 @@ static int autosuspend_check(struct usb_device *udev, int reschedule)
 	if (reschedule) {
 		if (!timer_pending(&udev->autosuspend.timer)) {
 			queue_delayed_work(ksuspend_usb_wq, &udev->autosuspend,
+#if 0
 				round_jiffies_relative(suspend_time - j));
+#else
+// We do not want to align to seconds, but rather fire at exiration time
+				(suspend_time - j));
+#endif
 		}
 		return -EAGAIN;
 	}
@@ -1209,9 +1214,12 @@ static int usb_autopm_do_device(struct usb_device *udev, int inc_usage_cnt)
 	udev->auto_pm = 1;
 	udev->pm_usage_cnt += inc_usage_cnt;
 	WARN_ON(udev->pm_usage_cnt < 0);
-	if (inc_usage_cnt)
-		udev->last_busy = jiffies;
+// MAR: Disable last_busy reset when dectementing usage count.
+//      Otherwise it would trigger extra timeout when shutting down roothub
+//	if (inc_usage_cnt)
+//		udev->last_busy = jiffies;
 	if (inc_usage_cnt >= 0 && udev->pm_usage_cnt > 0) {
+		udev->last_busy = jiffies;
 		if (udev->state == USB_STATE_SUSPENDED)
 			status = usb_resume_both(udev);
 		if (status != 0)
@@ -1527,7 +1535,13 @@ static int usb_suspend(struct device *dev, pm_message_t message)
 		return 0;
 	}
 
+#ifdef CONFIG_PALM_QC_MODEM_HANDSHAKING_SUPPORT
+	/* we always skip sys resume because the modem can't be awake
+	 * until sys resume is complete */
+	udev->skip_sys_resume = 1;
+#else
 	udev->skip_sys_resume = 0;
+#endif
 	return usb_external_suspend_device(udev, message);
 }
 

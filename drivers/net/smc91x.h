@@ -9,8 +9,7 @@
  .
  . This program is free software; you can redistribute it and/or modify
  . it under the terms of the GNU General Public License as published by
- . the Free Software Foundation; either version 2 of the License, or
- . (at your option) any later version.
+ . the Free Software Foundation; version 2 of the License.
  .
  . This program is distributed in the hope that it will be useful,
  . but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -260,6 +259,8 @@ SMC_outw(u16 val, void __iomem *ioaddr, int reg)
 		   machine_is_omap_h2() \
 		|| machine_is_omap_h3() \
 		|| machine_is_omap_h4() \
+		|| machine_is_omap_osk()\
+		|| machine_is_omap_apollon()\
 		|| (machine_is_omap_innovator() && !cpu_is_omap1510()) \
 	) ? IRQF_TRIGGER_FALLING : IRQF_TRIGGER_RISING)
 

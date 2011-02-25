@@ -118,6 +118,10 @@ struct request;
 typedef void (rq_end_io_fn)(struct request *, int);
 
 struct request_list {
+	/*
+	 * count[], starved[], and wait[] are indexed by
+	 * BLK_RW_SYNC/BLK_RW_ASYNC
+	 */
 	int count[2];
 	int starved[2];
 	int elvpriv;
@@ -147,6 +151,11 @@ enum rq_cmd_type_bits {
 	REQ_TYPE_ATA_TASK,
 	REQ_TYPE_ATA_TASKFILE,
 	REQ_TYPE_ATA_PC,
+};
+
+enum {
+	BLK_RW_ASYNC	= 0,
+	BLK_RW_SYNC	= 1,
 };
 
 /*
@@ -185,9 +194,11 @@ enum rq_flag_bits {
 	__REQ_QUIET,		/* don't worry about errors */
 	__REQ_PREEMPT,		/* set for "ide_preempt" requests */
 	__REQ_ORDERED_COLOR,	/* is before or after barrier */
-	__REQ_RW_SYNC,		/* request is sync (O_DIRECT) */
+	__REQ_RW_SYNC,		/* request is sync (sync write or read) */
 	__REQ_ALLOCED,		/* request came from our alloc pool */
 	__REQ_RW_META,		/* metadata io request */
+	__REQ_UNPLUG,		/* unplug queue on submission */
+	__REQ_NOIDLE,		/* Don't anticipate more IO after this one */
 	__REQ_NR_BITS,		/* stops here */
 };
 
@@ -209,6 +220,8 @@ enum rq_flag_bits {
 #define REQ_RW_SYNC	(1 << __REQ_RW_SYNC)
 #define REQ_ALLOCED	(1 << __REQ_ALLOCED)
 #define REQ_RW_META	(1 << __REQ_RW_META)
+#define REQ_UNPLUG	(1 << __REQ_UNPLUG)
+#define REQ_NOIDLE	(1 << __REQ_NOIDLE)
 
 #define BLK_MAX_CDB	16
 
@@ -466,13 +479,14 @@ struct request_queue
 #define QUEUE_FLAG_CLUSTER	0	/* cluster several segments into 1 */
 #define QUEUE_FLAG_QUEUED	1	/* uses generic tag queueing */
 #define QUEUE_FLAG_STOPPED	2	/* queue is stopped */
-#define	QUEUE_FLAG_READFULL	3	/* read queue has been filled */
-#define QUEUE_FLAG_WRITEFULL	4	/* write queue has been filled */
+#define	QUEUE_FLAG_SYNCFULL	3	/* read queue has been filled */
+#define QUEUE_FLAG_ASYNCFULL	4	/* write queue has been filled */
 #define QUEUE_FLAG_DEAD		5	/* queue being torn down */
 #define QUEUE_FLAG_REENTER	6	/* Re-entrancy avoidance */
 #define QUEUE_FLAG_PLUGGED	7	/* queue is plugged */
 #define QUEUE_FLAG_ELVSWITCH	8	/* don't use elevator, just do FIFO */
 #define QUEUE_FLAG_BIDI		9	/* queue supports bidi requests */
+#define QUEUE_FLAG_NONROT      14	/* non-rotational device (SSD) */
 
 enum {
 	/*
@@ -517,6 +531,7 @@ enum {
 #define blk_queue_plugged(q)	test_bit(QUEUE_FLAG_PLUGGED, &(q)->queue_flags)
 #define blk_queue_tagged(q)	test_bit(QUEUE_FLAG_QUEUED, &(q)->queue_flags)
 #define blk_queue_stopped(q)	test_bit(QUEUE_FLAG_STOPPED, &(q)->queue_flags)
+#define blk_queue_nonrot(q)	test_bit(QUEUE_FLAG_NONROT, &(q)->queue_flags)
 #define blk_queue_flushing(q)	((q)->ordseq)
 
 #define blk_fs_request(rq)	((rq)->cmd_type == REQ_TYPE_FS)
@@ -545,32 +560,42 @@ enum {
 #define rq_data_dir(rq)		((rq)->cmd_flags & 1)
 
 /*
- * We regard a request as sync, if it's a READ or a SYNC write.
+ * We regard a request as sync, if either a read or a sync write
  */
-#define rq_is_sync(rq)		(rq_data_dir((rq)) == READ || (rq)->cmd_flags & REQ_RW_SYNC)
+static inline bool rw_is_sync(unsigned int rw_flags)
+{
+	return !(rw_flags & REQ_RW) || (rw_flags & REQ_RW_SYNC);
+}
+
+static inline bool rq_is_sync(struct request *rq)
+{
+	return rw_is_sync(rq->cmd_flags);
+}
+
 #define rq_is_meta(rq)		((rq)->cmd_flags & REQ_RW_META)
+#define rq_noidle(rq)		((rq)->cmd_flags & REQ_NOIDLE)
 
-static inline int blk_queue_full(struct request_queue *q, int rw)
+static inline int blk_queue_full(struct request_queue *q, int sync)
 {
-	if (rw == READ)
-		return test_bit(QUEUE_FLAG_READFULL, &q->queue_flags);
-	return test_bit(QUEUE_FLAG_WRITEFULL, &q->queue_flags);
+	if (sync)
+		return test_bit(QUEUE_FLAG_SYNCFULL, &q->queue_flags);
+	return test_bit(QUEUE_FLAG_ASYNCFULL, &q->queue_flags);
 }
 
-static inline void blk_set_queue_full(struct request_queue *q, int rw)
+static inline void blk_set_queue_full(struct request_queue *q, int sync)
 {
-	if (rw == READ)
-		set_bit(QUEUE_FLAG_READFULL, &q->queue_flags);
+	if (sync)
+		set_bit(QUEUE_FLAG_SYNCFULL, &q->queue_flags);
 	else
-		set_bit(QUEUE_FLAG_WRITEFULL, &q->queue_flags);
+		set_bit(QUEUE_FLAG_ASYNCFULL, &q->queue_flags);
 }
 
-static inline void blk_clear_queue_full(struct request_queue *q, int rw)
+static inline void blk_clear_queue_full(struct request_queue *q, int sync)
 {
-	if (rw == READ)
-		clear_bit(QUEUE_FLAG_READFULL, &q->queue_flags);
+	if (sync)
+		clear_bit(QUEUE_FLAG_SYNCFULL, &q->queue_flags);
 	else
-		clear_bit(QUEUE_FLAG_WRITEFULL, &q->queue_flags);
+		clear_bit(QUEUE_FLAG_ASYNCFULL, &q->queue_flags);
 }
 
 
@@ -599,8 +624,12 @@ extern unsigned long blk_max_low_pfn, blk_max_pfn;
  * BLK_BOUNCE_ANY	: don't bounce anything
  * BLK_BOUNCE_ISA	: bounce pages above ISA DMA boundary
  */
+#if BITS_PER_LONG == 32
 #define BLK_BOUNCE_HIGH		((u64)blk_max_low_pfn << PAGE_SHIFT)
-#define BLK_BOUNCE_ANY		((u64)blk_max_pfn << PAGE_SHIFT)
+#else
+#define BLK_BOUNCE_HIGH		-1ULL
+#endif
+#define BLK_BOUNCE_ANY		(-1ULL)
 #define BLK_BOUNCE_ISA		(ISA_DMA_THRESHOLD)
 
 /*
@@ -667,18 +696,18 @@ extern int blk_rq_append_bio(struct request_queue *q, struct request *rq,
  * congested queues, and wake up anyone who was waiting for requests to be
  * put back.
  */
-static inline void blk_clear_queue_congested(struct request_queue *q, int rw)
+static inline void blk_clear_queue_congested(struct request_queue *q, int sync)
 {
-	clear_bdi_congested(&q->backing_dev_info, rw);
+	clear_bdi_congested(&q->backing_dev_info, sync);
 }
 
 /*
  * A queue has just entered congestion.  Flag that in the queue's VM-visible
  * state flags and increment the global gounter of congested queues.
  */
-static inline void blk_set_queue_congested(struct request_queue *q, int rw)
+static inline void blk_set_queue_congested(struct request_queue *q, int sync)
 {
-	set_bdi_congested(&q->backing_dev_info, rw);
+	set_bdi_congested(&q->backing_dev_info, sync);
 }
 
 extern void blk_start_queue(struct request_queue *q);

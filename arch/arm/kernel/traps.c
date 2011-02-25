@@ -302,6 +302,7 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	unsigned int instr;
 	struct undef_hook *hook;
 	siginfo_t info;
+	mm_segment_t fs;
 	void __user *pc;
 	unsigned long flags;
 
@@ -312,6 +313,8 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	 */
 	regs->ARM_pc -= correction;
 
+	fs = get_fs();
+	set_fs(KERNEL_DS);
 	pc = (void __user *)instruction_pointer(regs);
 
 	if (processor_mode(regs) == SVC_MODE) {
@@ -321,6 +324,7 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	} else {
 		get_user(instr, (u32 __user *)pc);
 	}
+	set_fs(fs);
 
 	spin_lock_irqsave(&undef_lock, flags);
 	list_for_each_entry(hook, &undef_hook, node) {
@@ -404,14 +408,24 @@ static int bad_syscall(int n, struct pt_regs *regs)
 	return regs->ARM_r0;
 }
 
+#define  MAGIC_CACHE_INVALIDATE   0x50414C4D
+
 static inline void
 do_cache_op(unsigned long start, unsigned long end, int flags)
 {
 	struct vm_area_struct *vma;
 
-	if (end < start || flags)
+	if (end < start)
 		return;
 
+	if (flags == MAGIC_CACHE_INVALIDATE) {
+		dmac_inv_range(start, end);
+		return;
+	}
+		
+	if (flags)
+		return;
+    
 	vma = find_vma(current->active_mm, start);
 	if (vma && vma->vm_start < end) {
 		if (start < vma->vm_start)
@@ -705,6 +719,13 @@ EXPORT_SYMBOL(abort);
 
 void __init trap_init(void)
 {
+#if   defined(CONFIG_KGDB)
+	return;
+}
+
+void __init early_trap_init(void)
+{
+#endif
 	unsigned long vectors = CONFIG_VECTORS_BASE;
 	extern char __stubs_start[], __stubs_end[];
 	extern char __vectors_start[], __vectors_end[];

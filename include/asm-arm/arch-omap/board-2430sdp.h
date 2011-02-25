@@ -7,8 +7,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -30,15 +30,21 @@
 #define __ASM_ARCH_OMAP_2430SDP_H
 
 /* Placeholder for 2430SDP specific defines */
-#define OMAP24XX_ETHR_START		 0x08000300
+#define OMAP24XX_ETHR_START		0x08000300
 #define OMAP24XX_ETHR_GPIO_IRQ		149
 #define SDP2430_CS0_BASE		0x04000000
+
+#define ONENAND_MAP 	0x20000000  /* OneNand flash */
 
 #define TWL4030_IRQNUM			INT_24XX_SYS_NIRQ
 
 /* TWL4030 Primary Interrupt Handler (PIH) interrupts */
 #define IH_TWL4030_BASE			IH_BOARD_BASE
 #define IH_TWL4030_END			(IH_TWL4030_BASE+8)
-#define NR_IRQS				(IH_TWL4030_END)
+
+/* TWL4030 GPIO Interrupts */
+#define IH_TWL4030_GPIO_BASE		(IH_TWL4030_END)
+#define IH_TWL4030_GPIO_END		(IH_TWL4030_BASE+18)
+#define NR_IRQS				(IH_TWL4030_GPIO_END)
 
 #endif /* __ASM_ARCH_OMAP_2430SDP_H */

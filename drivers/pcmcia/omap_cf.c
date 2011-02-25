@@ -5,8 +5,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  */
 
 #include <linux/module.h>
@@ -264,11 +264,11 @@ static int __init omap_cf_probe(struct platform_device *pdev)
 		goto fail1;
 
 	/* NOTE:  CF conflicts with MMC1 */
-	omap_cfg_reg(W11_1610_CF_CD1);
-	omap_cfg_reg(P11_1610_CF_CD2);
-	omap_cfg_reg(R11_1610_CF_IOIS16);
-	omap_cfg_reg(V10_1610_CF_IREQ);
-	omap_cfg_reg(W10_1610_CF_RESET);
+	omap_cfg_reg("W11_1610_CF_CD1");
+	omap_cfg_reg("P11_1610_CF_CD2");
+	omap_cfg_reg("R11_1610_CF_IOIS16");
+	omap_cfg_reg("V10_1610_CF_IREQ");
+	omap_cfg_reg("W10_1610_CF_RESET");
 
 	CF_CFG_REG = ~(1 << seg);
 

@@ -208,6 +208,17 @@ repeat:
 
 	__ptrace_link(task, current);
 
+#ifdef CONFIG_MINI_CORE
+	if (task->ptrace_attach_done)
+	{
+		complete(task->ptrace_attach_done);
+
+		/* not really an error case, but we definitely
+		 * want to skip the SIGSTOP */
+		goto bad;
+	}
+#endif
+
 	force_sig_specific(SIGSTOP, task);
 
 bad:

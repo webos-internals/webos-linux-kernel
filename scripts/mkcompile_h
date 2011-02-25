@@ -39,6 +39,12 @@ else
 	TIMESTAMP=$KBUILD_BUILD_TIMESTAMP
 fi
 
+if [ -z "$KBUILD_BUILD_COMPILE_BY" ]; then
+	LINUX_COMPILE_BY=`whoami`
+else
+	LINUX_COMPILE_BY=$KBUILD_BUILD_COMPILE_BY
+fi
+
 UTS_VERSION="#$VERSION"
 CONFIG_FLAGS=""
 if [ -n "$SMP" ] ; then CONFIG_FLAGS="SMP"; fi
@@ -50,6 +56,12 @@ UTS_VERSION="$UTS_VERSION $CONFIG_FLAGS $TIMESTAMP"
 UTS_LEN=64
 UTS_TRUNCATE="sed -e s/\(.\{1,$UTS_LEN\}\).*/\1/"
 
+if [ -z "$KBUILD_BUILD_COMPILE_HOST" ]; then
+	LINUX_COMPILE_HOST=`hostname | $UTS_TRUNCATE`
+else
+	LINUX_COMPILE_HOST=$KBUILD_BUILD_COMPILE_HOST
+fi
+
 # Generate a temporary compile.h
 
 ( echo /\* This file is auto generated, version $VERSION \*/
@@ -60,8 +72,8 @@ UTS_TRUNCATE="sed -e s/\(.\{1,$UTS_LEN\}\).*/\1/"
   echo \#define UTS_VERSION \"`echo $UTS_VERSION | $UTS_TRUNCATE`\"
 
   echo \#define LINUX_COMPILE_TIME \"`date +%T`\"
-  echo \#define LINUX_COMPILE_BY \"`whoami`\"
-  echo \#define LINUX_COMPILE_HOST \"`hostname | $UTS_TRUNCATE`\"
+  echo \#define LINUX_COMPILE_BY \"$LINUX_COMPILE_BY\"
+  echo \#define LINUX_COMPILE_HOST \"$LINUX_COMPILE_HOST\"
 
   if [ -x /bin/dnsdomainname ]; then
     echo \#define LINUX_COMPILE_DOMAIN \"`dnsdomainname | $UTS_TRUNCATE`\"

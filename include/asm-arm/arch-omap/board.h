@@ -25,9 +25,12 @@
 #define OMAP_TAG_FBMEM		0x4f08
 #define OMAP_TAG_STI_CONSOLE	0x4f09
 #define OMAP_TAG_CAMERA_SENSOR	0x4f0a
+#define OMAP_TAG_PARTITION      0x4f0b
+#define OMAP_TAG_TEA5761	0x4f10
+#define OMAP_TAG_TMP105		0x4f11
 
 #define OMAP_TAG_BOOT_REASON    0x4f80
-#define OMAP_TAG_FLASH_PART	0x4f81
+#define OMAP_TAG_FLASH_PART_STR	0x4f81
 #define OMAP_TAG_VERSION_STR	0x4f82
 
 struct omap_clock_config {
@@ -45,9 +48,24 @@ struct omap_mmc_conf {
 	unsigned cover:1;
 	/* 4 wire signaling is optional, and is only used for SD/SDIO */
 	unsigned wire4:1;
+	/* use the internal clock */
+	unsigned internal_clock:1;
 	s16 power_pin;
 	s16 switch_pin;
 	s16 wp_pin;
+	/* PALM extention */
+	u32   host_dma_ch;  /* max number of DMA channels */
+	u32   host_caps;    /* host capabilities */
+	u32   host_ocr;     /* host operating conditions  */
+	u32   host_fmax;    /* max clock frequency */
+	int   host_retry_max; /* max number of cmd retries */
+	int   host_cmd52_poll; /* poll cmd52 */
+	int (*board_power_mode)(void *mmc, int mode );
+	int (*board_probe)     (void *mmc);
+	int (*board_remove)    (void *mmc);
+	int (*board_shutdown)  (void *mmc);
+	int (*board_suspend)   (void *mmc);
+	int (*board_resume)    (void *mmc);
 };
 
 struct omap_mmc_config {
@@ -139,8 +157,25 @@ struct omap_uart_config {
 	unsigned int enabled_uarts;
 };
 
+struct omap_tea5761_config {
+	u16 enable_gpio;
+};
 
-struct omap_flash_part_config {
+/* This cannot be passed from the bootloader */
+struct omap_tmp105_config {
+	u16 tmp105_irq_pin;
+	int (* set_power)(int enable);
+};
+
+struct omap_partition_config {
+	char name[16];
+	unsigned int size;
+	unsigned int offset;
+	/* same as in include/linux/mtd/partitions.h */
+	unsigned int mask_flags;
+};
+
+struct omap_flash_part_str_config {
 	char part_table[0];
 };
 
@@ -154,7 +189,7 @@ struct omap_version_config {
 };
 
 
-#include <asm-arm/arch-omap/board-nokia.h>
+// #include <asm-arm/arch-omap/board-nokia.h>
 
 struct omap_board_config_entry {
 	u16 tag;
@@ -165,6 +200,26 @@ struct omap_board_config_entry {
 struct omap_board_config_kernel {
 	u16 tag;
 	const void *data;
+};
+
+/* Wake-up source configuration list */
+struct omap3_wkup_src_config {
+	const char	*name;		/* Driver name */
+	u32		dev_id;		/* Device instance ID */
+#define OMAP_WKUP_TYPE_GPIO		1
+#define OMAP_WKUP_TYPE_IOPAD		2
+	u32		type;		/* GPIO or IOPAD */
+	u32		gpio_nr;	/* GPIO number */
+	volatile u32	*padconf_addr;	/* Pad configuration reg addr */
+	u32		padconf_mask;	/* Mask, 0xFFFF0000 or 0x0000FFFF */
+	u32		padconf_config;	/* Configuration register value */
+#define OMAP_WKUP_FALLING_EDGE		(1<<0)
+#define OMAP_WKUP_RISING_EDGE		(1<<1)
+#define OMAP_WKUP_LEVEL_HI		(1<<2)
+#define OMAP_WKUP_LEVEL_LOW		(1<<3)
+	u32		padconf_trigger;
+	u32		num_sources;	/* Number of wkup sources for that
+					   driver. */
 };
 
 extern const void *__omap_get_config(u16 tag, size_t len, int nr);
@@ -182,5 +237,4 @@ extern int omap_board_config_size;
 
 /* for TI reference platforms sharing the same debug card */
 extern int debug_card_init(u32 addr, unsigned gpio);
-
 #endif

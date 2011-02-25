@@ -31,6 +31,7 @@
 #define	HPET_MINOR	     228
 #define KVM_MINOR            232
 
+#define PALKERN_MINOR		134
 struct device;
 
 struct miscdevice  {

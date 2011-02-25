@@ -1480,14 +1480,22 @@ done:
 void fb_set_suspend(struct fb_info *info, int state)
 {
 	struct fb_event event;
+	int blank;
 
 	event.info = info;
 	if (state) {
 		fb_notifier_call_chain(FB_EVENT_SUSPEND, &event);
 		info->state = FBINFO_STATE_SUSPENDED;
+		blank = 1;
+		event.data = &blank;
+		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+
 	} else {
 		info->state = FBINFO_STATE_RUNNING;
 		fb_notifier_call_chain(FB_EVENT_RESUME, &event);
+		blank = 0;
+		event.data = &blank;
+		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
 	}
 }
 

@@ -7,6 +7,8 @@
 #define OOM_ADJUST_MIN (-16)
 #define OOM_ADJUST_MAX 15
 
+#define OOM_HELPER_MAX_SIZE 128
+
 #ifdef __KERNEL__
 
 #include <linux/types.h>

@@ -26,6 +26,7 @@
 #include <asm/io.h>
 #include <asm/setup.h>
 
+#include <asm/arch/common.h>
 #include <asm/arch/board.h>
 #include <asm/arch/mux.h>
 #include <asm/arch/fpga.h>
@@ -39,6 +40,26 @@ int omap_bootloader_tag_len;
 
 struct omap_board_config_kernel *omap_board_config;
 int omap_board_config_size;
+
+#ifdef CONFIG_OMAP_BOOT_TAG
+
+static int __init parse_tag_omap(const struct tag *tag)
+{
+	u32 size = tag->hdr.size - (sizeof(tag->hdr) >> 2);
+
+        size <<= 2;
+	if (size > sizeof(omap_bootloader_tag))
+		return -1;
+
+	memcpy(omap_bootloader_tag, tag->u.omap.data, size);
+	omap_bootloader_tag_len = size;
+
+        return 0;
+}
+
+__tagtable(ATAG_BOARD, parse_tag_omap);
+
+#endif
 
 static const void *get_config(u16 tag, size_t len, int skip, size_t *len_out)
 {
@@ -171,18 +192,28 @@ console_initcall(omap_add_serial_console);
 
 #if defined(CONFIG_ARCH_OMAP16XX)
 #define TIMER_32K_SYNCHRONIZED		0xfffbc410
-#elif defined(CONFIG_ARCH_OMAP24XX)
-#define TIMER_32K_SYNCHRONIZED		(OMAP24XX_32KSYNCT_BASE + 0x10)
+#elif defined(CONFIG_ARCH_OMAP24XX) || defined(CONFIG_ARCH_OMAP34XX)
+#define TIMER_32K_SYNCHRONIZED		(OMAP2_32KSYNCT_BASE + 0x10)
 #endif
 
 #ifdef	TIMER_32K_SYNCHRONIZED
 
 #include <linux/clocksource.h>
 
-static cycle_t omap_32k_read(void)
+cycle_t omap_32k_read(void)
 {
 	return omap_readl(TIMER_32K_SYNCHRONIZED);
 }
+EXPORT_SYMBOL(omap_32k_read);
+
+void omap_wait_for_32kclock_edge(void) {
+	u32 counter_val;
+
+	counter_val = omap_32k_read();
+	while (counter_val == omap_32k_read()) {
+	}
+}
+EXPORT_SYMBOL(omap_wait_for_32kclock_edge);
 
 static struct clocksource clocksource_32k = {
 	.name		= "32k_counter",
@@ -193,12 +224,64 @@ static struct clocksource clocksource_32k = {
 	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
+#ifndef CONFIG_OMAP_32K_TIMER
+/*
+ * The 32KHz synchronized timer is an additional timer on 16xx.
+ * It is always running.
+ */
+inline unsigned long 
+omap_32k_sync_timer_read(void)
+{
+	return omap_readl(TIMER_32K_SYNCHRONIZED);
+}
+
+/*
+ * Rounds down to nearest usec. Note that this will overflow for larger values.
+ */
+inline unsigned long 
+omap_32k_ticks_to_usecs(unsigned long ticks_32k)
+{
+	return (unsigned long)(((unsigned long long) ticks_32k * 5*5*5*5*5*5) >> 9);
+}
+
+/*
+ * Rounds down to nearest nsec.
+ */
+inline unsigned long long 
+omap_32k_ticks_to_nsecs(unsigned long ticks_32k)
+{
+	return ((unsigned long long) ticks_32k * 1000 * 5*5*5*5*5*5 ) >> 9;
+}
+
+/*
+ * Returns current time from boot in nsecs. It's OK for this to wrap
+ * around for now, as it's just a relative time stamp.
+ */
+unsigned long long 
+sched_clock(void)
+{
+	return omap_32k_ticks_to_nsecs(omap_32k_sync_timer_read());
+}
+
+#endif
+
+
+
 static int __init omap_init_clocksource_32k(void)
 {
 	static char err[] __initdata = KERN_ERR
 			"%s: can't register clocksource!\n";
 
-	if (cpu_is_omap16xx() || cpu_is_omap24xx()) {
+	if (cpu_is_omap16xx() || cpu_class_is_omap2()) {
+		struct clk *sync_32k_ick;
+
+#if defined(CONFIG_ARCH_OMAP24XX)
+		sync_32k_ick = clk_get(NULL, "sync_32k_ick");
+#else
+		sync_32k_ick = clk_get(NULL, "omap_32ksync_ick");
+#endif
+		if (sync_32k_ick)
+			clk_enable(sync_32k_ick);
 		clocksource_32k.mult = clocksource_hz2mult(32768,
 					    clocksource_32k.shift);
 
@@ -210,3 +293,81 @@ static int __init omap_init_clocksource_32k(void)
 arch_initcall(omap_init_clocksource_32k);
 
 #endif	/* TIMER_32K_SYNCHRONIZED */
+
+
+/* Global address base setup code */
+
+#if defined(CONFIG_ARCH_OMAP2) || defined(CONFIG_ARCH_OMAP3)
+
+static struct omap_globals *omap2_globals;
+
+static void __init __omap2_set_globals(void)
+{
+//	omap2_set_globals_tap(omap2_globals);
+//	omap2_set_globals_memory(omap2_globals);
+	omap2_set_globals_control(omap2_globals);
+#ifndef CONFIG_OMAP3_PM
+//	omap2_set_globals_prcm(omap2_globals);
+#endif
+//	omap2_set_globals_clock24xx(omap2_globals);
+}
+
+#endif
+
+#if defined(CONFIG_ARCH_OMAP2420)
+
+static struct omap_globals omap242x_globals = {
+	.class	= OMAP242X_CLASS,
+	.tap	= (__force void __iomem *)OMAP2_IO_ADDRESS(0x48014000),
+	.sdrc	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP2420_SDRC_BASE),
+	.sms	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP2420_SMS_BASE),
+	.ctrl	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP2420_CTRL_BASE),
+	.prm	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP2420_PRM_BASE),
+	.cm	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP2420_CM_BASE),
+};
+
+void __init omap2_set_globals_242x(void)
+{
+	omap2_globals = &omap242x_globals;
+	__omap2_set_globals();
+}
+#endif
+
+#if defined(CONFIG_ARCH_OMAP2430)
+
+static struct omap_globals omap243x_globals = {
+	.class	= OMAP243X_CLASS,
+	.tap	= (__force void __iomem *)OMAP2_IO_ADDRESS(0x4900a000),
+	.sdrc	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP243X_SDRC_BASE),
+	.sms	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP243X_SMS_BASE),
+	.ctrl	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP243X_CTRL_BASE),
+	.prm	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP2430_PRM_BASE),
+	.cm	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP2430_CM_BASE),
+};
+
+void __init omap2_set_globals_243x(void)
+{
+	omap2_globals = &omap243x_globals;
+	__omap2_set_globals();
+}
+#endif
+
+#if defined(CONFIG_ARCH_OMAP3430)
+
+static struct omap_globals omap343x_globals = {
+	.class	= OMAP343X_CLASS,
+	.tap	= (__force void __iomem *)OMAP2_IO_ADDRESS(0x4830A000),
+	.sdrc	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP343X_SDRC_BASE),
+	.sms	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP343X_SMS_BASE),
+	.ctrl	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP343X_CTRL_BASE),
+	.prm	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP3430_PRM_BASE),
+	.cm	= (__force void __iomem *)OMAP2_IO_ADDRESS(OMAP3430_CM_BASE),
+};
+
+void __init omap2_set_globals_343x(void)
+{
+	omap2_globals = &omap343x_globals;
+	__omap2_set_globals();
+}
+#endif
+

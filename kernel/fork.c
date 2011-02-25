@@ -351,6 +351,7 @@ static struct mm_struct * mm_init(struct mm_struct * mm)
 	mm->nr_ptes = 0;
 	set_mm_counter(mm, file_rss, 0);
 	set_mm_counter(mm, anon_rss, 0);
+	set_mm_counter(mm, swapped_vm, 0);
 	spin_lock_init(&mm->page_table_lock);
 	rwlock_init(&mm->ioctx_list_lock);
 	mm->ioctx_list = NULL;
@@ -915,6 +916,8 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 
 	tty_audit_fork(sig);
 
+	sig->oom_adj = current->signal->oom_adj;
+
 	return 0;
 }
 
@@ -1046,6 +1049,9 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	INIT_LIST_HEAD(&p->children);
 	INIT_LIST_HEAD(&p->sibling);
 	p->vfork_done = NULL;
+#ifdef CONFIG_MINI_CORE
+	p->ptrace_attach_done = NULL;
+#endif
 	spin_lock_init(&p->alloc_lock);
 
 	clear_tsk_thread_flag(p, TIF_SIGPENDING);

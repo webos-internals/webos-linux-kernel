@@ -10,8 +10,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -447,6 +447,11 @@ static inline void  smc_rcv(struct net_device *dev)
 		dev->name, packet_number, status,
 		packet_len, packet_len);
 
+	if (unlikely(packet_len == 0 && !(status & RS_ERRORS))) {
+		printk(KERN_ERR "%s: bad memory timings: rxlen %u status %x\n",
+			dev->name, packet_len, status);
+		status |= RS_TOOSHORT;
+	}
 	back:
 	if (unlikely(packet_len < 6 || status & RS_ERRORS)) {
 		if (status & RS_TOOLONG && packet_len <= (1514 + 4 + 6)) {

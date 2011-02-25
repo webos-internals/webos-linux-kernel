@@ -38,6 +38,11 @@
 #include <asm/system.h>
 #include <asm/uaccess.h>
 
+#include <linux/delay.h>
+#ifdef CONFIG_HIGH_RES_TIMERS
+#include <linux/hrtimer.h>
+#endif
+
 #include "queue.h"
 
 /*
@@ -230,9 +235,11 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 			brq.cmd.arg <<= 9;
 		brq.cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
 		brq.data.blksz = 1 << md->block_bits;
+
 		brq.stop.opcode = MMC_STOP_TRANSMISSION;
 		brq.stop.arg = 0;
 		brq.stop.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+		
 		brq.data.blocks = req->nr_sectors >> (md->block_bits - 9);
 		if (brq.data.blocks > card->host->max_blk_count)
 			brq.data.blocks = card->host->max_blk_count;
@@ -251,9 +258,11 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		if (brq.data.blocks > 1) {
 			/* SPI multiblock writes terminate using a special
 			 * token, not a STOP_TRANSMISSION request.
+			 *
+			 * MMC closed ended writes do not have a stop request at all.
 			 */
-			if (!mmc_host_is_spi(card->host)
-					|| rq_data_dir(req) == READ)
+			if ((!mmc_card_mmc(card) || (card->host->caps & MMC_CAP_OPEN_ENDED_ONLY)) && 
+					(!mmc_host_is_spi(card->host) || rq_data_dir(req) == READ))
 				brq.mrq.stop = &brq.stop;
 			readcmd = MMC_READ_MULTIPLE_BLOCK;
 			writecmd = MMC_WRITE_MULTIPLE_BLOCK;
@@ -269,6 +278,22 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		} else {
 			brq.cmd.opcode = writecmd;
 			brq.data.flags |= MMC_DATA_WRITE;
+		}
+
+		/* mmc closed ended writes start with a SET_BLOCK_COUNT command */
+
+		if (!brq.mrq.stop && brq.data.blocks > 1) {
+			int err;
+
+			cmd.opcode = MMC_SET_BLOCK_COUNT;
+			cmd.arg = brq.data.blocks;
+			cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+			err = mmc_wait_for_cmd(card->host, &cmd, 0);
+			if (err) {
+				printk(KERN_ERR "%s: error %d setting mmc block length\n",
+					   req->rq_disk->disk_name, err);
+				goto cmd_err;
+			}
 		}
 
 		mmc_set_data_timeout(&brq.data, card);
@@ -315,8 +340,23 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 		}
 
 		if (!mmc_host_is_spi(card->host) && rq_data_dir(req) != READ) {
+#ifdef CONFIG_HIGH_RES_TIMERS
+			int delay_count = 0;
+			int delay_usec  = 1000;
+			struct timespec ts;
+#endif
 			do {
 				int err;
+#ifdef CONFIG_HIGH_RES_TIMERS
+				ts.tv_sec  = 0;
+				ts.tv_nsec = delay_usec * 1000;
+				hrtimer_nanosleep( &ts, NULL, HRTIMER_MODE_REL, CLOCK_MONOTONIC);
+				delay_count++;
+				if( delay_count > 5 )
+				    delay_usec  = 5000;
+				else 
+				    delay_usec  = 500;
+#endif
 
 				cmd.opcode = MMC_SEND_STATUS;
 				cmd.arg = card->rca << 16;
@@ -332,6 +372,9 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 				 * so make sure to check both the busy
 				 * indication and the card state.
 				 */
+				 if( cmd.resp[0] & 0xffff0000 ) {
+				 	panic( "MMC write failed 0x%08x\n", cmd.resp[0] );
+				 }
 			} while (!(cmd.resp[0] & R1_READY_FOR_DATA) ||
 				(R1_CURRENT_STATE(cmd.resp[0]) == 7));
 

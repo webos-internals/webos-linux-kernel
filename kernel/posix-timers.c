@@ -12,8 +12,8 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
+ * the Free Software Foundation; version 2 of the License.
+ *
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -47,6 +47,8 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/module.h>
+
+#include <palm/palm_time.h>
 
 /*
  * Management arrays for POSIX timers.	 Timers are kept in slab memory
@@ -224,6 +226,53 @@ static int posix_ktime_get_ts(clockid_t which_clock, struct timespec *tp)
 }
 
 /*
+ * Get time since boot for posix timers
+ */
+static int posix_uptime_get_ts(clockid_t which_clock, struct timespec *tp)
+{
+	ktime_get_ts(tp);
+	monotonic_to_bootbased(tp);
+	return 0;
+}
+
+/*
+ * Get wall clock separate from the one normally set via libc calls.
+ */
+static int posix_network_get_ts(clockid_t which_clock, struct timespec *tp)
+{
+	struct timespec network;
+	unsigned long seq;
+
+	do {
+		seq = read_seqbegin(&xtime_lock);
+		getnstimeofday(tp);     /* this also uses xtime_lock... */
+		network = wall_to_network;
+	} while (read_seqretry(&xtime_lock, seq));
+
+	set_normalized_timespec(tp, tp->tv_sec + network.tv_sec,
+                            tp->tv_nsec + network.tv_nsec);
+
+	return 0;
+}
+
+
+int posix_network_set_ts(const clockid_t clockid, struct timespec *tp)
+{
+    struct timeval sysTime;
+
+	time_t	sec = tp->tv_sec;
+	long	nsec = tp->tv_nsec;
+    
+    do_gettimeofday( &sysTime );
+    sec -= sysTime.tv_sec;
+    nsec -= sysTime.tv_usec;
+    
+    set_normalized_timespec( &wall_to_network, sec, nsec );
+
+    return 0;
+}
+
+/*
  * Initialize everything, well, just everything in Posix clocks/timers ;)
  */
 static __init int init_posix_timers(void)
@@ -237,8 +286,28 @@ static __init int init_posix_timers(void)
 		.clock_set = do_posix_clock_nosettime,
 	};
 
+	/* Must define at least one of .clock_getres or .res */
+	struct k_clock clock_network = {
+		.clock_getres = hrtimer_get_res,
+		.clock_get = posix_network_get_ts,
+		.clock_set = posix_network_set_ts,
+	};
+
+	struct k_clock clock_uptime = {
+		.clock_getres = hrtimer_get_res,
+		.clock_get = posix_uptime_get_ts,
+		.clock_set = do_posix_clock_nosettime,
+	};
+
 	register_posix_clock(CLOCK_REALTIME, &clock_realtime);
 	register_posix_clock(CLOCK_MONOTONIC, &clock_monotonic);
+	register_posix_clock(CLOCK_NETWORK, &clock_network);
+	register_posix_clock(CLOCK_UPTIME, &clock_uptime);
+	/* These two will be removed soon; the numbers are used
+	 * in the 2.6.29 kernel.
+	 */
+	register_posix_clock(CLOCK_NETWORK_OLD, &clock_network);
+	register_posix_clock(CLOCK_UPTIME_OLD, &clock_uptime);
 
 	posix_timers_cache = kmem_cache_create("posix_timers_cache",
 					sizeof (struct k_itimer), 0, SLAB_PANIC,
@@ -256,8 +325,9 @@ static void schedule_next_timer(struct k_itimer *timr)
 	if (timr->it.real.interval.tv64 == 0)
 		return;
 
-	timr->it_overrun += hrtimer_forward(timer, timer->base->get_time(),
-					    timr->it.real.interval);
+	timr->it_overrun += (unsigned int) hrtimer_forward(timer,
+						timer->base->get_time(),
+						timr->it.real.interval);
 
 	timr->it_overrun_last = timr->it_overrun;
 	timr->it_overrun = -1;
@@ -386,7 +456,7 @@ static enum hrtimer_restart posix_timer_fn(struct hrtimer *timer)
 					now = ktime_add(now, kj);
 			}
 #endif
-			timr->it_overrun +=
+			timr->it_overrun += (unsigned int)
 				hrtimer_forward(timer, now,
 						timr->it.real.interval);
 			ret = HRTIMER_RESTART;
@@ -662,7 +732,7 @@ common_timer_get(struct k_itimer *timr, struct itimerspec *cur_setting)
 	 */
 	if (iv.tv64 && (timr->it_requeue_pending & REQUEUE_PENDING ||
 	    (timr->it_sigev_notify & ~SIGEV_THREAD_ID) == SIGEV_NONE))
-		timr->it_overrun += hrtimer_forward(timer, now, iv);
+		timr->it_overrun += (unsigned int) hrtimer_forward(timer, now, iv);
 
 	remaining = ktime_sub(timer->expires, now);
 	/* Return 0 only, when the timer is expired and not pending */

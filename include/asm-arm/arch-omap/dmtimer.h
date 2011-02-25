@@ -9,8 +9,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * Free Software Foundation; version 2 of the License.
+ *
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -44,11 +44,15 @@
 #define OMAP_TIMER_TRIGGER_OVERFLOW		0x01
 #define OMAP_TIMER_TRIGGER_OVERFLOW_AND_COMPARE	0x02
 
+/* register offsets */
+#define OMAP_TIMER_WRITE_PEND_REG		0x34
+
 struct omap_dm_timer;
 struct clk;
 
 int omap_dm_timer_init(void);
 
+u32 omap_dm_timer_read_reg(struct omap_dm_timer *timer, int reg);
 struct omap_dm_timer *omap_dm_timer_request(void);
 struct omap_dm_timer *omap_dm_timer_request_specific(int timer_id);
 void omap_dm_timer_free(struct omap_dm_timer *timer);
@@ -68,7 +72,10 @@ void omap_dm_timer_set_source(struct omap_dm_timer *timer, int source);
 void omap_dm_timer_set_load(struct omap_dm_timer *timer, int autoreload, unsigned int value);
 void omap_dm_timer_set_match(struct omap_dm_timer *timer, int enable, unsigned int match);
 void omap_dm_timer_set_pwm(struct omap_dm_timer *timer, int def_on, int toggle, int trigger);
+void omap_dm_timer_set_pwm_start(struct omap_dm_timer *timer, int def_on,int toggle, int trigger, int run);
+
 void omap_dm_timer_set_prescaler(struct omap_dm_timer *timer, int prescaler);
+void omap_dm_timer_set_counter(struct omap_dm_timer *timer, int count);
 
 void omap_dm_timer_set_int_enable(struct omap_dm_timer *timer, unsigned int value);
 

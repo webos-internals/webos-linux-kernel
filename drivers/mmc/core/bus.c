@@ -242,10 +242,20 @@ int mmc_add_card(struct mmc_card *card)
 			mmc_card_highspeed(card) ? "high speed " : "",
 			type);
 	} else {
-		printk(KERN_INFO "%s: new %s%s card at address %04x\n",
+		int i, cb, len = 0;
+		char info[128] = {0};
+
+		for( i = 0; i < card->num_info; i++ ) {
+			cb = strlen(card->info[i]);
+			if((cb+1) > (sizeof(info)-len-1)) 
+				break;
+			len += sprintf( info+len, "%s ", card->info[i]);
+		}
+		
+		printk(KERN_INFO "%s: new %s%s card at address %04x: %s\n",
 			mmc_hostname(card->host),
 			mmc_card_highspeed(card) ? "high speed " : "",
-			type, card->rca);
+			type, card->rca, info );
 	}
 
 	card->dev.uevent_suppress = 1;

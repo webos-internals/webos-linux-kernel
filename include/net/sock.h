@@ -1319,12 +1319,12 @@ extern void __sock_recv_timestamp(struct msghdr *msg, struct sock *sk,
 static __inline__ void
 sock_recv_timestamp(struct msghdr *msg, struct sock *sk, struct sk_buff *skb)
 {
-	ktime_t kt = skb->tstamp;
+//	ktime_t kt = skb->tstamp;
 
 	if (sock_flag(sk, SOCK_RCVTSTAMP))
 		__sock_recv_timestamp(msg, sk, skb);
-	else
-		sk->sk_stamp = kt;
+//	else
+//		sk->sk_stamp = kt;
 }
 
 /**

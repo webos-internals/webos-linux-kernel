@@ -696,8 +696,8 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 				   pageset->pcp[j].batch);
 			}
 #ifdef CONFIG_SMP
-		seq_printf(m, "\n  vm stats threshold: %d",
-				pageset->stat_threshold);
+			seq_printf(m, "\n  vm stats threshold: %d",
+					pageset->stat_threshold);
 #endif
 	}
 	seq_printf(m,

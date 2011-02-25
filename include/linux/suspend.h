@@ -69,6 +69,11 @@ typedef int __bitwise suspend_state_t;
  *	This callback is optional, but should be implemented by the platforms
  *	that implement @prepare().  If implemented, it is always called after
  *	@enter() (even if @enter() fails).
+ *
+ * @fastsleep(): Called after @finish() to check if the system should
+ *	re-enter a sleep state (i.e. for fast battery-check wakeups).
+ *	It returns 1 if system should go back to sleep via @prepare(),
+ *	then @enter().
  */
 struct platform_suspend_ops {
 	int (*valid)(suspend_state_t state);
@@ -76,6 +81,7 @@ struct platform_suspend_ops {
 	int (*prepare)(void);
 	int (*enter)(suspend_state_t state);
 	void (*finish)(void);
+	int (*fastsleep)(void);
 };
 
 #ifdef CONFIG_SUSPEND
