@@ -228,6 +228,10 @@ static int twl4030_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	unsigned char rtc_data[ALL_TIME_REGS + 1];
 	int ret;
 
+	/* Year range is 00..99 */
+	if ((tm->tm_year -= (epoch - 1900)) >= 100)
+		tm->tm_year -= 100;
+
 	/* Month range is 01..12 */
 	tm->tm_mon++;
 
@@ -362,6 +366,10 @@ static int twl4030_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	unsigned char alarm_data[ALL_TIME_REGS + 1];
 	int ret;
 
+	/* Year range is 00..99 */
+	if ((alm->time.tm_year -= (epoch - 1900)) >= 100)
+		alm->time.tm_year -= 100;
+
 	/* Month range is 01..12 */
 	alm->time.tm_mon++;
 
@@ -482,8 +490,7 @@ static irqreturn_t twl4030_rtc_interrupt(int irq, void *rtc)
 	if (!(rd_reg & PWR_RTC_INT_CLR))
 		goto out;
 
-	rd_reg |= PWR_RTC_INT_CLR;
-	res = twl4030_i2c_write_u8(TWL4030_MODULE_INT, rd_reg, REG_PWR_ISR1);
+	res = twl4030_i2c_write_u8(TWL4030_MODULE_INT, PWR_RTC_INT_CLR, REG_PWR_ISR1);
 	if (res)
 		goto out;
 
@@ -511,12 +518,7 @@ static irqreturn_t twl4030_rtc_interrupt(int irq, void *rtc)
 	 * RTC event generates 2 interrupts in a row.
 	 * (no errata document available)
 	 */
-	res = twl4030_i2c_read_u8(TWL4030_MODULE_INT, &rd_reg, REG_PWR_ISR1);
-	if (res)
-		goto out;
-
-	rd_reg |= PWR_RTC_INT_CLR;
-	res = twl4030_i2c_write_u8(TWL4030_MODULE_INT, rd_reg, REG_PWR_ISR1);
+	res = twl4030_i2c_write_u8(TWL4030_MODULE_INT, PWR_RTC_INT_CLR, REG_PWR_ISR1);
 	if (res)
 		goto out;
 

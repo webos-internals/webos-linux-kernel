@@ -22,7 +22,9 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/workqueue.h>
+#ifdef CONFIG_USB_GADGET_EVENT
 #include <linux/usb/gadget_event.h>
+#endif
 
 #include "charger_detector.h"
 
@@ -58,8 +60,9 @@ charger_detect_work(struct work_struct *work)
 	}
 	if (vbus == 0) {
 		printk(KERN_INFO "%s: vbus=%d\n", NAME, vbus);
-		gadget_event_host_connected(0);
+#ifdef CONFIG_USB_GADGET_EVENT
 		gadget_event_power_state_changed(G_EV_SOURCE_NONE, 0);
+#endif
 		return;
 	}
 	else if (vbus == 1) {
@@ -128,15 +131,19 @@ charger_detect_work(struct work_struct *work)
 		}
 	}
 
+#ifdef CONFIG_USB_GADGET_EVENT
 	if (the_data->charger_mA > 0)
 		gadget_event_power_state_changed(G_EV_SOURCE_CHARGER,
 						 the_data->charger_mA);
+#endif
 }
 
 static void
 charger_vbus_lost_work(struct work_struct *work)
 {
+#ifdef CONFIG_USB_GADGET_EVENT
 	gadget_event_power_state_changed(G_EV_SOURCE_NONE, 0);
+#endif
 }
 
 int

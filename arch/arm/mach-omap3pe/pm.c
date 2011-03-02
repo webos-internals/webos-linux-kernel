@@ -378,89 +378,189 @@ static struct platform_suspend_ops omap_pm_ops = {
  ******************************************************************************/
 
 #ifdef CONFIG_PM
+
+#define PRCM_IRQ_TIMEOUT 500000
+
+/* PRM_IRQSTATUS_IVA2, PRM_IRQSTATUS_MPU shared bits */
+#define OMAP3430_WKUP_ST	(1 << 0)
+#define OMAP3430_IO_ST		(1 << 9)
+
+static void handle_wkup_wkup ( void )
+{
+	u32 fclk, iclk;
+	u32 cnt,  wkst;
+
+	wkst = PM_WKST_WKUP;
+	if (!wkst)
+		return;
+
+	cnt  = 0;
+	iclk = CM_ICLKEN_WKUP;
+	fclk = CM_FCLKEN_WKUP;
+	for (;;) {
+		CM_ICLKEN_WKUP |= wkst;
+		CM_FCLKEN_WKUP |= wkst;
+		PM_WKST_WKUP   = wkst;
+		wkst = PM_WKST_WKUP;
+		if (!wkst)
+			break;
+		if( cnt++ > PRCM_IRQ_TIMEOUT ) {
+			panic("Timeout in %s: PM_WKST_WKUP=0x%08x\n",
+			       __func__, PM_WKST_WKUP);
+		}
+		udelay(1);
+	}
+	CM_ICLKEN_WKUP = iclk;
+	CM_FCLKEN_WKUP = fclk;
+	return;
+}
+
+
+static void handle_core1_wkup ( void )
+{
+	u32 fclk, iclk;
+	u32 cnt,  wkst;
+
+	wkst = PM_WKST1_CORE;
+	if (!wkst)
+		return;
+
+	cnt  = 0;
+	iclk = CM_ICLKEN1_CORE;
+	fclk = CM_FCLKEN1_CORE;
+	for (;;){
+		CM_ICLKEN1_CORE |= wkst;
+		CM_FCLKEN1_CORE |= wkst;
+		PM_WKST1_CORE = wkst;
+		wkst = PM_WKST1_CORE;
+		if (!wkst)
+			break;
+		if( cnt++ > PRCM_IRQ_TIMEOUT ) {
+			panic("Timeout in %s: PM_WKST1_CORE=0x%08x\n",
+			       __func__, PM_WKST1_CORE);
+		}
+		udelay(1);
+	}
+	CM_ICLKEN1_CORE = iclk;
+	CM_FCLKEN1_CORE = fclk;
+}
+
+static void handle_core3_wkup ( void )
+{
+	u32 fclk, iclk;
+	u32 cnt,  wkst;
+
+	wkst = PM_WKST3_CORE;
+	if(!wkst)
+		return;
+
+	cnt  = 0;
+	iclk = CM_ICLKEN3_CORE;
+	fclk = CM_FCLKEN3_CORE;
+	for (;;){
+		CM_ICLKEN3_CORE |= wkst;
+		CM_FCLKEN3_CORE |= wkst;
+		PM_WKST3_CORE = wkst;
+		wkst = PM_WKST3_CORE;
+		if (!wkst)
+			break;
+		if( cnt++ > PRCM_IRQ_TIMEOUT ) {
+			panic("Timeout in %s: PM_WKST3_CORE=0x%08x\n",
+			       __func__, PM_WKST3_CORE);
+		}
+		udelay(1);
+	}
+	CM_ICLKEN3_CORE = iclk;
+	CM_FCLKEN3_CORE = fclk;
+}
+
+
+static void handle_usbhost_wkup (void)
+{
+	u32 fclk, iclk;
+	u32 cnt,  wkst;
+
+	wkst= PM_WKST_USBHOST;
+	if (!wkst)
+		return;
+
+	cnt  = 0;
+	iclk = CM_ICLKEN_USBHOST;
+	fclk = CM_FCLKEN_USBHOST;
+	CM_ICLKEN_USBHOST = 0x1;
+	CM_FCLKEN_USBHOST = 0x3; /* both bits */
+	for (;;){
+		PM_WKST_USBHOST = wkst;
+		wkst = PM_WKST_USBHOST;
+		if (!wkst)
+			break;
+		if( cnt++ > PRCM_IRQ_TIMEOUT ) {
+			panic( "Timeout in %s: PM_WKST_USBHOST=0x%08x\n",
+				__func__, PM_WKST_USBHOST);
+		}
+		udelay(1);
+	}
+	CM_ICLKEN_USBHOST = iclk;
+	CM_FCLKEN_USBHOST = fclk;
+}
+
+
+static void handle_per_wkup(void)
+{
+	u32 fclk, iclk;
+	u32 cnt,  wkst;
+
+	wkst = PM_WKST_PER;
+	if (!wkst)
+		return;
+
+	cnt  = 0;
+	iclk = CM_ICLKEN_PER;
+	fclk = CM_FCLKEN_PER;
+	for (;;){
+		CM_ICLKEN_PER |= wkst;
+		CM_FCLKEN_PER |= wkst;
+		PM_WKST_PER = wkst;
+		wkst = PM_WKST_PER;
+		if (!wkst)
+			break;
+		if( cnt++ > PRCM_IRQ_TIMEOUT ) {
+			panic("Timeout in %s: PM_WKST_PER=0x%08x\n",
+			       __func__, PM_WKST_PER);
+		}
+		udelay(1);
+	}
+	CM_ICLKEN_PER = iclk;
+	CM_FCLKEN_PER = fclk;
+}
+
+
 static irqreturn_t prcm_interrupt_handler(int irq, void *dev_id)
 {
-	u32 wkst_wkup	= PM_WKST_WKUP;
-	u32 wkst1_core	= PM_WKST1_CORE;
-	u32 wkst3_core  = PM_WKST3_CORE;
-	u32 wkst_usbhost = PM_WKST_USBHOST;
-	u32 wkst_per	= PM_WKST_PER;
-	u32 errst_vc	= PRM_VC_TIMEOUTERR_ST | PRM_VC_RAERR_ST | PRM_VC_SAERR_EN;
-	u32 fclk	= 0;
-	u32 iclk	= 0;
+	u32 cnt, irq_st_mpu, irq_en_mpu;
 
-	if (wkst_wkup) {
-		iclk = CM_ICLKEN_WKUP;
-		fclk = CM_FCLKEN_WKUP;
-		CM_ICLKEN_WKUP |= wkst_wkup;
-		CM_FCLKEN_WKUP |= wkst_wkup;
-		PM_WKST_WKUP = wkst_wkup;
-		while (PM_WKST_WKUP) ;
-		CM_ICLKEN_WKUP = iclk;
-		CM_FCLKEN_WKUP = fclk;
-	}
-	if (wkst1_core) {
-		iclk = CM_ICLKEN1_CORE;
-		fclk = CM_FCLKEN1_CORE;
-		CM_ICLKEN1_CORE |= wkst1_core;
-		CM_FCLKEN1_CORE |= wkst1_core;
-		PM_WKST1_CORE = wkst1_core;
-		while (PM_WKST1_CORE) ;
-		CM_ICLKEN1_CORE = iclk;
-		CM_FCLKEN1_CORE = fclk;
-	}
-	if (wkst3_core) {
-		iclk = CM_ICLKEN3_CORE;
-		fclk = CM_FCLKEN3_CORE;
-		CM_ICLKEN3_CORE |= wkst3_core;
-		CM_FCLKEN3_CORE |= wkst3_core;
-		PM_WKST3_CORE = wkst3_core;
-		while (PM_WKST3_CORE);
-		CM_ICLKEN3_CORE = iclk;
-		CM_FCLKEN3_CORE = fclk;
-	}
-	if (wkst_usbhost) {
-		iclk = CM_ICLKEN_USBHOST;
-		fclk = CM_FCLKEN_USBHOST;
-		CM_ICLKEN_USBHOST = 0x1;
-		CM_FCLKEN_USBHOST = 0x3;
-		PM_WKST_USBHOST |= 1;
-		while (PM_WKST_USBHOST);
-		CM_ICLKEN_USBHOST = iclk;
-		CM_FCLKEN_USBHOST = fclk;
-	}
-	if (wkst_per) {
-		iclk = CM_ICLKEN_PER;
-		fclk = CM_FCLKEN_PER;
-		CM_ICLKEN_PER |= wkst_per;
-		CM_FCLKEN_PER |= wkst_per;
-		PM_WKST_PER = wkst_per;
-		while (PM_WKST_PER) ;
-		CM_ICLKEN_PER = iclk;
-		CM_FCLKEN_PER = fclk;
-	}
-
-	if (!(wkst_wkup | wkst1_core | wkst3_core | wkst_usbhost | wkst_per)) {
-		if (!(PRM_IRQSTATUS_MPU & errst_vc)) {
-			printk(KERN_ERR "%x,%x,%x,%x\n", PRM_IRQSTATUS_MPU,
-				       wkst_wkup, wkst1_core, wkst_per);
-			printk(KERN_ERR "Spurious PRCM interrupt\n");
+	cnt = 0;
+	irq_st_mpu = PRM_IRQSTATUS_MPU;
+	irq_en_mpu = PRM_IRQENABLE_MPU;
+	for (;;){
+		irq_st_mpu = PRM_IRQSTATUS_MPU & irq_en_mpu;
+		if (irq_st_mpu & (OMAP3430_WKUP_ST | OMAP3430_IO_ST)) {
+			handle_wkup_wkup();
+			handle_core1_wkup();
+			handle_per_wkup();
+			handle_core3_wkup();
+			handle_usbhost_wkup();
 		}
-	}
-#ifdef CONFIG_OMAP_VOLT_SR_BYPASS
-	if (PRM_IRQSTATUS_MPU & PRM_VC_TIMEOUTERR_ST)
-		printk(KERN_ERR "PRCM: Voltage Controller timeout\n");
-	if (PRM_IRQSTATUS_MPU & PRM_VC_RAERR_ST)
-		printk(KERN_ERR "PRCM: Voltage Controller register address"
-		       " acknowledge error\n");
-	if (PRM_IRQSTATUS_MPU & PRM_VC_SAERR_ST)
-		printk(KERN_ERR "PRCM: Voltage Controller slave address"
-		       " acknowledge error\n");
-#endif
+		PRM_IRQSTATUS_MPU = irq_st_mpu;
+		irq_st_mpu = PRM_IRQSTATUS_MPU & irq_en_mpu;
+		if (!irq_st_mpu)
+			break;
 
-	if (PRM_IRQSTATUS_MPU) {
-		PRM_IRQSTATUS_MPU |= PRM_IRQSTATUS_MPU;
-		while (PRM_IRQSTATUS_MPU) ;
+		if (cnt++ > PRCM_IRQ_TIMEOUT) {
+			panic("Timeout in %s: PRM_IRQSTATUS_MPU=0x%08x\n",
+			       __func__, PRM_IRQSTATUS_MPU);
+		}
+		udelay(1);
 	}
 	return IRQ_HANDLED;
 }

@@ -1001,15 +1001,26 @@ void omap34xx_v4l2_device_videobuf_done(struct omap34xx_v4l2_device *dev,
 {
 	struct list_head *entry;
 	struct videobuf_buffer *buf;
+	struct timespec tspec;
+	u32 flags;
 
 	SPEW(3, "+++ %s: state=%d\n", __func__, state);
+	ktime_get_ts(&tspec); // get monotonic time
 
-	INVARIANT(dev->qbufs.next);
+
+	spin_lock_irqsave(&dev->qlock,flags);
+	if( list_empty(&dev->qbufs)) {
+		/* list was emptied by another isr call to this function.*/
+		goto exit;  /* safe to ignore.  list was resolved. */
+	}
+
 	buf = list_entry(dev->qbufs.next, struct videobuf_buffer, queue);
 	INVARIANT(STATE_ACTIVE == buf->state);
-	do_gettimeofday(&buf->ts);
 
-	spin_lock(&dev->qlock);
+	// convert to timeval
+	buf->ts.tv_sec = tspec.tv_sec;
+	buf->ts.tv_usec = tspec.tv_nsec / 1000;
+
 	buf->state = state;
 	wake_up(&buf->done);
 	list_del(&buf->queue);
@@ -1021,7 +1032,8 @@ void omap34xx_v4l2_device_videobuf_done(struct omap34xx_v4l2_device *dev,
 		dev->videobuf_start(dev, buf);
 	}
 
-	spin_unlock(&dev->qlock);
+exit:
+	spin_unlock_irqrestore(&dev->qlock,flags);
 
 	SPEW(3, "--- %s\n", __func__);
 }

@@ -1605,6 +1605,7 @@ static void udp4_format_sock(struct sock *sp, char *tmpbuf, int bucket)
 		atomic_read(&sp->sk_refcnt), sp);
 }
 
+#ifdef CONFIG_INTSOCK_NETFILTER
 static void udp4_idle_format_sock(struct sock *sp, char *tmpbuf, int bucket)
 {
 	struct inet_sock *inet = inet_sk(sp);
@@ -1617,6 +1618,7 @@ static void udp4_idle_format_sock(struct sock *sp, char *tmpbuf, int bucket)
 
 	ts=ktime_to_timespec(sp->sk_stamp);
         ktime_get_ts(&ts_curr);
+        monotonic_to_bootbased(&ts_curr);
         idle_time=(ts_curr.tv_sec-ts.tv_sec);
 
 	sprintf(tmpbuf, "%4d: %08X:%04X %08X:%04X"
@@ -1627,6 +1629,7 @@ static void udp4_idle_format_sock(struct sock *sp, char *tmpbuf, int bucket)
 		0, 0L, 0, sock_i_uid(sp), 0, sock_i_ino(sp),
 		atomic_read(&sp->sk_refcnt), sp, idle_time);
 }
+#endif
 
 int udp4_seq_show(struct seq_file *seq, void *v)
 {
@@ -1645,6 +1648,8 @@ int udp4_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
+
+#ifdef CONFIG_INTSOCK_NETFILTER
 int udp4_idle_seq_show(struct seq_file *seq, void *v)
 {
 	if (v == SEQ_START_TOKEN)
@@ -1661,6 +1666,7 @@ int udp4_idle_seq_show(struct seq_file *seq, void *v)
 	}
 	return 0;
 }
+#endif
 
 /* ------------------------------------------------------------------------ */
 static struct file_operations udp4_seq_fops;
@@ -1673,6 +1679,7 @@ static struct udp_seq_afinfo udp4_seq_afinfo = {
 	.seq_fops	= &udp4_seq_fops,
 };
 
+#ifdef CONFIG_INTSOCK_NETFILTER
 static struct udp_seq_afinfo udp4_idle_seq_afinfo = {
 	.owner		= THIS_MODULE,
 	.name		= "udp_idle",
@@ -1681,20 +1688,25 @@ static struct udp_seq_afinfo udp4_idle_seq_afinfo = {
 	.seq_show	= udp4_idle_seq_show,
 	.seq_fops	= &udp4_seq_fops,
 };
+#endif
 
 int __init udp4_proc_init(void)
 {
+#ifdef CONFIG_INTSOCK_NETFILTER
 	int ret;
-	ret=udp_proc_register(&udp4_seq_afinfo);
+	ret=udp_proc_register(&udp4_idle_seq_afinfo);
 	if(ret<0)
 		return ret;
-	return udp_proc_register(&udp4_idle_seq_afinfo);
+#endif
+	return udp_proc_register(&udp4_seq_afinfo);
 }
 
 void udp4_proc_exit(void)
 {
-	udp_proc_unregister(&udp4_seq_afinfo);
+#ifdef CONFIG_INTSOCK_NETFILTER
 	udp_proc_unregister(&udp4_idle_seq_afinfo);
+#endif
+	udp_proc_unregister(&udp4_seq_afinfo);
 }
 #endif /* CONFIG_PROC_FS */
 

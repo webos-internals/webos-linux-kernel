@@ -119,6 +119,9 @@
 #include <linux/err.h>
 #include <linux/ctype.h>
 #include <linux/if_arp.h>
+#ifdef CONFIG_NET_DEBUG_INFO
+#include <linux/net_debug.h>
+#endif
 
 #include "net-sysfs.h"
 
@@ -1603,7 +1606,13 @@ int dev_queue_xmit(struct sk_buff *skb)
 	struct net_device *dev = skb->dev;
 	struct Qdisc *q;
 	int rc = -ENOMEM;
+#ifdef CONFIG_NET_DEBUG_INFO
+	struct net_debug_info_t *ndi = &net_debug_info[NDI_DEV_QUEUE_XMIT];
 
+	ndi->last_time = jiffies;
+	ndi->last_skb = skb;
+	ndi->count++;
+#endif
 	/* GSO will handle the following emulations directly. */
 	if (netif_needs_gso(dev, skb))
 		goto gso;

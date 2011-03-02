@@ -46,6 +46,9 @@
 #include <linux/mutex.h>
 #include <net/slhc_vj.h>
 #include <asm/atomic.h>
+#ifdef CONFIG_NET_DEBUG_INFO
+#include <linux/net_debug.h>
+#endif
 
 #define PPP_VERSION	"2.4.2"
 
@@ -879,7 +882,13 @@ ppp_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct ppp *ppp = (struct ppp *) dev->priv;
 	int npi, proto;
 	unsigned char *pp;
+#ifdef CONFIG_NET_DEBUG_INFO
+	struct net_debug_info_t *ndi = &net_debug_info[NDI_PPP_START_XMIT];
 
+	ndi->last_time = jiffies;
+	ndi->last_skb = skb;
+	ndi->count++;
+#endif
 	npi = ethertype_to_npindex(ntohs(skb->protocol));
 	if (npi < 0)
 		goto outf;
@@ -1184,10 +1193,17 @@ ppp_push(struct ppp *ppp)
 	struct list_head *list;
 	struct channel *pch;
 	struct sk_buff *skb = ppp->xmit_pending;
-
+#ifdef CONFIG_NET_DEBUG_INFO
+	struct net_debug_info_t *ndi = &net_debug_info[NDI_PPP_PUSH];
+#endif
 	if (!skb)
 		return;
 
+#ifdef CONFIG_NET_DEBUG_INFO
+	ndi->last_time = jiffies;
+	ndi->last_skb = skb;
+	ndi->count++;
+#endif
 	list = &ppp->channels;
 	if (list_empty(list)) {
 		/* nowhere to send the packet, just drop it */

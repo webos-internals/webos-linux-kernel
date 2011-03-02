@@ -13,15 +13,23 @@
 #include "twl4030-audio-hw.h"
 #include "audio-debug.h"
 #include "script.h"
+
+
 static int8_t savedHFR_CTL = -1;
-static int phonecallEnabled = 0; /* state variable for when a phone call is in progress */
+
+static int phonecallEnabled = 0; /* phone call is in progress */
 static DEFINE_MUTEX(codec_lock);
 static DEFINE_MUTEX(mic_lock);
+
+static int twl4030_audio_mixer_init(struct snd_card *card);
+static int twl4030_audio_audio_mute(bool mute);
 
 inline int twl4030_audio_write(u8 addr, u8 data)
 {
 
-	if (unlikely(addr == REG_HFR_CTL)) { /* save the state of the REG_HFR_CTL register to stop clicks and pops on suspend/resume */
+	if (unlikely(addr == REG_HFR_CTL)) { 
+		/* save the state of the REG_HFR_CTL register 
+		to stop clicks and pops on suspend/resume */
 		savedHFR_CTL = data;
 	}
 	return twl4030_i2c_write_u8(TWL4030_MODULE_AUDIO_VOICE, data, addr);
@@ -39,8 +47,9 @@ inline int twl4030_audio_bit_set(u8 addr, u8 set)
 
 	rc = twl4030_audio_read(addr, &d);
 	if (unlikely(rc < 0)) {
-		printk(KERN_INFO 
-				"OMAP-AUDIO: failed to read AUDIO_VOICE addr %#x\n", addr);
+		printk(KERN_ERR 
+			"OMAP-AUDIO: failed to read AUDIO_VOICE addr %#x\n",
+			addr);
 		return rc;
 	}
 
@@ -48,11 +57,13 @@ inline int twl4030_audio_bit_set(u8 addr, u8 set)
 
 	rc = twl4030_audio_write(addr, d);
 	if (unlikely(rc < 0)) {
-		printk(KERN_INFO 
-				"OMAP-AUDIO: failed to write AUDIO_VOICE addr %#x data %#x\n", 
-				addr, d);
+		printk(KERN_ERR
+		"OMAP-AUDIO: failed to write AUDIO_VOICE addr %#x data %#x\n", 
+		 addr, d);
 	}
-	if (unlikely(addr == REG_HFR_CTL)) { /* save the state of the REG_HFR_CTL register to stop clicks and pops on suspend/resume */
+	if (unlikely(addr == REG_HFR_CTL)) { 
+		/* save the state of the REG_HFR_CTL register 
+		to stop clicks and pops on suspend/resume */
 		savedHFR_CTL = d;
 	}
 
@@ -66,8 +77,9 @@ inline int twl4030_audio_bit_clr(u8 addr, u8 clr)
 
 	rc = twl4030_audio_read(addr, &d);
 	if (unlikely(rc < 0)) {
-		printk(KERN_INFO 
-				"OMAP-AUDIO: failed to read AUDIO_VOICE addr %#x\n", addr);
+		printk(KERN_ERR
+			"OMAP-AUDIO: failed to read AUDIO_VOICE addr %#x\n", 
+			addr);
 		return rc;
 	}
 
@@ -75,11 +87,13 @@ inline int twl4030_audio_bit_clr(u8 addr, u8 clr)
 
 	rc = twl4030_audio_write(addr, d);
 	if (unlikely(rc < 0)) {
-		printk(KERN_INFO 
-				"OMAP-AUDIO: failed to write AUDIO_VOICE addr %#x data %#x\n", 
-				addr, d);
+		printk(KERN_ERR
+			"OMAP-AUDIO: failed to write AUDIO_VOICE addr %#x data %#x\n", 
+			addr, d);
 	}
-	if (unlikely(addr == REG_HFR_CTL)){ /* save the state of the REG_HFR_CTL register to stop clicks and pops on suspend/resume */
+	if (unlikely(addr == REG_HFR_CTL)){ 
+		/* save the state of the REG_HFR_CTL register to stop 
+		clicks and pops on suspend/resume */
 		savedHFR_CTL = d;
 	}
 	return rc;
@@ -92,8 +106,9 @@ static inline int twl4030_audio_bit_clr_set(u8 addr, u8 clr, u8 set)
 
 	rc = twl4030_audio_read(addr, &d);
 	if (unlikely(rc < 0)) {
-		printk(KERN_INFO 
-				"OMAP-AUDIO: failed to read AUDIO_VOICE addr %#x\n", addr);
+		printk(KERN_ERR
+			"OMAP-AUDIO: failed to read AUDIO_VOICE addr %#x\n", 
+			addr);
 		return rc;
 	}
 
@@ -102,13 +117,15 @@ static inline int twl4030_audio_bit_clr_set(u8 addr, u8 clr, u8 set)
 
 	rc = twl4030_audio_write(addr, d);
 	if (unlikely(rc < 0)) {
-		printk(KERN_INFO 
-				"OMAP-AUDIO: failed to write AUDIO_VOICE addr %#x data %#x\n", 
-				addr, d);
+		printk(KERN_ERR
+			"OMAP-AUDIO: failed to write AUDIO_VOICE addr %#x data %#x\n", 
+			addr, d);
 	}
 
-	if (unlikely(addr == REG_HFR_CTL)) { /* save the state of the REG_HFR_CTL register to stop clicks and pops on suspend/resume */
-	 savedHFR_CTL = d;
+	if (unlikely(addr == REG_HFR_CTL)) { 
+		/* save the state of the REG_HFR_CTL register 
+		to stop clicks and pops on suspend/resume */
+		 savedHFR_CTL = d;
 	}
 	return rc;
 }
@@ -142,7 +159,7 @@ static int twl4030_audio_probe(void)
 	rc = twl4030_i2c_read_u8(TWL4030_MODULE_INTBR, &val, 0x0);
 	if (rc) {
 		rc = -ENODEV;
-		printk(KERN_INFO "OMAP-AUDIO: twl4030 not detected\n");
+		printk(KERN_ERR "OMAP-AUDIO: twl4030 not detected\n");
 	}
 
 	return rc;
@@ -196,18 +213,18 @@ static int twl4030_audio_audio_configure(unsigned int sample_rate,
 			val << BIT_CODEC_MODE_APLL_RATE);
 
 	switch (data_width) {
-		case 16:
-			twl4030_audio_bit_clr_set(REG_AUDIO_IF, BIT_AUDIO_IF_DATA_WIDTH_M, 
-					AUDIO_DATA_WIDTH_16SAMPLE_16DATA);
-			break;
-		case 24:
-			twl4030_audio_bit_clr_set(REG_AUDIO_IF, BIT_AUDIO_IF_DATA_WIDTH_M,
-					AUDIO_DATA_WIDTH_32SAMPLE_24DATA);
-			break;
-		default:
-			printk(KERN_ERR "OMAP-AUDIO: Invalid data width %u\n", data_width);
-			rc = -EINVAL;
-			break;
+	case 16:
+		twl4030_audio_bit_clr_set(REG_AUDIO_IF, BIT_AUDIO_IF_DATA_WIDTH_M, 
+				AUDIO_DATA_WIDTH_16SAMPLE_16DATA);
+		break;
+	case 24:
+		twl4030_audio_bit_clr_set(REG_AUDIO_IF, BIT_AUDIO_IF_DATA_WIDTH_M,
+				AUDIO_DATA_WIDTH_32SAMPLE_24DATA);
+		break;
+	default:
+		printk(KERN_ERR "OMAP-AUDIO: Invalid data width %u\n", data_width);
+		rc = -EINVAL;
+		break;
 	}
 
 	return rc;
@@ -218,7 +235,9 @@ static twl4030_codec_event_callback callback;
 static void *callback_cookie;
 static bool mic_event = false;
 
-int twl4030_register_codec_event_callback(twl4030_codec_event_callback cb, void *cookie)
+int 
+twl4030_register_codec_event_callback(twl4030_codec_event_callback cb, 
+                                      void *cookie)
 {
 	if (callback != NULL) {
 		return -1;
@@ -228,8 +247,9 @@ int twl4030_register_codec_event_callback(twl4030_codec_event_callback cb, void 
 	return 0;
 }
 /*
-	twl4030_audio_codec_phonecall_enable called from script when phone call begins and ends
- 	used to decide whether to mute back speaker or not.  Can be removed when correct mute/unmute scripts exist for audiod
+	Called from script when phone call begins and ends
+	used to decide whether to mute back speaker or not.  
+	Can be removed when correct mute/unmute scripts exist for audiod
 */
 int twl4030_audio_codec_phonecall_enable(int enable)
 {
@@ -259,7 +279,10 @@ static int twl4030_audio_audio_capture_enable(void)
 
 static int twl4030_audio_audio_suspend(void)
 {
-	printk(KERN_INFO "%s: suspending codec\n", __FUNCTION__);
+	printk(KERN_DEBUG "%s: suspending codec\n", __FUNCTION__);
+
+	/* Mute back speaker if enabled */
+	twl4030_audio_audio_mute(true);
 
 	/* Disable ramp */
 	twl4030_audio_bit_clr(REG_HS_POPN_SET, BIT_HS_POPN_SET_RAMP_EN_M);
@@ -281,7 +304,7 @@ static int twl4030_audio_audio_suspend(void)
 
 static int twl4030_audio_audio_resume(void)
 {
-	printk(KERN_INFO "%s: resuming codec\n", __FUNCTION__);
+	printk(KERN_DEBUG "%s: resuming codec\n", __FUNCTION__);
 
 	/* Power up the audio submodule */
 	twl4030_audio_bit_set(REG_CODEC_MODE, BIT_CODEC_MODE_CODECPDZ_M);
@@ -337,8 +360,6 @@ int twl4030_audio_codec_enable(int enable)
 unlock:
 	mutex_unlock(&codec_lock);
 
-	printk(KERN_INFO "CODEC ref count = %d\n", ref);
-
 	return ret;
 }
 
@@ -383,8 +404,11 @@ int twl4030_audio_mic_bias_enable(bool enable)
 	mutex_lock(&mic_lock);
 	if (enable) {
 		twl4030_audio_read(REG_MICBIAS_CTL, &mic_bias);
-		mic_event = true;	/* prevents from disabling the codec when headset is inserted while codec is already on */
-		/* Codec needs to be on before enabling mic bias, so only turn on when it is not already turned on */
+		mic_event = true; /* prevents from disabling the codec when 
+		            headset is inserted while codec is already on */
+
+		/* Codec needs to be on before enabling mic bias, 
+		   so only turn on when it is not already turned on */
 		if (!mic_on)
 			twl4030_audio_codec_enable(1);
 		twl4030_audio_bit_set(REG_MICBIAS_CTL, BIT_MICBIAS_CTL_HSMICBIAS_EN_M);
@@ -401,9 +425,6 @@ int twl4030_audio_mic_bias_enable(bool enable)
 
 	return rc;
 }
-
-static int twl4030_audio_mixer_init(struct snd_card *card);
-static int twl4030_audio_audio_mute(bool mute);
 
 static struct omap_alsa_codec_ops twl4030_audio_ops = {
 	.probe      	= twl4030_audio_probe,
@@ -522,7 +543,8 @@ static int __init twl4030_audio_init(void)
 }
 subsys_initcall(twl4030_audio_init);
 /* twl4030_audio_audio_mute  
-   added sequencing for rear speaker to stop clicks and pops - if speaker is active shown by: BIT_HFR_CTL_HFR_HB_EN_M
+   added sequencing for rear speaker to stop clicks and pops - 
+   if speaker is active shown by: BIT_HFR_CTL_HFR_HB_EN_M
 */
 static int twl4030_audio_audio_mute(bool mute)
 {
@@ -531,8 +553,8 @@ static int twl4030_audio_audio_mute(bool mute)
 	twl4030_audio_read(REG_HFR_CTL, &hfr); 
 	LTRACE_ENTRY;
 
-	if (mute && ( 0 == phonecallEnabled ) ) { /* only mute back speaker if we are not on a call */
-		// mute sequence for rear speaker
+	if (mute && ( 0 == phonecallEnabled ) ) { 
+		/* only mute back speaker if we are not on a call */
 		if ( 0 != (hfr & BIT_HFR_CTL_HFR_HB_EN_M ) ) {
 			twl4030_audio_bit_clr(REG_HFR_CTL, BIT_HFR_CTL_HFR_LOOP_EN_M  | BIT_HFR_CTL_HFR_REF_EN_M );
 			twl4030_audio_bit_clr(REG_HFR_CTL, BIT_HFR_CTL_HFR_RAMP_EN_M );
@@ -540,7 +562,7 @@ static int twl4030_audio_audio_mute(bool mute)
 			savedHFR_CTL = hfr;
 		}
 	}
-	else {  // unmute sequence for rear speaker
+	else {  /* unmute sequence for rear speaker */
 		if ( 0 != (savedHFR_CTL & BIT_HFR_CTL_HFR_HB_EN_M ) ) {
 			twl4030_audio_bit_set(REG_HFR_CTL, BIT_HFR_CTL_HFR_REF_EN_M);
 			twl4030_audio_bit_set(REG_HFR_CTL, BIT_HFR_CTL_HFR_RAMP_EN_M);

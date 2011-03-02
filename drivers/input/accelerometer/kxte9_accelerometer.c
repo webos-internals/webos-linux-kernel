@@ -54,12 +54,13 @@ struct kxte9_device_state {
 	struct timer_list kxte9_timer;
 	struct input_dev  *inp_dev;
 	struct work_struct read_work;
-	struct mutex lock;
+	struct mutex fs_lock;
+	struct mutex chip_lock;
 	u16    poll_interval;
 	int    suspended;	/* flag to signal suspend resume */
 	int    stopping;	/* set if stop operation is in progress */
 	u8     mode;	        /* select off or interrupt mode  */
-	int kxte9_inputdev_opencount;
+	atomic_t opencount;     /* open count */
 };
 
 /****************************************************************************** 
@@ -363,16 +364,18 @@ kxte9_stop(struct i2c_client *dev)
 {
 	struct kxte9_device_state *state = i2c_get_clientdata(dev);
 
+	mutex_lock(&state->chip_lock);
 	state->stopping = 1; // set stopping
 	kxte9_enable_interrupt(state->i2c_dev, 0);
 	kxte9_enable_timer(state, 0);
+	mutex_unlock(&state->chip_lock);
 	cancel_work_sync(&state->read_work); 
 	state->stopping = 0; // stopped
 }
 
 /****************************************************************************** 
 * 
-* kxte9_start 
+* kxte9_start_nolock
 * 
 * Start the accelerometer with the select mode 
 *  
@@ -384,35 +387,35 @@ kxte9_stop(struct i2c_client *dev)
 * 
 ******************************************************************************/ 
 static void 
-kxte9_start(struct i2c_client *dev) 
+kxte9_start_nolock(struct i2c_client *dev) 
 {
 	struct kxte9_device_state *state = i2c_get_clientdata(dev);
 
-	if (state->kxte9_inputdev_opencount) {
-		switch (state->mode)
-		{
-			case MODE_INT_ALL:
-				kxte9_configure (state->i2c_dev);
-				kxte9_enable_interrupt(state->i2c_dev, 1);
-				kxte9_enable_timer(state, 1);
-				break;
-			case MODE_INT_AXIS: 
-				kxte9_configure (state->i2c_dev);
-				kxte9_enable_interrupt(state->i2c_dev, 0);
-				kxte9_enable_timer(state, 1);
-				break;			
-			case MODE_INT_TILT:
-				kxte9_configure (state->i2c_dev);
-				kxte9_enable_interrupt(state->i2c_dev, 1);
-				kxte9_enable_timer(state, 0);
-				break;
-			case MODE_OFF:
-				kxte9_enable_interrupt(state->i2c_dev, 0);
-				kxte9_enable_timer(state, 0);
-				break;
-			default:
-				break;
-		}
+	if (!atomic_read(&state->opencount))
+		return;
+
+	switch (state->mode) {
+		case MODE_INT_ALL:
+			kxte9_configure (state->i2c_dev);
+			kxte9_enable_interrupt(state->i2c_dev, 1);
+			kxte9_enable_timer(state, 1);
+			break;
+		case MODE_INT_AXIS: 
+			kxte9_configure (state->i2c_dev);
+			kxte9_enable_interrupt(state->i2c_dev, 0);
+			kxte9_enable_timer(state, 1);
+			break;
+		case MODE_INT_TILT:
+			kxte9_configure (state->i2c_dev);
+			kxte9_enable_interrupt(state->i2c_dev, 1);
+			kxte9_enable_timer(state, 0);
+			break;
+		case MODE_OFF:
+			kxte9_enable_interrupt(state->i2c_dev, 0);
+			kxte9_enable_timer(state, 0);
+			break;
+		default:
+			break;
 	}
 }
 
@@ -482,8 +485,9 @@ set_mode(struct device *dev,
 	struct kxte9_device_state *state;
 	state = (struct kxte9_device_state*)dev->driver_data;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
 	kxte9_stop(state->i2c_dev); /*stop the previous mode*/
+	mutex_lock(&state->chip_lock);
 	if( count >= 3 && strncmp( buf, "all", 3) == 0 ) {
 		state->mode = MODE_INT_ALL; 
 	} else if( count >= 3 && strncmp( buf, "off", 3) == 0 ) {
@@ -493,8 +497,9 @@ set_mode(struct device *dev,
 	} else if( count >= 4 && strncmp( buf, "axis", 4) == 0 ) {
 		state->mode = MODE_INT_AXIS;
 	}
-	kxte9_start(state->i2c_dev); /*start in the new mode*/
-	mutex_unlock(&state->lock);
+	kxte9_start_nolock(state->i2c_dev); /*start in the new mode*/
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 	
 	return count;
 }
@@ -597,7 +602,8 @@ set_wuf_thresh(struct device *dev, struct device_attribute *attr, const char *bu
 	struct kxte9_device_state *state;
 	state = (struct kxte9_device_state*)dev->driver_data;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
 	state->pdata->wuf_thresh = simple_strtoul(buf, &endp, 10);
 
 	state->pdata->wuf_thresh = (state->pdata->wuf_thresh > WUF_THRESH_MAX_VALUE) ? 
@@ -612,7 +618,8 @@ set_wuf_thresh(struct device *dev, struct device_attribute *attr, const char *bu
 
 	rc = kxte9_i2c_write_u8(state->i2c_dev, KXTE9_THRESH_LOCK_UNLOCK_REG, KXTE9_THRESH_LOCK);
 	
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 
 	return count;
 }
@@ -668,7 +675,9 @@ set_b2s_thresh(struct device *dev, struct device_attribute *attr, const char *bu
 	struct kxte9_device_state *state;
 	state = (struct kxte9_device_state*)dev->driver_data;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
+	
 	state->pdata->b2s_thresh = simple_strtoul(buf, &endp, 10);
 
 	state->pdata->b2s_thresh = (state->pdata->b2s_thresh > B2S_THRESH_MAX_VALUE) ?
@@ -683,7 +692,8 @@ set_b2s_thresh(struct device *dev, struct device_attribute *attr, const char *bu
 
 	rc = kxte9_i2c_write_u8(state->i2c_dev, KXTE9_THRESH_LOCK_UNLOCK_REG, KXTE9_THRESH_LOCK);
 	
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 
 	return count;
 }
@@ -737,7 +747,9 @@ set_wuf_timer(struct device *dev, struct device_attribute *attr, const char *buf
 	struct kxte9_device_state *state;
 	state = (struct kxte9_device_state*)dev->driver_data;
 	
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
+
 	state->pdata->wuf_timer = simple_strtoul(buf, &endp, 10);
 
 	state->pdata->wuf_timer = (state->pdata->wuf_timer > WUF_TIMER_MAX_VALUE) ?
@@ -748,7 +760,8 @@ set_wuf_timer(struct device *dev, struct device_attribute *attr, const char *buf
 
 	rc = kxte9_i2c_write_u8(state->i2c_dev, WUF_TIMER, wuf_counts);
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 
 	return count;
 }
@@ -804,7 +817,9 @@ set_b2s_timer(struct device *dev, struct device_attribute *attr, const char *buf
 	struct kxte9_device_state *state;
 	state = (struct kxte9_device_state*)dev->driver_data;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
+	
 	state->pdata->b2s_timer = simple_strtoul(buf, &endp, 10);
 	state->pdata->b2s_timer = (state->pdata->b2s_timer > B2S_TIMER_MAX_VALUE) ?
 								B2S_TIMER_MAX_VALUE :
@@ -814,7 +829,8 @@ set_b2s_timer(struct device *dev, struct device_attribute *attr, const char *buf
 
 	rc = kxte9_i2c_write_u8(state->i2c_dev, B2S_TIMER, b2s_counts);
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 	return count;
 }
 
@@ -875,7 +891,9 @@ set_odr_main(struct device *dev, struct device_attribute *attr, const char *buf,
 	if (!buf)
 		return 0;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
+	
 	
 	state->pdata->odr_main = simple_strtoul(buf, &endp, 10);
 
@@ -886,7 +904,8 @@ set_odr_main(struct device *dev, struct device_attribute *attr, const char *buf,
 	rc = kxte9_i2c_read_u8(state->i2c_dev, CTRL_REG1, &temp);
 	rc = kxte9_i2c_write_u8(state->i2c_dev, CTRL_REG1, ( (temp & 0xE7) | (state->pdata->odr_main << 3) ));
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 
 	return count;
 }
@@ -950,7 +969,9 @@ set_odr_b2s (struct device *dev, struct device_attribute *attr, const char *buf,
 	if (!buf)
 		return 0;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
+	
 	
 	state->pdata->odr_b2s = simple_strtoul(buf, &endp, 10);
 
@@ -961,7 +982,8 @@ set_odr_b2s (struct device *dev, struct device_attribute *attr, const char *buf,
 	rc = kxte9_i2c_read_u8(state->i2c_dev, CTRL_REG3, &temp);
 	rc = kxte9_i2c_write_u8(state->i2c_dev, CTRL_REG3, ( (temp & 0xF3) | (state->pdata->odr_b2s << 2) ));
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 
 	return count;
 }
@@ -1024,7 +1046,8 @@ set_odr_wuf (struct device *dev, struct device_attribute *attr, const char *buf,
 	if (!buf)
 		return 0;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
 	
 	state->pdata->odr_wuf = simple_strtoul(buf, &endp, 10);
 
@@ -1035,7 +1058,8 @@ set_odr_wuf (struct device *dev, struct device_attribute *attr, const char *buf,
 	rc = kxte9_i2c_read_u8(state->i2c_dev, CTRL_REG3, &temp);
 	rc = kxte9_i2c_write_u8(state->i2c_dev, CTRL_REG3, ( (temp & 0xFC) | (state->pdata->odr_wuf) ));
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 
 	return count;
 }
@@ -1097,10 +1121,14 @@ set_tilt_timer(struct device *dev, struct device_attribute *attr, const char *bu
 	struct kxte9_device_state *state;
 	state = (struct kxte9_device_state*)dev->driver_data;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
+	
 	state->pdata->tilt_timer = simple_strtoul(buf, &endp, 10);
 	rc = kxte9_i2c_write_u8(state->i2c_dev, TILT_TIMER, state->pdata->tilt_timer);
-	mutex_unlock(&state->lock);
+
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 
 	return count;
 }
@@ -1158,7 +1186,9 @@ set_tilt_thresh(struct device *dev, struct device_attribute *attr, const char *b
 	struct kxte9_device_state *state;
 	state = (struct kxte9_device_state*)dev->driver_data;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
+	
 	state->pdata->tilt_thresh = simple_strtoul(buf, &endp, 10);
 
 	if (state->pdata->tilt_thresh > TILT_LOW_LIMIT_MAX) {
@@ -1173,7 +1203,8 @@ set_tilt_thresh(struct device *dev, struct device_attribute *attr, const char *b
 
 	rc = kxte9_i2c_write_u8(state->i2c_dev, KXTE9_THRESH_LOCK_UNLOCK_REG, KXTE9_THRESH_LOCK);
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 
 	return count;
 }
@@ -1315,11 +1346,9 @@ kxte9_read_xyz(struct work_struct *work)
 	int tilt_pos = 0;
 	struct kxte9_device_state *state = container_of(work, struct kxte9_device_state, read_work);
 
-	rc = mutex_trylock(&state->lock);
-	if (!rc) { // again
-		if (state->stopping)
-			return;
-		schedule_work(&state->read_work);
+	mutex_lock(&state->chip_lock);
+	if (state->stopping) {
+		mutex_unlock(&state->chip_lock);
 		return;
 	}
 
@@ -1365,37 +1394,38 @@ kxte9_read_xyz(struct work_struct *work)
 	if ((state->mode == MODE_INT_AXIS) ||
 		(state->mode == MODE_INT_ALL)) {
 		// In poll mode we just unconditinally set up next sample
-		mod_timer(&state->kxte9_timer, jiffies  + (HZ * state->poll_interval)/1000);
+		mod_timer(&state->kxte9_timer, jiffies  + 
+				msecs_to_jiffies(state->poll_interval));
 	}
 
 	// Clear interrupt
 	rc = kxte9_i2c_read_u8(state->i2c_dev, INT_REL, &val);
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
 }
 
 
-/*********************************************************************************
+/*****************************************************************************
 * kxte9_inputdev_open (struct input_dev *dev)
 *
-* This is the function called when the accelerometer input event is being listened
+* Called when the accelerometer input event is being listened
 *
 * Inputs   None
 * 
 * return error code , 0 on success, or non-zero otherwise
-***********************************************************************************/
+******************************************************************************/
 static int kxte9_inputdev_open(struct input_dev *dev)
 {
-	struct kxte9_device_state *state = (struct kxte9_device_state *) (dev_get_drvdata (dev->dev.parent));
+	struct kxte9_device_state *state = dev_get_drvdata (dev->dev.parent);
 
-	mutex_lock(&state->lock);
-
-	state->kxte9_inputdev_opencount++;	
-	if (1 == state->kxte9_inputdev_opencount) {
-		kxte9_start (state->i2c_dev);
+	mutex_lock(&state->fs_lock);
+	if ( atomic_add_return(1, &state->opencount) == 1 ) {
+		mutex_lock(&state->chip_lock);
+		kxte9_start_nolock (state->i2c_dev);
+		mutex_unlock(&state->chip_lock);
 	}
+	mutex_unlock(&state->fs_lock);
 
-	mutex_unlock(&state->lock);
 	return 0;
 }
 
@@ -1411,14 +1441,13 @@ static int kxte9_inputdev_open(struct input_dev *dev)
 ***********************************************************************************/
 static void kxte9_inputdev_close(struct input_dev *dev)
 {
-	struct kxte9_device_state *state = (struct kxte9_device_state *) dev_get_drvdata (dev->dev.parent);
-	mutex_lock(&state->lock);
-	if (1 == state->kxte9_inputdev_opencount) {
-		kxte9_stop (state->i2c_dev);		
-	}
-	state->kxte9_inputdev_opencount--;
+	struct kxte9_device_state *state = dev_get_drvdata (dev->dev.parent);
 
-	mutex_unlock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	if ( atomic_sub_return(1, &state->opencount) == 0 ) {
+		kxte9_stop (state->i2c_dev);
+	}
+	mutex_unlock(&state->fs_lock);
 }
 
 /****************************************************************************** 
@@ -1459,7 +1488,8 @@ kxte9_i2c_probe(struct i2c_client *client)
 	state->i2c_dev = client;
 
 	// Init spinlock 
-	mutex_init(&state->lock);
+	mutex_init(&state->fs_lock);
+	mutex_init(&state->chip_lock);
 	state->suspended = 0;
 
 	// Attach platform data 
@@ -1469,7 +1499,7 @@ kxte9_i2c_probe(struct i2c_client *client)
 	state->mode = MODE_OFF;
 
 	state->poll_interval = 250; // Poll XYZ every 250ms
-	state->kxte9_inputdev_opencount = 0;
+	atomic_set(&state->opencount, 0);
 
 	// Init Workque interface  
 	INIT_WORK(&state->read_work, kxte9_read_xyz); 
@@ -1640,10 +1670,6 @@ kxte9_i2c_remove(struct i2c_client *client)
 { 
 	struct kxte9_device_state *state = i2c_get_clientdata(client);    
 
-	mutex_lock(&state->lock);
-
-	kxte9_stop(client);
-	
 	device_remove_file(&state->inp_dev->dev, &dev_attr_wuf_thresh); 
 	device_remove_file(&state->inp_dev->dev, &dev_attr_b2s_thresh); 
 	device_remove_file(&state->inp_dev->dev, &dev_attr_wuf_timer); 
@@ -1655,6 +1681,8 @@ kxte9_i2c_remove(struct i2c_client *client)
 	device_remove_file(&state->inp_dev->dev, &dev_attr_odr_b2s);
 	device_remove_file(&state->inp_dev->dev, &dev_attr_poll_interval); 	
 	device_remove_file(&state->inp_dev->dev, &dev_attr_tilt_thresh);	
+
+	kxte9_stop(client);
 	
 	// Unregister input device
 	input_unregister_device(state->inp_dev);
@@ -1666,8 +1694,6 @@ kxte9_i2c_remove(struct i2c_client *client)
 	// Unregister interrupt handlers and free gpio
 	free_irq(state->i2c_dev->irq, state);
 	gpio_free(state->pdata->gpio);
-
-	mutex_unlock(&state->lock);
 
 	// Detach state 
 	i2c_set_clientdata(client, NULL);
@@ -1696,8 +1722,8 @@ kxte9_i2c_suspend(struct i2c_client *dev, pm_message_t event)
 	u8 val;
 	struct kxte9_device_state *state = i2c_get_clientdata(dev);    
 
-	mutex_lock(&state->lock);
-
+	mutex_lock(&state->fs_lock);
+	
 	// Check if already suspended */
 	if (state->suspended) 
 		goto err;
@@ -1712,7 +1738,7 @@ kxte9_i2c_suspend(struct i2c_client *dev, pm_message_t event)
 	state->suspended = 1;
 
 err:
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->fs_lock);
 	return 0;
 }
 
@@ -1734,22 +1760,24 @@ kxte9_i2c_resume ( struct i2c_client *dev )
 	u8 val;
 	struct kxte9_device_state *state = i2c_get_clientdata(dev);    
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
 
 	if(!state->suspended ) 
 		goto err; // already resumed
 		
 	// Enable accelerometer 
+	mutex_lock(&state->chip_lock);
 	rc = kxte9_i2c_read_u8(state->i2c_dev, CTRL_REG1, &val); 
-	rc = kxte9_i2c_write_u8(state->i2c_dev, CTRL_REG1, (val |OPERATING_MODE));
+	rc = kxte9_i2c_write_u8(state->i2c_dev, CTRL_REG1, 
+			        (val |OPERATING_MODE));
 
-	kxte9_start(dev);
+	kxte9_start_nolock(dev);
+	mutex_unlock(&state->chip_lock);
 
 	// Mark as resumed
 	state->suspended = 0;
-
 err:
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->fs_lock);
 	return 0;
 }
 #else

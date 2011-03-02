@@ -668,45 +668,28 @@ config	USB_ROCKHOPPER_VID
 	help
 	  Enter the USB Vendor ID for Rockhopper Gadget
 
-config	USB_ROCKHOPPER_PID_DEV_1
-	hex "USB Product ID for Config DEV 1"
-	default 0x100
+config	USB_ROCKHOPPER_PID_BASE
+	hex "USB Product ID Base (e.g. 0x8000)"
+	default 0x8000
 	depends on USB_ROCKHOPPER
 	help
-	  Enter the USB Product ID for Config "Dev 1", which is
-	  RNDIS Ethernet function + Passthru function.
+	  Enter the USB Product ID Base, which is used to calculate
+	  the product id for each configuration. For example,
+	  if the USB Product ID Base is 0x8000 and the USB Product ID
+	  Shift is 8, the product id for "ums" configuration is
+	  0x8000 + (4 << 8) = 0x8400. "ums+novacom" configuration is
+	  0x8000 + (2 << 8) = 0x8200, etc.
 
-config	USB_ROCKHOPPER_PID_DEV_2
-	hex "USB Product ID for Config DEV 2"
-	default 0x101
+config	USB_ROCKHOPPER_PID_SHIFT
+	int "USB Product ID Shift (Palm style: 0, HP style: 8)"
+	default 0
 	depends on USB_ROCKHOPPER
 	help
-	  Enter the USB Product ID for Config "Dev 2", which is
-	  RNDIS Ethernet function + Mass-Storage function +
-	  Novacom function.
-
-config	USB_ROCKHOPPER_PID_DEBUG
-	hex "USB Product ID for Config DEBUG"
-	default 0x8002
-	depends on USB_ROCKHOPPER
-	help
-	  Enter the USB Product ID for Config "DEBUG", which is
-	  Mass-Storage function + Novacom function.
-
-config	USB_ROCKHOPPER_PID_PASSTHRU
-	hex "USB Product ID for Config PASSTHRU"
-	default 0x8003
-	depends on USB_ROCKHOPPER
-	help
-	  Enter the USB Product ID for Config "PASSTHRU", which is
-	  Passthru function only.
-
-config	USB_ROCKHOPPER_PID_RETAIL
-	hex "USB Product ID for Config RETAIL"
-	default 0x8004
-	depends on USB_ROCKHOPPER
-	help
-	  Enter the USB Product ID for Config "RETAIL", which is
-	  Mass-Storage only.
+	  Enter the USB Product ID Shift, which is used to calculate
+	  the product id for each configuration. For example,
+	  if the USB Product ID Base is 0x8000 and the USB Product ID
+	  Shift is 8, the product id for "ums" configuration is
+	  0x8000 + (4 << 8) = 0x8400. "ums+novacom" configuration is
+	  0x8000 + (2 << 8) = 0x8200, etc.
 
 endif # USB_GADGET

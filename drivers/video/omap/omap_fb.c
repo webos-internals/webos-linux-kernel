@@ -98,6 +98,8 @@ struct omap24xxfb_info {
 
 	wait_queue_head_t vsync_wait;
 	unsigned long vsync_cnt;
+	unsigned int  vsync_ref;  /* vsync irq ref count */
+	spinlock_t    vsync_lock; /* vsync irq lock */
 
 	u32 pseudo_palette[17];
 	u32 *palette;
@@ -475,7 +477,7 @@ omap24xxfb_isr(void *arg, struct pt_regs *regs)
 	struct omap24xxfb_info *oinfo = (struct omap24xxfb_info *) arg;
 
 	++oinfo->vsync_cnt;
-	wake_up_interruptible(&oinfo->vsync_wait);
+	wake_up_interruptible_all(&oinfo->vsync_wait);
 }
 
 /* Wait for a vsync interrupt.  This routine sleeps so it can only be called
@@ -484,34 +486,44 @@ omap24xxfb_isr(void *arg, struct pt_regs *regs)
 static int
 omap24xxfb_wait_for_vsync(struct omap24xxfb_info *oinfo)
 {
-	wait_queue_t wqt;
-	unsigned long cnt;
 	int ret;
-	unsigned int mask = 0;
+	unsigned long cnt;
+	unsigned long flags;
+	unsigned int  mask = 0;
+
 	DBGENTER;
 
-	mask = (DISPC_IRQSTATUS_EVSYNC_ODD | DISPC_IRQSTATUS_EVSYNC_EVEN
-						 	| DISPC_IRQSTATUS_VSYNC);
-	omap2_disp_irqenable(omap24xxfb_isr,mask);
+	mask = (DISPC_IRQSTATUS_EVSYNC_ODD 
+			| DISPC_IRQSTATUS_EVSYNC_EVEN
+			| DISPC_IRQSTATUS_VSYNC);
 
-	init_waitqueue_entry(&wqt, current);
-
+	spin_lock_irqsave(&oinfo->vsync_lock, flags );
+	if(++oinfo->vsync_ref == 1) {
+		omap2_disp_irqenable(omap24xxfb_isr,mask);
+	}
 	cnt = oinfo->vsync_cnt;
+	spin_unlock_irqrestore(&oinfo->vsync_lock, flags );
+	
 	ret = wait_event_interruptible_timeout(oinfo->vsync_wait,
-					cnt != oinfo->vsync_cnt, oinfo->timeout);
+				cnt != oinfo->vsync_cnt, oinfo->timeout);
 
 	/*
 	  * If the GFX is on TV, then wait for another VSYNC
 	  * to compensate for Interlaced scan
 	  */
-	if(omap2_disp_get_output_dev(OMAP2_GRAPHICS) == OMAP2_OUTPUT_TV){
-		if(ret<0){
+	if(omap2_disp_get_output_dev(OMAP2_GRAPHICS) == OMAP2_OUTPUT_TV) {
+		if( ret < 0) {
 			cnt = oinfo->vsync_cnt;
 			ret = wait_event_interruptible_timeout(oinfo->vsync_wait,
-						cnt != oinfo->vsync_cnt, oinfo->timeout);
+				cnt != oinfo->vsync_cnt, oinfo->timeout);
 		}
 	}
-	omap2_disp_irqdisable(omap24xxfb_isr,~(mask));
+
+	spin_lock_irqsave(&oinfo->vsync_lock, flags );
+	if(--oinfo->vsync_ref == 0) {
+		omap2_disp_irqdisable(omap24xxfb_isr,~(mask));
+	}
+	spin_unlock_irqrestore(&oinfo->vsync_lock, flags );
 
 	DBGLEAVE;
 
@@ -521,6 +533,16 @@ omap24xxfb_wait_for_vsync(struct omap24xxfb_info *oinfo)
 		return -ETIMEDOUT;
 
 	return 0;
+}
+
+
+int omap24xxfb_display_wait_for_vsync(void)
+{
+	if (saved_oinfo!=NULL) {
+		return omap24xxfb_wait_for_vsync(saved_oinfo);
+	}
+	return 0;
+
 }
 
 #ifdef DEBUG
@@ -1333,6 +1355,12 @@ omap24xxfb_blank(int blank_mode, struct fb_info *info)
 
 	DBGENTER;
 
+	/* fb0 should not be blanked in WebOS as it needs to be available at all times.
+	 * Simply return 0 and let fbmem continues to send out fb notifications, but
+	 * no actions will be performed */
+#if defined(CONFIG_MACH_SIRLOIN) || defined(CONFIG_MACH_SIRLOIN_3630)
+	(void) oinfo; /* unused */
+#else
 	/* No need for suspend lockout because if the framebuffer device is
 	 * suspended, then the console is already blanked.
 	 */
@@ -1365,6 +1393,7 @@ omap24xxfb_blank(int blank_mode, struct fb_info *info)
 		udelay(20);
 		enable_backlight();
 	}
+#endif
 
 	DBGLEAVE;
 	return 0;
@@ -2221,6 +2250,11 @@ int __init omap24xxfb_init(void)
 	/* initialize the vsync wait queue */
 	init_waitqueue_head(&oinfo->vsync_wait);
 
+	/* and related variables */
+	spin_lock_init(&oinfo->vsync_lock);
+	oinfo->vsync_ref = 0;
+	
+
 	/* install our interrupt service routine */
 	if (omap2_disp_register_isr(omap24xxfb_isr, oinfo,0)) {
 		printk(KERN_ERR FB_NAME
@@ -2432,6 +2466,7 @@ static void __exit omap24xxfb_cleanup(void)
 
 module_init(omap24xxfb_init);
 module_exit(omap24xxfb_cleanup);
+EXPORT_SYMBOL(omap24xxfb_display_wait_for_vsync);
 
 MODULE_LICENSE("GPL");
 

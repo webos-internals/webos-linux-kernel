@@ -31,7 +31,7 @@ config OPROFILE
 config OPROFILE_ARMV7
 	bool 
 	depends on OPROFILE && CPU_V7 && !SMP
-	default y
+	default n
 
 config OPROFILE_ARMV6
 	bool

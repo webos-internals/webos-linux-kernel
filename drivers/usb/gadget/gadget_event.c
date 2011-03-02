@@ -24,8 +24,9 @@
 
 #define GADGET_EVENT_NAME	"usb_gadget"
 
-struct gadget_event_state {
+static struct gadget_event_state {
 	/* mass storage */
+	int	storage_events_enabled;
 	int	host_connected;
 	int	bus_suspended;
 	int	media_loaded;
@@ -33,15 +34,11 @@ struct gadget_event_state {
 	/* power */
 	enum gadget_event_source_type	source;
 	int	current_mA;
-};
-
-static struct gadget_event_state the_state = {
-	.host_connected = -1,
-	.bus_suspended = -1,
-	.media_loaded = -1,
-	.media_requested = -1,
-	.source = G_EV_SOURCE_UNKNOWN,
-	.current_mA = -1,
+} the_state = {
+	/* mass storage */
+	0, -1, -1, -1, -1,
+	/* power */
+	G_EV_SOURCE_UNKNOWN, -1,
 };
 
 static struct platform_device gadget_event_device = {
@@ -56,6 +53,34 @@ static struct platform_driver gadget_event_driver = {
 		.owner = THIS_MODULE,
 	},
 };
+
+/*
+ * storage events
+ */
+void
+gadget_event_enable_storage_events(int enable)
+{
+	if (enable == the_state.storage_events_enabled) {
+		printk(KERN_INFO "gadget_event: %s storage events (no change)\n", enable ? "enable" : "disable");
+		return;
+	}
+	if (enable) {
+		printk(KERN_INFO "gadget_event: enable storage events\n");
+		the_state.storage_events_enabled = 1;
+	} else if (!enable) {
+		printk(KERN_INFO "gadget_event: disable storage events\n");
+		if (the_state.host_connected)
+			gadget_event_host_connected(0);
+		if (the_state.bus_suspended)
+			gadget_event_bus_suspended(0);
+		if (the_state.media_loaded)
+			gadget_event_media_loaded(0);
+		if (the_state.media_requested)
+			gadget_event_media_requested(0);
+		the_state.storage_events_enabled = 0;
+	}
+}
+EXPORT_SYMBOL(gadget_event_enable_storage_events);
 
 /*
  * host_connected
@@ -81,6 +106,10 @@ gadget_event_host_connected(int host_connected)
 		NULL
 	};
 
+	if (!the_state.storage_events_enabled) {
+		printk(KERN_INFO "gadget_event: storage events is disabled\n");
+		return;
+	}
 	if (the_state.host_connected == host_connected) {
 		printk(KERN_INFO "gadget_event: host_connected=%d (no change)\n", host_connected);
 		return;
@@ -91,6 +120,45 @@ gadget_event_host_connected(int host_connected)
 	kobject_uevent_env(&gadget_event_device.dev.kobj, KOBJ_CHANGE, envp);
 }
 EXPORT_SYMBOL(gadget_event_host_connected);
+
+static struct delayed_work host_connected_work;
+static struct delayed_work host_disconnected_work;
+
+static void host_connected_func(struct work_struct *w)
+{
+	gadget_event_host_connected(1);
+}
+
+static void host_disconnected_func(struct work_struct *w)
+{
+	gadget_event_host_connected(0);
+}
+
+void
+gadget_event_host_connected_async(int host_connected, unsigned long delay)
+{
+	static int scheduled_host_connected = 0;
+	static int scheduled_host_disconnected = 0;
+
+	if (host_connected) {
+		if (scheduled_host_connected)
+			return;
+		scheduled_host_disconnected = 0;
+		scheduled_host_connected = 1;
+		printk(KERN_INFO "gadget_event: schedule host_connected\n");
+		cancel_delayed_work(&host_disconnected_work);
+		schedule_delayed_work(&host_connected_work, delay);
+	} else {
+		if (scheduled_host_disconnected)
+			return;
+		scheduled_host_connected = 0;
+		scheduled_host_disconnected = 1;
+		printk(KERN_INFO "gadget_event: schedule host_disconnected\n");
+		cancel_delayed_work(&host_connected_work);
+		schedule_delayed_work(&host_disconnected_work, delay);
+	}
+}
+EXPORT_SYMBOL(gadget_event_host_connected_async);
 
 /*
  * bus_suspended
@@ -116,6 +184,10 @@ gadget_event_bus_suspended(int bus_suspended)
 		NULL
 	};
 
+	if (!the_state.storage_events_enabled) {
+		printk(KERN_INFO "gadget_event: storage events is disabled\n");
+		return;
+	}
 	if (the_state.bus_suspended == bus_suspended) {
 		printk(KERN_INFO "gadget_event: bus_suspended=%d (no change)\n", bus_suspended);
 		return;
@@ -151,6 +223,10 @@ gadget_event_media_loaded(int media_loaded)
 		NULL
 	};
 
+	if (!the_state.storage_events_enabled) {
+		printk(KERN_INFO "gadget_event: storage events is disabled\n");
+		return;
+	}
 	if (the_state.media_loaded == media_loaded) {
 		printk(KERN_INFO "gadget_event: media_loaded=%d (no change)\n", media_loaded);
 		return;
@@ -200,6 +276,10 @@ gadget_event_media_requested(int media_requested)
 		NULL
 	};
 
+	if (!the_state.storage_events_enabled) {
+		printk(KERN_INFO "gadget_event: storage events is disabled\n");
+		return;
+	}
 	if (the_state.media_requested == media_requested) {
 		printk(KERN_INFO "gadget_event: media_requested=%d (no change)\n", media_requested);
 		return;
@@ -310,6 +390,9 @@ static int __init init(void)
 
 	if ((ret = platform_driver_register(&gadget_event_driver)))
 		goto fail7;
+
+	INIT_DELAYED_WORK(&host_connected_work, host_connected_func);
+	INIT_DELAYED_WORK(&host_disconnected_work, host_disconnected_func);
 
 	goto done;
 

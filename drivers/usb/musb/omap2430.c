@@ -45,6 +45,8 @@
 #define	get_cpu_rev()	2
 #endif
 
+static int musb_enabled = 0;
+
 #if !defined(CONFIG_ARCH_OMAP34XX)
 #define MUSB_TIMEOUT_A_WAIT_BCON	1100
 
@@ -57,9 +59,9 @@ static void musb_do_idle(unsigned long _musb)
 //	u8	power;
 	u8	devctl;
 
-	devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
-
 	spin_lock_irqsave(&musb->lock, flags);
+
+	devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
 
 	switch (musb->xceiv.state) {
 	case OTG_STATE_A_WAIT_BCON:
@@ -144,9 +146,11 @@ void musb_platform_try_idle(struct musb *musb, unsigned long timeout)
 
 void musb_platform_enable(struct musb *musb)
 {
+	musb_enabled = 1;
 }
 void musb_platform_disable(struct musb *musb)
 {
+	musb_enabled = 0;
 }
 static void omap_vbus_power(struct musb *musb, int is_on, int sleeping)
 {
@@ -246,9 +250,16 @@ int __init musb_platform_init(struct musb *musb)
 
 	the_musb = musb; /* REVISIT */
 
-	OTG_SYSCONFIG_REG = SMARTIDLE | AUTOIDLE;
-	//OTG_SYSCONFIG_REG |= ENABLEWAKEUP;
-	OTG_INTERFSEL_REG = ULPI_12PIN;
+	OTG_SYSCONFIG_REG  &= ~ENABLEWAKEUP;/* disable wakeup */
+        OTG_FORCESTDBY_REG &= ~ENABLEFORCE; /* disable MSTANDBY */
+        OTG_SYSCONFIG_REG &= ~NOSTDBY;      /* remove possible NOSTDBY */
+        OTG_SYSCONFIG_REG |= SMARTSTDBY;    /* enable smart standby */
+        OTG_SYSCONFIG_REG &= ~AUTOIDLE;     /* disable auto idle */
+        OTG_SYSCONFIG_REG &= ~NOIDLE;       /* remove possible NOIDLE */
+        OTG_SYSCONFIG_REG |= SMARTIDLE;     /* enable smart idle */
+//      OTG_SYSCONFIG_REG |= AUTOIDLE;      /* enable auto idle */
+// 	OTG_SYSCONFIG_REG |= ENABLEWAKEUP;  /* enable wakeup */
+	OTG_INTERFSEL_REG  = ULPI_12PIN;
 
 	printk(KERN_INFO "HS USB OTG: revision 0x%x, sysconfig 0x%02x, "
 			"sysstatus 0x%x, intrfsel 0x%x, simenable  0x%x\n",
@@ -283,6 +294,8 @@ int musb_platform_suspend(struct musb *musb)
 
 //	printk("@@ %s: enter\n", __func__);
 
+	musb_context_save(musb);
+
 	/* Configure SYSCONFIG:
 	 *     Force Standby Master  (0 << 12)
 	 *     Force Idle Slave      (0 <<  3)
@@ -295,8 +308,6 @@ int musb_platform_suspend(struct musb *musb)
         OTG_SYSCONFIG_REG &= ~(NOIDLE | SMARTIDLE);   /* enable force idle */
         OTG_FORCESTDBY_REG |= ENABLEFORCE;            /* enable MSTANDBY   */
 //      OTG_SYSCONFIG_REG |= AUTOIDLE;                /* enable auto idle  */
-
-	musb_context_save(musb);
 
 	if (musb->xceiv.set_suspend)
 		musb->xceiv.set_suspend(&musb->xceiv, 1);
@@ -347,7 +358,7 @@ int musb_platform_resume(struct musb *musb)
         OTG_SYSCONFIG_REG &= ~NOIDLE;       /* remove possible NOIDLE */
         OTG_SYSCONFIG_REG |= SMARTIDLE;     /* enable smart idle */
 //      OTG_SYSCONFIG_REG |= AUTOIDLE;      /* enable auto idle */
-	OTG_SYSCONFIG_REG |= ENABLEWAKEUP;  /* enable wakeup */
+// 	OTG_SYSCONFIG_REG |= ENABLEWAKEUP;  /* enable wakeup */
 
 	musb->asleep = 0;
 
@@ -393,7 +404,11 @@ void musb_softconn(int is_on)
 	struct musb *musb = the_musb;
 	unsigned long	flags;
 
-	if (!musb)
+	/*
+	 *  Do not enable pullup if musb is not started.
+	 *  Somehow it prevents it entering standby mode which prevents C5 
+	 */
+	if (!musb || !musb_enabled)
 		return;
 
 	printk(KERN_INFO "%s: %s\n", __func__, is_on ? "on" : "off");

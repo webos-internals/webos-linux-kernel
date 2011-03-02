@@ -25,6 +25,7 @@
 #include <linux/gen_timer.h>
 #include <linux/fastpath_client.h>
 #include <net/inet_timewait_sock.h>
+#include <net/tcp.h>
 
 /*
  * Debug
@@ -92,6 +93,9 @@ int tcp_prepare_handler(void)
 	/* Calculate the next alarm from the timer_list*/
 	
 	run_gen_timers();
+#ifdef CONFIG_INTSOCK_NETFILTER
+	check_idle_sockets();
+#endif
 	spin_lock_irqsave(&timer_lock,flags);
 	list_for_each(ptr,&timer_list_head) {
 	        timer=list_entry(ptr,struct timer_list,entry);

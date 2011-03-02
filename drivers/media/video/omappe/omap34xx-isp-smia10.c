@@ -233,13 +233,11 @@ omap34xx_isp_smia10_isr(struct omap34xx_isp_input *input)
 		LCx_FSC_IRQ_MASK(0) & lc0 ? __stringify(FSC) : "",
 		LCx_FW_IRQ_MASK(0) & lc0 ? __stringify(FW) : "");
 
-	spin_lock(&input->lock);
 	if ((LCx_FS_IRQ_MASK(0) & lc0) && input->finalize_stat_buf) {
 		omap34xx_v4l2_device_videobuf_done(&input->isp_v4l2_dev->dev,
 				STATE_DONE);
 		input->finalize_stat_buf = 0;
 	}
-	spin_unlock(&input->lock);
 
 	if (LCx_FE_IRQ_MASK(0) & lc0)
 		++data->frames;
@@ -327,6 +325,9 @@ omap34xx_isp_smia10_ioctl_streamon(struct omap34xx_v4l2_int_master *mst)
 	omap_writel(LCx_ADDR(data->sof_isp), CCP2_LCx_SOF_ADDR(data->base, 0));
 	SPEW(2, "CCP2_LC0_SOF_ADDR: ADDR=0x%08X\n", LCx_ADDR(data->sof_isp));
 
+	/* Status line memory writing offset is set from DAT_OFST aswell */
+	val = ALIGN(fmt.fmt.pix.bytesperline, 0x20);
+	omap_writel(val, CCP2_LCx_DAT_OFST(data->base, 0));
 	data->frames = data->errors = 0;
 
 	CONTROL_CSIRXFE |= CSIRXFE_CSIB_PWRDNZ_MASK;

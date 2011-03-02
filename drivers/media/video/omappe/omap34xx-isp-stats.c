@@ -224,6 +224,7 @@ static int omap34xx_isp_stats_isr(struct omap34xx_isp_v4l2_device *dev)
 
 	dev->input->finalize_stat_buf = 1;
 	data->stats++;
+
 exit:
 	return (!!irq0);
 }
@@ -557,6 +558,7 @@ omap34xx_isp_stats_vidioc_streamoff(struct omap34xx_v4l2_device *dev)
 {
 	struct omap34xx_isp_input *input;
 	struct omap34xx_isp_stats_data *data = dev->priv;
+	u32 irq_flags;
 
 	input = container_of(dev, struct omap34xx_isp_v4l2_device, dev)->input;
 
@@ -569,19 +571,18 @@ omap34xx_isp_stats_vidioc_streamoff(struct omap34xx_v4l2_device *dev)
 
 	omap_clearl(ISP_CTRL, H3A_CLK_EN_MASK);
 
-	spin_lock(&input->lock);
+	spin_lock_irqsave(&input->lock,irq_flags);
 	if (input->finalize_stat_buf) {
-		omap34xx_v4l2_device_videobuf_done(&input->isp_v4l2_dev->dev,
-				STATE_ERROR);
+ 		omap34xx_v4l2_device_videobuf_done(&input->isp_v4l2_dev->dev,STATE_ERROR);
 		input->finalize_stat_buf = 0;
 	}
-	spin_unlock(&input->lock);
 
 	/* TODO: not SMP friendly... */
 	if (data->buf) {
 		data->buf = NULL;
 		omap34xx_v4l2_device_videobuf_done(dev, STATE_ERROR);
 	}
+	spin_unlock_irqrestore(&input->lock,irq_flags);
 
 	SPEW(1, "--- %s: stats=%lu delays=%lu\n", __func__, data->stats,
 		data->delays);

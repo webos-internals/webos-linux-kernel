@@ -219,10 +219,9 @@ static struct hsuart_platform_data btuart_data = {
 	.max_packet_size = 450, // ~450
 	.min_packet_size = 6,   // min packet size
 	.rx_latency      = 512, // in bytes at current speed
-	.rts_pin         = -1,    // no rts pin override
-//	.rts_pin         = 145,   // uart rts line pin
-//	.rts_act_mode    = "AB25_3430_UART2_RTS",  // uart rts line active mode 
-//	.rts_gpio_mode   = "AB25_3430_UART2_GPIO", // uart rts line gpio mode 
+	.rts_pin         = 145,   // uart rts line pin
+	.rts_act_mode    = "AB25_3430_UART2_RTS",  // uart rts line active mode
+	.rts_gpio_mode   = "AB25_3430_UART2_GPIO", // uart rts line gpio mode
 	.idle_timeout      =  500, // initial idle timeout
 	.idle_poll_timeout =  500, // same as regular idle timeout
 	.dbg_level         =    0, // dbg level 0 for now
@@ -518,7 +517,7 @@ static struct maxim7359_platform_data board_kbd_data = {
 	.row_num      = 8,
 	.col_num      = 5,
 	.keymap       = board_keymap,
-	.key_prox_timeout = 200, 
+	.key_prox_timeout = 50,
 	.key_prox_width = 6,
 	.key_prox_map   = board_key_prox_map,
 	.rep_period  = 100,       // 100 ms repeat time (10 cps)
@@ -546,7 +545,7 @@ static struct gpio_keys_button board_gpio_keys_buttons[] = {
 		.desc        = "volume up",
 		.debounce    = 20,
 		.type	     = EV_KEY,
-		.wakeup      = 0,
+		.wakeup      = 1,
 		.pin         = "AE7_3430_GPIO24_KEY_VOL_UP",
 #ifdef  CONFIG_GPIO_KEYS_CONSOLE_TRIGGER
 		.options     = OPT_CONSOLE_TRIGGER,
@@ -559,7 +558,7 @@ static struct gpio_keys_button board_gpio_keys_buttons[] = {
 		.desc        = "volume down",
 		.debounce    = 20,
 		.type	     = EV_KEY,
-		.wakeup      = 0,
+		.wakeup      = 1,
 		.pin         = "AF7_3430_GPIO25_KEY_VOL_DN",
 	},
 	{
@@ -1842,6 +1841,8 @@ struct user_pin audio_pins[] = {
 		.def_level  =  0,  // initialy low
 		.pin_mode   =  AUDIO_PCM_R_TO_BT_CLK_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 	{
 		.name       = "AUDIO_PCM_R_TO_BT_DATA",
@@ -1851,6 +1852,8 @@ struct user_pin audio_pins[] = {
 		.def_level  =  1,  // initialy high
 		.pin_mode   =  AUDIO_PCM_R_TO_BT_DATA_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 	{
 		.name       = "AUDIO_PCM_REMOTE_MASTER",
@@ -1860,6 +1863,8 @@ struct user_pin audio_pins[] = {
 		.def_level  =  1,  // initialy high
 		.pin_mode   =  AUDIO_PCM_REMOTE_MASTER_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 };
 
@@ -1875,6 +1880,8 @@ static struct user_pin modem_pins[] = {
 		.def_level  =  -1,  // unset
 		.pin_mode   =  MODEM_POWER_ON_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 	{
 		.name       = "boot_mode",
@@ -1884,6 +1891,8 @@ static struct user_pin modem_pins[] = {
 		.def_level  =  0,   // initially low
 		.pin_mode   =  MODEM_BOOT_MODE_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 	{
 		.name       =  "wakeup_modem",
@@ -1896,6 +1905,8 @@ static struct user_pin modem_pins[] = {
 		.def_level  =  0,  // initialy low
 		.pin_mode   =  MODEM_WAKE_MODEM_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 	{
 		.name       =  "wakeup_app",
@@ -1905,6 +1916,8 @@ static struct user_pin modem_pins[] = {
 		.def_level  = -1,  // unset
 		.pin_mode   =  MODEM_WAKE_APP_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 	{
 		.name       =  "wakeup_app_usb",
@@ -1914,6 +1927,8 @@ static struct user_pin modem_pins[] = {
 		.def_level  = -1,  // unset
 		.pin_mode   =  MODEM_WAKE_APP_USB_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 };
 
@@ -1930,6 +1945,8 @@ static struct user_pin bt_pins[] = {
 		.def_level  =  0, // default level (low)
 		.pin_mode   =  BT_RESET_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 	{
 		.name       =  "wake",
@@ -1939,6 +1956,8 @@ static struct user_pin bt_pins[] = {
 		.def_level  =  0, // default level (low)
 		.pin_mode   =  BT_WAKE_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 	{
 		.name       =  "host_wake",
@@ -1949,6 +1968,9 @@ static struct user_pin bt_pins[] = {
 		.options    =  PIN_WAKEUP_SOURCE,
 		.pin_mode   =  BT_HOST_WAKE_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  IRQF_TRIGGER_RISING,
+		.irq_handle_mode = IRQ_HANDLE_AUTO,
 	},
 };
 
@@ -1964,6 +1986,8 @@ static struct user_pin wifi_pins[] = {
 		.def_level  =  0, // default level (low)
 		.pin_mode   =  WIFI_RESET_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 };
 
@@ -1979,6 +2003,8 @@ static struct user_pin camera_pins[] = {
 		.def_level  =  0,  // initialy low
 		.pin_mode   =  CAM_FLASH_SYNC_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 };
 
@@ -1995,6 +2021,8 @@ static struct user_pin power_pins[] = {
 		.def_level  = -1,  // unset
 		.pin_mode   =  CHG_BYPASS_GPIO_PIN_MODE,
 		.sysfs_mask =  0777,
+		.options    =  0,
+		.irq_config =  0,
 	},
 };
 

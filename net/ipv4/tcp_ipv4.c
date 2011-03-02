@@ -2344,6 +2344,7 @@ static void get_tcp4_sock(struct sock *sk, char *tmpbuf, int i)
 		tp->snd_ssthresh >= 0xFFFF ? -1 : tp->snd_ssthresh);
 }
 
+#ifdef CONFIG_INTSOCK_NETFILTER
 static void get_tcp4_idle_sock(struct sock *sk, char *tmpbuf, int i)
 {
 	int timer_active;
@@ -2376,6 +2377,7 @@ static void get_tcp4_idle_sock(struct sock *sk, char *tmpbuf, int i)
 
 	ts=ktime_to_timespec(sk->sk_stamp);
 	ktime_get_ts(&ts_curr);
+	monotonic_to_bootbased(&ts_curr);
 	idle_time=(ts_curr.tv_sec-ts.tv_sec);
 
 
@@ -2398,6 +2400,8 @@ static void get_tcp4_idle_sock(struct sock *sk, char *tmpbuf, int i)
 		tp->snd_cwnd,
 		tp->snd_ssthresh >= 0xFFFF ? -1 : tp->snd_ssthresh,idle_time);
 }
+#endif
+
 static void get_timewait4_sock(struct inet_timewait_sock *tw,
 			       char *tmpbuf, int i)
 {
@@ -2453,6 +2457,7 @@ out:
 	return 0;
 }
 
+#ifdef CONFIG_INTSOCK_NETFILTER
 static int tcp4_idle_seq_show(struct seq_file *seq, void *v)
 {
 	struct tcp_iter_state* st;
@@ -2483,6 +2488,7 @@ static int tcp4_idle_seq_show(struct seq_file *seq, void *v)
 out:
 	return 0;
 }
+#endif
 
 static struct file_operations tcp4_seq_fops;
 static struct tcp_seq_afinfo tcp4_seq_afinfo = {
@@ -2493,6 +2499,7 @@ static struct tcp_seq_afinfo tcp4_seq_afinfo = {
 	.seq_fops	= &tcp4_seq_fops,
 };
 
+#ifdef CONFIG_INTSOCK_NETFILTER
 static struct tcp_seq_afinfo tcp4_idle_seq_afinfo = {
 	.owner		= THIS_MODULE,
 	.name		= "tcp_idle",
@@ -2500,20 +2507,24 @@ static struct tcp_seq_afinfo tcp4_idle_seq_afinfo = {
 	.seq_show	= tcp4_idle_seq_show,
 	.seq_fops	= &tcp4_seq_fops,
 };
-
+#endif
 int __init tcp4_proc_init(void)
 {
+#ifdef CONFIG_INTSOCK_NETFILTER
 	int ret;
-	ret=tcp_proc_register(&tcp4_seq_afinfo);
+	ret = tcp_proc_register(&tcp4_idle_seq_afinfo);
 	if(ret < 0)
 		return ret;
-	return tcp_proc_register(&tcp4_idle_seq_afinfo);
+#endif
+	return tcp_proc_register(&tcp4_seq_afinfo);
 }
 
 void tcp4_proc_exit(void)
 {
-	tcp_proc_unregister(&tcp4_seq_afinfo);
+#ifdef CONFIG_INTSOCK_NETFILTER
 	tcp_proc_unregister(&tcp4_idle_seq_afinfo);
+#endif
+	tcp_proc_unregister(&tcp4_seq_afinfo);
 }
 #endif /* CONFIG_PROC_FS */
 

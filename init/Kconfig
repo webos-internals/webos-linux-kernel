@@ -102,6 +102,18 @@ config SWAP
 	  used to provide more virtual memory than the actual RAM present
 	  in your computer.  If unsure say Y.
 
+config SWAP_NOTIFIERS
+	bool "Support for 'swap free notify' feature (swap_notifier)"
+	depends on SWAP
+	select LZO_COMPRESS
+	select LZO_DECOMPRESS
+	default n
+	help
+	  This will enable 'swap free notify' feature used by compcache.
+	  This allows kernel to send callback to ramzswap as soon as a
+	  swap slot becomes free. So, we can immediately free memory allocated
+	  for this page, eliminating any stale data in (compressed) memory.
+
 config SYSVIPC
 	bool "System V IPC"
 	---help---
@@ -573,7 +585,6 @@ config SIGNALFD
 config TIMERFD
 	bool "Enable timerfd() system call" if EMBEDDED
 	select ANON_INODES
-	depends on BROKEN
 	default y
 	help
 	  Enable the timerfd() system call that allows to receive timer

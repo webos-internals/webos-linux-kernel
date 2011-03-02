@@ -3,8 +3,6 @@
  *
  * Author - Tigran Aivazian <tigran@veritas.com>
  *
- * Ported to 2.6.24 by toshi.kikuchi@palm.com
- *
  * Thanks to:
  *     Manfred Spraul <manfred@colorfullife.com>:
  *             useful comments.
@@ -20,6 +18,9 @@
  *
  * This file is released under the GPL.
  */
+/*
+ * Ported to 2.6.24. No munmap support.
+ */
 
 #include <linux/file.h>
 #include <linux/init.h>
@@ -27,10 +28,14 @@
 #include <linux/module.h>
 #include <linux/mount.h>
 #include <linux/sched.h>
+#include <linux/fs.h>
 
 #define BADFS_MAGIC	0xBADF5001
 
 static struct vfsmount *badfs_mnt;
+static struct dentry *badfs_dentry_pwd;
+static struct dentry *badfs_dentry_root;
+static struct dentry *badfs_dentry_file;
 
 static struct inode *badfs_get_inode(struct super_block *sb, int mode)
 {
@@ -43,7 +48,7 @@ static struct inode *badfs_get_inode(struct super_block *sb, int mode)
 	return inode;
 }
 
-static void disable_pwd(struct fs_struct *fs)
+static struct dentry * __init new_badfs_dentry_pwd(void)
 {
 	struct inode *inode;
 	struct dentry *dentry;
@@ -52,8 +57,8 @@ static void disable_pwd(struct fs_struct *fs)
 
 	inode = badfs_get_inode(badfs_mnt->mnt_sb, mode);
 	if (!inode) {
-		printk(KERN_ERR "disable_pwd(): can't allocate inode\n");
-		return;
+		printk(KERN_ERR "FU: %s: can't allocate inode\n", __func__);
+		return NULL;
 	}
 
 	name.name = "dead_pwd";
@@ -61,16 +66,20 @@ static void disable_pwd(struct fs_struct *fs)
 	dentry = d_alloc(badfs_mnt->mnt_sb->s_root, &name);
 	if (!dentry) {
 		iput(inode);
-		printk(KERN_ERR "disable_pwd(): can't allocate dentry\n");
-		return;
+		printk(KERN_ERR "FU: %s: can't allocate dentry\n", __func__);
+		return NULL;
 	}
 	d_instantiate(dentry, inode);
-	dget(dentry);
 
-	set_fs_pwd(fs, badfs_mnt, dentry);
+	return dentry;
 }
 
-static void disable_root(struct fs_struct *fs)
+static void disable_pwd(struct fs_struct *fs)
+{
+	set_fs_pwd(fs, badfs_mnt, badfs_dentry_pwd);
+}
+
+static struct dentry * __init new_badfs_dentry_root(void)
 {
 	struct inode *inode;
 	struct dentry *dentry;
@@ -78,8 +87,8 @@ static void disable_root(struct fs_struct *fs)
 
 	inode = badfs_get_inode(badfs_mnt->mnt_sb, S_IFDIR | 0755);
 	if (!inode) {
-		printk(KERN_ERR "disable_root(): can't allocate inode\n");
-		return;
+		printk(KERN_ERR "FU: %s: can't allocate inode\n", __func__);
+		return NULL;
 	}
 
 	name.name = "dead_root";
@@ -87,20 +96,32 @@ static void disable_root(struct fs_struct *fs)
 	dentry = d_alloc(badfs_mnt->mnt_sb->s_root, &name);
 	if (!dentry) {
 		iput(inode);
-		printk(KERN_ERR "disable_root(): can't allocate dentry\n");
-		return;
+		printk(KERN_ERR "FU: %s: can't allocate dentry\n", __func__);
+		return NULL;
 	}
 	d_instantiate(dentry, inode);
-	dget(dentry);
 
-	set_fs_root(fs, badfs_mnt, dentry);
+	return dentry;
+}
+
+static void disable_root(struct fs_struct *fs)
+{
+	set_fs_root(fs, badfs_mnt, badfs_dentry_root);
 }
 
 static int check_dirs(struct vfsmount *mnt)
 {
 	struct task_struct *p;
+	unsigned long expires;
+
+	expires = jiffies + HZ;
 
 repeat:
+	if (time_after(jiffies, expires)) {
+		printk(KERN_INFO "FU: %s: timeout\n", __func__);
+		return -1;
+	}
+
 	if (signal_pending(current))
 		return -1;
 
@@ -120,12 +141,15 @@ repeat:
 
 		if (fs->pwdmnt == mnt) {
 			read_unlock(&tasklist_lock);
+			printk(KERN_WARNING "FU: disable pwd of %s\n", p->comm);
 			disable_pwd(fs);	/* may sleep */
 			put_fs_struct(fs);
 			goto repeat;
 		}
 		if (fs->rootmnt == mnt) {
 			read_unlock(&tasklist_lock);
+			printk(KERN_WARNING "FU: disable root of %s\n",
+			       p->comm);
 			disable_root(fs);	/* may sleep */
 			put_fs_struct(fs);
 			goto repeat;
@@ -137,224 +161,210 @@ repeat:
 	return 0;
 }
 
-static struct file *get_bad_file(void)
+static struct dentry * __init new_badfs_dentry_file(void)
 {
-	struct inode *i;
-	struct dentry *d;
+	struct inode *inode;
+	struct dentry *dentry;
 	struct qstr name;
-	struct file *f = get_empty_filp();
 
-	if (!f) {
-		printk(KERN_ERR "get_bad_file(): can't allocate file\n");
-		goto err;
-	}
-
-	i = badfs_get_inode(badfs_mnt->mnt_sb, 0755);
-	if (!i) {
-		printk(KERN_ERR "get_bad_file(): can't allocate inode\n");
-		goto err_inode;
+	inode = badfs_get_inode(badfs_mnt->mnt_sb, 0755);
+	if (!inode) {
+		printk(KERN_ERR "FU: %s: can't allocate inode\n", __func__);
+		return NULL;
 	}
 
 	name.name = "dead_file";
 	name.len = strlen(name.name);
-	d = d_alloc(badfs_mnt->mnt_sb->s_root, &name);
-	if (!d) {
-		printk(KERN_ERR "get_bad_file(): can't allocate dentry\n");
-		goto err_dentry;
+	dentry = d_alloc(badfs_mnt->mnt_sb->s_root, &name);
+	if (!dentry) {
+		printk(KERN_ERR "FU: %s: can't allocate dentry\n", __func__);
+		iput(inode);
+		return NULL;
 	}
 
-	d_instantiate(d, i);
+	d_instantiate(dentry, inode);
 
-	f->f_vfsmnt = mntget(badfs_mnt);
-	f->f_dentry = dget(d);
-	f->f_mapping = i->i_mapping;
-	f->f_op = i->i_fop;
-
-	return f;
-
-err_dentry:
-	iput(i);
-err_inode:
-	filp_close(f, NULL);
-err:
-	return NULL;
+	return dentry;
 }
 
-static int check_file(unsigned int fd, struct files_struct *files,
-		      struct fdtable *fdt, struct vfsmount *mnt,
-		      struct file *badfile)
+static struct file *get_bad_file(void)
 {
-	struct inode *inode;
-	struct file *file = fcheck_files(files, fd);
+	struct file *f;
 
-	if (file) {
-		inode = file->f_dentry->d_inode;
-		if (inode && file->f_vfsmnt == mnt) {
-			/* If allocation failed, the forced unmount
-			   fails.  This seems safer than just closing
-			   the fd.  Note that it will retry until
-			   either it succeeds or a signal is received. */
-			if (!badfile)
-				return 1;
-
-			/* Preserve mode so as to get EIO rather
-			 * than EBADF. */
-			badfile->f_mode = file->f_mode;
-
-			atomic_inc(&badfile->f_count);
-			rcu_assign_pointer(fdt->fd[fd], badfile);
-
-			while (file->f_light)
-				schedule();
-			filp_close(file, files);
-
-			return 1;
-		}
+	f = get_empty_filp();
+	if (!f) {
+		printk(KERN_ERR "FU: %s: can't allocate file\n", __func__);
+		return NULL;
 	}
 
-	return 0;
+	f->f_vfsmnt = mntget(badfs_mnt);
+	f->f_dentry = dget(badfs_dentry_file);
+	f->f_mapping = badfs_dentry_file->d_inode->i_mapping;
+	f->f_op = badfs_dentry_file->d_inode->i_fop;
+
+	return f;
+}
+
+#define RET_OK		0
+#define RET_CLOSED	1
+#define RET_F_LIGHT	2
+
+/*
+ * Close a file if it belongs to the specified fs.
+ * (Inspired by sys_close())
+ */
+static int close_file_on_fs(unsigned int fd, struct files_struct *files,
+			    struct vfsmount *mnt, struct file *badfilp)
+{
+	struct fdtable *fdt;
+	struct inode *inode;
+	struct file *filp;
+	int ret = RET_OK;
+
+	spin_lock(&files->file_lock);
+	fdt = files_fdtable(files);
+	if (fd >= fdt->max_fds)
+		goto out_unlock;
+	filp = fdt->fd[fd];
+	if (!filp)
+		goto out_unlock;
+
+	inode = filp->f_dentry->d_inode;
+	if (!inode || filp->f_vfsmnt != mnt)
+		goto out_unlock;
+
+	if (filp->f_light) {
+		/* we have to wait for fput_light() */
+		ret = RET_F_LIGHT;
+		goto out_unlock;
+	}
+
+	/* replace the filp with the badfilp.
+	 * preserve mode so as to get EIO rather than EBADF.
+	 */
+	badfilp->f_mode = filp->f_mode;
+	rcu_assign_pointer(fdt->fd[fd], badfilp);
+	spin_unlock(&files->file_lock);
+
+	/* we have to unlock tasklist_lock here because
+	 * filp_close() calls fput() which may sleep.
+	 */
+	read_unlock(&tasklist_lock);
+
+	filp_close(filp, files);
+
+	return RET_CLOSED; /* we closed a file */
+
+out_unlock:
+	spin_unlock(&files->file_lock);
+	return ret;
+}
+
+/*
+ * Close files if any of them belongs to the specified fs.
+ * Inspired by flush_old_files()
+ */
+static int close_files_on_fs(struct files_struct * files,
+			     struct vfsmount *mnt, struct file *badfilp)
+{
+	long j = -1;
+	struct fdtable *fdt;
+	int ret = RET_OK;
+
+	spin_lock(&files->file_lock);
+	for (;;) {
+		unsigned long set, i;
+
+		j++;
+		i = j * __NFDBITS;
+		fdt = files_fdtable(files);
+		if (i >= fdt->max_fds)
+			break;
+		set = fdt->open_fds->fds_bits[j];
+		if (!set)
+			continue;
+		spin_unlock(&files->file_lock);
+		for ( ; set ; i++,set >>= 1) {
+			if (set & 1) {
+				int val;
+
+				val = close_file_on_fs(i, files, mnt, badfilp);
+				if (val == RET_CLOSED) {
+					/* if we closed a file, we need to
+					 * exit all the nested loop.
+					 */
+					return RET_CLOSED;
+				} else if (val == RET_F_LIGHT) {
+					ret = RET_F_LIGHT;
+				}
+			}
+		}
+		spin_lock(&files->file_lock);
+	}
+	spin_unlock(&files->file_lock);
+	return ret;
 }
 
 static int check_files(struct vfsmount *mnt)
 {
 	struct task_struct *p;
-	struct file *badfile = NULL;
+	unsigned long expires;
+	struct file *badfilp = NULL;
+	int retry = 0;
+
+	expires = jiffies + HZ;
 
 repeat:
+	if (time_after(jiffies, expires)) {
+		printk(KERN_INFO "FU: %s: timeout\n", __func__);
+		return -1;
+	}
+
 	if (signal_pending(current))
 		return -1;
 
-	/* Allocate a bad file in advance, so it's not done with
-	   files_lock held.  I'm not sure what the lock order issues are
-	   with doing that stuff with the lock held. */
-	if (!badfile)
-		badfile = get_bad_file();
+	/* Allocate a bad file in advance */
+	if (!badfilp) {
+		badfilp = get_bad_file();
+		if (!badfilp)
+			return -1;
+	}
 
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
-		unsigned int i, j;
 		struct files_struct *files;
-		struct fdtable *fdt;
+		int val;
 
-		/* get a reference to p->files */
 		files = get_files_struct(p);
 		if (!files)
 			continue;
-
-		j = 0;
-
-		rcu_read_lock();
-		spin_lock(&files->file_lock);
-		fdt = files_fdtable(files);
-		/* check if this process has open files here */
-		/* see close_files() */
-		for (;;) {
-			unsigned long set;
-			i = j * __NFDBITS;
-			if (i >= fdt->max_fds)
-				break;
-			set = fdt->open_fds->fds_bits[j++];
-			while (set) {
-				if (set & 1) {
-					if (check_file(i, files, fdt, mnt,
-						       badfile)) {
-						spin_unlock(&files->file_lock);
-						rcu_read_unlock();
-						put_files_struct(files);
-						read_unlock(&tasklist_lock);
-						goto repeat;
-					}
-				}
-				i++;
-				set >>= 1;
-			}
-		}
-		spin_unlock(&files->file_lock);
-		rcu_read_unlock();
+		val = close_files_on_fs(files, mnt, badfilp);
 		put_files_struct(files);
-	}
-	read_unlock(&tasklist_lock);
 
-	if (badfile)
-		filp_close(badfile, NULL);
-
-	return 0;
-}
-
-static struct vm_area_struct *find_mmap_on_fs(struct mm_struct *mm,
-					      struct vfsmount *mnt)
-{
-	struct vm_area_struct *vma;
-	struct file *file;
-	struct inode *inode;
-
-	/* check for mmap'd files on this vfsmount */
-	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		file = vma->vm_file;
-		if (!file)
-			continue;
-		inode = file->f_dentry->d_inode;
-		if (!inode || !inode->i_sb)
-			continue;
-		if (file->f_vfsmnt == mnt)
-			return vma;
-	}
-
-	return NULL;
-}
-
-static int check_mmaps(struct vfsmount *mnt)
-{
-	struct task_struct *p;
-	int retry = 0;
-
-repeat:
-	if (signal_pending(current))
-		return -1;
-
-	read_lock(&tasklist_lock);
-	for_each_process(p) {
-		struct mm_struct *mm;
-		struct vm_area_struct *vma;
-
-		mm = get_task_mm(p);
-		if (!mm)
-			continue;
-
-		if (down_read_trylock(&mm->mmap_sem)) {
-			vma = find_mmap_on_fs(mm, mnt);
-			up_read(&mm->mmap_sem);
-		} else {
-			mmput(mm);
-			retry = 1;
-			continue;
-		}
-
-		if (vma) {
-			read_unlock(&tasklist_lock);
-
-			down_write(&mm->mmap_sem);
-
-			/* vma may have gone away while mmap_sem was not held */
-			vma = find_mmap_on_fs(mm, mnt);
-			if (vma)
-				do_munmap(mm, vma->vm_start,
-					  vma->vm_end - vma->vm_start);
-
-			up_write(&mm->mmap_sem);
-			mmput(mm);
+		if (val == RET_CLOSED) {
+			/* we closed a file. we need to repeat from the
+			 * beginning with a new badfilp.
+			 * NOTE: tasklist_lock has been unlocked.
+			 */
+			badfilp = NULL;
+			printk(KERN_WARNING
+			       "FU: closed a file opened by %s\n", p->comm);
 			goto repeat;
+		} else if (val == RET_F_LIGHT) {
+			retry = 1;
+			printk(KERN_WARNING
+			       "FU: f_light call in progress by %s\n", p->comm);
 		}
-
-		mmput(mm);
 	}
-
 	read_unlock(&tasklist_lock);
 	if (retry) {
-		/* We had to skip one or more processes.  Try again. */
 		retry = 0;
+		schedule(); /* give a chance for fput_light() */
 		goto repeat;
 	}
+
+	if (badfilp)
+		filp_close(badfilp, NULL);
 
 	return 0;
 }
@@ -377,14 +387,18 @@ void quiesce_filesystem(struct vfsmount *mnt)
 	 * to try again.
 	 */
 
+	printk(KERN_INFO "FU: %s\n", __func__);
+
 	if (check_dirs(mnt) < 0)
 		return;
 
 	if (check_files(mnt) < 0)
 		return;
 
-	if (check_mmaps(mnt) < 0)
-		return;
+	/*
+	 * if (check_mmaps(mnt) < 0)
+	 *	return;
+	 */
 }
 
 static int badfs_get_sb(struct file_system_type *fstype,
@@ -408,15 +422,44 @@ static int __init init_badfs_fs(void)
 		badfs_mnt = kern_mount(&badfs_fs_type);
 		if (IS_ERR(badfs_mnt)) {
 			err = PTR_ERR(badfs_mnt);
-			unregister_filesystem(&badfs_fs_type);
+			goto err1;
 		}
 	}
+
+	badfs_dentry_pwd = new_badfs_dentry_pwd();
+	if (!badfs_dentry_pwd) {
+		err = -ENOMEM;
+		goto err1;
+	}
+	badfs_dentry_root = new_badfs_dentry_root();
+	if (!badfs_dentry_root) {
+		err = -ENOMEM;
+		goto err2;
+	}
+
+	badfs_dentry_file = new_badfs_dentry_file();
+	if (!badfs_dentry_file) {
+		err = -ENOMEM;
+		goto err3;
+	}
+
+	return 0;
+err3:
+	dput(badfs_dentry_root);
+err2:
+	dput(badfs_dentry_pwd);
+err1:
+	unregister_filesystem(&badfs_fs_type);
 
 	return err;
 }
 
 static void __exit exit_badfs_fs(void)
 {
+	dput(badfs_dentry_file);
+	dput(badfs_dentry_root);
+	dput(badfs_dentry_pwd);
+
 	unregister_filesystem(&badfs_fs_type);
 }
 

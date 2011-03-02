@@ -30,8 +30,8 @@
 #  define DPRINTK(fmt, args...)
 #endif
 
-static	DECLARE_MUTEX(res_handle_mutex);
-static	DECLARE_MUTEX(users_list_mutex);
+static	DEFINE_SPINLOCK(res_handle_lock);
+static	DEFINE_SPINLOCK(users_list_lock);
 
 #define down_srfmutex(x)	{\
 				if (!(in_atomic() || irqs_disabled())) \
@@ -129,13 +129,14 @@ struct res_handle *resource_get(const char *name, const char *id)
 	struct shared_resource **resp;
 	short index = 0;
 	struct res_handle *res = ERR_PTR(-ENOENT);
+	unsigned long flags;
 
 	if (name == NULL || id == NULL) {
 		printk(KERN_ERR "resource_get: Invalid pointer\n");
 		return res;
 	}
-	down_srfmutex(&res_handle_mutex);
 	DPRINTK("resource_get for %s Clock-name %s\n", id, name);
+	spin_lock_irqsave(&res_handle_lock, flags);
 	for (resp = res_list; *resp; resp++) {
 		if (strcmp((*resp)->name, id) == 0) {
 			/* look for a free handle from the handle_list POOL */
@@ -159,7 +160,7 @@ struct res_handle *resource_get(const char *name, const char *id)
 			break;
 		}
 	}
-	up_srfmutex(&res_handle_mutex);
+	spin_unlock_irqrestore(&res_handle_lock, flags);
 	return res;
 }
 
@@ -173,6 +174,7 @@ int resource_request(struct res_handle *res, unsigned short target_level)
 	struct 	users_list *user, *cur_user = NULL;
 	short 	index = 0;
 	int	ret = -1;
+	unsigned long flags;
 
 	if (res == ERR_PTR(-ENOENT)) {
 		DPRINTK("Invalid resource handle passed to reource_request\n");
@@ -183,7 +185,7 @@ int resource_request(struct res_handle *res, unsigned short target_level)
 
 	DPRINTK("resource_request: Clock-name %s\n", res->usr_name);
 
-	down_srfmutex(&users_list_mutex);
+	spin_lock_irqsave(&users_list_lock, flags);
 
 	if (res->usr_index != -1) {
 		cur_user = &usr_list[res->usr_index];
@@ -237,8 +239,8 @@ int resource_request(struct res_handle *res, unsigned short target_level)
 		if (user->level > target_level)
 			target_level = user->level;
 	}
+	spin_unlock_irqrestore(&users_list_lock, flags);
 	DPRINTK("New Target level is %d\n", target_level);
-	up_srfmutex(&users_list_mutex);
 
 	if (target_level != resp->curr_level) {
 		DPRINTK("Changing Level for resource %s to %d\n",
@@ -273,7 +275,7 @@ int resource_request(struct res_handle *res, unsigned short target_level)
 
 	return ret;
 out_unlock:
-	up_srfmutex(&users_list_mutex);
+	spin_unlock_irqrestore(&users_list_lock, flags);
 	return ret;
 }
 
@@ -288,6 +290,7 @@ int resource_release(struct res_handle *res)
 	struct  users_list *user, *cur_user = NULL;
 	unsigned short target_level;
 	int ret = 0;
+	unsigned long flags;
 
 	if (res == ERR_PTR(-ENOENT)) {
 		DPRINTK("Invalid resource handle passed to reource_release\n");
@@ -297,7 +300,7 @@ int resource_release(struct res_handle *res)
 	resp = res->res;
 	DPRINTK("resource_request: Clock-name %s\n", res->usr_name);
 
-	down_srfmutex(&users_list_mutex);
+	spin_lock_irqsave(&users_list_lock, flags);
 
 	if (res->usr_index == -1)
 		goto out_unlock;
@@ -314,10 +317,10 @@ int resource_release(struct res_handle *res)
 	/* Delete the resource */
 	DPRINTK("Deleting resource for %s\n", resp->name);
 	list_del(&cur_user->node);
-	usr_flag[cur_user->index]          = RES_UNUSED;
 	usr_list[cur_user->index].usr_name = NULL;
 	usr_list[cur_user->index].level    = DEFAULT_LEVEL;
 	usr_list[cur_user->index].index    = cur_user->index;
+	usr_flag[cur_user->index]          = RES_UNUSED;
 	res->usr_index = -1;
 
 	/* Decrement the number of users for this domain. */
@@ -330,8 +333,8 @@ int resource_release(struct res_handle *res)
 			target_level = user->level;
 	}
 
+	spin_unlock_irqrestore(&users_list_lock, flags);
 	DPRINTK("New Target level is %d\n", target_level);
-	up_srfmutex(&users_list_mutex);
 
 	if ((target_level == DEFAULT_LEVEL) &&
 			(resp->prcm_id == PRCM_VDD1_CONSTRAINT))
@@ -380,13 +383,14 @@ int resource_release(struct res_handle *res)
 	return 0;
 
 out_unlock:
-	up_srfmutex(&users_list_mutex);
+	spin_unlock_irqrestore(&users_list_lock, flags);
 	return ret;
 }
 
 /* Frees the res_handle structure from the pool */
 void resource_put(struct res_handle *res)
 {
+	unsigned long flags;
 	if (res == ERR_PTR(-ENOENT)) {
 		DPRINTK("Invalid resource handle passed to resource_put\n");
 		return;
@@ -397,15 +401,15 @@ void resource_put(struct res_handle *res)
 				"resource_release\n");
 		return;
 	}
-	down_srfmutex(&res_handle_mutex);
 	DPRINTK("resource_put for %s, index = %d\n",
 			res->res->name, res->res_index);
+	spin_lock_irqsave(&res_handle_lock, flags);
 	handle_flag[res->res_index] = RES_UNUSED;
 	handle_list[res->res_index].res = NULL;
 	handle_list[res->res_index].usr_name = NULL;
 	handle_list[res->res_index].res_index = res->res_index;
 	handle_list[res->res_index].usr_index = -1;
-	up_srfmutex(&res_handle_mutex);
+	spin_unlock_irqrestore(&res_handle_lock, flags);
 }
 
 /* Returns the current level for a resource */
@@ -413,11 +417,12 @@ int resource_get_level(struct res_handle *res)
 {
 	struct shared_resource *resp;
 	int ret;
+	unsigned long flags;
 
 	resp = res->res;
-	down_srfmutex(&res_handle_mutex);
+	spin_lock_irqsave(&res_handle_lock, flags);
 	ret = resp->curr_level;
-	up_srfmutex(&res_handle_mutex);
+	spin_unlock_irqrestore(&res_handle_lock, flags);
 	return ret;
 }
 

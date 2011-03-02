@@ -330,7 +330,7 @@ nonblock:
 		break;
 	case STATE_EP_DISABLED:
 	default:				/* error! */
-		ERROR(nep->novacom->cdev, "novacom: ep %p not available, state %d\n",
+		DBG(nep->novacom->cdev, "novacom: ep %p not available, state %d\n",
 			   nep, nep->state);
 		val = -ENODEV;
 		up (&nep->sem);

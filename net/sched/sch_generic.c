@@ -25,6 +25,9 @@
 #include <linux/rcupdate.h>
 #include <linux/list.h>
 #include <net/pkt_sched.h>
+#ifdef CONFIG_NET_DEBUG_INFO
+#include <linux/net_debug.h>
+#endif
 
 /* Main transmission queue. */
 
@@ -135,12 +138,18 @@ static inline int qdisc_restart(struct net_device *dev)
 	struct Qdisc *q = dev->qdisc;
 	struct sk_buff *skb;
 	int ret = NETDEV_TX_BUSY;
-
+#ifdef CONFIG_NET_DEBUG_INFO
+	struct net_debug_info_t *ndi = &net_debug_info[NDI_QDISC_RESTART];
+#endif
 	/* Dequeue packet */
 	if (unlikely((skb = dev_dequeue_skb(dev, q)) == NULL))
 		return 0;
 
-
+#ifdef CONFIG_NET_DEBUG_INFO
+	ndi->last_time = jiffies;
+	ndi->last_skb = skb;
+	ndi->count++;
+#endif
 	/* And release queue */
 	spin_unlock(&dev->queue_lock);
 
@@ -348,8 +357,19 @@ static inline struct sk_buff_head *prio2list(struct sk_buff *skb,
 static int pfifo_fast_enqueue(struct sk_buff *skb, struct Qdisc* qdisc)
 {
 	struct sk_buff_head *list = prio2list(skb, qdisc);
+#ifdef CONFIG_NET_DEBUG_INFO
+	struct net_debug_info_t *ndi = &net_debug_info[NDI_PFIFO_FAST_ENQUEUE];
 
+	ndi->last_time = jiffies;
+	ndi->last_skb = skb;
+	ndi->count++;
+#endif
+#ifdef CONFIG_NET_DEBUG_INFO
+	if ((ndi->data1 = skb_queue_len(list)) <
+	    (ndi->data2 = qdisc->dev->tx_queue_len)) {
+#else
 	if (skb_queue_len(list) < qdisc->dev->tx_queue_len) {
+#endif
 		qdisc->q.qlen++;
 		return __qdisc_enqueue_tail(skb, qdisc, list);
 	}

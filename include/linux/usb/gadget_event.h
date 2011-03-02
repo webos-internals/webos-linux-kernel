@@ -28,7 +28,9 @@ enum gadget_event_source_type {
 	G_EV_SOURCE_CHARGER = 2,
 };
 
+extern void gadget_event_enable_storage_events(int enable);
 extern void gadget_event_host_connected(int host_connected);
+extern void gadget_event_host_connected_async(int host_connected, unsigned long delay);
 extern void gadget_event_bus_suspended(int bus_suspended);
 extern void gadget_event_media_loaded(int media_loaded);
 extern void gadget_event_media_requested(int media_requested);

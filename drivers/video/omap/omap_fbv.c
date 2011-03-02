@@ -68,8 +68,11 @@
 
 MODULE_SUPPORTED_DEVICE(DEVNAME);
 
+#define FBIO_WAITFORVSYNC	_IOW('F', 0x20, u_int32_t)
 
 #define LOCAL_ID  0x6f6d6676
+
+extern int omap24xxfb_display_wait_for_vsync(void);
 
 /* There are many reasons for implmenting this as a separate module 
  * with limited capabilites as opposed to being more generic.  
@@ -310,6 +313,25 @@ static int omap_fbv_setcolreg(u_int regno,  u_int red, u_int green, u_int blue,
 	return 0;
 }
 
+static int
+omap_fbv_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
+
+{
+	int ret;
+	switch(cmd)
+	{
+		case FBIO_WAITFORVSYNC:
+			/* This ioctl accepts an integer argument to specify a
+			 * display.  We only support one display, so we will
+			 * simply ignore the argument.
+		 	 */
+			omap2_disp_get_dss();
+			ret = omap24xxfb_display_wait_for_vsync();
+			omap2_disp_put_dss();
+			return ret;
+	}
+	return -EINVAL;
+}
 
 static int omap_fbv_pan_display(struct fb_var_screeninfo *var,
 			     struct fb_info *info)
@@ -342,6 +364,9 @@ static int omap_fbv_pan_display(struct fb_var_screeninfo *var,
 
 	if (fbvdev->blank_mode == FB_BLANK_UNBLANK) {
 		omap2_disp_get_dss();
+		
+		// in future determine if really want to wait...
+		wait_for_go(fbvdev);
 	
 		dispc_reg_out(DISPC_VID_BA0(reg_bank), 
 				fbvdev->framebuffer_pan_base_phys);
@@ -354,8 +379,6 @@ static int omap_fbv_pan_display(struct fb_var_screeninfo *var,
 */
 		dispc_reg_merge(DISPC_CONTROL, DISPC_CONTROL_GOLCD,
 				DISPC_CONTROL_GOLCD);
-		// in future determine if really want to wait...
-		wait_for_go(fbvdev);
 		omap2_disp_put_dss();
 	}
 
@@ -400,6 +423,9 @@ static int omap_fbv_blank(int blank_mode, struct fb_info *info)
 	default:
 		if (fbvdev->blank_mode == FB_BLANK_UNBLANK) {
 			fbvdev->blank_mode = blank_mode;
+
+			/* wait until Vsync */
+			omap24xxfb_display_wait_for_vsync();
 			omap2_disp_disable_layer(fbvdev->video_layer);
 			omap2_disp_release_layer(fbvdev->video_layer);
 		}
@@ -465,6 +491,7 @@ static struct fb_ops omap_fbv_ops = {
 	.fb_fillrect	= cfb_fillrect,
 	.fb_copyarea	= cfb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
+	.fb_ioctl	= omap_fbv_ioctl,
 };
 
 

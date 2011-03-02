@@ -158,7 +158,9 @@ static void tcp_event_data_sent(struct tcp_sock *tp,
 		tcp_cwnd_restart(sk, __sk_dst_get(sk));
 
 	tp->lsndtime = now;
-	sk->sk_stamp=ktime_get();
+#ifdef CONFIG_INTSOCK_NETFILTER
+	sk->sk_stamp=ktime_get_uptime();
+#endif
 
 	/* If it is a reply for ato after last received
 	 * packet, enter pingpong mode.
@@ -170,7 +172,9 @@ static void tcp_event_data_sent(struct tcp_sock *tp,
 static inline void tcp_event_ack_sent(struct sock *sk, unsigned int pkts)
 {
 	tcp_dec_quickack_mode(sk, pkts);
-	sk->sk_stamp=ktime_get();
+#ifdef CONFIG_INTSOCK_NETFILTER
+	sk->sk_stamp=ktime_get_uptime();
+#endif
 	inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
 }
 

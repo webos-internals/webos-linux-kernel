@@ -1018,7 +1018,11 @@ static int __init composite_bind(struct usb_gadget *gadget)
 	cdev->bufsiz = USB_BUFSIZ;
 	cdev->driver = composite;
 
-	usb_gadget_set_selfpowered(gadget);
+	/*
+	 * GetStatus request should return "bus powered".
+	 * Otherwise CV Test would not be happy if we draw more than 100mA.
+	 */
+	/* usb_gadget_set_selfpowered(gadget); */
 
 	/* interface and string IDs start at zero via kzalloc.
 	 * we force endpoints to start unassigned; few controller
@@ -1065,42 +1069,6 @@ fail:
 	composite_unbind(gadget);
 	return status;
 }
-
-/*-------------------------------------------------------------------------*/
-
-#ifdef CONFIG_USB_FILE_STORAGE_MEDIASYNC
-void
-composite_mediasync_set(struct usb_gadget *gadget,
-			int vendor_id, int product_id,
-			int composite_version, char *serial_number)
-{
-	struct usb_composite_dev	*cdev = get_gadget_data(gadget);
-
-	if (composite->mediasync_set)
-		composite->mediasync_set(cdev, vendor_id, product_id,
-					 composite_version, serial_number);
-}
-
-void
-composite_mediasync_unset(struct usb_gadget *gadget)
-{
-	struct usb_composite_dev	*cdev = get_gadget_data(gadget);
-
-	if (composite->mediasync_unset)
-		composite->mediasync_unset(cdev);
-}
-
-void
-composite_mediasync_get_defaults(int *vendor_id, int *product_id,
-				 int *composite_version,
-				 char *serial_number)
-{
-	if (composite->mediasync_get_defaults)
-		composite->mediasync_get_defaults(vendor_id, product_id,
-						  composite_version,
-						  serial_number);
-}
-#endif
 
 /*-------------------------------------------------------------------------*/
 

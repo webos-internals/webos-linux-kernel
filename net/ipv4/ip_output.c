@@ -81,6 +81,9 @@
 #include <linux/mroute.h>
 #include <linux/netlink.h>
 #include <linux/tcp.h>
+#ifdef CONFIG_NET_DEBUG_INFO
+#include <linux/net_debug.h>
+#endif
 
 int sysctl_ip_default_ttl __read_mostly = IPDEFTTL;
 
@@ -204,6 +207,13 @@ static inline int ip_skb_dst_mtu(struct sk_buff *skb)
 
 static int ip_finish_output(struct sk_buff *skb)
 {
+#ifdef CONFIG_NET_DEBUG_INFO
+	struct net_debug_info_t *ndi = &net_debug_info[NDI_IP_FINISH_OUTPUT];
+
+	ndi->last_time = jiffies;
+	ndi->last_skb = skb;
+	ndi->count++;
+#endif
 #if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
 	/* Policy lookup after SNAT yielded a new policy */
 	if (skb->dst->xfrm != NULL) {
@@ -279,9 +289,16 @@ int ip_mc_output(struct sk_buff *skb)
 int ip_output(struct sk_buff *skb)
 {
 	struct net_device *dev = skb->dst->dev;
-
+#ifdef CONFIG_NET_DEBUG_INFO
+	struct net_debug_info_t *ndi = &net_debug_info[NDI_IP_OUTPUT];
+#endif
 	IP_INC_STATS(IPSTATS_MIB_OUTREQUESTS);
 
+#ifdef CONFIG_NET_DEBUG_INFO
+	ndi->last_time = jiffies;
+	ndi->last_skb = skb;
+	ndi->count++;
+#endif
 	skb->dev = dev;
 	skb->protocol = htons(ETH_P_IP);
 

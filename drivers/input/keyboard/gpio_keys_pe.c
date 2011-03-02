@@ -326,6 +326,21 @@ gpio_keys_check_keytrigger_event(struct gpio_keys_dev *kdev)
 }
 #endif
 
+
+static void 
+gpio_keys_send_event (struct gpio_keys_dev *kdev, 
+                      struct gpio_keys_button *btn,
+                      unsigned int type, unsigned int code, int value)
+{
+	if( btn->type == EV_KEY) {  /* button event  */
+		printk(KERN_INFO "%s: %s button %s\n", 
+			"gpio-keys", btn->desc,
+			value ? "pressed" : "released");
+	}
+	input_event(kdev->idev, type, code, value );
+}
+
+
 static irqreturn_t 
 gpio_keys_isr(int irq, void *dev_id)
 {
@@ -349,9 +364,11 @@ gpio_keys_isr(int irq, void *dev_id)
 			if (btn->prev_state == btn->state) {
 				/* If there is an interrupt but the state didn't change,
 				 * it probably missed an interrupt so fake the missed event. */
-				input_event(kdev->idev, type, button->code, !(btn->state));
+				gpio_keys_send_event(kdev, button,
+					type, button->code, !(btn->state));
 			}
-			input_event(kdev->idev, type, button->code, !!(btn->state));
+			gpio_keys_send_event(kdev, button, 
+					type, button->code, !!(btn->state));
 			input_sync (kdev->idev);
 		}
 	}
@@ -431,9 +448,9 @@ gpio_keys_register_button ( struct platform_device *pdev, int idx)
 	kdev->pbtns[idx].state = kdev->pbtns[idx].prev_state =
 	            (gpio_get_value(button->gpio) ? 1 : 0) ^ button->active_low;
 
-	input_event(input, button->type, button->code, !!(kdev->pbtns[idx].state));
+	gpio_keys_send_event(kdev, button, 
+		button->type, button->code, !!(kdev->pbtns[idx].state));
 	input_sync(input);
-
 
 	return;
 

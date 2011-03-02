@@ -117,12 +117,17 @@ struct gpio_pin {
 	int     direction;
 	int     act_level;
 	int     def_level;
+	irqreturn_t (*irq_handler)(int irq, void *data);
+	int     irq_config;
 	const char * name;
+	int     irq_handle_mode;
+	int     irqs_during_suspend;
 	struct  pin_attribute attr_gpio;
 	struct  pin_attribute attr_level;
 	struct  pin_attribute attr_active;
 	struct  pin_attribute attr_direction;
-	struct  attribute *attr_ptr_arr[5];
+	struct  pin_attribute attr_irq_handle_mode;
+	struct  attribute *attr_ptr_arr[6];
 };
 
 struct gpio_pin_set_item {
@@ -138,9 +143,43 @@ struct gpio_pin_set {
 };
 
 struct gpio_pin_dev_ctxt {
+	spinlock_t suspend_lock;
 	int    num_sets;
 	struct gpio_pin_set *sets[];	
 };
+
+/*
+ *  Show irq handle mode
+ *
+ *  If AUTO, irq will be handled by irq_handler 
+ */
+static int 
+pin_show_irq_mode ( struct pin_attribute *attr, char  *buf)
+{
+	struct gpio_pin *pin = container_of(attr, struct gpio_pin, attr_irq_handle_mode );
+	return sprintf(buf, "%d\n", pin->irq_handle_mode );
+}
+
+/*
+ *  Set irq handle mode for specified pin
+ *
+ */
+static ssize_t 
+pin_store_irq_mode( struct pin_attribute *attr, const char * buf, size_t count)
+{
+	struct gpio_pin *pin = container_of(attr, struct gpio_pin, attr_irq_handle_mode );
+ 	sscanf(buf, "%d", &pin->irq_handle_mode);
+
+	//reset irq count to detect user suspend and kernel suspend
+	if(pin->irq_handle_mode == IRQ_HANDLE_OFF)
+		pin->irqs_during_suspend = 0;
+
+	printk(KERN_INFO"USERPIN: setting irq handle mode of pin gpio %d to %d\n",
+		pin->gpio, pin->irq_handle_mode);
+
+	return count;
+}
+
 
 /*
  *  Show gpio direction 
@@ -246,6 +285,32 @@ set:
 	return count;
 }
 
+static irqreturn_t pin_irq_handler(int irq, void *data) {
+	int i, j;
+	struct platform_device *pdev = data;
+	struct gpio_pin_dev_ctxt *dev_ctxt;
+	struct gpio_pin_set *pset;
+
+	printk("USERPIN_IRQ_HANDLER: Received irq=%d\n", irq);
+
+	dev_ctxt = platform_get_drvdata ( pdev );
+	if( dev_ctxt == NULL )
+		return 0;
+
+	for( i = 0; i< dev_ctxt->num_sets; i++ ) {
+		pset = dev_ctxt->sets[i];
+		for( j = 0; j < pset->num_pins; j++ ) {
+			if (irq == gpio_to_irq(pset->pins[j].pin.gpio) &&
+					pset->pins[j].pin.irq_handle_mode & IRQ_HANDLE_OFF) {
+
+				pset->pins[j].pin.irqs_during_suspend++;
+
+			}
+		}
+	}
+
+	return IRQ_HANDLED;
+}
 
 
 /*
@@ -260,6 +325,11 @@ pin_set_item_init (struct gpio_pin_set_item *psi, struct user_pin *up)
 	psi->pin.direction = up->direction;
 	psi->pin.act_level = up->act_level;
 	psi->pin.def_level = up->def_level;
+	psi->pin.irq_config = up->irq_config;
+	if(up->irq_config)
+		psi->pin.irq_handler = pin_irq_handler;
+	psi->pin.irq_handle_mode = up->irq_handle_mode;
+	psi->pin.irqs_during_suspend = 0;
 
 	// gpio attr
 	psi->pin.attr_gpio.attr.name  = "gpio";
@@ -285,13 +355,25 @@ pin_set_item_init (struct gpio_pin_set_item *psi, struct user_pin *up)
 	psi->pin.attr_direction.attr.mode  =  0444;
 	psi->pin.attr_direction.attr.owner =  THIS_MODULE;
 	psi->pin.attr_direction.show       = pin_show_direction;
+	
+	// irq handle mode 
+	psi->pin.attr_irq_handle_mode.attr.name  = "irq_handle_mode";
+	psi->pin.attr_irq_handle_mode.attr.mode  =  0644;
+	psi->pin.attr_irq_handle_mode.attr.owner =  THIS_MODULE;
+	psi->pin.attr_irq_handle_mode.show       =  pin_show_irq_mode;
+	psi->pin.attr_irq_handle_mode.store      =  pin_store_irq_mode;
 
 	// setup attr pointer array 
 	psi->pin.attr_ptr_arr[0] = &psi->pin.attr_gpio.attr;
 	psi->pin.attr_ptr_arr[1] = &psi->pin.attr_level.attr;
 	psi->pin.attr_ptr_arr[2] = &psi->pin.attr_active.attr;
 	psi->pin.attr_ptr_arr[3] = &psi->pin.attr_direction.attr;
-	psi->pin.attr_ptr_arr[4] = NULL;
+	if(up->irq_config) {
+		psi->pin.attr_ptr_arr[4] = &psi->pin.attr_irq_handle_mode.attr;
+		psi->pin.attr_ptr_arr[5] = NULL;
+	} else {
+		psi->pin.attr_ptr_arr[4] = NULL;
+	}
 
 	// setup  attribute group
 	psi->attr_grp.name  = psi->pin.name;
@@ -329,7 +411,7 @@ pin_set_alloc ( struct user_pin_set *ups )
  *   Registers specified pin set
  */
 static int 
-pin_set_register( struct gpio_pin_set *s )
+pin_set_register( struct gpio_pin_set *s, struct platform_device *pdev)
 {   
 	int rc, i;
 
@@ -354,6 +436,21 @@ pin_set_register( struct gpio_pin_set *s )
 			printk ( KERN_ERR "Failed to request gpio (%d)\n", 
 			         s->pins[i].pin.gpio );
 			continue;
+		}
+
+		if(s->pins[i].pin.irq_handler != NULL)
+		{
+			printk("USERPINS: Configuring irq for gpio=%d\n",
+				s->pins[i].pin.gpio);
+
+			rc = request_irq(gpio_to_irq(s->pins[i].pin.gpio), s->pins[i].pin.irq_handler,
+					s->pins[i].pin.irq_config, "userpins", pdev);
+
+			if(rc)
+			{
+				printk("USERPINS: Failed to request irq!\n");
+				continue;
+			}
 		}
  
 		if( s->pins[i].pin.direction != -1 ) 
@@ -398,6 +495,11 @@ pin_set_unregister( struct gpio_pin_set *s )
 	/* for all pins */
 	for ( i = 0; s->num_pins; i++ ) 
 	{
+		if(s->pins[i].pin.irq_handler != NULL)
+		{
+			free_irq(gpio_to_irq(s->pins[i].pin.gpio), NULL);
+		}
+	
 		sysfs_remove_group( &s->kobj, &s->pins[i].attr_grp );
 		gpio_free ( s->pins[i].pin.gpio );
 	}
@@ -424,6 +526,7 @@ user_pins_probe  (struct platform_device *pdev)
 		return -ENOMEM; 
 	}
 	dev_ctxt->num_sets = pdata->num_sets;
+	spin_lock_init(&dev_ctxt->suspend_lock);
 
 	for ( i = 0; i < dev_ctxt->num_sets; i++ ) {
 		dev_ctxt->sets[i] = pin_set_alloc ( pdata->sets + i );
@@ -432,7 +535,7 @@ user_pins_probe  (struct platform_device *pdev)
 			         pdata->sets[i].set_name );
 			continue;
 		}
-		rc = pin_set_register( dev_ctxt->sets[i] );
+		rc = pin_set_register( dev_ctxt->sets[i], pdev );
 		if( rc ) {
 			printk ( KERN_ERR "Failed to register pin set '%s'\n",
 			         pdata->sets[i].set_name );
@@ -475,23 +578,58 @@ user_pins_remove (struct platform_device *pdev)
 static int 
 user_pins_suspend(struct platform_device *pdev, pm_message_t state)
 {
-	int i, j;
+	int i, j, irq;
 	struct gpio_pin_dev_ctxt *dev_ctxt;
 	struct gpio_pin_set      *pset;
+	unsigned long flags;
 
 	dev_ctxt = platform_get_drvdata ( pdev );
 	if( dev_ctxt == NULL )
 		return 0;
 
+	spin_lock_irqsave ( &dev_ctxt->suspend_lock, flags );
+
+	/*
+ 	 * The first loop is to check for any pending interrupts from
+ 	 * the time starting IRQ_HANDLE_OFF is set (from user space).
+ 	 * If so, fail the suspend, and let the system to go back up
+ 	 * to userspace.
+ 	 */
+
+	for( i = 0; i < dev_ctxt->num_sets; i++ ) {
+		pset = dev_ctxt->sets[i];
+		for( j = 0; j < pset->num_pins; j++ ) {
+
+			if( pset->pins[j].pin.irq_handle_mode & IRQ_HANDLE_OFF &&
+			    pset->pins[j].pin.irqs_during_suspend != 0 ) {
+
+				pset->pins[j].pin.irqs_during_suspend = 0;
+				spin_unlock_irqrestore ( &dev_ctxt->suspend_lock, flags );
+
+				printk(KERN_INFO"%s: not suspending due to pending irqs for gpio %d\n",
+					__func__, pset->pins[j].pin.gpio);
+
+				return -EBUSY;
+			}
+		}
+	}
+
 	for( i = 0; i < dev_ctxt->num_sets; i++ ) {
 		pset = dev_ctxt->sets[i];
 		for( j = 0; j < pset->num_pins; j++ ) {
 			if( pset->pins[j].pin.options & PIN_WAKEUP_SOURCE ) {
-				int irq = gpio_to_irq(pset->pins[j].pin.gpio );
+				irq = gpio_to_irq(pset->pins[j].pin.gpio );
+
+				if( pset->pins[i].pin.irq_handler != NULL ) {
+					disable_irq(gpio_to_irq(pset->pins[j].pin.gpio));
+				}
 				enable_irq_wake(irq);
 			}
 		}
 	}
+
+	spin_unlock_irqrestore ( &dev_ctxt->suspend_lock, flags );
+
 
 	return 0;
 }
@@ -516,7 +654,11 @@ user_pins_resume(struct platform_device *pdev)
 			if( pset->pins[j].pin.options & PIN_WAKEUP_SOURCE ) {
 				int irq = gpio_to_irq(pset->pins[j].pin.gpio );
 				disable_irq_wake(irq);
+				if( pset->pins[i].pin.irq_handler != NULL ) {
+					enable_irq(gpio_to_irq(pset->pins[j].pin.gpio));
+				}
 			}
+			pset->pins[j].pin.irqs_during_suspend = 0;
 		}
 	}
 

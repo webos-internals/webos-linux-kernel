@@ -652,6 +652,7 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 	struct ff_effect effect;
 	int __user *ip = (int __user *)p;
 	int i, t, u, v, m;
+	unsigned int __user *uip = (unsigned int __user *)p;
 	int error;
 
 	switch (cmd) {
@@ -704,6 +705,15 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 			return -EFAULT;
 
 		return dev->setkeycode(dev, t, v);
+
+	case EVIOCGCOUNTRY:
+		if (put_user(dev->country, uip))
+			return -EFAULT;
+		return 0;
+
+	case EVIOCSCOUNTRY:
+		dev->country = (unsigned int)p;
+		return 0;
 
 	case EVIOCGMONO:
 		if (copy_to_user(p, &client->monotonic_time, sizeof(int)))

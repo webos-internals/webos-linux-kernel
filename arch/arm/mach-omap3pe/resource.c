@@ -1024,8 +1024,10 @@ int __init omap3_resource_init(void)
  ******************************************************************************/
 
 #ifdef CONFIG_PROC_FS
+
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+
 static void *omap_shared_res_start(struct seq_file *m, loff_t * pos)
 {
 	return *pos < 1 ? (void *)1 : NULL;
@@ -1043,13 +1045,20 @@ static void omap_shared_res_stop(struct seq_file *m, void *v)
 
 int omap_shared_res_show(struct seq_file *m, void *v)
 {
-	struct shared_resource **resp;
+	int  i;
+	struct shared_resource *resp;
 	struct users_list *user;
 
-	for (resp = res_list; resp < res_list + ARRAY_SIZE(res_list); resp++) {
+	for (i = 0; i < ARRAY_SIZE(res_list); i++) {
+
+		resp = res_list[i];
+		if (resp == NULL)
+			continue;
+			
 		seq_printf(m, "Number of users for domain %s: %lu\n",
-			   (*resp)->name, (*resp)->no_of_users);
-		list_for_each_entry(user, &((*resp)->users_list), node) {
+			   resp->name, resp->no_of_users);
+
+		list_for_each_entry(user, &(resp->users_list), node) {
 			seq_printf(m, "User: %s  Level: %lu\n",
 				   user->usr_name, user->level);
 		}
@@ -1059,18 +1068,18 @@ int omap_shared_res_show(struct seq_file *m, void *v)
 
 static struct seq_operations omap_shared_res_op = {
 	.start = omap_shared_res_start,
-	.next = omap_shared_res_next,
-	.stop = omap_shared_res_stop,
-	.show = omap_shared_res_show
+	.next  = omap_shared_res_next,
+	.stop  = omap_shared_res_stop,
+	.show  = omap_shared_res_show
 };
 
-static int omap_ck_open(struct inode *inode, struct file *file)
+static int omap_shared_res_open(struct inode *inode, struct file *file)
 {
 	return seq_open(file, &omap_shared_res_op);
 }
 
 static struct file_operations proc_shared_res_ops = {
-	.open		= omap_ck_open,
+	.open		= omap_shared_res_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= seq_release,
@@ -1083,10 +1092,12 @@ int proc_entry_create(void)
 
 	/* Create a proc entry for shared resources */
 	entry = create_proc_entry("shared_resources", 0, NULL);
-	if (entry)
+	if (entry) {
 		entry->proc_fops = &proc_shared_res_ops;
-	else
+	}
+	else {
 		printk(KERN_ERR "create_proc_entry 'shared_resources' failed\n");
+	}
 
 	return 0;
 }

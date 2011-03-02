@@ -26,6 +26,8 @@
 #include <linux/gen_timer.h>
 #include <linux/fastpath_client.h>
 
+#define	EPOCH	1900	/* RTC epoch */
+
 /*
  * Debug
  */
@@ -82,8 +84,8 @@ static int fastpath_state;
 extern gen_timer_stats_t gtimerstats;
 static struct list_head fastpath_client_list_head;
 static unsigned long sleep_offset_old,time_old;
-unsigned long sleep_offset=0;
-
+unsigned long sleep_offset = 0,current_sleep_length = 0;
+ 
 /**
  * Methods.
  */
@@ -112,8 +114,10 @@ static unsigned long rtc_alarm(struct rtc_device *rtc)
 	}
 
 	if (alm.enabled) {
-		INFO("%s: Read current rtc alarm of %02d:%02d:%02d\n", __FUNCTION__,
-				alm.time.tm_hour, alm.time.tm_min, alm.time.tm_sec);
+		INFO("%s: Read current rtc alarm of %04d/%02d/%02d %02d:%02d:%02d\n",
+		     __FUNCTION__,
+		     EPOCH + alm.time.tm_year, alm.time.tm_mon, alm.time.tm_mday,
+		     alm.time.tm_hour, alm.time.tm_min, alm.time.tm_sec);
 
 		rtc_tm_to_time(&alm.time, &alarm_secs);
 	}
@@ -141,8 +145,10 @@ static int rtc_alarm_write(struct rtc_device *rtc, unsigned long next_alarm)
 		goto error;
 	}
 
-	DEBUG("%s: Setting rtc alarm to %02d:%02d:%02d\n", __FUNCTION__,
-		alm.time.tm_hour, alm.time.tm_min, alm.time.tm_sec);
+	DEBUG("%s: Setting rtc alarm to %04d/%02d/%02d %02d:%02d:%02d\n",
+		__FUNCTION__,
+	      EPOCH + alm.time.tm_year, alm.time.tm_mon, alm.time.tm_mday,
+	      alm.time.tm_hour, alm.time.tm_min, alm.time.tm_sec);
 
 error:
 	return retval;
@@ -160,8 +166,9 @@ static unsigned long rtc_now(struct rtc_device *rtc)
 		goto cleanup;
 	}
 
-	DEBUG("%s: Now %02d:%02d:%02d\n", __FUNCTION__,
-			alm.time.tm_hour, alm.time.tm_min, alm.time.tm_sec);
+	DEBUG("%s: Now %04d/%02d/%02d %02d:%02d:%02d\n", __FUNCTION__,
+	      EPOCH + alm.time.tm_year, alm.time.tm_mon, alm.time.tm_mday,
+	      alm.time.tm_hour, alm.time.tm_min, alm.time.tm_sec);
 
 	rtc_tm_to_time(&alm.time, &now);
 
@@ -237,12 +244,16 @@ int fastpath_prepare(void)
 		rtc_time_to_tm(next_alarm, &next_alrm_tm);
 		//rtc_time_to_tm(battery.last_read_sec, &last_batt_tm);
 
-		INFO("%s: RTC = %02d:%02d:%02d, UserAlarm = %02d:%02d:%02d, "
-				 "NextFastWake = %02d:%02d:%02d\n",
-				__FUNCTION__,
-			now_tm.tm_hour, now_tm.tm_min, now_tm.tm_sec,
-			alm_tm.tm_hour, alm_tm.tm_min, alm_tm.tm_sec,
-			next_alrm_tm.tm_hour, next_alrm_tm.tm_min, next_alrm_tm.tm_sec);
+		INFO("%s: RTC = %04d/%02d/%02d %02d:%02d:%02d, "
+				"UserAlarm = %04d/%02d/%02d %02d:%02d:%02d, "
+				"NextFastWake = %04d/%02d/%02d %02d:%02d:%02d\n",
+			__FUNCTION__,
+		     EPOCH + now_tm.tm_year, now_tm.tm_mon, now_tm.tm_mday,
+		     now_tm.tm_hour, now_tm.tm_min, now_tm.tm_sec,
+		     EPOCH + alm_tm.tm_year, alm_tm.tm_mon, alm_tm.tm_mday,
+		     alm_tm.tm_hour, alm_tm.tm_min, alm_tm.tm_sec,
+		     EPOCH + next_alrm_tm.tm_year, next_alrm_tm.tm_mon, next_alrm_tm.tm_mday,
+		     next_alrm_tm.tm_hour, next_alrm_tm.tm_min, next_alrm_tm.tm_sec);
 		if(next_alarm_client)
 			INFO("%s: Alarm set after %lu seconds by fastpath client : %s\n",
 				__FUNCTION__,next_alarm-now,next_alarm_client->name);
@@ -308,7 +319,8 @@ int fastpath_fastsleep(int wakeup_is_rtc)
 		goto end;
 	}
 
-	sleep_offset=sleep_offset_old+(now-time_old);	
+	current_sleep_length = now - time_old;
+	sleep_offset = sleep_offset_old + current_sleep_length;
 	
 	/* Skip battery check and don't re-enter sleep
 	 * if not real RTC wakeup. */

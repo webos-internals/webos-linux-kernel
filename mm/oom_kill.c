@@ -59,6 +59,10 @@ unsigned long badness(struct task_struct *p, unsigned long uptime)
 	unsigned long points, cpu_time, run_time, s;
 	struct mm_struct *mm;
 	struct task_struct *child;
+	int oom_adj = p->signal->oom_adj;
+
+	if (oom_adj == OOM_DISABLE)
+		return 0;
 
 	task_lock(p);
 	mm = p->mm;
@@ -151,15 +155,15 @@ unsigned long badness(struct task_struct *p, unsigned long uptime)
 		points /= 8;
 
 	/*
-	 * Adjust the score by oomkilladj.
+	 * Adjust the score by oom_adj.
 	 */
-	if (p->oomkilladj) {
-		if (p->oomkilladj > 0) {
+	if (oom_adj) {
+		if (oom_adj > 0) {
 			if (!points)
 				points = 1;
-			points <<= p->oomkilladj;
+			points <<= oom_adj;
 		} else
-			points >>= -(p->oomkilladj);
+			points >>= -(oom_adj);
 	}
 
 #ifdef DEBUG
@@ -249,7 +253,7 @@ static struct task_struct *select_bad_process(unsigned long *ppoints)
 			*ppoints = ULONG_MAX;
 		}
 
-		if (p->oomkilladj == OOM_DISABLE)
+		if (p->signal->oom_adj == OOM_DISABLE)
 			continue;
 
 		points = badness(p, uptime.tv_sec);
@@ -262,7 +266,7 @@ static struct task_struct *select_bad_process(unsigned long *ppoints)
 	return chosen;
 }
 
-/**
+/*
  * Send SIGKILL to the selected  process irrespective of  CAP_SYS_RAW_IO
  * flag though it's unlikely that  we select a process with CAP_SYS_RAW_IO
  * set.
@@ -311,17 +315,8 @@ static int oom_kill_task(struct task_struct *p)
 	 * change to NULL at any time since we do not hold task_lock(p).
 	 * However, this is of no concern to us.
 	 */
-
-	if (mm == NULL)
+	if (!mm || p->signal->oom_adj == OOM_DISABLE)
 		return 1;
-
-	/*
-	 * Don't kill the process if any threads are set to OOM_DISABLE
-	 */
-	do_each_thread(g, q) {
-		if (q->mm == mm && q->oomkilladj == OOM_DISABLE)
-			return 1;
-	} while_each_thread(g, q);
 
 	__oom_kill_task(p, 1);
 
@@ -345,8 +340,9 @@ static int oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 
 	if (printk_ratelimit()) {
 		printk(KERN_WARNING "%s invoked oom-killer: "
-			"gfp_mask=0x%x, order=%d, oomkilladj=%d\n",
-			current->comm, gfp_mask, order, current->oomkilladj);
+			"gfp_mask=0x%x, order=%d, oom_adj=%d\n",
+			current->comm, gfp_mask, order,
+			current->signal->oom_adj);
 		dump_stack();
 		show_mem();
 	}

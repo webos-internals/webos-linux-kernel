@@ -214,13 +214,13 @@ struct itimerval {
 
 /*
  * The IDs of the various system clocks (for POSIX.1b interval timers):
+ *
+ * For palm-specific system clocks, see <palm/palm_time.h>.
  */
 #define CLOCK_REALTIME			0
 #define CLOCK_MONOTONIC			1
 #define CLOCK_PROCESS_CPUTIME_ID	2
 #define CLOCK_THREAD_CPUTIME_ID		3
-#define CLOCK_NETWORK    		4
-#define	CLOCK_UPTIME			5	/* Real seconds since boot */
 
 /*
  * The IDs of various hardware clocks:

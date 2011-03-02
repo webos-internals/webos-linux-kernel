@@ -4,6 +4,7 @@
 
 #include <asm/arch/mux.h>
 
+#include "twl4030-audio.h"
 #include "board-audio.h"
 
 static struct platform_device joplin_audio_devices[] = {
@@ -62,6 +63,7 @@ int sirloin_btsco_configure(unsigned int sample_rate, unsigned int data_width,
 int sirloin_btsco_enable(bool enable)
 {
 	if (enable) {
+		twl4030_audio_codec_phonecall_enable(1);
 		omap_cfg_reg("AF6_3430_MCBSP3_DX");
 		omap_cfg_reg("AE6_3430_MCBSP3_DR");
 		omap_cfg_reg("AF5_3430_MCBSP3_CLKX");
@@ -71,6 +73,7 @@ int sirloin_btsco_enable(bool enable)
 		omap_cfg_reg("AE6_3430_GPIO_141");
 		omap_cfg_reg("AF5_3430_GPIO_142");
 		omap_cfg_reg("AE5_3430_GPIO_143");
+		twl4030_audio_codec_phonecall_enable(0);
 	}
 
 	return 0;

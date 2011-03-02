@@ -808,7 +808,9 @@ static void phy_suspend_work(struct work_struct *work)
 		spin_unlock_irqrestore(&twl->lock, flags);
 		printk(KERN_INFO "%s: musb is still active after %d retries\n",
 		       __func__, n);
-		gadget_event_host_connected(0); /* musb hasn't done this */
+#ifdef CONFIG_USB_GADGET_EVENT
+		gadget_event_host_connected_async(0, HZ); /* musb hasn't done this */
+#endif
 		phy_suspend(twl);
 		return;
 	}
@@ -984,9 +986,6 @@ static void vbus_draw_work(struct work_struct *work)
 					       vbus_draw_work);
 	if (twl->mA == CONFIGURED_MA) {
 		charger_cancel_detection();
-		gadget_event_host_connected(1);
-	} else if (twl->mA == 0) {
-		gadget_event_host_connected(0);
 	}
 #ifdef CONFIG_USB_GADGET_EVENT
 	gadget_event_power_state_changed(G_EV_SOURCE_BUS, twl->mA);

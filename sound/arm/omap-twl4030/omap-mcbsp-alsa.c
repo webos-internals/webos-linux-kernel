@@ -271,7 +271,8 @@ static int omap_mcbsp_alsa_pcm_mcbsp_configure(
 	r = omap2_mcbsp_interface_reset(mcbsp->mcbsp_id);
 	if (unlikely(r)) {
 		printk(KERN_ERR
-				"OMAP-AUDIO: failed to reset mcbsp%d\n", mcbsp->mcbsp_id);
+			"OMAP-AUDIO: failed to reset mcbsp%d\n", 
+			mcbsp->mcbsp_id);
 		return r;
 	}
 
@@ -330,8 +331,8 @@ static int omap_mcbsp_alsa_pcm_mcbsp_configure(
 
 err_p:
 	printk(KERN_ERR
-			"OMAP-AUDIO: failed to configure mcbsp%d (line %d)\n",
-			mcbsp->mcbsp_id, line);
+		"OMAP-AUDIO: failed to configure mcbsp%d (line %d)\n",
+		mcbsp->mcbsp_id, line);
 	return r;
 }
 
@@ -463,10 +464,11 @@ static int omap_mcbsp_alsa_pcm_hw_params(struct snd_pcm_substream *ss,
 				"mcbsp%d already acquired\n", mcbsp->mcbsp_id);
 	} else {
 		r = omap2_mcbsp_request_interface(mcbsp->mcbsp_id,
-						OMAP2_MCBSP_SLAVE, mcbsp->mcbsp_clk_src);
+				OMAP2_MCBSP_SLAVE, mcbsp->mcbsp_clk_src);
 		if (unlikely(r)) {
 			printk(KERN_ERR
-					"OMAP-AUDIO: failed to acquire mcbsp%d\n", mcbsp->mcbsp_id);
+				"OMAP-AUDIO: failed to acquire mcbsp%d\n", 
+				mcbsp->mcbsp_id);
 			return r;
 		}
 
@@ -476,8 +478,9 @@ static int omap_mcbsp_alsa_pcm_hw_params(struct snd_pcm_substream *ss,
 				OMAP2_MCBSP_IRQEN_XOVFL | OMAP2_MCBSP_IRQEN_XUNDFL |
 				OMAP2_MCBSP_IRQEN_ROVFL | OMAP2_MCBSP_IRQEN_RUNDFL);
 		if (unlikely(r)) {
-			printk(KERN_ERR "OMAP-AUDIO: failed to register isr for mcbsp%d\n", 
-					mcbsp->mcbsp_id);
+			printk(KERN_ERR 
+				"OMAP-AUDIO: failed to register isr for mcbsp%d\n", 
+				mcbsp->mcbsp_id);
 			goto err;
 		}
 
@@ -624,27 +627,24 @@ static int omap_mcbsp_alsa_pcm_trigger(struct snd_pcm_substream *ss, int cmd)
 					r = omap2_mcbsp_stop_datarx(chip->mcbsp->mcbsp_id);
 					if (unlikely(r)) {
 						printk(KERN_ERR 
-								"OMAP-AUDIO: failed to stop mcbsp%d rx\n",
-								chip->mcbsp->mcbsp_id);
+							"OMAP-AUDIO: failed to stop mcbsp%d rx\n",
+							chip->mcbsp->mcbsp_id);
 					}
 					omap2_mcbsp_set_rrst(chip->mcbsp->mcbsp_id,
 							OMAP2_MCBSP_RRST_DISABLE);
 				} else {
-				  if (chip->c_ops && chip->c_ops->mute) { /* currently only defined in twl4030-i2s */
-						chip->c_ops->mute(true);
-					}
 					r = omap2_mcbsp_stop_datatx(chip->mcbsp->mcbsp_id);
 					if (unlikely(r)) {
 						printk(KERN_ERR 
-								"OMAP-AUDIO: failed to stop mcbsp%d tx\n",
-								chip->mcbsp->mcbsp_id);
+							"OMAP-AUDIO: failed to stop mcbsp%d tx\n",
+							chip->mcbsp->mcbsp_id);
 					}
 					omap2_mcbsp_set_xrst(chip->mcbsp->mcbsp_id,
 							OMAP2_MCBSP_XRST_DISABLE);
 				}
 			} else {
 				TRACEF(4, OMAP_ALSA_TRACE_DRIVER,
-						"mcbsp%d not acquired\b", chip->mcbsp->mcbsp_id);
+					"mcbsp%d not acquired\b", chip->mcbsp->mcbsp_id);
 			}
 
 			spin_unlock_irqrestore(&as->dma_lock, flags);
@@ -861,7 +861,8 @@ static int omap_mcbsp_alsa_drv_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_PM
-static int omap_mcbsp_alsa_drv_suspend(struct platform_device *pdev, pm_message_t mesg)
+static int 
+omap_mcbsp_alsa_drv_suspend(struct platform_device *pdev, pm_message_t mesg)
 {
 	struct snd_card             *card;
 	struct omap_mcbsp_alsa_chip *chip;
@@ -897,7 +898,8 @@ static int omap_mcbsp_alsa_drv_suspend(struct platform_device *pdev, pm_message_
 	return 0;
 }
 
-static int omap_mcbsp_alsa_drv_resume(struct platform_device *pdev)
+static int 
+omap_mcbsp_alsa_drv_resume(struct platform_device *pdev)
 {
 	struct snd_card             *card;
 	struct omap_mcbsp_alsa_chip *chip;

@@ -100,7 +100,7 @@ config SECURITY_ROOTPLUG
 
 	  See <http://www.linuxjournal.com/article.php?sid=6279> for
 	  more information about this module.
-	  
+
 	  If you are unsure how to answer this question, answer N.
 
 config SECURITY_LOWMEM

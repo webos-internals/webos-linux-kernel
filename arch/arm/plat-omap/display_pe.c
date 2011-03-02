@@ -3243,6 +3243,11 @@ static void omap2_reset_venc(void)
 
 /*
  * Enables an IRQ in DSPC_IRQENABLE.
+ *
+ * WARNING: It is assumed that each isr routine installed is unique
+ * so if the same routine must be installed more then one time - it 
+ * should be handled externally.
+ *
  */
 int omap2_disp_irqenable(omap2_disp_isr_t isr, unsigned int mask)
 {
@@ -3368,18 +3373,29 @@ int omap2_disp_unregister_isr(omap2_disp_isr_t isr)
 static irqreturn_t
 omap2_disp_master_isr(int irq, void *arg, struct pt_regs *regs)
 {
-	unsigned long dispc_irqstatus = dispc_reg_in(DISPC_IRQSTATUS);
+	unsigned long dispc_irqstatus;
 	int i;
 
-	for (i = 0; i < MAX_ISR_NR; i++) {
-		if (registered_isr[i].isr == NULL)
-			continue;
-		if (registered_isr[i].mask & dispc_irqstatus)
-			registered_isr[i].isr(registered_isr[i].arg, regs);
+	/* Enable DSS clocks */
+	omap2_disp_get_dss();
+
+	/* get irq status */
+	dispc_irqstatus = dispc_reg_in(DISPC_IRQSTATUS);
+
+	if (dispc_irqstatus) {
+		for (i = 0; i < MAX_ISR_NR; i++) {
+			if (registered_isr[i].isr == NULL)
+				continue;
+			if (registered_isr[i].mask & dispc_irqstatus)
+				registered_isr[i].isr(registered_isr[i].arg, regs);
+		}
+
+		/* ack the interrupt */
+		dispc_reg_out(DISPC_IRQSTATUS, dispc_irqstatus);
 	}
 
-	/* ack the interrupt */
-	dispc_reg_out(DISPC_IRQSTATUS, dispc_irqstatus);
+	/* Disable DSS clocks */
+	omap2_disp_put_dss();
 
 	return IRQ_HANDLED;
 }

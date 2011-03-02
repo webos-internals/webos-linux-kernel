@@ -56,3 +56,5 @@ obj-$(CONFIG_NET_9P)		+= 9p/
 ifeq ($(CONFIG_NET),y)
 obj-$(CONFIG_SYSCTL)		+= sysctl_net.o
 endif
+
+obj-$(CONFIG_NET_DEBUG_INFO)	+= net_debug.o

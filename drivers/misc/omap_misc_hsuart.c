@@ -2793,7 +2793,8 @@ hsuart_probe ( struct platform_device  *dev )
 	int rc = 0;
 	struct hsuart_platform_data *pdata;
 	struct dev_ctxt *ctxt = NULL;
-	
+	unsigned long flags;
+
 	pdata = dev->dev.platform_data;
 	if( pdata == NULL ) {
 		printk (KERN_ERR "%s: no platform data\n", DRIVER );
@@ -2894,7 +2895,9 @@ hsuart_probe ( struct platform_device  *dev )
 	/* Stop RX timer even though it's not running at this point.  Stopping
 	 * the timer explicitely here will turn off its clocks to save power.
 	 */
+	spin_lock_irqsave ( &ctxt->lock, flags );
 	hsuart_rx_timer_stop ( ctxt );
+	spin_unlock_irqrestore ( &ctxt->lock, flags );
 
 	/* Release the clocks. At this point there should be only one ref on
 	 * the clocks from early boot code so this should turn the clocks off.

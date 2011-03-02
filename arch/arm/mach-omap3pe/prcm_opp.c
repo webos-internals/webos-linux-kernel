@@ -136,6 +136,38 @@ u32 prcm_get_current_vdd2_opp(void)
 	return current_vdd2_opp;
 }
 
+u32 omap3_max_vdd1_opp(void)
+{
+	return 5;
+
+	/* This function call is used in the bridgedriver.
+	 *
+	 * The code below is from a newer TI kernel drop and returns the max
+	 * OPP based on silicon revision and part binning. We are not using
+	 * this code right now but are keeping it here for future reference.
+	 *
+	 * For our kernel we are always returning 5 as max OPP.
+	 */
+#if 0
+	u32 sku_id;
+
+	if (is_sil_rev_less_than(OMAP3430_REV_ES3_1) ||
+		is_sil_rev_equal_to(OMAP3430_REV_ES3_1))
+		return 5;
+
+	sku_id = omap_readl(CONTROL_PRODUCTION_ID_SKU_ID) & 0xf;
+	if (sku_id == 0)
+		return 5;
+	else if (sku_id == 1)
+		return 6;
+	else if (sku_id >= 2)
+		return 7;
+	return 5;
+#endif
+}
+EXPORT_SYMBOL(omap3_max_vdd1_opp);
+
+
 /******************************************************************************
  *
  * Table of DPLL register definitions.
@@ -195,7 +227,6 @@ static struct dpll_param iva_dpll_param[5][PRCM_NO_VDD1_OPPS] = {
 	 {0x0B4, 0x05, 0x07, 0x01}, {0x0C6, 0x05, 0x07, 0x01},
 	/* OPP5 (430 Mhz) */
 	 {0x0D7, 0x05, 0x07, 0x01} },
-#if 0
 	/* 13M values */
 	/* OPP1(90 Mhz) and OPP2(180 Mhz)*/
 	{{0x168, 0x0C, 0x03, 0x04}, {0x168, 0x0C, 0x03, 0x02},
@@ -203,20 +234,6 @@ static struct dpll_param iva_dpll_param[5][PRCM_NO_VDD1_OPPS] = {
 	 {0x168, 0x0C, 0x03, 0x01}, {0x190, 0x0C, 0x03, 0x01},
 	/* OPP5 (430 Mhz) */
 	 {0x1AE, 0x0C, 0x03, 0x01} },
-#else
-	/* WORKAROUND for mystery bug. REMOVE ME once IVA2 issue has been
-	 * fixed.
-	 *
-	 * Keep the IVA2 @ 360 MHz for OPP3/4/5.
-	 */
-	/* 13M values */
-	/* OPP1(90 Mhz) and OPP2(180 Mhz)*/
-	{{0x168, 0x0C, 0x03, 0x04}, {0x168, 0x0C, 0x03, 0x02},
-	/* OPP3(360 Mhz) and OPP4(360 Mhz)*/
-	 {0x168, 0x0C, 0x03, 0x01}, {0x168, 0x0C, 0x03, 0x01},
-	/* OPP5 (360 Mhz) */
-	 {0x168, 0x0C, 0x03, 0x01} },
-#endif
 	/* 19.2M values */
 	/* OPP1(90 Mhz) and OPP2(180 Mhz)*/
 	{{0x0E1, 0x0B, 0x06, 0x04}, {0x0E1, 0x0B, 0x06, 0x02},
@@ -1523,3 +1540,5 @@ err_out:
 
 	return -1;
 }
+
+

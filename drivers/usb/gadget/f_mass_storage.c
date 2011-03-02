@@ -1334,20 +1334,18 @@ static int do_inquiry(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	if (!mediasync_mode) {
 		/* REVISIT - should use fsg->vendor */
 		static char vendor_id[] = "Palm    ";
-		/* REVISIT - should be set somewhere else */
-#if defined(CONFIG_MACH_SIRLOIN)
-		static char product_id[] = "Pre             ";
-#elif defined(CONFIG_MACH_CHUCK)
-		static char product_id[] = "Chuck           ";
-#else
-		static char product_id[] = "Unknown         ";
-#endif
+		char product_id[16+1];
+
 		memset(buf, 0, 8);	/* Non-removable, direct-access device */
 		buf[1] = 0x80;		/* removable */
 		buf[2] = 2;		/* ANSI SCSI level 2 */
 		buf[3] = 2;		/* SCSI-2 INQUIRY data format */
 		buf[4] = 31;		/* Additional length */
 					/* No special options */
+
+		snprintf(product_id, sizeof(product_id), "%-16s",
+			 CONFIG_USB_ROCKHOPPER_PRODUCT_STRING);
+
 		sprintf(buf + 8, "%-8s%-16s%04x", vendor_id, product_id,
 			fsg->release);
 		return 36;
@@ -1406,7 +1404,7 @@ static int do_inquiry(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 #else /* CONFIG_USB_FILE_STORAGE_MEDIASYNC */
 	u8	*buf = (u8 *) bh->buf;
 	static char vendor_id[] = "Palm    ";
-	static char product_id[] = "Pre             ";
+	char product_id[16+1];
 
 	if (!fsg->curlun) {		/* Unsupported LUNs are okay */
 		fsg->bad_lun_okay = 1;
@@ -1422,6 +1420,10 @@ static int do_inquiry(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	buf[3] = 2;		/* SCSI-2 INQUIRY data format */
 	buf[4] = 31;		/* Additional length */
 				/* No special options */
+
+	snprintf(product_id, sizeof(product_id), "%-16s",
+		 CONFIG_USB_ROCKHOPPER_PRODUCT_STRING);
+
 	sprintf(buf + 8, "%-8s%-16s%04x", vendor_id, product_id,
 		fsg->release);
 	return 36;
@@ -1659,8 +1661,12 @@ static int do_prevent_allow(struct fsg_dev *fsg)
 		return -EINVAL;
 	}
 
-	if (curlun->prevent_medium_removal && !prevent)
-		fsync_sub(curlun);
+	/*
+	 * This sync causes a command timeout on Windows XP.
+	 *
+	 * if (curlun->prevent_medium_removal && !prevent)
+	 * fsync_sub(curlun);
+	 */
 	curlun->prevent_medium_removal = prevent;
 	return 0;
 }
@@ -3411,6 +3417,10 @@ fsg_function_unbind(struct usb_configuration *c, struct usb_function *f)
 	/* Free the data buffers */
 	for (i = 0; i < NUM_BUFFERS; ++i)
 		kfree(fsg->buffhds[i].buf);
+
+#ifdef CONFIG_USB_GADGET_EVENT
+	gadget_event_enable_storage_events(0);
+#endif
 }
 
 static int __init
@@ -3427,6 +3437,9 @@ fsg_function_bind(struct usb_configuration *c, struct usb_function *f)
 
 	FSG_DBG(fsg, "fsg_function_bind\n");
 
+#ifdef CONFIG_USB_GADGET_EVENT
+	gadget_event_enable_storage_events(1);
+#endif
 	dev_attr_file.attr.mode = 0644;
 
 	/* Find out how many LUNs there should be */
@@ -3609,7 +3622,9 @@ static int fsg_function_set_alt_async(struct usb_function *f,
 	FSG_DBG(fsg, "fsg_function_set_alt_async intf: %d alt: %d\n", intf, alt);
 	fsg->new_config = 1;
 	raise_exception(fsg, FSG_STATE_CONFIG_CHANGE);
-
+#ifdef CONFIG_USB_GADGET_EVENT
+	gadget_event_host_connected_async(1, 0);
+#endif
 	return 0;
 }
 
@@ -3619,6 +3634,17 @@ static void fsg_function_disable(struct usb_function *f)
 	FSG_DBG(fsg, "fsg_function_disable\n");
 	fsg->new_config = 0;
 	raise_exception(fsg, FSG_STATE_DISCONNECT);
+#ifdef CONFIG_USB_GADGET_EVENT
+	gadget_event_host_connected_async(0, HZ);
+#endif
+}
+
+static void fsg_function_suspend(struct usb_function *f)
+{
+}
+
+static void fsg_function_resume(struct usb_function *f)
+{
 }
 
 int __init mass_storage_function_add(struct usb_configuration *c, int nluns)
@@ -3660,6 +3686,8 @@ int __init mass_storage_function_add(struct usb_configuration *c, int nluns)
 	fsg->function.set_alt = NULL;
 	fsg->function.set_alt_async = fsg_function_set_alt_async;
 	fsg->function.disable = fsg_function_disable;
+	fsg->function.suspend = fsg_function_suspend;
+	fsg->function.resume = fsg_function_resume;
 
 	rc = usb_add_function(c, &fsg->function);
 	if (rc != 0)

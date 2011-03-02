@@ -294,6 +294,14 @@
 #define CSCRCR_MASK		(0x3FF << 0)
 #define	CSCRCR(val)		((0x3FF & (val)) << 0)
 
+#define PRV_CSC_OFFSET		PRV_REG(0x70)
+#define CSC_YOFST_MASK		(0xFF << 16)
+#define	CSC_YOFST(val)		((0xFF & (val)) << 16)
+#define CSC_OFSTCB_MASK		(0xFF << 8)
+#define	CSC_OFSTCB(val)		((0xFF & (val)) << 8)
+#define CSC_OFSTCR_MASK		(0xFF << 0)
+#define	CSC_OFSTCR(val)		((0xFF & (val)) << 0)
+
 #define PRV_CNT_BRT		PRV_REG(0x74)
 #define CNT_MASK		(0xFF << 8)
 #define	CNT(val)		((0xFF & (val)) << 8)
@@ -1114,6 +1122,20 @@ __omap34xx_isp_video_config(struct omap34xx_isp_video_data *data)
 			data->yuv.csc2_cscrcr < 0 ? "-" : "",
 			S10Q8I(data->yuv.csc2_cscrcr),
 			S10Q8F(data->yuv.csc2_cscrcr));
+
+		val = CSC_YOFST(data->yuv.csc_offset_yofst);
+		val |= CSCGCR(data->yuv.csc_offset_ofstcb);
+		val |= CSCRCR(data->yuv.csc_offset_ofstcr);
+		bits = CSC_YOFST_MASK | CSC_OFSTCB_MASK | CSC_OFSTCR_MASK;
+		omap_masked_writel(PRV_CSC_OFFSET, val, bits);
+		SPEW(2, "PRV_CSC_OFFSET: CSC_YOFST=%s%u/256 CSC_OFSTCB=%s%u/256"
+			" CSC_OFSTCR=%s%u/256\n",
+			data->yuv.csc_offset_yofst < 0 ? "-" : "",
+			data->yuv.csc_offset_yofst,
+			data->yuv.csc_offset_ofstcb < 0 ? "-" : "",
+			data->yuv.csc_offset_ofstcb,
+			data->yuv.csc_offset_ofstcr < 0 ? "-" : "",
+			data->yuv.csc_offset_ofstcr);
 	}
 	if (CONFIG_PRV_DCOR & data->flags) {
 		val = DCOR_METHOD(data->dcor.pcr_dcor_method);

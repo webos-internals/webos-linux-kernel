@@ -28,6 +28,8 @@
 
 #define CONFIG_USB_ETH_RNDIS /* REVISIT - always use rndis */
 
+#define OLD_PID_COMPAT /* hack until novacomd understands the new PIDs */
+
 #include "u_ether.h"
 #include "u_serial.h"
 #include "gadget_chips.h"
@@ -104,58 +106,72 @@ extern char *nduid_string_get(void);
 
 /*-------------------------------------------------------------------------*/
 
-#define RH_CONFIG_RETAIL	1
-#define RH_CONFIG_DEBUG		2
-#define RH_CONFIG_PASSTHRU	3
-#define RH_CONFIG_DEV_1		4
-#define RH_CONFIG_DEV_2		5
+#define RH_CONFIG_UMS			1
+#define RH_CONFIG_UMS_NOVACOM		2
+#define RH_CONFIG_PASSTHRU		3
+#define RH_CONFIG_USBNET_PASSTHRU	4
+#define RH_CONFIG_USBNET_UMS_NOVACOM	5
+#define RH_CONFIG_PASSTHRU_NOVACOM	6
 
-#define RH_CONFIG_MAX		6
+#define RH_CONFIG_SENTINEL		7
 
-#define RH_FUNC_RNDIS		(1<<0)
+#define RH_FUNC_RNDIS		(1<<0)	/* this needs to be the first */
 #define RH_FUNC_ACM		(1<<1)
 #define RH_FUNC_SERIAL		(1<<2)
 #define RH_FUNC_MASS_STORAGE	(1<<3)
 #define RH_FUNC_NOVACOM		(1<<4)
 
 static unsigned short rh_func_bitmap[] = {
-	[RH_CONFIG_DEV_1] = RH_FUNC_RNDIS | RH_FUNC_ACM | RH_FUNC_SERIAL,
-	[RH_CONFIG_DEV_2] = RH_FUNC_RNDIS | RH_FUNC_MASS_STORAGE | RH_FUNC_NOVACOM,
-	[RH_CONFIG_DEBUG] = RH_FUNC_MASS_STORAGE | RH_FUNC_NOVACOM,
-	[RH_CONFIG_RETAIL] = RH_FUNC_MASS_STORAGE,
+	[RH_CONFIG_UMS] = RH_FUNC_MASS_STORAGE,
+	[RH_CONFIG_UMS_NOVACOM] = RH_FUNC_MASS_STORAGE | RH_FUNC_NOVACOM,
 	[RH_CONFIG_PASSTHRU] = RH_FUNC_ACM | RH_FUNC_SERIAL,
-	[RH_CONFIG_MAX] = 0,
+	[RH_CONFIG_USBNET_PASSTHRU] =
+				RH_FUNC_RNDIS | RH_FUNC_ACM | RH_FUNC_SERIAL,
+	[RH_CONFIG_USBNET_UMS_NOVACOM] =
+			RH_FUNC_RNDIS | RH_FUNC_MASS_STORAGE | RH_FUNC_NOVACOM,
+	[RH_CONFIG_PASSTHRU_NOVACOM] =
+		RH_FUNC_ACM | RH_FUNC_SERIAL | RH_FUNC_NOVACOM,
+	[RH_CONFIG_SENTINEL] = 0,
 };
 
 #define RH_OPT_NO_SERIAL_NUMBER	(1<<0)
 
 static unsigned char rh_option[] = {
-	[RH_CONFIG_DEV_1] = RH_OPT_NO_SERIAL_NUMBER,
 	[RH_CONFIG_PASSTHRU] = RH_OPT_NO_SERIAL_NUMBER,
-	[RH_CONFIG_MAX] = 0,
+	[RH_CONFIG_USBNET_PASSTHRU] = RH_OPT_NO_SERIAL_NUMBER,
+	[RH_CONFIG_PASSTHRU_NOVACOM] = RH_OPT_NO_SERIAL_NUMBER,
+	[RH_CONFIG_SENTINEL] = 0,
 };
 
 static unsigned short rh_product_id[] = {
-	[RH_CONFIG_DEV_1] = CONFIG_USB_ROCKHOPPER_PID_DEV_1,
-	[RH_CONFIG_DEV_2] = CONFIG_USB_ROCKHOPPER_PID_DEV_2,
-	[RH_CONFIG_DEBUG] = CONFIG_USB_ROCKHOPPER_PID_DEBUG,
-	[RH_CONFIG_RETAIL] = CONFIG_USB_ROCKHOPPER_PID_RETAIL,
-	[RH_CONFIG_PASSTHRU] = CONFIG_USB_ROCKHOPPER_PID_PASSTHRU,
-	[RH_CONFIG_MAX] = 0,
+	[RH_CONFIG_UMS] = CONFIG_USB_ROCKHOPPER_PID_BASE +
+			(0x4 << CONFIG_USB_ROCKHOPPER_PID_SHIFT),
+	[RH_CONFIG_UMS_NOVACOM] = CONFIG_USB_ROCKHOPPER_PID_BASE +
+			(0x2 << CONFIG_USB_ROCKHOPPER_PID_SHIFT),
+	[RH_CONFIG_PASSTHRU] = CONFIG_USB_ROCKHOPPER_PID_BASE +
+			(0x3 << CONFIG_USB_ROCKHOPPER_PID_SHIFT),
+	[RH_CONFIG_USBNET_PASSTHRU] = CONFIG_USB_ROCKHOPPER_PID_BASE +
+			(0x5 << CONFIG_USB_ROCKHOPPER_PID_SHIFT),
+	[RH_CONFIG_USBNET_UMS_NOVACOM] = CONFIG_USB_ROCKHOPPER_PID_BASE +
+			(0x6 << CONFIG_USB_ROCKHOPPER_PID_SHIFT),
+	[RH_CONFIG_PASSTHRU_NOVACOM] = CONFIG_USB_ROCKHOPPER_PID_BASE +
+			(0x7 << CONFIG_USB_ROCKHOPPER_PID_SHIFT),
+	[RH_CONFIG_SENTINEL] = 0,
 };
 
 static char *rh_config_description[] = {
-	[RH_CONFIG_DEV_1] = "Dev 1",
-	[RH_CONFIG_DEV_2] = "Dev 2",
-	[RH_CONFIG_DEBUG] = "Debug",
-	[RH_CONFIG_RETAIL] = "Retail",
-	[RH_CONFIG_PASSTHRU] = "Passthru",
-	[RH_CONFIG_MAX] = NULL,
+	[RH_CONFIG_UMS] = "ums",
+	[RH_CONFIG_UMS_NOVACOM] = "ums+novcom",
+	[RH_CONFIG_PASSTHRU] = "passthru",
+	[RH_CONFIG_USBNET_PASSTHRU] = "usbnet+passthru",
+	[RH_CONFIG_USBNET_UMS_NOVACOM] = "usbnet+ums+novacom",
+	[RH_CONFIG_PASSTHRU_NOVACOM] = "passthru+novacom",
+	[RH_CONFIG_SENTINEL] = NULL,
 };
 
-static unsigned int config_num = RH_CONFIG_RETAIL; /* 1 */
+static unsigned int config_num = RH_CONFIG_UMS; /* 1 */
 module_param(config_num, uint, S_IRUGO);
-MODULE_PARM_DESC(config_num, "config number, default=1 (RETAIL)");
+MODULE_PARM_DESC(config_num, "config number, default=1 (UMS)");
 
 static int use_acm = false;
 module_param(use_acm, bool, 0);
@@ -331,6 +347,17 @@ static int __init rockhopper_bind(struct usb_composite_dev *cdev)
 	/* set up device descriptor */
 	device_desc.idVendor = cpu_to_le16(CONFIG_USB_ROCKHOPPER_VID);
 	device_desc.idProduct = cpu_to_le16(rh_product_id[config_num]);
+#ifdef OLD_PID_COMPAT
+	/* hack until novacomd understands the new PIDs */
+	switch (device_desc.idProduct) {
+	case 0x8006:
+		device_desc.idProduct = 0x101; /* castle usbnet+novacom */
+		break;
+	case 0x8016:
+		device_desc.idProduct = 0x103; /* pixie usbnet+novacom */
+		break;
+	}
+#endif
 	device_desc.bNumConfigurations = 1;
 
 	gcnum = usb_gadget_controller_number(gadget);

@@ -278,7 +278,6 @@ try_format (struct v4l2_pix_format *pix)
 	case V4L2_PIX_FMT_YUYV:
 	case V4L2_PIX_FMT_UYVY:
 	default:
-		pix->colorspace = V4L2_COLORSPACE_JPEG;
 		bpp = YUYV_BPP;
 	break;
 	case V4L2_PIX_FMT_RGB565:

@@ -30,6 +30,7 @@
 #include <linux/notifier.h>
 #include <linux/fs.h>
 #include <linux/reboot.h>
+#include <linux/sched.h>
 
 #undef  MODDEBUG
 //#define MODDEBUG  1
@@ -73,6 +74,8 @@ hardkey_reboot_timer_cb (unsigned long data)
 {
 	(void) data;
 	
+	show_state_filter(0);
+
 	printk( KERN_INFO "Initiate hardkey triggered Emergency reboot\n");
 	emergency_restart();
 }

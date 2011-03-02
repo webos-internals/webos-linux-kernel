@@ -105,6 +105,9 @@ struct omap_wdt_dev {
 	struct clk      *mpu_wdt_fck;
 	struct resource *mem;
 	struct miscdevice omap_wdt_miscdev;
+#if defined(AGGR_PM_WDT)
+	unsigned int	clk_enabled;
+#endif
 };
 
 #ifdef AGGR_PM_WDT
@@ -267,7 +270,9 @@ static int omap_wdt_open(struct inode *inode, struct file *file)
 			goto fail;
 		}
 	}
-
+#if defined(AGGR_PM_WDT)
+	wdev->clk_enabled = 1;
+#endif
 	/* initialize prescaler */
 	while (omap_readl(base + OMAP_WATCHDOG_WPS) & 0x01)
 		cpu_relax();
@@ -312,6 +317,9 @@ static int omap_wdt_release(struct inode *inode, struct file *file)
 		clk_put(wdev->mpu_wdt_ick);
 		clk_put(wdev->mpu_wdt_fck);
 	}
+#if defined(AGGR_PM_WDT)
+	wdev->clk_enabled = 0;
+#endif
 #else
 	printk(KERN_CRIT "omap_wdt: Unexpected close, not stopping!\n");
 #endif
@@ -450,12 +458,15 @@ static int __init omap_wdt_probe(struct platform_device *pdev)
 #if defined(AGGR_PM_WDT)
 	/* Enable clocks for SYSCONFIG setting */
 	if (clk_enable(wdev->mpu_wdt_ick) != 0) {
+		wdev->clk_enabled = 0;
 		goto fail;
 	}
 	if (clk_enable(wdev->mpu_wdt_fck) != 0) {
 		clk_disable(wdev->mpu_wdt_ick);
+		wdev->clk_enabled = 0;
 		goto fail;
 	}
+	wdev->clk_enabled = 1;
 #endif /* #if defined(AGGR_PM_WDT) */
 
 	/* SYSCONFIG setting */	
@@ -468,6 +479,7 @@ static int __init omap_wdt_probe(struct platform_device *pdev)
 #if defined(AGGR_PM_WDT)
 	clk_disable(wdev->mpu_wdt_ick);	/* Disable the interface clock */
 	clk_disable(wdev->mpu_wdt_fck);	/* Disable the functional clock */
+	wdev->clk_enabled = 0;
 #endif /* #if defined(AGGR_PM_WDT) */
 
 	omap_wdt_dev = pdev;
@@ -535,11 +547,14 @@ static int omap_wdt_suspend(struct platform_device *pdev, pm_message_t state)
 		omap_wdt_disable(wdev);
 
 #if defined(AGGR_PM_WDT)
-	if (cpu_is_omap34xx())
-		omap_wdt_sysconfig (wdev, OMAP_WDT_SYSCONFIG_LVL2);
+	if (wdev->clk_enabled) {
+		if (cpu_is_omap34xx())
+			omap_wdt_sysconfig (wdev, OMAP_WDT_SYSCONFIG_LVL2);
 
-	clk_disable(wdev->mpu_wdt_ick);	/* Disable the interface clock */
-	clk_disable(wdev->mpu_wdt_fck);	/* Disable the functional clock */
+		clk_disable(wdev->mpu_wdt_ick);	/* Disable the interface clock */
+		clk_disable(wdev->mpu_wdt_fck);	/* Disable the functional clock */
+		wdev->clk_enabled = 0;
+	}
 #endif /* #if defined(AGGR_PM_WDT) */
 	return 0;
 }
@@ -550,11 +565,14 @@ static int omap_wdt_resume(struct platform_device *pdev)
 	wdev = platform_get_drvdata(pdev);
 
 #if defined(AGGR_PM_WDT)
-	if (clk_enable(wdev->mpu_wdt_ick) != 0)	/* Enable the interface clock */
-		goto fail;
+	if (!wdev->clk_enabled) {
+		if (clk_enable(wdev->mpu_wdt_ick) != 0)	/* Enable the interface clock */
+			goto fail;
 
-	if (clk_enable(wdev->mpu_wdt_fck) != 0)	/* Enable the functional clock */
-		goto fail_1;
+		if (clk_enable(wdev->mpu_wdt_fck) != 0)	/* Enable the functional clock */
+			goto fail_1;
+		wdev->clk_enabled = 1;
+	}
 
 	if (cpu_is_omap34xx())
 		omap_wdt_sysconfig (wdev, OMAP_WDT_SYSCONFIG_LVL1);
@@ -569,6 +587,7 @@ static int omap_wdt_resume(struct platform_device *pdev)
 #if defined(AGGR_PM_WDT)
 fail_1:
 	clk_disable(wdev->mpu_wdt_ick);
+	wdev->clk_enabled = 0;
 fail:
 	printk(KERN_ERR"WDT: clock enable failure\n");
  	return -1;  

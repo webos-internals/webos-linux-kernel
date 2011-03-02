@@ -55,11 +55,12 @@ struct accelerometer_state {
 	struct input_dev       *inp_dev; 
 	struct kxsd9_platform_data *pdata;
 	struct timer_list       accelerometer_timer; 
-	struct mutex lock;
+	struct mutex fs_lock;
+	struct mutex chip_lock;
 	struct work_struct      read_work; 
 	int    suspended;       /*flag to signal suspend resume*/
 	int    stopping;	/* set if stop operation is in progress */
-	int	   accelerometer_inputdev_opencount;
+	atomic_t opencount;
 	u8     motion_wake_up_threshold; /*motion threshold value*/
 	u8     filter_frequency; /*Filter frequency bandwidth*/
 	u8     poll_intr_mode; /*select Polling or Interrupt*/ 
@@ -156,13 +157,10 @@ accelerometer_i2c_write_u8(struct i2c_client* client, u8 index, u8 value)
 static void 
 accelerometer_enable_timer(struct accelerometer_state *state, int enable)
 {
-	if(enable == TIMER_ENABLED)
-	{
+	if(enable == TIMER_ENABLED) {
 		mod_timer(&state->accelerometer_timer, 
-		           jiffies  + (HZ * state->poll_interval_val)/1000);
-	}
-	else
-	{
+		          jiffies + msecs_to_jiffies(state->poll_interval_val));
+	} else {
 		del_timer_sync(&state->accelerometer_timer);
 	}
 }
@@ -269,16 +267,18 @@ accelerometer_stop(struct i2c_client *dev)
 {
 	struct accelerometer_state *state = i2c_get_clientdata(dev);
 
+	mutex_lock(&state->chip_lock);
 	state->stopping = 1; // set stopping
 	accelerometer_enable_motion_intr( state->i2c_dev, DISABLE_MOTION_INTERRUPT );
 	accelerometer_enable_timer ( state, TIMER_DISABLED );
+	mutex_unlock(&state->chip_lock);
 	cancel_work_sync  ( &state->read_work ); 
 	state->stopping = 0; // stopped
 }
 
 /****************************************************************************** 
 * 
-* accelerometer_start 
+* accelerometer_start_nolock 
 * 
 * Start the accelerometer with the select mode 
 *  
@@ -290,23 +290,21 @@ accelerometer_stop(struct i2c_client *dev)
 * 
 ******************************************************************************/ 
 static void 
-accelerometer_start(struct i2c_client *dev) 
+accelerometer_start_nolock(struct i2c_client *dev) 
 {
 	struct accelerometer_state *state = i2c_get_clientdata(dev);
+
+	if (atomic_read(&state->opencount) == 0)
+		return;
 	
-	if (state->accelerometer_inputdev_opencount) {
-		if(IS_POLLED_MODE (state->poll_intr_mode) )/*polling mode*/ 
-		{	/* Reactivate the timer again */
-			accelerometer_enable_timer(state, TIMER_ENABLED);
-		} 
-	    else if( state->poll_intr_mode == MODE_INTERRUPT )
-	    {
-	        accelerometer_enable_motion_intr(state->i2c_dev,ENABLE_MOTION_INTERRUPT);
-	    }
-	    else 
-	    {   /* Nothing to do */
-	    }
-    }
+	if(IS_POLLED_MODE (state->poll_intr_mode) ) { 
+		/* Reactivate the timer again */
+		accelerometer_enable_timer(state, TIMER_ENABLED);
+	} 
+	else if( state->poll_intr_mode == MODE_INTERRUPT ) {
+	        accelerometer_enable_motion_intr(state->i2c_dev,
+	                                         ENABLE_MOTION_INTERRUPT);
+	}
 }
 
 
@@ -325,15 +323,14 @@ accelerometer_start(struct i2c_client *dev)
 ******************************************************************************/ 
 static ssize_t
 show_mode(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
+	  struct device_attribute *attr,
+	  char *buf)
 {
 	ssize_t count = 0;
 	char *mode = NULL;
-	struct accelerometer_state *state = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *state = dev->driver_data;
 
 	switch (state->poll_intr_mode){
-
 		case MODE_POLL_ALL:
 			mode = "all";
 			break;
@@ -369,13 +366,14 @@ show_mode(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 set_mode(struct device *dev, 
-					struct device_attribute *attr, 
-					const char *buf, size_t count)
+	 struct device_attribute *attr, 
+	 const char *buf, size_t count)
 {
-	struct accelerometer_state *state = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *state = dev->driver_data;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
 	accelerometer_stop(state->i2c_dev); /*stop the previous mode*/
+	mutex_lock(&state->chip_lock);
 	if( count >= 3 && strncmp( buf, "all", 3) == 0 ) {
 		state->poll_intr_mode = MODE_POLL_ALL; 
 	} else if( count >= 4 && strncmp( buf, "axis", 4) == 0 ) {
@@ -383,8 +381,9 @@ set_mode(struct device *dev,
 	} else if( count >= 3 && strncmp( buf, "off", 3) == 0 ) {
 		state->poll_intr_mode = MODE_OFF;
 	}
-	accelerometer_start(state->i2c_dev); /*start in the new mode*/
-	mutex_unlock(&state->lock);
+	accelerometer_start_nolock(state->i2c_dev); /*start in the new mode*/
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 	
 	return count;
 }
@@ -403,9 +402,9 @@ set_mode(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 show_accelerometer_polling_interval(struct device *dev,
-					 struct device_attribute *attr, char *buf)
+	                            struct device_attribute *attr, char *buf)
 {
-	struct accelerometer_state *state = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *state = dev->driver_data;
 	return snprintf(buf, PAGE_SIZE, "%u\n", state->poll_interval_val);
 }
 
@@ -423,17 +422,21 @@ show_accelerometer_polling_interval(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 set_accelerometer_polling_interval(struct device *dev,
-							struct device_attribute *attr, 
-							const char *buf, size_t count)
+	                           struct device_attribute *attr, 
+	                           const char *buf, size_t count)
 {
 	u16 value;
-	struct accelerometer_state *state = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *state = dev->driver_data;
 	if (!buf || !count) 
 		return 0; 
-	mutex_lock(&state->lock);
+		
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
 	value = simple_strtoul(buf, NULL, 10);
 	state->poll_interval_val = value;
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
+	
 	return count;
 }
 
@@ -452,10 +455,10 @@ set_accelerometer_polling_interval(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 show_accelerometer_motion_wake_up_threshold(struct device *dev,
-								struct device_attribute *attr, 
-								char *buf)
+	                                    struct device_attribute *attr, 
+	                                    char *buf)
 {
-	struct accelerometer_state *data = (struct accelerometer_state *) dev->driver_data;
+	struct accelerometer_state *data = dev->driver_data;
 	return snprintf(buf,sizeof(buf), "%u",data->motion_wake_up_threshold);
 }
 
@@ -474,14 +477,15 @@ show_accelerometer_motion_wake_up_threshold(struct device *dev,
 ******************************************************************************/ 
 static ssize_t
 set_accelerometer_motion_wake_up_threshold(struct device *dev, 
-							struct device_attribute *attr,
-							 const char *buf, size_t count)
+	                                   struct device_attribute *attr,
+	                                   const char *buf, size_t count)
 {
 	u8 value,val;
 	int res;
-	struct accelerometer_state *data = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *data = dev->driver_data;
 
-	mutex_lock(&data->lock);
+	mutex_lock(&data->fs_lock);
+	mutex_lock(&data->chip_lock);
 
 	value = simple_strtoul(buf, NULL, 10);
 	res = accelerometer_i2c_read_u8(data->i2c_dev, CTRL_REGC,1,&val);
@@ -491,7 +495,8 @@ set_accelerometer_motion_wake_up_threshold(struct device *dev,
 	val |= value;
 	accelerometer_i2c_write_u8(data->i2c_dev, CTRL_REGC, val);
 
-	mutex_unlock(&data->lock);
+	mutex_unlock(&data->chip_lock);
+	mutex_unlock(&data->fs_lock);
 	return count;
 }
 
@@ -510,7 +515,7 @@ set_accelerometer_motion_wake_up_threshold(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 show_accelerometer_filter_frequency(struct device *dev,
-					struct device_attribute *attr, char *buf)
+	                            struct device_attribute *attr, char *buf)
 {
 	struct accelerometer_state *data = (struct accelerometer_state *)dev->driver_data;
 	return snprintf(buf, sizeof(buf),"%u",data->filter_frequency );
@@ -531,14 +536,16 @@ show_accelerometer_filter_frequency(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 set_accelerometer_filter_frequency(struct device *dev,
-					struct device_attribute *attr, 
-					const char *buf, size_t count)
+	                           struct device_attribute *attr, 
+	                           const char *buf, size_t count)
 {
 	u8 value,val;
 	int res;
-	struct accelerometer_state *data = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *data = dev->driver_data;
 
-	mutex_lock(&data->lock);
+	mutex_lock(&data->fs_lock);
+	mutex_lock(&data->chip_lock);
+	
 	value = simple_strtoul(buf, NULL, 10);
 	res = accelerometer_i2c_read_u8(data->i2c_dev, CTRL_REGC,1,&val);
 	val &= (~CLEAR_FILTER_FRQUENCY);
@@ -546,7 +553,9 @@ set_accelerometer_filter_frequency(struct device *dev,
 	data->filter_frequency = value;
 	val |= value;
 	accelerometer_i2c_write_u8(data->i2c_dev, CTRL_REGC, val);
-	mutex_unlock(&data->lock);
+
+	mutex_unlock(&data->chip_lock);
+	mutex_unlock(&data->fs_lock);
 
 	return count;
 }
@@ -577,10 +586,10 @@ static DEVICE_ATTR(accelerometer_filter_frequency, S_IRUGO | S_IWUSR,
 ******************************************************************************/ 
 static ssize_t
 show_accelerometer_reg_val(struct device *dev, 
-				struct device_attribute *attr, char *buf)
+	                   struct device_attribute *attr, char *buf)
 {
 	u8 val,res;
-	struct accelerometer_state *data = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *data = dev->driver_data;
 	res = accelerometer_i2c_read_u8(data->i2c_dev, data->test_reg_name,1,&val);
 	return snprintf(buf, PAGE_SIZE, "%u\n", val);
 }
@@ -599,16 +608,18 @@ show_accelerometer_reg_val(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 set_accelerometer_reg_val(struct device *dev,
-				struct device_attribute *attr,
-				const char *buf, size_t count)
+	                  struct device_attribute *attr,
+	                  const char *buf, size_t count)
 {
 	u8 val;
-	struct accelerometer_state *data = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *data = dev->driver_data;
 
-	mutex_lock(&data->lock);
+	mutex_lock(&data->fs_lock);
+	mutex_lock(&data->chip_lock);
 	val = simple_strtoul(buf, NULL, 10);
 	accelerometer_i2c_write_u8(data->i2c_dev, data->test_reg_name, val);
-	mutex_unlock(&data->lock);
+	mutex_unlock(&data->chip_lock);
+	mutex_unlock(&data->fs_lock);
 
 	return count;
 }
@@ -629,10 +640,10 @@ set_accelerometer_reg_val(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 show_accelerometer_reg_name(struct device *dev,
-						struct device_attribute *attr, 
-						char *buf)
+	                    struct device_attribute *attr, 
+	                    char *buf)
 {
-	struct accelerometer_state *data = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *data = dev->driver_data;
 	return snprintf(buf, PAGE_SIZE, "%u",data->test_reg_name);
 }
 
@@ -651,15 +662,18 @@ show_accelerometer_reg_name(struct device *dev,
 ******************************************************************************/ 
 static ssize_t
 set_accelerometer_reg_name(struct device *dev, 
-							struct device_attribute *attr,
-							 const char *buf, size_t count)
+	                   struct device_attribute *attr,
+	                   const char *buf, size_t count)
 {
 	u8 value;
-	struct accelerometer_state *data = (struct accelerometer_state *)dev->driver_data;
-	mutex_lock(&data->lock);
+	struct accelerometer_state *data = dev->driver_data;
+	
+	mutex_lock(&data->fs_lock);
+	mutex_lock(&data->chip_lock);
 	value = simple_strtoul(buf, NULL, 10);
 	data->test_reg_name = value;
-	mutex_unlock(&data->lock);
+	mutex_unlock(&data->chip_lock);
+	mutex_unlock(&data->fs_lock);
 	return count;
 }
 
@@ -677,7 +691,7 @@ set_accelerometer_reg_name(struct device *dev,
 ******************************************************************************/ 
 static ssize_t
 show_accelerometer_test_poll(struct device *dev, 
-				struct device_attribute *attr, char *buf)
+	                     struct device_attribute *attr, char *buf)
 {
 	u16 val;
 	if (!buf) 
@@ -699,16 +713,18 @@ show_accelerometer_test_poll(struct device *dev,
 ******************************************************************************/ 
 static ssize_t 
 set_accelerometer_test_poll(struct device *dev,
-				struct device_attribute *attr,
-				const char *buf, size_t count)
+	                    struct device_attribute *attr,
+	                    const char *buf, size_t count)
 {
 	u16 val;
-	struct accelerometer_state *state = (struct accelerometer_state *)dev->driver_data;
+	struct accelerometer_state *state = dev->driver_data;
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	mutex_lock(&state->chip_lock);
 	val = simple_strtoul(buf, NULL, 10);
 	atomic_set(&current_timer_test_val,val);
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
+	mutex_unlock(&state->fs_lock);
 	return count; 
 }
 
@@ -739,13 +755,15 @@ static DEVICE_ATTR(accelerometer_test_poll, S_IRUGO | S_IWUSR,
 static int kxsd9_count_to_g(u32 out)
 {
 	int gravity;
-	gravity = ( (int) (10000 * (out - 2048) ) ) / 819; // KXSD9 has 819 counts per G for the +/-2G
+	// KXSD9 has 819 counts per G for the +/-2G
+	gravity = ( (int) (10000 * (out - 2048) ) ) / 819; 
 	return gravity;
 }
 
 /****************************************************************************** 
 * 
-* kxsd9_translate_xyz (struct accelerometer_state *state, int *x_gravity, int * y_gravity, int * z_gravity) 
+* kxsd9_translate_xyz (struct accelerometer_state *state, 
+* int *x_gravity, int * y_gravity, int * z_gravity) 
 * 
 * Translates the the X,Y and Z axis values as per the board file
 * Inputs 
@@ -755,21 +773,22 @@ static int kxsd9_count_to_g(u32 out)
 *   None. 
 * 
 ******************************************************************************/ 
-void kxsd9_translate_xyz (struct accelerometer_state *state, int *x_gravity, int * y_gravity, int * z_gravity)
+void kxsd9_translate_xyz (struct accelerometer_state *state, 
+	                  int *x_gravity, int * y_gravity, int * z_gravity)
 {
 	int temp_x = 0, temp_y = 0, temp_z = 0;
 
 	temp_x = state->pdata->xyz_translation_map [0] * (*x_gravity) +
-				state->pdata->xyz_translation_map [1] * (*y_gravity) +
-				state->pdata->xyz_translation_map [2] * (*z_gravity);
+		state->pdata->xyz_translation_map [1] * (*y_gravity) +
+		state->pdata->xyz_translation_map [2] * (*z_gravity);
 
 	temp_y = state->pdata->xyz_translation_map [3] * (*x_gravity) +
-				state->pdata->xyz_translation_map [4] * (*y_gravity) +
-				state->pdata->xyz_translation_map [5] * (*z_gravity);
+		state->pdata->xyz_translation_map [4] * (*y_gravity) +
+		state->pdata->xyz_translation_map [5] * (*z_gravity);
 	
 	temp_z = state->pdata->xyz_translation_map [6] * (*x_gravity) +
-				state->pdata->xyz_translation_map [7] * (*y_gravity) +
-				state->pdata->xyz_translation_map [8] * (*z_gravity);
+		state->pdata->xyz_translation_map [7] * (*y_gravity) +
+		state->pdata->xyz_translation_map [8] * (*z_gravity);
 
 	*x_gravity = temp_x;
 	*y_gravity = temp_y;
@@ -803,11 +822,9 @@ accelerometer_read_xyz(struct work_struct *work)
 	u32 accelerometer_z = 0;
 	struct accelerometer_state *state = container_of(work, struct accelerometer_state, read_work);
 
-	res = mutex_trylock(&state->lock);
-	if (!res) { // again
-		if (state->stopping)
-			return;
-		schedule_work(&state->read_work);
+	mutex_lock(&state->chip_lock);
+	if (state->stopping) {
+		mutex_unlock(&state->chip_lock);
 		return;
 	}
 
@@ -843,20 +860,20 @@ accelerometer_read_xyz(struct work_struct *work)
 	input_report_abs(state->inp_dev,  ABS_Z, z_gravity);
 	input_sync(state->inp_dev);
 
-	if(IS_POLLED_MODE (state->poll_intr_mode) )/*polling mode*/ 
-	{   // In poll mode we just unconditinally set up next sample
+	if(IS_POLLED_MODE (state->poll_intr_mode) ) {
+		// In poll mode we just unconditinally set up next sample
 		mod_timer(&state->accelerometer_timer,
-		           jiffies  + (HZ * state->poll_interval_val)/1000);
+		          jiffies + msecs_to_jiffies(state->poll_interval_val));
 	}
-	if( state->poll_intr_mode == MODE_INTERRUPT )
-	{	// In interrupt mode we should actually figure out when to stop sampling
+	if( state->poll_intr_mode == MODE_INTERRUPT ) {
+		// In interrupt mode we should actually figure out when to stop sampling
 		// DOLATER: Please implement ME
 		printk ("Please: implement me\n" );
 		mod_timer(&state->accelerometer_timer,
 		           jiffies  + (HZ * state->poll_interval_val)/1000);
 	}
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->chip_lock);
 }
 
 
@@ -871,15 +888,18 @@ accelerometer_read_xyz(struct work_struct *work)
 ***********************************************************************************/
 static int accelerometer_inputdev_open(struct input_dev *dev)
 {
-	struct accelerometer_state *state = (struct accelerometer_state *) (dev_get_drvdata (dev->dev.parent));
+	int rc;
+	struct accelerometer_state *state = (dev_get_drvdata (dev->dev.parent));
 
-	mutex_lock(&state->lock);
-
-	state->accelerometer_inputdev_opencount++;
-	if (1 == state->accelerometer_inputdev_opencount) {
-		accelerometer_start (state->i2c_dev);
+	mutex_lock(&state->fs_lock);
+	rc = atomic_add_return( 1, &state->opencount);
+	if (1 == rc) {
+		mutex_lock(&state->chip_lock);
+		accelerometer_start_nolock (state->i2c_dev);
+		mutex_unlock(&state->chip_lock);
 	}
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->fs_lock);
+
 	return 0;
 }
 
@@ -895,14 +915,15 @@ static int accelerometer_inputdev_open(struct input_dev *dev)
 ***********************************************************************************/
 static void accelerometer_inputdev_close(struct input_dev *dev)
 {
-	struct accelerometer_state *state = (struct accelerometer_state *) dev_get_drvdata (dev->dev.parent);
-	mutex_lock(&state->lock);
-	if (1 == state->accelerometer_inputdev_opencount) {
-		accelerometer_stop (state->i2c_dev);		
-	}
-	state->accelerometer_inputdev_opencount--;
+	int rc;
+	struct accelerometer_state *state = dev_get_drvdata (dev->dev.parent);
 
-	mutex_unlock(&state->lock);
+	mutex_lock(&state->fs_lock);
+	rc = atomic_sub_return(1,&state->opencount);
+	if (0 == rc) {
+		accelerometer_stop (state->i2c_dev);
+	}
+	mutex_unlock(&state->fs_lock);
 }
 
 /****************************************************************************** 
@@ -947,7 +968,8 @@ accelerometer_i2c_probe(struct i2c_client *client)
 	state->i2c_dev = client;
 
 	// Init spinlock 
-	mutex_init(&state->lock);
+	mutex_init(&state->fs_lock);
+	mutex_init(&state->chip_lock);
 	state->suspended = 0;
 
 	// Attach platform data 
@@ -955,7 +977,7 @@ accelerometer_i2c_probe(struct i2c_client *client)
 	
 	/*By default poll mode is selected*/
 	state->poll_intr_mode = MODE_OFF;
-	state->accelerometer_inputdev_opencount	 = 0;
+	atomic_set ( &state->opencount, 0);
 
 	/* Default value of poll interval is 250 ms*/
 	state->poll_interval_val = POLL_INTERVAL; 
@@ -991,7 +1013,7 @@ accelerometer_i2c_probe(struct i2c_client *client)
 
 	state->inp_dev->name = ACCELEROMETER_DRIVER;
 	state->inp_dev->id.bustype = BUS_I2C; 
-	state->inp_dev->id.vendor  = ACCELEROMETER_VENDOR_ID;  		
+	state->inp_dev->id.vendor  = ACCELEROMETER_VENDOR_ID;
 	state->inp_dev->id.product = ACCELEROMETER_PRODUCT_ID;  
 	state->inp_dev->id.version = ACCELEROMETER_VERSION_ID;
 	state->inp_dev->dev.parent = &client->dev;
@@ -1118,9 +1140,7 @@ accelerometer_i2c_remove(struct i2c_client *client)
 { 
 	struct accelerometer_state *state = i2c_get_clientdata(client);    
 
-	mutex_lock(&state->lock);
-
-	accelerometer_stop(client);
+	mutex_lock(&state->fs_lock);
 
 	device_remove_file(&state->inp_dev->dev, &dev_attr_accelerometer_filter_frequency); 
 	device_remove_file(&state->inp_dev->dev, &dev_attr_accelerometer_motion_wake_up_threshold); 
@@ -1133,6 +1153,8 @@ accelerometer_i2c_remove(struct i2c_client *client)
 	device_remove_file(&state->inp_dev->dev, &dev_attr_accelerometer_test_reg_val); 
 	#endif
 
+	accelerometer_stop(client);
+
 	//unregister input device
 	input_unregister_device ( state->inp_dev );
 
@@ -1140,7 +1162,7 @@ accelerometer_i2c_remove(struct i2c_client *client)
 	free_irq  ( state->i2c_dev->irq, state );
 	gpio_free ( irq_to_gpio(state->i2c_dev->irq));
 
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->fs_lock);
 
 	//Detach state 
 	i2c_set_clientdata(client, NULL );    
@@ -1170,7 +1192,7 @@ accelerometer_i2c_suspend( struct i2c_client *dev, pm_message_t event )
 	u8 val;
 	struct accelerometer_state *state = i2c_get_clientdata(dev);    
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
 
 	//Check if already suspended */
 	if( state->suspended  ) 
@@ -1182,12 +1204,12 @@ accelerometer_i2c_suspend( struct i2c_client *dev, pm_message_t event )
 	res = accelerometer_i2c_read_u8(state->i2c_dev, CTRL_REGB,1,&val); 
 	val &= (~ACCELEROMETER_ENABLE_BIT);
 	res = accelerometer_i2c_write_u8(state->i2c_dev, CTRL_REGB, val);
-    
+
 	//Mark it suspended */
 	state->suspended = 1;
 
 err:
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->fs_lock);
 	return 0;
 }
 
@@ -1209,21 +1231,26 @@ accelerometer_i2c_resume ( struct i2c_client *dev )
 	u8 val;
 	struct accelerometer_state *state = i2c_get_clientdata(dev);    
 
-	mutex_lock(&state->lock);
+	mutex_lock(&state->fs_lock);
+
 	if(!state->suspended ) 
 		goto err; // already resumed
 		
-	accelerometer_start(dev);
+
+	mutex_lock(&state->chip_lock);
+	accelerometer_start_nolock(dev);
 	
 	// Put accelerometer in normal working mode
 	res = accelerometer_i2c_read_u8(state->i2c_dev, CTRL_REGB,1,&val); 
 	val |= ACCELEROMETER_ENABLE_BIT;
 	res = accelerometer_i2c_write_u8(state->i2c_dev, CTRL_REGB, val);
+	mutex_unlock(&state->chip_lock);
 	
 	//Reset suspended flag 
 	state->suspended = 0;
+
 err:
-	mutex_unlock(&state->lock);
+	mutex_unlock(&state->fs_lock);
 	return 0;
 }
 #else

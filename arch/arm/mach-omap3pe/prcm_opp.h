@@ -46,6 +46,7 @@ void vdd2_opp_setting(u32 target_opp_no);
 
 u32 prcm_get_current_vdd1_opp(void);
 u32 prcm_get_current_vdd2_opp(void);
+u32 omap3_max_vdd1_opp(void);
 
 int __init prcm_vdd_clk_init(void);
 

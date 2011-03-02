@@ -67,6 +67,8 @@ struct input_absinfo {
 #define EVIOCGNAME(len)		_IOC(_IOC_READ, 'E', 0x06, len)		/* get device name */
 #define EVIOCGPHYS(len)		_IOC(_IOC_READ, 'E', 0x07, len)		/* get physical location */
 #define EVIOCGUNIQ(len)		_IOC(_IOC_READ, 'E', 0x08, len)		/* get unique identifier */
+#define EVIOCGCOUNTRY		_IOR('E', 0x09, unsigned int)		/* get country code */
+#define EVIOCSCOUNTRY		_IOW('E', 0x09, unsigned int)		/* set country code */
 
 #define EVIOCGKEY(len)		_IOC(_IOC_READ, 'E', 0x18, len)		/* get global keystate */
 #define EVIOCGLED(len)		_IOC(_IOC_READ, 'E', 0x19, len)		/* get all LEDs */
@@ -583,6 +585,13 @@ struct input_absinfo {
 #define KEY_BRL_DOT9		0x1f9
 #define KEY_BRL_DOT10		0x1fa
 
+/* define additional keys for bt avrcp 1.3 */
+#define KEY_REPEAT_ALL		0x1a5
+#define KEY_REPEAT_TRACK	0x1a6
+#define KEY_REPEAT_NONE		0x1a7
+#define KEY_SHUFFLE_ON		0x1a8
+#define KEY_SHUFFLE_OFF		0x1a9
+
 /* We avoid low common keys in module aliases so they don't get huge. */
 #define KEY_MIN_INTERESTING	KEY_MUTE
 #define KEY_MAX			0x1ff
@@ -992,6 +1001,7 @@ struct ff_effect {
  * @phys: physical path to the device in the system hierarchy
  * @uniq: unique identification code for the device (if device has it)
  * @id: id of the device (struct input_id)
+ * @country: country code (if device has it)
  * @evbit: bitmap of types of events supported by the device (EV_KEY,
  *	EV_REL, etc.)
  * @keybit: bitmap of keys/buttons this device has
@@ -1069,6 +1079,8 @@ struct input_dev {
 	const char *phys;
 	const char *uniq;
 	struct input_id id;
+
+	unsigned int country;
 
 	unsigned long evbit[BITS_TO_LONGS(EV_CNT)];
 	unsigned long keybit[BITS_TO_LONGS(KEY_CNT)];

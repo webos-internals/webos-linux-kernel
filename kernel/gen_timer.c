@@ -110,14 +110,13 @@ static void internal_add_gen_timer(struct timer_list *timer)
 {
 	unsigned long expires = timer->expires;
 	struct list_head *ptr;	
-	unsigned long flags,added_in_list=0;
+	unsigned long added_in_list=0;
 	struct timer_list *timer_ptr;
-	spin_lock_irqsave(&timer_lock, flags);
+
 	if(list_empty(&timer_list_head)){ 	// No entry in list yet ...
 		list_add(&timer->entry,&timer_list_head);
 		added_in_list=1;
-	}
-	else {
+	} else {
 		list_for_each(ptr,&timer_list_head) {
 			timer_ptr=list_entry(ptr,struct timer_list,entry);
 			if(timer_ptr->expires > expires) {
@@ -126,12 +125,11 @@ static void internal_add_gen_timer(struct timer_list *timer)
 				break;
 			}
 		}
-	}	
+	}
 	if(!added_in_list) {	// Expire value greater than all timers in list so inserting in the end
 		list_add_tail(&timer->entry,&timer_list_head);
 	}
-	spin_unlock_irqrestore(&timer_lock, flags);
-}	
+}
 
 
 static inline void detach_gen_timer(struct timer_list *timer,
@@ -152,7 +150,6 @@ int __mod_gen_timer(struct timer_list *timer, unsigned long expires)
 
 	BUG_ON(!timer->function);
 
-	
 	spin_lock_irqsave(&timer_lock, flags);
 
 	if (timer_pending(timer)) {
@@ -160,7 +157,7 @@ int __mod_gen_timer(struct timer_list *timer, unsigned long expires)
 		ret = 1;
 	}
 	timer->expires = expires + sleep_offset*HZ;
-	
+
 	internal_add_gen_timer(timer);
 	spin_unlock_irqrestore(&timer_lock, flags);
 

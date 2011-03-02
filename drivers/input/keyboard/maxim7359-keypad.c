@@ -250,8 +250,35 @@ static DEVICE_ATTR(key_state, S_IRUGO, key_state_show, NULL );
 
 #ifdef MAXIM7359_DEBUG
 
+
 static ssize_t
-hw_debounce_show(	struct device *dev,
+prox_timeout_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", jiffies_to_msecs(state->prox_timeout));
+}
+
+static ssize_t
+prox_timeout_store( struct device *dev,
+                struct device_attribute *attr,
+                const char *buf, size_t count)
+{
+	char *endp;
+	struct maxim_kp_state *state = (struct maxim_kp_state *)dev_get_drvdata(dev);
+	int new_prox_timeout = simple_strtoul(buf, &endp, 10);
+
+	state->prox_timeout = msecs_to_jiffies(new_prox_timeout);
+
+	return count;
+}
+
+static DEVICE_ATTR(prox_timeout, S_IWUGO | S_IRUGO, prox_timeout_show, prox_timeout_store);
+
+static ssize_t
+hw_debounce_show(struct device *dev,
 		struct device_attribute *attr,
 		char *buf)
 {
@@ -702,6 +729,12 @@ static int maxim_i2c_probe(struct i2c_client *client)
 	}
 
 #ifdef MAXIM7359_DEBUG
+
+	rc = device_create_file(&(state->i2c_dev->dev),  &dev_attr_prox_timeout);
+	if(rc) {
+		goto err2;
+	}
+
 	rc = device_create_file(&(state->i2c_dev->dev),  &dev_attr_hw_debounce);
 	if(rc) {
 		goto err2;
@@ -813,6 +846,7 @@ static int maxim_i2c_remove(struct i2c_client *client)
 	device_remove_file(&(state->i2c_dev->dev), &dev_attr_key_state);
 	device_remove_file(&(state->i2c_dev->dev), &dev_attr_fifo_read);
 #ifdef MAXIM7359_DEBUG
+	device_remove_file(&(state->i2c_dev->dev), &dev_attr_prox_timeout);
 	device_remove_file(&(state->i2c_dev->dev), &dev_attr_sw_debounce);
 	device_remove_file(&(state->i2c_dev->dev), &dev_attr_hw_debounce);
 	device_remove_file(&(state->i2c_dev->dev), &dev_attr_autosleep);

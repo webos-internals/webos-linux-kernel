@@ -18,6 +18,7 @@
 #include <linux/string.h>
 #include <linux/kdev_t.h>
 #include <linux/notifier.h>
+#include <linux/kallsyms.h>
 
 #include <asm/semaphore.h>
 
@@ -60,6 +61,10 @@ dev_attr_show(struct kobject * kobj, struct attribute * attr, char * buf)
 
 	if (dev_attr->show)
 		ret = dev_attr->show(dev, dev_attr, buf);
+	if (ret >= (ssize_t)PAGE_SIZE) {
+		print_symbol("dev_attr_show: %s returned bad count\n",
+				(unsigned long)dev_attr->show);
+	}
 	return ret;
 }
 
