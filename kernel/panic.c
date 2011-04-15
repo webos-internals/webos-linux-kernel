@@ -23,7 +23,11 @@
 #include <linux/kallsyms.h>
 #include <linux/dmi.h>
 
-int panic_on_oops;
+#ifndef CONFIG_PANIC_ON_OOPS
+#define CONFIG_PANIC_ON_OOPS 0
+#endif
+
+int panic_on_oops = CONFIG_PANIC_ON_OOPS;
 static unsigned long tainted_mask;
 static int pause_on_oops;
 static int pause_on_oops_flag;

@@ -7,6 +7,7 @@
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/types.h>
+#include <linux/uaccess.h>
 #include <linux/hres_counter.h>
 
 #include <linux/a6_sbw_interface.h>

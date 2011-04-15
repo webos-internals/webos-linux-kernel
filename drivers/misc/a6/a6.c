@@ -33,6 +33,7 @@
 #include <linux/poll.h>
 #include <asm/io.h>
 #include <linux/gpio.h>
+#include <linux/cdev.h>
 #include <linux/debugfs.h>
 #include "high_level_funcs.h"
 
@@ -217,7 +218,7 @@ uint32_t start_last_a6_activity = 0;
 #define	TS2_I2C_ENUM_SERNO_2                           0x040C
 #define	TS2_I2C_ENUM_SERNO_1                           0x040D
 #define	TS2_I2C_ENUM_SERNO_0                           0x040E
-#define	TS2_I2C_ENUM_HW_REV                            0x040F
+#define	TS2_I2C_ENUM_ASSY_REV                          0x040F
 #define	TS2_I2C_ENUM_FW_VER_2                          0x0410
 #define	TS2_I2C_ENUM_FW_VER_1                          0x0411
 #define	TS2_I2C_ENUM_FW_VER_0                          0x0412
@@ -259,8 +260,12 @@ uint32_t start_last_a6_activity = 0;
 #define	TS2_I2C_ENUM_REMOTE_PROTOCOL_MAP_VER           0x0502
 #define	TS2_I2C_ENUM_REMOTE_MFGR_ID_HI                 0x0503
 #define	TS2_I2C_ENUM_REMOTE_MFGR_ID_LO                 0x0504
+#define	TS2_I2C_ENUM_REMOTE_MFGR_ID_HI_V1              0x0505
+#define	TS2_I2C_ENUM_REMOTE_MFGR_ID_LO_V1              0x0506
 #define	TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_HI            0x0505
 #define	TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_LO            0x0506
+#define	TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_HI_V1         0x0507
+#define	TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_LO_V1         0x0508
 #define	TS2_I2C_ENUM_REMOTE_SERNO_7                    0x0507
 #define	TS2_I2C_ENUM_REMOTE_SERNO_6                    0x0508
 #define	TS2_I2C_ENUM_REMOTE_SERNO_5                    0x0509
@@ -269,7 +274,7 @@ uint32_t start_last_a6_activity = 0;
 #define	TS2_I2C_ENUM_REMOTE_SERNO_2                    0x050C
 #define	TS2_I2C_ENUM_REMOTE_SERNO_1                    0x050D
 #define	TS2_I2C_ENUM_REMOTE_SERNO_0                    0x050E
-#define	TS2_I2C_ENUM_REMOTE_HW_REV                     0x050F
+#define	TS2_I2C_ENUM_REMOTE_ASSY_REV                   0x050F
 #define	TS2_I2C_ENUM_REMOTE_FW_VER_2                   0x0510
 #define	TS2_I2C_ENUM_REMOTE_FW_VER_1                   0x0511
 #define	TS2_I2C_ENUM_REMOTE_FW_VER_0                   0x0512
@@ -284,6 +289,8 @@ uint32_t start_last_a6_activity = 0;
 #define	TS2_I2C_ENUM_REMOTE_TNODE_MIN                  0x051B
 #define	TS2_I2C_ENUM_REMOTE_TNODE_MAX                  0x051C
 #define	TS2_I2C_ENUM_REMOTE_POWER_MAX                  0x051D
+
+
 
 #define	TS2_I2C_ENUM_REMOTE_ACCE_0                     0x0528
 #define	TS2_I2C_ENUM_REMOTE_ACCE_1                     0x0529
@@ -357,6 +364,29 @@ uint32_t start_last_a6_activity = 0;
 
 /* misc registers */
 #define TS2_I2C_COMMAND                                0x1000
+#define TS2_I2C_COMMAND_RESET_HOST               	 0x01
+#define TS2_I2C_COMMAND_CLEAR_BTN_SEQ_RESET_FLAG 	 0x02
+
+#define TS2_I2C_COMMAND_COMM_CONNECT             	 0x10
+#define TS2_I2C_COMMAND_COMM_DISCONNECT          	 0x11
+#define TS2_I2C_COMMAND_REENUMERATE              	 0x12
+
+#define TS2_I2C_COMMAND_FRAM_CHECKSUM_1400_READ  	 0x20
+#define TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_1     	 0x21
+#define TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_2     	 0x22
+
+#define TS2_I2C_COMMAND_MEM_READ_BYTE            	 0x80
+#define TS2_I2C_COMMAND_MEM_READ_CHAWMP          	 0x81
+#define TS2_I2C_COMMAND_MEM_WRITE_BYTE           	 0x82
+#define TS2_I2C_COMMAND_MEM_WRITE_CHAWMP         	 0x83
+#define TS2_I2C_COMMAND_PMIC_READ                	 0x84
+#define TS2_I2C_COMMAND_PMIC_WRITE               	 0x85
+#define TS2_I2C_COMMAND_SP_READ                  	 0x86
+#define TS2_I2C_COMMAND_SP_INDIRECT_READ         	 0x87
+#define TS2_I2C_COMMAND_ADDR_MSB                       0x1001
+#define TS2_I2C_COMMAND_ADDR_LSB                       0x1002
+#define TS2_I2C_COMMAND_DATA_MSB                       0x1003
+#define TS2_I2C_COMMAND_DATA_LSB                       0x1004
 
 #define RSENSE_DEFAULT	20;
 #define FORCE_WAKE_TIMER_EXPIRY (HZ/20)
@@ -370,6 +400,7 @@ enum {
 	READ_ACTIVE_BIT,
 	WRITE_ACTIVE_BIT,
 	A2A_CONNECTED,
+	EXTRACT_INITIATED,
 	// capabilities
 	CAP_PERIODIC_WAKE,
 #ifdef A6_PQ
@@ -420,7 +451,14 @@ struct a6_device_state {
 	uint8_t debug_unused_02;
 #endif
 #endif
+
 	int cpufreq_hold;
+
+	// pmem extract
+	struct file_operations pmem_fops;
+	struct miscdevice pmem_mdev;
+	char pmem_dev_name[16];
+	
 	char *a2a_rd_buf, *a2a_wr_buf;
 	char *a2a_rp, *a2a_wp;
 };
@@ -480,7 +518,18 @@ int32_t format_max_power_available(const struct a6_device_state* state, const ui
 				   uint8_t* fmt_buffer, uint32_t size_buffer);
 int32_t format_accessory_combo(const struct a6_device_state* state, const uint8_t* val,
 			       uint8_t* fmt_buffer, uint32_t size_buffer);
-			 
+int32_t format_u16_hex(const struct a6_device_state* state, const uint8_t* val,
+		       uint8_t* fmt_buffer, uint32_t size_buffer);
+int32_t format_serno_v1(const struct a6_device_state* state, const uint8_t* val,
+			uint8_t* fmt_buffer, uint32_t size_buffer);
+int32_t format_serno_v2(const struct a6_device_state* state, const uint8_t* val,
+			uint8_t* fmt_buffer, uint32_t size_buffer);
+
+static ssize_t a6_diag_show(struct device *dev, struct device_attribute *dev_attr, char *buf);
+static ssize_t a6_diag_store(struct device *dev, struct device_attribute *dev_attr, const char *buf,
+			     size_t count);
+static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *attr, char *buf);
+
 void a6_force_wake_timer_callback(ulong data);
 /*
  Note:  16-bit accesses comprising an LSB, MSB register pair must be specified in LSB:MSB order
@@ -678,7 +727,7 @@ struct a6_register_desc {
 			TS2_I2C_ENUM_SERNO_2, TS2_I2C_ENUM_SERNO_3,
 			TS2_I2C_ENUM_SERNO_4, TS2_I2C_ENUM_SERNO_5,
 			TS2_I2C_ENUM_SERNO_6, TS2_I2C_ENUM_SERNO_7,
-			TS2_I2C_ENUM_HW_REV, TS2_I2C_ENUM_FW_VER_0,
+			TS2_I2C_ENUM_ASSY_REV, TS2_I2C_ENUM_FW_VER_0,
 			TS2_I2C_ENUM_FW_VER_1, TS2_I2C_ENUM_FW_VER_2},
 		.num_ids = 16, .ro = 1},
 
@@ -697,9 +746,8 @@ struct a6_register_desc {
 
 	/* command registers */
 	[35] = {.debug_name = "TS2_I2C_COMMAND",
-		{{.name = "command", .mode = S_IRUGO|S_IWUGO},
-		.show = a6_generic_show, .store = a6_generic_store},
-		.format = format_command,
+		{{.name = "command", .mode = S_IWUGO},
+		.show = NULL, .store = a6_generic_store},
 		.id = {TS2_I2C_COMMAND}, .num_ids = 1, .ro = 0},
 
 	/* remote enumeration registers */
@@ -713,7 +761,7 @@ struct a6_register_desc {
 			TS2_I2C_ENUM_REMOTE_SERNO_2, TS2_I2C_ENUM_REMOTE_SERNO_3,
 			TS2_I2C_ENUM_REMOTE_SERNO_4, TS2_I2C_ENUM_REMOTE_SERNO_5,
 			TS2_I2C_ENUM_REMOTE_SERNO_6, TS2_I2C_ENUM_REMOTE_SERNO_7,
-			TS2_I2C_ENUM_REMOTE_HW_REV, TS2_I2C_ENUM_REMOTE_FW_VER_0,
+			TS2_I2C_ENUM_REMOTE_ASSY_REV, TS2_I2C_ENUM_REMOTE_FW_VER_0,
 			TS2_I2C_ENUM_REMOTE_FW_VER_1, TS2_I2C_ENUM_REMOTE_FW_VER_2},
 		.num_ids = 16, .ro = 1},
 
@@ -992,7 +1040,95 @@ struct a6_register_desc {
 			TS2_I2C_ENUM_REMOTE_ACCE_10, TS2_I2C_ENUM_REMOTE_ACCE_11,
 			TS2_I2C_ENUM_REMOTE_ACCE_12, TS2_I2C_ENUM_REMOTE_ACCE_13,
 			TS2_I2C_ENUM_REMOTE_ACCE_14, TS2_I2C_ENUM_REMOTE_ACCE_15},
-		.num_ids = 16, .ro = 1}
+		.num_ids = 16, .ro = 1},
+
+	[80] = {.debug_name = "TS2_I2C_COMMAND_ADDR_LSB_MSB",
+		{{.name = "command_addr", .mode = S_IRUGO|S_IWUGO},
+		.show = a6_generic_show, .store = a6_generic_store},
+		.id = {TS2_I2C_COMMAND_ADDR_LSB, TS2_I2C_COMMAND_ADDR_MSB},
+		.format = format_u16_hex,
+		.num_ids = 2, .ro = 0},
+	[81] = {.debug_name = "TS2_I2C_COMMAND_DATA_LSB_MSB",
+		{{.name = "command_data", .mode = S_IRUGO|S_IWUGO},
+		.show = a6_generic_show, .store = a6_generic_store},
+		.id = {TS2_I2C_COMMAND_DATA_LSB, TS2_I2C_COMMAND_DATA_MSB},
+		.format = format_u16_hex,
+		.num_ids = 2, .ro = 0},
+
+	[82] = {.debug_name = "REMOTE_MFGRID_V1",
+		{{.name = "remote_mfgrid_v1", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_u16_hex,
+		.id = { TS2_I2C_ENUM_REMOTE_MFGR_ID_LO_V1,
+			TS2_I2C_ENUM_REMOTE_MFGR_ID_HI_V1},
+		.num_ids = 2, .ro = 1},
+	[83] = {.debug_name = "REMOTE_MFGRID_V2",
+		{{.name = "remote_mfgrid_v2", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_u16_hex,
+		.id = { TS2_I2C_ENUM_REMOTE_MFGR_ID_LO,
+			TS2_I2C_ENUM_REMOTE_MFGR_ID_HI},
+		.num_ids = 2, .ro = 1},
+	[84] = {.debug_name = "REMOTE_PRODUCTID_V1",
+		{{.name = "remote_productid_v1", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_u16_hex,
+		.id = { TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_LO_V1,
+			TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_HI_V1},
+		.num_ids = 2, .ro = 1},
+	[85] = {.debug_name = "REMOTE_PRODUCTID_V2",
+		{{.name = "remote_productid_v2", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_u16_hex,
+		.id = { TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_LO,
+			TS2_I2C_ENUM_REMOTE_PRODUCT_TYPE_HI},
+		.num_ids = 2, .ro = 1},
+	[86] = {.debug_name = "REMOTE_SERNO_V1",
+		{{.name = "remote_serno_v1", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_serno_v1,
+		.id = { TS2_I2C_ENUM_REMOTE_SERNO_0, TS2_I2C_ENUM_REMOTE_SERNO_1,
+			TS2_I2C_ENUM_REMOTE_SERNO_2, TS2_I2C_ENUM_REMOTE_SERNO_3,
+			TS2_I2C_ENUM_REMOTE_SERNO_4, TS2_I2C_ENUM_REMOTE_SERNO_5},
+		.num_ids = 6, .ro = 1},
+	[87] = {.debug_name = "REMOTE_SERNO_V2",
+		{{.name = "remote_serno_v2", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_serno_v2,
+		.id = { TS2_I2C_ENUM_REMOTE_SERNO_0, TS2_I2C_ENUM_REMOTE_SERNO_1,
+			TS2_I2C_ENUM_REMOTE_SERNO_2, TS2_I2C_ENUM_REMOTE_SERNO_3,
+			TS2_I2C_ENUM_REMOTE_SERNO_4, TS2_I2C_ENUM_REMOTE_SERNO_5,
+			TS2_I2C_ENUM_REMOTE_SERNO_6, TS2_I2C_ENUM_REMOTE_SERNO_7},
+		.num_ids = 8, .ro = 1},
+	[88] = {.debug_name = "LOCAL_MFGRID",
+		{{.name = "local_mfgrid", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_u16_hex,
+		.id = { TS2_I2C_ENUM_MFGR_ID_LO, TS2_I2C_ENUM_MFGR_ID_HI},
+		.num_ids = 2, .ro = 1},
+	[89] = {.debug_name = "LOCAL_PRODUCTID",
+		{{.name = "local_productid", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_u16_hex,
+		.id = { TS2_I2C_ENUM_PRODUCT_TYPE_LO, TS2_I2C_ENUM_PRODUCT_TYPE_HI},
+		.num_ids = 2, .ro = 1},
+	[90] = {.debug_name = "LOCAL_SERNO",
+		{{.name = "local_serno", .mode = S_IRUGO},
+		.show = a6_generic_show, .store = NULL},
+		.format = format_serno_v2,
+		.id = { TS2_I2C_ENUM_SERNO_0, TS2_I2C_ENUM_SERNO_1,
+			TS2_I2C_ENUM_SERNO_2, TS2_I2C_ENUM_SERNO_3,
+			TS2_I2C_ENUM_SERNO_4, TS2_I2C_ENUM_SERNO_5,
+			TS2_I2C_ENUM_SERNO_6, TS2_I2C_ENUM_SERNO_7},
+			.num_ids = 8, .ro = 1},
+};
+
+
+struct device_attribute custom_devattr[] = {
+	{{.name = "a6_diag", .mode = S_IRUGO | S_IWUGO},
+	 .show = a6_diag_show, .store = a6_diag_store},
+ 	{{.name = "validate_cksum", .mode = S_IRUGO},
+ 	 .show = a6_val_cksum_show, .store = NULL},
 };
 
 #ifdef A6_PQ
@@ -1894,7 +2030,6 @@ int32_t format_command(const struct a6_device_state* state, const uint8_t* val,
 	int32_t ret;
 	int conv_command_debug_code = val[0];
 
-	// in C
 	ret = snprintf(fmt_buffer, size_buffer, "%d\n", (int8_t)conv_command_debug_code);
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "debug code(C): %s\n",
 		fmt_buffer);
@@ -2079,6 +2214,17 @@ int32_t format_raw_unsigned(const struct a6_device_state* state, const uint8_t* 
 	return ret;
 }
 
+int32_t format_u16_hex(const struct a6_device_state* state, const uint8_t* val,
+		       uint8_t* fmt_buffer, uint32_t size_buffer)
+{
+	int32_t ret;
+	uint16_t conv_val = *(uint16_t*)val;
+
+	ret = scnprintf(fmt_buffer, size_buffer, "0x%04hx\n", conv_val);
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "u16_hex: %s\n", fmt_buffer);
+	return ret;
+}
+
 int32_t format_max_power_available(const struct a6_device_state* state, const uint8_t* val,
 				   uint8_t* fmt_buffer, uint32_t size_buffer)
 {
@@ -2104,6 +2250,28 @@ int32_t format_accessory_combo(const struct a6_device_state* state, const uint8_
 			"0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x \n",
 			val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7],
 			val[8], val[9], val[10], val[11], val[12], val[13], val[14], val[15]);
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
+	return ret;
+}
+
+int32_t format_serno_v1(const struct a6_device_state* state, const uint8_t* val,
+			       uint8_t* fmt_buffer, uint32_t size_buffer)
+{
+	int32_t ret;
+
+	ret = scnprintf(fmt_buffer, size_buffer, "%02x%02x%02x%02x%02x%02x\n",
+			val[0], val[1], val[2], val[3], val[4], val[5]);
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
+	return ret;
+}
+
+int32_t format_serno_v2(const struct a6_device_state* state, const uint8_t* val,
+			uint8_t* fmt_buffer, uint32_t size_buffer)
+{
+	int32_t ret;
+
+	ret = scnprintf(fmt_buffer, size_buffer, "%02x%02x%02x%02x%02x%02x%02x%02x\n",
+			val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7]);
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_INFO, "%s", fmt_buffer);
 	return ret;
 }
@@ -2136,7 +2304,7 @@ static ssize_t a6_generic_show(struct device *dev, struct device_attribute *attr
 		mutex_unlock(&state->dev_mutex);
 		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: about to wait for device non-busy...\n", __func__);
 
-		// bootload bit set? wait to be cleared (at least 3 mins: in jiffies)
+		// bootload bit set? wait to be cleared (at least 5 mins: in jiffies)
 		ret = wait_event_interruptible_timeout(state->dev_busyq,
 				!test_bit(BOOTLOAD_ACTIVE_BIT, state->flags), 300*HZ);
 		if (!ret) {
@@ -2263,7 +2431,7 @@ static ssize_t a6_generic_store(struct device *dev, struct device_attribute *att
 		mutex_unlock(&state->dev_mutex);
 		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: about to wait for device non-busy...\n", __func__);
 
-		// bootload bit set? wait to be cleared (at least 3 mins: in jiffies)
+		// bootload bit set? wait to be cleared (at least 5 mins: in jiffies)
 		ret = wait_event_interruptible_timeout(state->dev_busyq,
 				!test_bit(BOOTLOAD_ACTIVE_BIT, state->flags), 300*HZ);
 		if (!ret) {
@@ -2396,17 +2564,312 @@ err0:
 	return ret;
 }
 
+enum {
+	ACTIVATE_EXTRACT,
+	NONE
+};
+
+static ssize_t a6_val_cksum_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int32_t rc = 0;
+	struct a6_device_state* state = i2c_get_clientdata(client);
+	uint16_t cksum1, cksum2, cksum_cycles;
+	struct a6_register_desc *reg_desc;
+	uint8_t vals[id_size];
+
+
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: enter\n", __func__);
+
+	// critsec for manipulating flags
+	rc = mutex_lock_interruptible(&state->dev_mutex);
+	if (rc) {
+		printk(KERN_ERR "%s: mutex_lock interrupted\n", __func__);
+		return -EIO;
+	}
+
+	// are we busy?
+	while (test_and_set_bit(DEVICE_BUSY_BIT, state->flags)) {
+		// yes: get on a waitq
+		mutex_unlock(&state->dev_mutex);
+
+		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: about to wait for device non-busy...\n", __func__);
+
+		// busy bit set? wait to be cleared (at least 5 minutes: in jiffies)
+		rc = wait_event_interruptible_timeout(state->dev_busyq,
+				!test_bit(DEVICE_BUSY_BIT, state->flags), 300*HZ);
+		if (!rc) {
+			printk(KERN_ERR "%s: wait on device busy timed-out/interrupted\n", __func__);
+			// reset busy state
+			clear_bit(DEVICE_BUSY_BIT, state->flags);
+			// and continue...
+		}
+
+		// we're about to manipulate flags again: acquire critsec
+		rc = mutex_lock_interruptible(&state->dev_mutex);
+		if (rc) {
+			printk(KERN_ERR "%s: mutex_lock interrupted(2)\n", __func__);
+			goto err0;
+		}
+	}
+
+	rc = test_and_set_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
+	ASSERT(!rc);
+
+	// we're done with flags: exit critsec
+	mutex_unlock(&state->dev_mutex);
+
+	do {
+		/* write command (cksum1) */
+		reg_desc = &a6_register_desc_arr[35];
+		vals[0] = TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_1;
+		rc = a6_i2c_write_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
+		if (rc < 0) {
+			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			__func__, reg_desc->debug_name, reg_desc->id[0]);
+			break;
+		}
+
+		/* read cksum1 */
+		reg_desc = &a6_register_desc_arr[80];
+		memset(vals, 0, sizeof(vals));
+		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
+		if (rc < 0) {
+			printk(KERN_ERR "%s: error reading reg: %s, ids: 0x%x 0x%x\n",
+			__func__, reg_desc->debug_name, reg_desc->id[0], reg_desc->id[1]);
+			break;
+		}
+		cksum1 = vals[0] | vals[1] << 8;
+
+		/* read cksum cycle counter */
+		reg_desc = &a6_register_desc_arr[81];
+		memset(vals, 0, sizeof(vals));
+		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
+		if (rc < 0) {
+			printk(KERN_ERR "%s: error reading reg: %s, ids: 0x%x 0x%x\n",
+			__func__, reg_desc->debug_name, reg_desc->id[0], reg_desc->id[1]);
+			break;
+		}
+		cksum_cycles = vals[0] | vals[1] << 8;
+
+		/* write command (cksum2) */
+		reg_desc = &a6_register_desc_arr[35];
+		vals[0] = TS2_I2C_COMMAND_FRAM_CHECKSUM_READ_2;
+		rc = a6_i2c_write_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
+		if (rc < 0) {
+			printk(KERN_ERR "%s: error writing reg: %s, id: 0x%x\n",
+			__func__, reg_desc->debug_name, reg_desc->id[0]);
+			break;
+		}
+
+		/* read cksum2 */
+		reg_desc = &a6_register_desc_arr[80];
+		memset(vals, 0, sizeof(vals));
+		rc = a6_i2c_read_reg(state->i2c_dev, reg_desc->id, reg_desc->num_ids, vals);
+		if (rc < 0) {
+			printk(KERN_ERR "%s: error reading reg: %s, ids: 0x%x 0x%x\n",
+			__func__, reg_desc->debug_name, reg_desc->id[0], reg_desc->id[1]);
+			break;
+		}
+		cksum2 = vals[0] | vals[1] << 8;
+	} while (0);
+
+	if (rc < 0) {
+		printk(KERN_ERR "%s: checksum retrieval enountered i2c errors: "
+				"fallback to sbw(jtag) access.\n", __func__);
+		get_checksum_data_sbw((struct a6_sbw_interface*)state->plat_data->sbw_ops, &cksum1,
+				       &cksum2, &cksum_cycles, NULL);
+	}
+
+	/* validate cksum */
+	if (!cksum1 || !cksum2 || (cksum1 != cksum2)) {
+		printk(KERN_ERR "A6 checksum validation failed:\n"
+				"cksum1: 0x%02hx; cksum2: 0x%02hx; cksum_cycles: 0x%02hx\n",
+				cksum1, cksum2, cksum_cycles);
+		rc = snprintf(buf, PAGE_SIZE, "%d\n", 0);
+	}
+	else {
+		rc = snprintf(buf, PAGE_SIZE, "%d\n", 1);
+	}
+
+err0:
+	mutex_lock(&state->dev_mutex);
+	clear_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
+	clear_bit(DEVICE_BUSY_BIT, state->flags);
+	mutex_unlock(&state->dev_mutex);
+	wake_up_interruptible(&state->dev_busyq);
+
+	return rc;
+}
+
+
+static char* activation_strlist[] = {
+	[ACTIVATE_EXTRACT] = "extract",
+	[NONE] = "none"
+};
+
+static ssize_t a6_diag_store(struct device *dev, struct device_attribute *attr, const char *buf,
+				size_t count)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int32_t rc = 0, ret_val, action_i = 0;
+	struct a6_device_state* state = i2c_get_clientdata(client);
+	bool skip = false;
+
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: enter\n", __func__);
+
+	action_i = (sizeof(activation_strlist)/sizeof(char*));
+	do {
+		if (0 == strncmp(buf, activation_strlist[action_i-1],
+		    strlen(activation_strlist[action_i-1]))) {
+			break;
+		}
+	} while(action_i--);
+
+	if (!action_i) {
+		return -EINVAL;
+	}
+
+	// store the action index
+	action_i--;
+
+	// critsec for manipulating flags
+	rc = mutex_lock_interruptible(&state->dev_mutex);
+	if (rc) {
+		printk(KERN_ERR "%s: mutex_lock interrupted\n", __func__);
+		return -EIO;
+	}
+
+	// are we busy?
+	while (test_and_set_bit(DEVICE_BUSY_BIT, state->flags)) {
+		// yes: get on a waitq
+		mutex_unlock(&state->dev_mutex);
+
+		A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: about to wait for device non-busy...\n", __func__);
+
+		// busy bit set? wait to be cleared (at least 5 minutes: in jiffies)
+		rc = wait_event_interruptible_timeout(state->dev_busyq,
+				!test_bit(DEVICE_BUSY_BIT, state->flags), 300*HZ);
+		if (!rc) {
+			printk(KERN_ERR "%s: wait on device busy timed-out/interrupted\n", __func__);
+			// reset busy state
+			clear_bit(DEVICE_BUSY_BIT, state->flags);
+			// and continue...
+		}
+
+		// we're about to manipulate flags again: acquire critsec
+		rc = mutex_lock_interruptible(&state->dev_mutex);
+		if (rc) {
+			printk(KERN_ERR "%s: mutex_lock interrupted(2)\n", __func__);
+			goto err0;
+		}
+	}
+
+	if (ACTIVATE_EXTRACT == action_i) {
+		if (test_bit(EXTRACT_INITIATED, state->flags)) {
+			skip = true;
+		}
+		else {
+			ret_val = test_and_set_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
+			ASSERT(!ret_val);
+			ret_val = test_and_set_bit(EXTRACT_INITIATED, state->flags);
+			ASSERT(!ret_val);
+		}
+	}
+	else if (NONE == action_i) {
+		if (!(test_bit(EXTRACT_INITIATED, state->flags))) {
+			skip = true;
+		}
+	}
+	else {
+		// invalid
+	}
+
+	// we're done with flags: exit critsec
+	mutex_unlock(&state->dev_mutex);
+
+	if (true == skip) goto err0;
+	
+	if (ACTIVATE_EXTRACT == action_i) {
+		// start pmem extract
+		printk(KERN_ERR "%s: starting ttf_extract.\n", __func__);
+		rc = ttf_extract_fw_sbw((struct a6_sbw_interface*)state->plat_data->sbw_ops);
+		if (rc) {
+			printk(KERN_ERR "Failed to ttf_extract a6 pmem.\n");
+			goto err0;
+		}
+		else {	
+			printk(KERN_ERR "A6: Completed ttf_extract a6 pmem.\n");
+			// wait for the A6 to boot...
+			msleep(3000);
+			// - re-init state
+			// - if init fails: ignore
+			a6_init_state(state->i2c_dev);
+		}
+	}
+	else if (NONE == action_i) {
+		printk(KERN_ERR "%s: clearing ttf_extract cache.\n", __func__);
+		rc = ttf_extract_cache_clear();
+	}
+	else {
+		// invalid
+	}
+
+err0:
+	mutex_lock(&state->dev_mutex);
+	if (false == skip) {
+		if (rc || NONE == action_i) {
+			if (test_bit(EXTRACT_INITIATED, state->flags)) {
+				clear_bit(EXTRACT_INITIATED, state->flags);
+			}
+		}
+		if (test_bit(BOOTLOAD_ACTIVE_BIT, state->flags)) {
+			clear_bit(BOOTLOAD_ACTIVE_BIT, state->flags);
+		}
+	}
+	clear_bit(DEVICE_BUSY_BIT, state->flags);
+	mutex_unlock(&state->dev_mutex);
+	wake_up_interruptible(&state->dev_busyq);
+
+	return (rc ? rc : count);
+}
+
+static ssize_t a6_diag_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int32_t rc = 0;
+	struct a6_device_state* state = i2c_get_clientdata(client);
+
+	
+	mutex_lock(&state->dev_mutex);
+	if (test_bit(EXTRACT_INITIATED, state->flags)) {
+		rc = snprintf(buf, PAGE_SIZE, "%s\n", activation_strlist[ACTIVATE_EXTRACT]);
+	}
+	mutex_unlock(&state->dev_mutex);
+
+	return rc;
+}
 
 int32_t a6_create_dev_files(struct a6_device_state* state, struct device* dev)
 {
 	int32_t rc = 0, reg_cnt = sizeof(a6_register_desc_arr)/sizeof(struct a6_register_desc);
-	int32_t idx;
+	int32_t idx = 0, cust_idx = 0;
 
 	for (idx = 0; idx < reg_cnt; idx++) {
 		rc = device_create_file(dev, &a6_register_desc_arr[idx].dev_attr);
 		if (rc < 0) {
 			printk(KERN_ERR "%s: failed to create dev_attr file for %s.\n",
 			       __func__, a6_register_desc_arr[idx].dev_attr.attr.name);
+			goto err0;
+		}
+	}
+
+	reg_cnt = sizeof(custom_devattr)/sizeof(struct device_attribute);
+	for (cust_idx = 0; cust_idx < reg_cnt; cust_idx++) {
+		rc = device_create_file(dev, &custom_devattr[cust_idx]);
+		if (rc < 0) {
+			printk(KERN_ERR "%s: failed to create dev_attr file for %s.\n",
+			       __func__, custom_devattr[cust_idx].attr.name);
 			goto err0;
 		}
 	}
@@ -2423,7 +2886,9 @@ err0:
 	for (idx--; idx >= 0; idx--) {
 		device_remove_file(dev, &a6_register_desc_arr[idx].dev_attr);
 	}
-
+	for (cust_idx--; cust_idx >= 0; cust_idx--) {
+		device_remove_file(dev, &custom_devattr[cust_idx]);
+	}
 	return rc;
 
 }
@@ -2437,6 +2902,10 @@ void a6_remove_dev_files(struct a6_device_state* state, struct device* dev)
 		device_remove_file(dev, &a6_register_desc_arr[idx].dev_attr);
 	}
 
+	reg_cnt = sizeof(custom_devattr)/sizeof(struct device_attribute);
+	for (idx = 0; idx < reg_cnt; idx++) {
+		device_remove_file(dev, &custom_devattr[idx]);
+	}
 }
 
 typedef enum {
@@ -3026,10 +3495,7 @@ static irqreturn_t a6_irq(int irq, void *dev_id)
 
 	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: entry.\n", __func__);
 
-	rc = queue_work(state->ka6d_workqueue, &state->a6_irq_work);
-	if (!rc) {
-		printk(KERN_ERR "**** %s: failed queueing irq work item.\n", __func__);
-	}
+	queue_work(state->ka6d_workqueue, &state->a6_irq_work);
 
 	return IRQ_HANDLED;
 }
@@ -3465,6 +3931,66 @@ void a6_force_wake_timer_callback(ulong data)
 		printk(KERN_ERR "**** %s: failed queueing force_wake work item.\n", __func__);
 	}
 }
+
+static int a6_pmem_open(struct inode *inode, struct file *file)
+{
+	struct a6_device_state* state;
+
+	/* get device */
+	state = container_of(file->f_op, struct a6_device_state, pmem_fops);
+
+	/* Allow only read. */
+	if ((file->f_mode & (FMODE_READ|FMODE_WRITE)) != FMODE_READ) {
+		    return -EINVAL;
+	}
+
+	/* check if it is in use */
+	if (test_and_set_bit(IS_OPENED, state->flags)) {
+		return -EBUSY;
+	}
+
+	/* attach private data */
+	file->private_data = state;
+	return 0;
+}
+
+static int a6_pmem_close(struct inode *inode, struct file *file)
+{
+	struct a6_device_state* state = (struct  a6_device_state*) file->private_data;
+
+	/* mark it as unused */
+	clear_bit(IS_OPENED, state->flags);
+	return 0;
+}
+
+static ssize_t a6_pmem_read(struct file *file, char __user *buf, size_t count, loff_t *ppos )
+{
+
+	ssize_t rc = 0;
+	struct a6_device_state* state;
+
+	A6_DPRINTK(A6_DEBUG_VERBOSE, KERN_ERR, "%s: enter\n", __func__);
+
+	/* input validations */
+	if (!count) {
+		return -EINVAL;
+	}
+
+	/* get state */
+	state = container_of(file->f_op, struct a6_device_state, fops);
+	rc = ttf_image_read(buf, count, ppos);
+	
+	return rc;
+}
+
+struct file_operations a6_pmem_fops = {
+	.owner   = THIS_MODULE,
+	.read    = a6_pmem_read,
+	.open    = a6_pmem_open,
+	.release = a6_pmem_close,
+};
+
+
 /******************************************************************************
 * a6_i2c_probe()
 ******************************************************************************/
@@ -3615,7 +4141,19 @@ static int a6_i2c_probe(struct i2c_client *client, const struct i2c_device_id *d
 	rc = misc_register(&state->mdev);
 	if (rc < 0) {
 		printk(KERN_ERR "%s: Failed to register as misc device\n", A6_DRIVER);
-		goto err7;
+		goto err6;
+	}
+
+	memcpy(&state->pmem_fops, &a6_pmem_fops, sizeof(struct file_operations));
+	state->pmem_mdev.minor = MISC_DYNAMIC_MINOR;
+	snprintf(state->pmem_dev_name, sizeof(state->pmem_dev_name),
+		 "%s_diag", plat_data->dev_name);
+	state->pmem_mdev.name = state->pmem_dev_name;
+	state->pmem_mdev.fops = &state->pmem_fops;
+	rc = misc_register(&state->pmem_mdev);
+	if (rc < 0) {
+		printk(KERN_ERR "%s: Failed to register as a6 pmem misc device\n", A6_DRIVER);
+		goto err6;
 	}
 
 	rc = a6_create_dev_files(state, &client->dev);

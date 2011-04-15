@@ -780,6 +780,184 @@ word VerifyAllSections_430Xv2(const unsigned short *data, const unsigned long *a
     return(latched_ret);
 }
 
+word TTFExtractSection_430Xv2
+(const unsigned long sec_addr, const unsigned long sec_len,
+ unsigned char* sec_databuf, extract_conv_fn ttf_conv,
+ unsigned long* sec_fmt_len)
+{
+	unsigned int idx;
+	unsigned short data;
+	int conv_bytes;
+	unsigned char* w_buf = sec_databuf;
+
+	SetPC_430Xv2(sec_addr);
+	IR_Shift(IR_CNTRL_SIG_16BIT);
+	DR_Shift16(0x0501);
+	IR_Shift(IR_ADDR_CAPTURE);
+
+	IR_Shift(IR_DATA_QUICK);
+
+	for (idx = 0; idx < sec_len; idx++)
+	{
+		SetTCLK();
+		ClrTCLK();
+		data = DR_Shift16(0);  // Read data from memory.
+		conv_bytes = ttf_conv(data, w_buf, idx);
+		w_buf += conv_bytes;
+	}
+
+	if (idx % 8) {
+		sprintf(w_buf, "\x0d\x0a");
+		w_buf += 2;
+	}
+
+	IR_Shift(IR_CNTRL_SIG_CAPTURE);
+	*sec_fmt_len = (unsigned long)(w_buf - sec_databuf);
+
+	return STATUS_OK;
+}
+
+#define NUM_PMEM_SECTIONS  (4)
+#define SECTION_PREFIX_LEN (7)
+
+struct section_map_desc {
+	unsigned long sec_addr[NUM_PMEM_SECTIONS];
+	unsigned long sec_len[NUM_PMEM_SECTIONS];
+	void* sec_databuf[NUM_PMEM_SECTIONS];
+	unsigned long sec_fmt_len[NUM_PMEM_SECTIONS];
+};
+
+struct section_map_desc ttf_extract_smap =
+{
+	.sec_addr = {0x1400, 0x1800, 0x1c00, 0xc800},
+	.sec_len =  {0x200,  0x200,  0x200,  0x1c00}, // double-byte length
+};
+
+int ttf_extract_conv_fn
+	(const unsigned short inp_data, unsigned char* op_data, unsigned int count)
+{
+	int ret;
+	
+	ret = sprintf(op_data, "%02X %02X ",
+		      (unsigned char)inp_data,
+		      (unsigned char)(inp_data >> 8));
+	if (0 == (count+1) % 8) {
+		ret += sprintf(op_data + ret, "\x0d\x0a");
+	}
+
+	return ret;
+}
+
+word TTFExtractAllSections_430Xv2(void)
+{
+	int idx = 0, hdr_len;
+	unsigned char* sec_buf;
+	unsigned long sec_fmt_len = 0;
+
+	for (idx = 0; idx < NUM_PMEM_SECTIONS; idx++) {
+		/* allocate buffers */
+		sec_buf = kzalloc(
+			(ttf_extract_smap.sec_len[idx] * 6) +         // 4 digits + 2 spaces
+			((ttf_extract_smap.sec_len[idx] / 8) * 2) +   // newline for row of 8
+			0x14,					      // overhead
+			GFP_KERNEL);
+		ttf_extract_smap.sec_databuf[idx] = sec_buf;
+
+		hdr_len = sprintf(sec_buf, "@%04hX\x0d\x0a",
+				  (unsigned short)ttf_extract_smap.sec_addr[idx]);
+		TTFExtractSection(
+			ttf_extract_smap.sec_addr[idx],
+			ttf_extract_smap.sec_len[idx],
+			sec_buf + hdr_len,
+			ttf_extract_conv_fn,
+			&sec_fmt_len);
+		ttf_extract_smap.sec_fmt_len[idx] = sec_fmt_len + SECTION_PREFIX_LEN;
+
+		printk(KERN_ERR "Section Start (fmt len: %ld)\n", sec_fmt_len);
+	}
+
+	return STATUS_OK;
+}
+
+int TTFImageRead_430Xv2(char *buf, size_t count, loff_t *ppos)
+{
+	int idx, s_off, b_off = 0, ret;
+	unsigned int accum_size = 0, copy_size = 0, rem_count = count;
+	loff_t offset = *ppos;
+
+	for (idx = 0; idx < NUM_PMEM_SECTIONS; idx++) {
+		if (offset < (accum_size + ttf_extract_smap.sec_fmt_len[idx])) {
+			s_off = offset - accum_size;
+			copy_size = ((ttf_extract_smap.sec_fmt_len[idx] - s_off) >  rem_count) ?
+					rem_count : (ttf_extract_smap.sec_fmt_len[idx] - s_off);
+			ret = copy_to_user(buf + b_off,
+					   ((char*)ttf_extract_smap.sec_databuf[idx]) + s_off,
+					   copy_size);
+			rem_count -= copy_size;
+			offset += copy_size;
+			b_off += copy_size;
+		}
+
+		if (!rem_count) break;
+		accum_size += ttf_extract_smap.sec_fmt_len[idx];
+	}
+
+	*ppos = offset;
+	return (count - rem_count);
+}
+
+
+word TTFExtractCacheClear_430Xv2(void)
+{
+	int idx = 0;
+
+	for (idx = 0; idx < NUM_PMEM_SECTIONS; idx++) {
+		/* free buffers */
+		if (ttf_extract_smap.sec_databuf[idx]) {
+			kfree(ttf_extract_smap.sec_databuf[idx]);
+			ttf_extract_smap.sec_databuf[idx] = NULL;
+			ttf_extract_smap.sec_fmt_len[idx] = 0;
+		}
+	}
+
+	return STATUS_OK;
+}
+
+
+int GetChecksumData_430Xv2(unsigned short* cksum1, unsigned short* cksum2,
+			   unsigned short* cksum_cycles, unsigned short* cksum_errors)
+{
+	word prev, check;
+	word error_count = 0, cycle_count = 0;
+	int ret = 0;
+	word addr;
+
+	InitTarget();
+	// halt to inquire value computed over code
+	GetDevice_430Xv2();
+
+	check = ReadMem_430Xv2(F_WORD, 0x1A1A); // current/1a1a
+	prev = ReadMem_430Xv2(F_WORD, 0x1A1E); // previous/1a1e
+	error_count = ReadMem_430Xv2(F_WORD, 0x1a20); // read error count
+	cycle_count = ReadMem_430Xv2(F_WORD, 0x1a22); // read cksum cycle count
+
+	if (cksum1) *cksum1 = prev;
+	if (cksum2) *cksum2 = check;
+	if (cksum_cycles) *cksum_cycles = cycle_count;
+	if (cksum_errors) *cksum_errors = error_count;
+
+	// reset
+	addr = ReadMem_430Xv2(F_WORD, V_RESET);
+	SetPC_430Xv2(addr);                 // Set target CPU's PC
+	IR_Shift(IR_CNTRL_SIG_16BIT);
+	DR_Shift16(0x0401);
+	IR_Shift(IR_ADDR_CAPTURE);
+	IR_Shift(IR_CNTRL_SIG_RELEASE);
+
+	MsDelay(1000);
+
+	return ret;
+}
 //----------------------------------------------------------------------------
 /* This function reads one byte/word from a given address in memory
    Arguments: word Format (F_BYTE or F_WORD)

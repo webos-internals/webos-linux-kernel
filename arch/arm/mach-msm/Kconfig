@@ -237,6 +237,7 @@ config MACH_SHANK
 	help
 	  Support for Shank.
 
+
 endmenu
 
 config MSM_STACKED_MEMORY

@@ -390,6 +390,7 @@ int verify_device_sbw(struct a6_sbw_interface* sbw_ops, uint32_t read_address)
 	uint32_t read_len = 0, write_len = 0;
 	SBW_STATE_CODE parse_ret;
 	int ret_val = 0;
+	uint16_t addr;
 
 
 	if (read_address & 1) {
@@ -437,9 +438,82 @@ int verify_device_sbw(struct a6_sbw_interface* sbw_ops, uint32_t read_address)
 
 
 err0:
-
-	ReleaseDevice(V_BOR, VERIFY);               // BOR reset
+	addr = ReadMem_430Xv2(F_WORD, V_RESET);
+	ReleaseDevice(addr, VERIFY);  // set PC to V_RESET contents
 	ReleaseTarget();
 
 	return ret_val;
+}
+
+int ttf_extract_fw_sbw(struct a6_sbw_interface* sbw_ops)
+{
+	int ret_val = 0;
+	uint16_t addr;
+
+
+	// set up the current mappings for the sbw code...
+	SetSBWTCK = sbw_ops->a6_per_device_interface.SetSBWTCK;
+	ClrSBWTCK = sbw_ops->a6_per_device_interface.ClrSBWTCK;
+	SetSBWTDIO = sbw_ops->a6_per_device_interface.SetSBWTDIO;
+	ClrSBWTDIO = sbw_ops->a6_per_device_interface.ClrSBWTDIO;
+	SetInSBWTDIO = sbw_ops->a6_per_device_interface.SetInSBWTDIO;
+	SetOutSBWTDIO = sbw_ops->a6_per_device_interface.SetOutSBWTDIO;
+	GetSBWTDIO = sbw_ops->a6_per_device_interface.GetSBWTDIO;
+	SetSBWAKEUP = sbw_ops->a6_per_device_interface.SetSBWAKEUP;
+	ClrSBWAKEUP = sbw_ops->a6_per_device_interface.ClrSBWAKEUP;
+	delay = sbw_ops->a6_per_target_interface.delay;
+
+	InitTarget();
+
+	// Start of SBW access to the Target
+	if (GetDevice() != STATUS_OK)         // Set DeviceId
+	{
+		printk("Error in GetDevice()\n");      // stop here if invalid JTAG ID or
+	                                               // time-out. (error: red LED is ON)
+		ret_val = -1;
+		goto err0;
+	}
+
+	if (!TTFExtractAllSections()) {
+		printk("Error in TTFExtractAllSections\n");
+		ret_val = -1;
+	}
+
+
+err0:
+
+	addr = ReadMem_430Xv2(F_WORD, V_RESET);
+	ReleaseDevice(addr, VERIFY);  // set PC to V_RESET contents
+	ReleaseTarget();
+	return ret_val;
+}
+
+int ttf_image_read(char *buf, size_t count, loff_t *ppos)
+{
+	return TTFImageRead(buf, count, ppos);
+}
+
+int ttf_extract_cache_clear(void)
+{
+	TTFExtractCacheClear();
+	return 0;
+}
+
+int get_checksum_data_sbw(struct a6_sbw_interface* sbw_ops, unsigned short* cksum1,
+			  unsigned short* cksum2, unsigned short* cksum_cycles,
+			  unsigned short* cksum_errors)
+{
+	// set up the current mappings for the sbw code...
+	SetSBWTCK = sbw_ops->a6_per_device_interface.SetSBWTCK;
+	ClrSBWTCK = sbw_ops->a6_per_device_interface.ClrSBWTCK;
+	SetSBWTDIO = sbw_ops->a6_per_device_interface.SetSBWTDIO;
+	ClrSBWTDIO = sbw_ops->a6_per_device_interface.ClrSBWTDIO;
+	SetInSBWTDIO = sbw_ops->a6_per_device_interface.SetInSBWTDIO;
+	SetOutSBWTDIO = sbw_ops->a6_per_device_interface.SetOutSBWTDIO;
+	GetSBWTDIO = sbw_ops->a6_per_device_interface.GetSBWTDIO;
+	SetSBWAKEUP = sbw_ops->a6_per_device_interface.SetSBWAKEUP;
+	ClrSBWAKEUP = sbw_ops->a6_per_device_interface.ClrSBWAKEUP;
+	delay = sbw_ops->a6_per_target_interface.delay;
+
+	return GetChecksumData(cksum1, cksum2, cksum_cycles, cksum_errors);
 }

@@ -143,6 +143,10 @@
 #include <linux/vibrator.h>
 #endif
 
+#ifdef CONFIG_NDUID
+#include <linux/nduid.h>
+#endif
+
 enum broadway_board_types {
 	BW_PROTO = 0,
 	BW_EVT1,
@@ -963,6 +967,22 @@ static struct platform_device msm_v4l2_device = {
    },
 };
 
+#ifdef CONFIG_NDUID
+
+static struct nduid_config nduid_cfg[] = {
+	{
+		.dev_name = "nduid",
+	},
+};
+
+static struct platform_device nduid_device = {
+	.name = "nduid",
+	.id   = -1,
+	.dev  = {
+		.platform_data = &nduid_cfg,
+	},
+};
+#endif
 
 #ifdef CONFIG_HRES_COUNTER
 static int msm_hres_timer_init(void** timer)
@@ -2408,6 +2428,9 @@ static struct platform_device *devices[] __initdata = {
     &shank_cy8ctma300_device,
 #endif
 
+#ifdef CONFIG_NDUID
+	&nduid_device,
+#endif
 #ifdef CONFIG_MSM_VIBRATOR
         &board_vibe_device,
 #endif

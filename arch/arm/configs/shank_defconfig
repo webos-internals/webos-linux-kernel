@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Linux kernel version: 2.6.29-palm
-# Mon Feb 14 00:40:05 2011
+# Thu Mar 17 19:38:34 2011
 #
 CONFIG_ARM=y
 CONFIG_SYS_SUPPORTS_APM_EMULATION=y
@@ -60,8 +60,6 @@ CONFIG_IKCONFIG=y
 CONFIG_IKCONFIG_PROC=y
 CONFIG_LOG_BUF_SHIFT=17
 # CONFIG_GROUP_SCHED is not set
-# CONFIG_USER_SCHED is not set
-# CONFIG_CGROUP_SCHED is not set
 CONFIG_CGROUPS=y
 # CONFIG_CGROUP_DEBUG is not set
 CONFIG_CGROUP_NS=y
@@ -142,6 +140,11 @@ CONFIG_IOSCHED_CFQ=y
 CONFIG_DEFAULT_CFQ=y
 # CONFIG_DEFAULT_NOOP is not set
 CONFIG_DEFAULT_IOSCHED="cfq"
+
+#
+# Palm general setup
+#
+CONFIG_PANIC_ON_OOPS=1
 CONFIG_FREEZER=y
 
 #

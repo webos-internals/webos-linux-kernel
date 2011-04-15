@@ -38,6 +38,9 @@
 #include <mach/camera.h>
 #include <linux/syscalls.h>
 #include <linux/hrtimer.h>
+
+#define WORKAROUND_CAMERA_STOP_VIDEO_NO_RETURN
+
 DEFINE_MUTEX(hlist_mut);
 DEFINE_MUTEX(ctrl_cmd_lock);
 
@@ -47,6 +50,7 @@ spinlock_t pp_thumb_spinlock;
 
 #define MSM_MAX_CAMERA_SENSORS 5
 #define CAMERA_STOP_SNAPSHOT 42
+#define CAMERA_STOP_VIDEO	57
 
 #define ERR_USER_COPY(to) pr_err("%s(%d): copy %s user\n", \
 				__func__, __LINE__, ((to) ? "to" : "from"))
@@ -654,6 +658,7 @@ static int msm_control(struct msm_control_device *ctrl_pmsm,
 	struct msm_queue_cmd qcmd;
 	struct msm_queue_cmd *qcmd_resp = NULL;
 	uint8_t data[100];
+	int timeout = MAX_SCHEDULE_TIMEOUT;
 
 	CDBG("Inside msm_control\n");
 	if (copy_from_user(&udata, arg, sizeof(struct msm_ctrl_cmd))) {
@@ -691,9 +696,17 @@ static int msm_control(struct msm_control_device *ctrl_pmsm,
 		goto end;
 	}
 
+#ifdef WORKAROUND_CAMERA_STOP_VIDEO_NO_RETURN	  
+	// workaround for stability test in which CAMERA_STOP_VIDEO never returns
+	if (udata.type == CAMERA_STOP_VIDEO) {
+		timeout = msecs_to_jiffies(200);
+		CDBG("CAMERA_STOP_VIDEO timeout as 200ms\n");
+	}
+#endif
+
 	qcmd_resp = __msm_control(sync,
 				  &ctrl_pmsm->ctrl_q,
-				  &qcmd, MAX_SCHEDULE_TIMEOUT);
+				  &qcmd, timeout);
 
 	if (!qcmd_resp || IS_ERR(qcmd_resp)) {
 		/* Do not free qcmd_resp here.  If the config thread read it,

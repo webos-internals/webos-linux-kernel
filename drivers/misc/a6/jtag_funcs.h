@@ -106,3 +106,21 @@ void ReadMemQuick_430Xv2(unsigned long StartAddr, unsigned long Length, word *Da
 word VerifyMem_430Xv2(unsigned long StartAddr, unsigned long Length, word *DataArray);
 #define VerifyMem VerifyMem_430Xv2
 
+
+typedef int (*extract_conv_fn)( const unsigned short inp_data,
+	      unsigned char* op_data, unsigned int count);
+
+word TTFExtractSection_430Xv2
+	(const unsigned long sec_addr, const unsigned long sec_len,
+	 unsigned char* sec_databuf, extract_conv_fn ttf_conv,
+	 unsigned long* sec_fmt_len);
+#define TTFExtractSection TTFExtractSection_430Xv2
+word TTFExtractAllSections_430Xv2(void);
+#define TTFExtractAllSections TTFExtractAllSections_430Xv2
+word TTFExtractCacheClear_430Xv2(void);
+#define TTFExtractCacheClear TTFExtractCacheClear_430Xv2
+int TTFImageRead_430Xv2(char *buf, size_t count, loff_t *ppos);
+#define TTFImageRead TTFImageRead_430Xv2
+int GetChecksumData_430Xv2(unsigned short* cksum1, unsigned short* cksum2,
+	unsigned short* cksum_cycles, unsigned short* cksum_errors);
+#define GetChecksumData GetChecksumData_430Xv2

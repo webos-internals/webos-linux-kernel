@@ -1613,7 +1613,14 @@ static const struct file_operations kgsl_fops = {
 struct kgsl_driver kgsl_driver = {
 	.misc = {
 		 .name = DRIVER_NAME,
+#if 0
 		 .minor = MISC_DYNAMIC_MINOR,
+#else
+		 /**
+		  * Workaround for the jailer who is using hardcoded value.
+		  */
+		 .minor = 240,
+#endif
 		 .fops = &kgsl_fops,
 	 },
 	.open_count = ATOMIC_INIT(0),
