@@ -5,12 +5,14 @@
 #include <linux/types.h>
 #include <linux/compiler.h>
 
+#define FIRMWARE_NAME_MAX 30
 #define FW_ACTION_NOHOTPLUG 0
 #define FW_ACTION_HOTPLUG 1
 
 struct firmware {
 	size_t size;
 	const u8 *data;
+	struct page **pages;
 };
 
 struct device;

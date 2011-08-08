@@ -1488,8 +1488,10 @@ sock_recv_timestamp(struct msghdr *msg, struct sock *sk, struct sk_buff *skb)
 	    (hwtstamps->syststamp.tv64 &&
 	     sock_flag(sk, SOCK_TIMESTAMPING_SYS_HARDWARE)))
 		__sock_recv_timestamp(msg, sk, skb);
+#ifndef CONFIG_INTSOCK_NETFILTER
 	else
 		sk->sk_stamp = kt;
+#endif
 }
 
 /**

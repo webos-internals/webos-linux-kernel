@@ -21,7 +21,9 @@
 
 #include <asm/memory.h>
 #include <mach/vmalloc.h>
+#include <mach/memory.h>
 #include <asm/pgtable-hwdef.h>
+#include <asm/tlbflush.h>
 
 /*
  * Just any arbitrary offset to the start of the vmalloc VM area: the
@@ -311,6 +313,24 @@ static inline pte_t pte_mkspecial(pte_t pte) { return pte; }
 	__pgprot((pgprot_val(prot) & ~L_PTE_MT_MASK) | L_PTE_MT_UNCACHED)
 #define pgprot_writecombine(prot) \
 	__pgprot((pgprot_val(prot) & ~L_PTE_MT_MASK) | L_PTE_MT_BUFFERABLE)
+#define pgprot_device(prot) \
+	__pgprot((pgprot_val(prot) & ~L_PTE_MT_MASK) | L_PTE_MT_DEV_NONSHARED)
+#define pgprot_writethroughcache(prot) \
+	__pgprot((pgprot_val(prot) & ~L_PTE_MT_MASK) | L_PTE_MT_WRITETHROUGH)
+#define pgprot_writebackcache(prot) \
+	__pgprot((pgprot_val(prot) & ~L_PTE_MT_MASK) | L_PTE_MT_WRITEBACK)
+#define pgprot_writebackwacache(prot) \
+	__pgprot((pgprot_val(prot) & ~L_PTE_MT_MASK) | L_PTE_MT_WRITEALLOC)
+
+#if __LINUX_ARM_ARCH__ >= 7 || defined(CONFIG_ARCH_MSM)
+#define pgprot_dmacoherent(prot) \
+	__pgprot_modify(prot, L_PTE_MT_MASK|L_PTE_EXEC, L_PTE_MT_BUFFERABLE)
+#define COHERENT_IS_NORMAL 1
+#else
+#define pgprot_dmacoherent(prot) \
+	__pgprot_modify(prot, L_PTE_MT_MASK|L_PTE_EXEC, L_PTE_MT_UNCACHED)
+#define COHERENT_IS_NORMAL 0
+#endif
 
 #define pmd_none(pmd)		(!pmd_val(pmd))
 #define pmd_present(pmd)	(pmd_val(pmd))
@@ -441,8 +461,17 @@ extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
  * remap a physical page `pfn' of size `size' with page protection `prot'
  * into virtual address `from'
  */
+
+
+#ifndef HAS_ARCH_IO_REMAP_PFN_RANGE
 #define io_remap_pfn_range(vma,from,pfn,size,prot) \
-		remap_pfn_range(vma, from, pfn, size, prot)
+	remap_pfn_range(vma,from,pfn,size,prot)
+#else
+extern int arch_io_remap_pfn_range(struct vm_area_struct *vma, unsigned long addr, unsigned long pfn, unsigned long size, pgprot_t prot);
+#define io_remap_pfn_range(vma,from,pfn,size,prot) \
+	arch_io_remap_pfn_range(vma,from,pfn,size,prot)
+#endif
+
 
 #define pgtable_cache_init() do { } while (0)
 

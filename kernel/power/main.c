@@ -12,7 +12,9 @@
 #include <linux/string.h>
 #include <linux/resume-trace.h>
 #include <linux/workqueue.h>
-
+#ifdef CONFIG_HAS_WAKELOCK
+#include <linux/wakelock.h>
+#endif
 #include "power.h"
 
 DEFINE_MUTEX(pm_mutex);
@@ -143,11 +145,25 @@ static ssize_t state_show(struct kobject *kobj, struct kobj_attribute *attr,
 	return (s - buf);
 }
 
+#ifdef CONFIG_HAS_WAKELOCK
+void wake_timer_func(unsigned long arg)
+{
+    printk(KERN_ERR "Waking up task waiting on wake lock\n");
+    thaw_process(arg);
+}
+
+DEFINE_TIMER(wake_timer, wake_timer_func, 0, 0);
+#endif
+
 static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 			   const char *buf, size_t n)
 {
 #ifdef CONFIG_SUSPEND
+#ifdef CONFIG_EARLYSUSPEND
+	suspend_state_t state = PM_SUSPEND_ON;
+#else
 	suspend_state_t state = PM_SUSPEND_STANDBY;
+#endif
 	const char * const *s;
 #endif
 	char *p;
@@ -169,7 +185,28 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 			break;
 	}
 	if (state < PM_SUSPEND_MAX && *s)
-		error = enter_state(state);
+#ifdef CONFIG_EARLYSUSPEND && CONFIG_HAS_WAKELOCK
+		if (state == PM_SUSPEND_ON || valid_state(state)) {
+			error = 0;
+                request_suspend_state(state);
+		}
+#elif defined CONFIG_HAS_WAKELOCK
+        wake_unlock(&main_wake_lock);  //Release main lock in the hope of going to sleep
+        
+        if (!has_wake_lock(WAKE_LOCK_SUSPEND)) {
+            wake_timer.data = current;
+            mod_timer(&wake_timer, jiffies + HZ * 5); //To prevent us from freezing indefinitely
+            
+            set_freeze_flag(current);
+            try_to_freeze();
+            
+            del_timer(&wake_timer);
+        }
+      
+        wake_lock(&main_wake_lock);  //Re-grab the main lock so that we do not go into sleep again
+#else         
+        error = enter_state(state);
+#endif
 #endif
 
  Exit:
@@ -203,6 +240,16 @@ pm_trace_store(struct kobject *kobj, struct kobj_attribute *attr,
 power_attr(pm_trace);
 #endif /* CONFIG_PM_TRACE */
 
+#ifdef CONFIG_USER_WAKELOCK
+power_attr(wake_lock);
+power_attr(wake_unlock);
+#endif
+
+#ifdef CONFIG_WAKE_SOURCES
+extern struct kobj_attribute registered_wakeup_sources_attr;
+extern struct kobj_attribute wakeup_event_list_attr;
+#endif /* CONFIG_WAKE_SOURCES */
+
 static struct attribute * g[] = {
 	&state_attr.attr,
 #ifdef CONFIG_PM_TRACE
@@ -210,6 +257,14 @@ static struct attribute * g[] = {
 #endif
 #if defined(CONFIG_PM_SLEEP) && defined(CONFIG_PM_DEBUG)
 	&pm_test_attr.attr,
+#endif
+#ifdef CONFIG_USER_WAKELOCK
+	&wake_lock_attr.attr,
+	&wake_unlock_attr.attr,
+#endif
+#ifdef CONFIG_WAKE_SOURCES
+	&registered_wakeup_sources_attr.attr,
+	&wakeup_event_list_attr.attr,
 #endif
 	NULL,
 };

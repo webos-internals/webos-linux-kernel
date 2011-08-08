@@ -20,12 +20,27 @@ obj-$(CONFIG_MFD_WM831X)	+= wm831x.o
 wm8350-objs			:= wm8350-core.o wm8350-regmap.o wm8350-gpio.o
 obj-$(CONFIG_MFD_WM8350)	+= wm8350.o
 obj-$(CONFIG_MFD_WM8350_I2C)	+= wm8350-i2c.o
+obj-$(CONFIG_MFD_WM8994)	+= wm8994-core.o wm8994-irq.o
 
 obj-$(CONFIG_TPS65010)		+= tps65010.o
+obj-$(CONFIG_MARIMBA_CODEC)     += marimba-codec.o
 obj-$(CONFIG_MENELAUS)		+= menelaus.o
 
 obj-$(CONFIG_TWL4030_CORE)	+= twl4030-core.o twl4030-irq.o
 obj-$(CONFIG_TWL4030_POWER)    += twl4030-power.o
+
+obj-$(CONFIG_MARIMBA_CORE)	+= marimba-core.o
+obj-$(CONFIG_MARIMBA_TSADC)	+= marimba-tsadc.o
+obj-$(CONFIG_BAHAMA_CORE)	+= bahama-core.o
+obj-$(CONFIG_TPS65023)		+= tps65023.o
+
+obj-$(CONFIG_TIMPANI_CODEC)	+= timpani-codec.o
+
+ifdef CONFIG_TIMPANI_CODEC
+obj-$(CONFIG_TIMPANI_CODEC) += msm-adie-codec.o
+else ifdef CONFIG_MARIMBA_CODEC
+obj-$(CONFIG_MARIMBA_CODEC) += msm-adie-codec.o
+endif
 
 obj-$(CONFIG_MFD_MC13783)	+= mc13783-core.o
 
@@ -50,3 +65,5 @@ obj-$(CONFIG_PCF50633_ADC)	+= pcf50633-adc.o
 obj-$(CONFIG_PCF50633_GPIO)	+= pcf50633-gpio.o
 obj-$(CONFIG_AB3100_CORE)	+= ab3100-core.o
 obj-$(CONFIG_AB3100_OTP)	+= ab3100-otp.o
+obj-$(CONFIG_PMIC8058)		+= pmic8058.o
+obj-$(CONFIG_PMIC8901)		+= pmic8901.o

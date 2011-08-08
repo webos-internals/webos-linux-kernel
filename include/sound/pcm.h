@@ -394,6 +394,7 @@ struct snd_pcm_substream {
 #endif
 	/* misc flags */
 	unsigned int hw_opened: 1;
+	unsigned int prepared: 1;
 };
 
 #define SUBSTREAM_BUSY(substream) ((substream)->ref_count > 0)

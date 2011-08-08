@@ -450,6 +450,10 @@ static int file_ioctl(struct file *filp, unsigned int cmd,
 	case FS_IOC_RESVSP:
 	case FS_IOC_RESVSP64:
 		return ioctl_preallocate(filp, p);
+#ifdef CONFIG_MACH_RIB
+	case FIGETBSZ:
+		return put_user(inode->i_sb->s_blocksize, p);
+#endif
 	}
 
 	return vfs_ioctl(filp, cmd, arg);
@@ -590,6 +594,11 @@ int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
 	case FS_IOC_FIEMAP:
 		return ioctl_fiemap(filp, arg);
 
+	/*
+	 * Temporarily, restrict FIGETBSZ ioctl, just to files,
+	 * to get vibrator working for RIB
+	 */
+#ifndef CONFIG_MACH_RIB
 	case FIGETBSZ:
 	{
 		struct inode *inode = filp->f_path.dentry->d_inode;
@@ -597,6 +606,7 @@ int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
 		return put_user(inode->i_sb->s_blocksize, p);
 	}
 
+#endif
 	default:
 		if (S_ISREG(filp->f_path.dentry->d_inode->i_mode))
 			error = file_ioctl(filp, cmd, arg);

@@ -1,0 +1,9 @@
+menu "Palm general setup"
+
+config PANIC_ON_OOPS
+	int "Panic when encountering OOPS"
+	default 0
+	help
+	  If 1, sets behavior on OOPS to panic.
+
+endmenu		# General setup

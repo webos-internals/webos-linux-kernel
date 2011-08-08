@@ -155,6 +155,35 @@ static void i2c_device_shutdown(struct device *dev)
 		driver->shutdown(client);
 }
 
+#ifdef CONFIG_SUSPEND
+static int i2c_device_pm_suspend(struct device *dev)
+{
+	const struct dev_pm_ops *pm;
+
+	if (!dev->driver)
+		return 0;
+	pm = dev->driver->pm;
+	if (!pm || !pm->suspend)
+		return 0;
+	return pm->suspend(dev);
+}
+
+static int i2c_device_pm_resume(struct device *dev)
+{
+	const struct dev_pm_ops *pm;
+
+	if (!dev->driver)
+		return 0;
+	pm = dev->driver->pm;
+	if (!pm || !pm->resume)
+		return 0;
+	return pm->resume(dev);
+}
+#else
+#define i2c_device_pm_suspend	NULL
+#define i2c_device_pm_resume	NULL
+#endif
+
 static int i2c_device_suspend(struct device *dev, pm_message_t mesg)
 {
 	struct i2c_client *client = i2c_verify_client(dev);
@@ -219,6 +248,11 @@ static const struct attribute_group *i2c_dev_attr_groups[] = {
 	NULL
 };
 
+const static struct dev_pm_ops i2c_device_pm_ops = {
+	.suspend = i2c_device_pm_suspend,
+	.resume = i2c_device_pm_resume,
+};
+
 struct bus_type i2c_bus_type = {
 	.name		= "i2c",
 	.match		= i2c_device_match,
@@ -227,6 +261,9 @@ struct bus_type i2c_bus_type = {
 	.shutdown	= i2c_device_shutdown,
 	.suspend	= i2c_device_suspend,
 	.resume		= i2c_device_resume,
+#ifdef CONFIG_PM_RUNTIME
+	.pm		= &i2c_device_pm_ops,
+#endif
 };
 EXPORT_SYMBOL_GPL(i2c_bus_type);
 
@@ -801,6 +838,9 @@ int i2c_del_adapter(struct i2c_adapter *adap)
 				 adap->dev.parent);
 #endif
 
+	/* device name is gone after device_unregister */
+	dev_dbg(&adap->dev, "adapter [%s] unregistered\n", adap->name);
+
 	/* clean up the sysfs representation */
 	init_completion(&adap->dev_released);
 	device_unregister(&adap->dev);
@@ -812,8 +852,6 @@ int i2c_del_adapter(struct i2c_adapter *adap)
 	mutex_lock(&core_lock);
 	idr_remove(&i2c_adapter_idr, adap->nr);
 	mutex_unlock(&core_lock);
-
-	dev_dbg(&adap->dev, "adapter [%s] unregistered\n", adap->name);
 
 	/* Clear the device structure in case this adapter is ever going to be
 	   added again */

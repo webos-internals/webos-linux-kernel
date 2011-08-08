@@ -15,20 +15,15 @@
  * must not be used by drivers.
  */
 #ifndef __arch_page_to_dma
-
-#if !defined(CONFIG_HIGHMEM)
-static inline dma_addr_t page_to_dma(struct device *dev, struct page *page)
-{
-	return (dma_addr_t)__virt_to_bus((unsigned long)page_address(page));
-}
-#elif defined(__pfn_to_bus)
 static inline dma_addr_t page_to_dma(struct device *dev, struct page *page)
 {
 	return (dma_addr_t)__pfn_to_bus(page_to_pfn(page));
 }
-#else
-#error "this machine class needs to define __arch_page_to_dma to use HIGHMEM"
-#endif
+
+static inline struct page *dma_to_page(struct device *dev, dma_addr_t addr)
+{
+	return pfn_to_page(__bus_to_pfn(addr));
+}
 
 static inline void *dma_to_virt(struct device *dev, dma_addr_t addr)
 {
@@ -43,6 +38,11 @@ static inline dma_addr_t virt_to_dma(struct device *dev, void *addr)
 static inline dma_addr_t page_to_dma(struct device *dev, struct page *page)
 {
 	return __arch_page_to_dma(dev, page);
+}
+
+static inline struct page *dma_to_page(struct device *dev, dma_addr_t addr)
+{
+	return __arch_dma_to_page(dev, addr);
 }
 
 static inline void *dma_to_virt(struct device *dev, dma_addr_t addr)
@@ -127,6 +127,45 @@ static inline void *dma_alloc_noncoherent(struct device *dev, size_t size,
 static inline void dma_free_noncoherent(struct device *dev, size_t size,
 		void *cpu_addr, dma_addr_t handle)
 {
+}
+
+/*
+ * dma_coherent_pre_ops - barrier functions for coherent memory before DMA.
+ * A barrier is required to ensure memory operations are complete before the
+ * initiation of a DMA xfer.
+ * If the coherent memory is Strongly Ordered
+ * - pre ARMv7 and 8x50 guarantees ordering wrt other mem accesses
+ * - ARMv7 guarantees ordering only within a 1KB block, so we need a barrier
+ * If coherent memory is normal then we need a barrier to prevent
+ * reordering
+ */
+static inline void dma_coherent_pre_ops(void)
+{
+#if COHERENT_IS_NORMAL == 1
+	dmb();
+#else
+	if (arch_is_coherent())
+		dmb();
+	else
+		barrier();
+#endif
+}
+/*
+ * dma_post_coherent_ops - barrier functions for coherent memory after DMA.
+ * If the coherent memory is Strongly Ordered we dont need a barrier since
+ * there are no speculative fetches to Strongly Ordered memory.
+ * If coherent memory is normal then we need a barrier to prevent reordering
+ */
+static inline void dma_coherent_post_ops(void)
+{
+#if COHERENT_IS_NORMAL == 1
+	dmb();
+#else
+	if (arch_is_coherent())
+		dmb();
+	else
+		barrier();
+#endif
 }
 
 /**
@@ -309,6 +348,52 @@ static inline dma_addr_t dma_map_single(struct device *dev, void *cpu_addr,
 }
 
 /**
+ * dma_cache_pre_ops - clean or invalidate cache before dma transfer is
+ *                     initiated and perform a barrier operation.
+ * @virtual_addr: A kernel logical or kernel virtual address
+ * @size: size of buffer to map
+ * @dir: DMA transfer direction
+ *
+ * Ensure that any data held in the cache is appropriately discarded
+ * or written back.
+ *
+ */
+static inline void dma_cache_pre_ops(void *virtual_addr,
+		size_t size, enum dma_data_direction dir)
+{
+	BUG_ON(!valid_dma_direction(dir));
+
+	if (!arch_is_coherent())
+		dma_cache_maint(virtual_addr, size, dir);
+}
+
+/**
+ * dma_cache_post_ops - clean or invalidate cache after dma transfer is
+ *                     initiated and perform a barrier operation.
+ * @virtual_addr: A kernel logical or kernel virtual address
+ * @size: size of buffer to map
+ * @dir: DMA transfer direction
+ *
+ * Ensure that any data held in the cache is appropriately discarded
+ * or written back.
+ *
+ */
+static inline void dma_cache_post_ops(void *virtual_addr,
+		size_t size, enum dma_data_direction dir)
+{
+	BUG_ON(!valid_dma_direction(dir));
+
+	if (arch_has_speculative_dfetch() && !arch_is_coherent()
+	 && dir != DMA_TO_DEVICE)
+		/*
+		 * Treat DMA_BIDIRECTIONAL and DMA_FROM_DEVICE
+		 * identically: invalidate
+		 */
+		dma_cache_maint(virtual_addr,
+				size, DMA_FROM_DEVICE);
+}
+
+/**
  * dma_map_page - map a portion of a page for streaming DMA
  * @dev: valid struct device pointer, or NULL for ISA and EISA-like devices
  * @page: page that buffer resides in
@@ -350,7 +435,12 @@ static inline dma_addr_t dma_map_page(struct device *dev, struct page *page,
 static inline void dma_unmap_single(struct device *dev, dma_addr_t handle,
 		size_t size, enum dma_data_direction dir)
 {
-	/* nothing to do */
+	BUG_ON(!valid_dma_direction(dir));
+
+	if (arch_has_speculative_dfetch() && !arch_is_coherent() &&
+	    dir != DMA_TO_DEVICE)
+		dma_cache_maint(dma_to_virt(dev, handle), size,
+				DMA_FROM_DEVICE);
 }
 #endif /* CONFIG_DMABOUNCE */
 
@@ -371,7 +461,13 @@ static inline void dma_unmap_single(struct device *dev, dma_addr_t handle,
 static inline void dma_unmap_page(struct device *dev, dma_addr_t handle,
 		size_t size, enum dma_data_direction dir)
 {
-	dma_unmap_single(dev, handle, size, dir);
+	BUG_ON(!valid_dma_direction(dir));
+
+	if (arch_has_speculative_dfetch() && !arch_is_coherent() &&
+	    dir != DMA_TO_DEVICE)
+		dma_cache_maint_page(dma_to_page(dev, handle),
+				     handle & ~PAGE_MASK, size,
+				     DMA_FROM_DEVICE);
 }
 
 /**
@@ -398,7 +494,13 @@ static inline void dma_sync_single_range_for_cpu(struct device *dev,
 {
 	BUG_ON(!valid_dma_direction(dir));
 
-	dmabounce_sync_for_cpu(dev, handle, offset, size, dir);
+	if (!dmabounce_sync_for_cpu(dev, handle, offset, size, dir))
+		return;
+
+	if (arch_has_speculative_dfetch() && !arch_is_coherent()
+	    && dir != DMA_TO_DEVICE)
+		dma_cache_maint(dma_to_virt(dev, handle) + offset, size,
+				DMA_FROM_DEVICE);
 }
 
 static inline void dma_sync_single_range_for_device(struct device *dev,

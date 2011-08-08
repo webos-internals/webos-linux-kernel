@@ -51,6 +51,7 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_WM8988 if SND_SOC_I2C_AND_SPI
 	select SND_SOC_WM8990 if I2C
 	select SND_SOC_WM8993 if I2C
+	select SND_SOC_WM8994 if MFD_WM8994
 	select SND_SOC_WM9081 if I2C
 	select SND_SOC_WM9705 if SND_SOC_AC97_BUS
 	select SND_SOC_WM9712 if SND_SOC_AC97_BUS
@@ -68,8 +69,8 @@ config SND_SOC_ALL_CODECS
 
 config SND_SOC_WM_HUBS
 	tristate
-	default y if SND_SOC_WM8993=y
-	default m if SND_SOC_WM8993=m
+	default y if SND_SOC_WM8993=y || SND_SOC_WM8994=y
+	default m if SND_SOC_WM8993=m || SND_SOC_WM8994=m
 
 config SND_SOC_AC97_CODEC
 	tristate
@@ -210,6 +211,9 @@ config SND_SOC_WM9081
 
 config SND_SOC_WM9705
 	tristate
+
+config SND_SOC_WM8994
+	tristate "wm8994 support"
 
 config SND_SOC_WM9712
 	tristate

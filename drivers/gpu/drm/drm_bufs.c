@@ -40,13 +40,37 @@
 
 resource_size_t drm_get_resource_start(struct drm_device *dev, unsigned int resource)
 {
+	if (drm_core_check_feature(dev, DRIVER_USE_PLATFORM_DEVICE)) {
+		struct resource *r;
+		r = platform_get_resource(dev->platformdev, IORESOURCE_MEM,
+					     resource);
+
+		return r ? r->start : 0;
+	}
+
+#ifdef CONFIG_PCI
 	return pci_resource_start(dev->pdev, resource);
+#endif
+
+	return 0;
 }
 EXPORT_SYMBOL(drm_get_resource_start);
 
 resource_size_t drm_get_resource_len(struct drm_device *dev, unsigned int resource)
 {
+	if (drm_core_check_feature(dev, DRIVER_USE_PLATFORM_DEVICE)) {
+		struct resource *r;
+		r = platform_get_resource(dev->platformdev, IORESOURCE_MEM,
+			resource);
+
+		return r ? (r->end - r->start) : 0;
+	}
+
+#ifdef CONFIG_PCI
 	return pci_resource_len(dev->pdev, resource);
+#endif
+
+	return 0;
 }
 
 EXPORT_SYMBOL(drm_get_resource_len);
@@ -188,7 +212,7 @@ static int drm_addmap_core(struct drm_device * dev, resource_size_t offset,
 	switch (map->type) {
 	case _DRM_REGISTERS:
 	case _DRM_FRAME_BUFFER:
-#if !defined(__sparc__) && !defined(__alpha__) && !defined(__ia64__) && !defined(__powerpc64__) && !defined(__x86_64__)
+#if !defined(__sparc__) && !defined(__alpha__) && !defined(__ia64__) && !defined(__powerpc64__) && !defined(__x86_64__) && !defined(__arm__)
 		if (map->offset + (map->size-1) < map->offset ||
 		    map->offset < virt_to_phys(high_memory)) {
 			kfree(map);
@@ -326,7 +350,7 @@ static int drm_addmap_core(struct drm_device * dev, resource_size_t offset,
 		 * As we're limiting the address to 2^32-1 (or less),
 		 * casting it down to 32 bits is no problem, but we
 		 * need to point to a 64bit variable first. */
-		dmah = drm_pci_alloc(dev, map->size, map->size, 0xffffffffUL);
+		dmah = drm_pci_alloc(dev, map->size, map->size);
 		if (!dmah) {
 			kfree(map);
 			return -ENOMEM;
@@ -885,7 +909,7 @@ int drm_addbufs_pci(struct drm_device * dev, struct drm_buf_desc * request)
 
 	while (entry->buf_count < count) {
 
-		dmah = drm_pci_alloc(dev, PAGE_SIZE << page_order, 0x1000, 0xfffffffful);
+		dmah = drm_pci_alloc(dev, PAGE_SIZE << page_order, 0x1000);
 
 		if (!dmah) {
 			/* Set count correctly so we free the proper amount. */

@@ -45,12 +45,20 @@ static int mmc_queue_thread(void *d)
 {
 	struct mmc_queue *mq = d;
 	struct request_queue *q = mq->queue;
+	struct request *req;
+
+#ifdef CONFIG_MMC_PERF_PROFILING
+	ktime_t start, diff;
+	struct mmc_host *host = mq->card->host;
+	unsigned long bytes_xfer;
+#endif
+
 
 	current->flags |= PF_MEMALLOC;
 
 	down(&mq->thread_sem);
 	do {
-		struct request *req = NULL;
+		req = NULL;	/* Must be set to NULL at each iteration */
 
 		spin_lock_irq(q->queue_lock);
 		set_current_state(TASK_INTERRUPTIBLE);
@@ -71,7 +79,26 @@ static int mmc_queue_thread(void *d)
 		}
 		set_current_state(TASK_RUNNING);
 
-		mq->issue_fn(mq, req);
+#ifdef CONFIG_MMC_PERF_PROFILING
+		bytes_xfer = blk_rq_bytes(req);
+		if (rq_data_dir(req) == READ) {
+			start = ktime_get();
+			mq->issue_fn(mq, req);
+			diff = ktime_sub(ktime_get(), start);
+			host->perf.rbytes_mmcq += bytes_xfer;
+			host->perf.rtime_mmcq =
+				ktime_add(host->perf.rtime_mmcq, diff);
+		} else {
+			start = ktime_get();
+			mq->issue_fn(mq, req);
+			diff = ktime_sub(ktime_get(), start);
+			host->perf.wbytes_mmcq += bytes_xfer;
+			host->perf.wtime_mmcq =
+				ktime_add(host->perf.wtime_mmcq, diff);
+		}
+#else
+			mq->issue_fn(mq, req);
+#endif
 	} while (1);
 	up(&mq->thread_sem);
 
@@ -90,9 +117,10 @@ static void mmc_request(struct request_queue *q)
 	struct request *req;
 
 	if (!mq) {
-		printk(KERN_ERR "MMC: killing requests for dead queue\n");
-		while ((req = blk_fetch_request(q)) != NULL)
+		while ((req = blk_fetch_request(q)) != NULL) {
+			req->cmd_flags |= REQ_QUIET;
 			__blk_end_request_all(req, -EIO);
+		}
 		return;
 	}
 
@@ -223,16 +251,17 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	struct request_queue *q = mq->queue;
 	unsigned long flags;
 
-	/* Mark that we should start throwing out stragglers */
-	spin_lock_irqsave(q->queue_lock, flags);
-	q->queuedata = NULL;
-	spin_unlock_irqrestore(q->queue_lock, flags);
-
 	/* Make sure the queue isn't suspended, as that will deadlock */
 	mmc_queue_resume(mq);
 
 	/* Then terminate our worker thread */
 	kthread_stop(mq->thread);
+
+	/* Empty the queue */
+	spin_lock_irqsave(q->queue_lock, flags);
+	q->queuedata = NULL;
+	blk_start_queue(q);
+	spin_unlock_irqrestore(q->queue_lock, flags);
 
  	if (mq->bounce_sg)
  		kfree(mq->bounce_sg);
@@ -244,8 +273,6 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	if (mq->bounce_buf)
 		kfree(mq->bounce_buf);
 	mq->bounce_buf = NULL;
-
-	blk_cleanup_queue(mq->queue);
 
 	mq->card = NULL;
 }

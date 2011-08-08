@@ -9,6 +9,7 @@
 /*
  * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
  * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
+ * Copyright (c) 2010, Code Aurora Forum.
  * All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -48,6 +49,7 @@
 #include <linux/proc_fs.h>
 #include <linux/init.h>
 #include <linux/file.h>
+#include <linux/platform_device.h>
 #include <linux/pci.h>
 #include <linux/jiffies.h>
 #include <linux/smp_lock.h>	/* For (un)lock_kernel */
@@ -143,6 +145,7 @@ extern void drm_ut_debug_printk(unsigned int request_level,
 #define DRIVER_IRQ_VBL2    0x800
 #define DRIVER_GEM         0x1000
 #define DRIVER_MODESET     0x2000
+#define DRIVER_USE_PLATFORM_DEVICE  0x4000
 
 /***********************************************************************/
 /** \name Begin the DRM... */
@@ -829,6 +832,7 @@ struct drm_driver {
 	int num_ioctls;
 	struct file_operations fops;
 	struct pci_driver pci_driver;
+	struct platform_device *platform_device;
 	/* List of devices hanging off this driver */
 	struct list_head device_list;
 };
@@ -1015,6 +1019,9 @@ struct drm_device {
 #ifdef __alpha__
 	struct pci_controller *hose;
 #endif
+
+	struct platform_device *platformdev;
+
 	struct drm_sg_mem *sg;	/**< Scatter gather memory */
 	int num_crtcs;                  /**< Number of CRTCs on this device */
 	void *dev_private;		/**< device private data */
@@ -1054,15 +1061,19 @@ struct drm_device {
 
 };
 
-static inline int drm_dev_to_irq(struct drm_device *dev)
-{
-	return dev->pdev->irq;
-}
-
 static __inline__ int drm_core_check_feature(struct drm_device *dev,
 					     int feature)
 {
 	return ((dev->driver->driver_features & feature) ? 1 : 0);
+}
+
+
+static inline int drm_dev_to_irq(struct drm_device *dev)
+{
+	if (drm_core_check_feature(dev, DRIVER_USE_PLATFORM_DEVICE))
+		return platform_get_irq(dev->platformdev, 0);
+	else
+		return dev->pdev->irq;
 }
 
 #ifdef __alpha__
@@ -1143,6 +1154,7 @@ extern int drm_mmap_locked(struct file *filp, struct vm_area_struct *vma);
 extern void drm_vm_open_locked(struct vm_area_struct *vma);
 extern resource_size_t drm_core_get_map_ofs(struct drm_local_map * map);
 extern resource_size_t drm_core_get_reg_ofs(struct drm_device *dev);
+extern void drm_vm_close_locked(struct vm_area_struct *vma);
 extern unsigned int drm_poll(struct file *filp, struct poll_table_struct *wait);
 
 				/* Memory management support (drm_memory.h) */
@@ -1295,6 +1307,7 @@ extern u32 drm_vblank_count(struct drm_device *dev, int crtc);
 extern void drm_handle_vblank(struct drm_device *dev, int crtc);
 extern int drm_vblank_get(struct drm_device *dev, int crtc);
 extern void drm_vblank_put(struct drm_device *dev, int crtc);
+extern void drm_vblank_off(struct drm_device *dev, int crtc);
 extern void drm_vblank_cleanup(struct drm_device *dev);
 /* Modesetting support */
 extern void drm_vblank_pre_modeset(struct drm_device *dev, int crtc);
@@ -1342,8 +1355,11 @@ extern int drm_dropmaster_ioctl(struct drm_device *dev, void *data,
 struct drm_master *drm_master_create(struct drm_minor *minor);
 extern struct drm_master *drm_master_get(struct drm_master *master);
 extern void drm_master_put(struct drm_master **master);
-extern int drm_get_dev(struct pci_dev *pdev, const struct pci_device_id *ent,
-		       struct drm_driver *driver);
+extern int drm_get_pci_dev(struct pci_dev *pdev,
+			   const struct pci_device_id *ent,
+			   struct drm_driver *driver);
+extern int drm_get_platform_dev(struct platform_device *pdev,
+				struct drm_driver *driver);
 extern void drm_put_dev(struct drm_device *dev);
 extern int drm_put_minor(struct drm_minor **minor);
 extern unsigned int drm_debug;
@@ -1401,7 +1417,7 @@ extern int drm_ati_pcigart_cleanup(struct drm_device *dev,
 				   struct drm_ati_pcigart_info * gart_info);
 
 extern drm_dma_handle_t *drm_pci_alloc(struct drm_device *dev, size_t size,
-				       size_t align, dma_addr_t maxaddr);
+				       size_t align);
 extern void __drm_pci_free(struct drm_device *dev, drm_dma_handle_t * dmah);
 extern void drm_pci_free(struct drm_device *dev, drm_dma_handle_t * dmah);
 
@@ -1496,6 +1512,9 @@ static __inline__ struct drm_local_map *drm_core_findmap(struct drm_device *dev,
 
 static __inline__ int drm_device_is_agp(struct drm_device *dev)
 {
+	if (drm_core_check_feature(dev, DRIVER_USE_PLATFORM_DEVICE))
+		return 0;
+
 	if (dev->driver->device_is_agp != NULL) {
 		int err = (*dev->driver->device_is_agp) (dev);
 
@@ -1509,7 +1528,10 @@ static __inline__ int drm_device_is_agp(struct drm_device *dev)
 
 static __inline__ int drm_device_is_pcie(struct drm_device *dev)
 {
-	return pci_find_capability(dev->pdev, PCI_CAP_ID_EXP);
+	if (drm_core_check_feature(dev, DRIVER_USE_PLATFORM_DEVICE))
+		return 0;
+	else
+		return pci_find_capability(dev->pdev, PCI_CAP_ID_EXP);
 }
 
 static __inline__ void drm_core_dropmap(struct drm_local_map *map)
@@ -1536,6 +1558,22 @@ static __inline void drm_free_large(void *ptr)
 
 	vfree(ptr);
 }
+
+static inline void *drm_get_device(struct drm_device *dev)
+{
+	if (drm_core_check_feature(dev, DRIVER_USE_PLATFORM_DEVICE))
+		return dev->platformdev;
+	else
+		return dev->pdev;
+}
+
+extern int drm_platform_init(struct drm_driver *driver);
+extern int drm_pci_init(struct drm_driver *driver);
+extern int drm_fill_in_dev(struct drm_device *dev,
+			   const struct pci_device_id *ent,
+			   struct drm_driver *driver);
+int drm_get_minor(struct drm_device *dev, struct drm_minor **minor, int type);
+
 /*@}*/
 
 #endif				/* __KERNEL__ */

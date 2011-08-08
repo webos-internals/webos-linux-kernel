@@ -162,6 +162,10 @@ enum
 	KERN_MAX_LOCK_DEPTH=74,
 	KERN_NMI_WATCHDOG=75, /* int: enable/disable nmi watchdog */
 	KERN_PANIC_ON_NMI=76, /* int: whether we will panic on an unrecovered */
+#ifdef CONFIG_MINI_CORE
+  	KERN_MINICORE_PATTERN=77,	/* string: pattern for core-files */
+	KERN_MINICORE_TIMEOUT=78,	/* int: minicore timeout in sec */
+#endif
 };
 
 
@@ -490,6 +494,7 @@ enum
 	NET_IPV4_CONF_PROMOTE_SECONDARIES=20,
 	NET_IPV4_CONF_ARP_ACCEPT=21,
 	NET_IPV4_CONF_ARP_NOTIFY=22,
+	NET_IPV4_CONF_SRC_VMARK=24,
 	__NET_IPV4_CONF_MAX
 };
 

@@ -68,8 +68,18 @@
  * We make up offsets for buffer objects so we can recognize them at
  * mmap time.
  */
+
+/* pgoff in mmap is an unsigned long, so we need to make sure that
+ * the faked up offset will fit
+ */
+
+#if BITS_PER_LONG == 64
 #define DRM_FILE_PAGE_OFFSET_START ((0xFFFFFFFFUL >> PAGE_SHIFT) + 1)
 #define DRM_FILE_PAGE_OFFSET_SIZE ((0xFFFFFFFFUL >> PAGE_SHIFT) * 16)
+#else
+#define DRM_FILE_PAGE_OFFSET_START ((0xFFFFFFFUL >> PAGE_SHIFT) + 1)
+#define DRM_FILE_PAGE_OFFSET_SIZE ((0xFFFFFFFUL >> PAGE_SHIFT) * 16)
+#endif
 
 /**
  * Initialize the GEM device fields
@@ -141,19 +151,6 @@ drm_gem_object_alloc(struct drm_device *dev, size_t size)
 	obj->filp = shmem_file_setup("drm mm object", size, VM_NORESERVE);
 	if (IS_ERR(obj->filp))
 		goto free;
-
-	/* Basically we want to disable the OOM killer and handle ENOMEM
-	 * ourselves by sacrificing pages from cached buffers.
-	 * XXX shmem_file_[gs]et_gfp_mask()
-	 */
-	mapping_set_gfp_mask(obj->filp->f_path.dentry->d_inode->i_mapping,
-			     GFP_HIGHUSER |
-			     __GFP_COLD |
-			     __GFP_FS |
-			     __GFP_RECLAIMABLE |
-			     __GFP_NORETRY |
-			     __GFP_NOWARN |
-			     __GFP_NOMEMALLOC);
 
 	kref_init(&obj->refcount);
 	kref_init(&obj->handlecount);
@@ -493,6 +490,7 @@ void drm_gem_vm_close(struct vm_area_struct *vma)
 	struct drm_device *dev = obj->dev;
 
 	mutex_lock(&dev->struct_mutex);
+	drm_vm_close_locked(vma);
 	drm_gem_object_unreference(obj);
 	mutex_unlock(&dev->struct_mutex);
 }

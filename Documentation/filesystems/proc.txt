@@ -163,6 +163,7 @@ read the file /proc/PID/status:
   VmExe:        68 kB
   VmLib:      1412 kB
   VmPTE:        20 kb
+  VmSwap:        0 kB
   Threads:        1
   SigQ:   0/28578
   SigPnd: 0000000000000000
@@ -187,6 +188,12 @@ The  statm  file  contains  more  detailed  information about the process
 memory usage. Its seven fields are explained in Table 1-3.  The stat file
 contains details information about the process itself.  Its fields are
 explained in Table 1-4.
+
+(for SMP CONFIG users)
+For making accounting scalable, RSS related information are handled in
+asynchronous manner and the vaule may not be very precise. To see a precise
+snapshot of a moment, you can see /proc/<pid>/smaps file and scan page table.
+It's slow but very precise.
 
 Table 1-2: Contents of the statm files (as of 2.6.30-rc7)
 ..............................................................................
@@ -213,6 +220,7 @@ Table 1-2: Contents of the statm files (as of 2.6.30-rc7)
  VmExe                       size of text segment
  VmLib                       size of shared library code
  VmPTE                       size of page table entries
+ VmSwap                      size of swap usage (the number of referred swapents)
  Threads                     number of threads
  SigQ                        number of signals queued/max. number for queue
  SigPnd                      bitmap of pending signals for the thread

@@ -28,6 +28,7 @@ obj-$(CONFIG_USB_FSL_QE)	+= fsl_qe_udc.o
 obj-$(CONFIG_USB_CI13XXX)	+= ci13xxx_udc.o
 obj-$(CONFIG_USB_S3C_HSOTG)	+= s3c-hsotg.o
 obj-$(CONFIG_USB_LANGWELL)	+= langwell_udc.o
+obj-$(CONFIG_USB_MSM_72K)	+= msm72k_udc.o
 
 #
 # USB gadget drivers
@@ -41,6 +42,11 @@ gadgetfs-objs			:= inode.o
 g_file_storage-objs		:= file_storage.o
 g_printer-objs			:= printer.o
 g_cdc-objs			:= cdc2.o
+g_android-objs			:= android.o f_adb.o f_mass_storage.o \
+					u_serial.o f_acm.o u_ether.o \
+					$(F_ECM) $(F_SERIAL) $(F_DIAG) \
+					$(F_RMNET) $(F_RNDIS)
+g_rockhopper-objs		:= rockhopper.o
 
 obj-$(CONFIG_USB_ZERO)		+= g_zero.o
 obj-$(CONFIG_USB_AUDIO)		+= g_audio.o
@@ -52,3 +58,21 @@ obj-$(CONFIG_USB_G_PRINTER)	+= g_printer.o
 obj-$(CONFIG_USB_MIDI_GADGET)	+= g_midi.o
 obj-$(CONFIG_USB_CDC_COMPOSITE) += g_cdc.o
 
+obj-$(CONFIG_USB_ANDROID)	+= g_android.o
+obj-$(CONFIG_USB_ROCKHOPPER)	+= g_rockhopper.o
+
+obj-$(CONFIG_USB_ANDROID)	+= android.o
+obj-$(CONFIG_USB_ANDROID_ACM)	+= f_acm.o u_serial.o
+obj-$(CONFIG_USB_F_SERIAL)	+= f_serial.o u_serial.o
+obj-$(CONFIG_USB_ANDROID_ADB)	+= f_adb.o
+obj-$(CONFIG_USB_ANDROID_MASS_STORAGE)	+= f_mass_storage.o
+obj-$(CONFIG_USB_ANDROID_RNDIS)	+= f_rndis.o u_ether.o
+
+# MSM specific
+obj-$(CONFIG_USB_ANDROID_DIAG)	+= f_diag.o
+obj-$(CONFIG_USB_ANDROID_RMNET)	+= f_rmnet.o
+
+#
+# USB gadget events
+#
+obj-$(CONFIG_USB_GADGET_EVENT)	+= gadget_event.o

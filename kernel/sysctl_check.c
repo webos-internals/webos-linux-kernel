@@ -104,6 +104,10 @@ static const struct trans_ctl_table trans_kern_table[] = {
 	{ KERN_MAX_LOCK_DEPTH,		"max_lock_depth" },
 	{ KERN_NMI_WATCHDOG,		"nmi_watchdog" },
 	{ KERN_PANIC_ON_NMI,		"panic_on_unrecovered_nmi" },
+#ifdef CONFIG_MINI_CORE
+	{ KERN_MINICORE_PATTERN,	"minicore_pattern" },
+	{ KERN_MINICORE_TIMEOUT,	"minicore_timeout" },
+#endif
 	{}
 };
 
@@ -220,6 +224,7 @@ static const struct trans_ctl_table trans_net_ipv4_conf_vars_table[] = {
 	{ NET_IPV4_CONF_PROMOTE_SECONDARIES,	"promote_secondaries" },
 	{ NET_IPV4_CONF_ARP_ACCEPT,		"arp_accept" },
 	{ NET_IPV4_CONF_ARP_NOTIFY,		"arp_notify" },
+	{ NET_IPV4_CONF_SRC_VMARK,		"src_valid_mark" },
 	{}
 };
 
