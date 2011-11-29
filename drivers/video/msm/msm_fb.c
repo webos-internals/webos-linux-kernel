@@ -864,6 +864,11 @@ static int msm_fb_handle_video_mode_change(
 				mdp4_overlay_ndx2pipe(mfd->overlay_g1_pipe_index);
 			pipe->mixer_stage = MDP4_MIXER_STAGE2;
 			mdp4_mixer_stage_up(pipe);
+
+			/* Update the previous fb1 layer information since fb1 is
+			 * now elevated, and it is no longer the bottom most layer
+                         */
+			mdp4_overlay_update_layer(LAYER_FB1,mfd,-1, 0);
 		}
 		else {
 			pipe =
