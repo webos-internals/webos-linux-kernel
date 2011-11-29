@@ -412,9 +412,35 @@ static struct platform_device omap_wdt_device = {
 	.resource	= wdt_resources,
 };
 
+#if defined(CONFIG_OMAP34XX_WDT3)
+#define OMAP_WDT3_BASE		0x49030000
+
+static struct resource wdt3_resources[] = {
+	{
+		.start		= OMAP_WDT3_BASE,
+		.end		= OMAP_WDT3_BASE + 0x4f,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= INT_34XX_WDT3_IRQ,
+		.flags		= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device omap_wdt3_device = {
+	.name	   = "omap_wdt",
+	.id	     = 3,
+	.num_resources	= ARRAY_SIZE(wdt3_resources),
+	.resource	= wdt3_resources,
+};
+#endif
+
 static void omap_init_wdt(void)
 {
 	(void) platform_device_register(&omap_wdt_device);
+#if defined(CONFIG_OMAP34XX_WDT3)
+	(void) platform_device_register(&omap_wdt3_device);
+#endif
 }
 #else
 static inline void omap_init_wdt(void) {}

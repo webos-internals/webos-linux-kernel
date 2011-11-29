@@ -370,6 +370,17 @@ asmlinkage void bad_mode(struct pt_regs *regs, int reason)
 {
 	console_verbose();
 
+#ifdef CONFIG_OMAP34XX_WDT3_FIQ
+	/* Watchdog handler causes a data abort in FIQ mode */
+	if (reason == 1 && processor_mode(regs) == 17) {
+		printk(KERN_CRIT "Watchdog FIQ fired\n");
+		show_state_filter(0);
+		die("Watchdog FIQ", regs, 0);
+		local_irq_disable();
+		panic("watchdog FIQ");
+		return;
+	}
+#endif
 	printk(KERN_CRIT "Bad mode in %s handler detected\n", handler[reason]);
 
 	die("Oops - bad mode", regs, 0);

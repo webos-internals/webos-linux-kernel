@@ -1748,7 +1748,7 @@ static void stop_data_traffic(struct acm *acm, int disconnected)
 
 	tasklet_enable(&acm->urb_task);
 
-	cancel_work_sync(&acm->work);
+	acm->work_cancelled = cancel_work_sync(&acm->work);
 	if (disconnected)
 		cancel_work_sync(&acm->waker);
 }
@@ -1888,6 +1888,12 @@ static int acm_resume(struct usb_interface *intf)
 		acm_palm_flowmsg(acm, 1); // flow on
 #endif
 		tasklet_schedule(&acm->urb_task);
+
+		if (acm->work_cancelled && acm->tty) {
+			acm->work_cancelled = 0;
+			printk("%s: reschedule write wakeup\n", __func__);
+			queue_work(acm_workq, &acm->work);
+		}
 	}
 
 err_out:

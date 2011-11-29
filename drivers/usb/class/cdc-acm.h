@@ -141,6 +141,7 @@ struct acm {
 	struct async_icount icount;
 	struct async_icount last_icount;
 	wait_queue_head_t modem_wait;
+	int work_cancelled;
 };
 
 #define NOTIFICATION_NOT_EXIST	0

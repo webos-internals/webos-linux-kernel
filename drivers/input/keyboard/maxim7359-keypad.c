@@ -513,7 +513,8 @@ static void maxim_kp_scan(struct work_struct *work)
 
 				if(!readtimeout--) {
 					/* reuse the same timer we use for debounce */
-					mod_timer(&state->sw_debounce_timer, HZ >> 2);
+					mod_timer(&state->sw_debounce_timer, \
+						jiffies + msecs_to_jiffies (250));
 					break;
 				}
 
@@ -611,6 +612,15 @@ static void maxim_kp_scan(struct work_struct *work)
 
 		/* We are done with this key */
 		list_del_init(&item->link);
+	}
+
+	// If the debounce timer is still in the past, set it up
+	// unconditionally 1 second, into the future, to read
+	// any key events. This is done to workaround a hardware
+	// bug with MAX7359, wherein the hardware would not generate
+	// an interrupt for some key events.
+	if (time_before (state->sw_debounce_timer.expires, jiffies) ) {
+		mod_timer(&state->sw_debounce_timer, jiffies + msecs_to_jiffies (1000));
 	}
 
 }

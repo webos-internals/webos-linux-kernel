@@ -48,11 +48,21 @@
 #include <asm/arch/prcm.h>
 #if defined(CONFIG_ARCH_OMAP24XX) || defined(CONFIG_ARCH_OMAP34XX)
 #include <asm/arch/clock.h>
+#if defined(CONFIG_OMAP34XX_WDT3)
+#include <linux/interrupt.h>
+#if defined(CONFIG_OMAP34XX_WDT3_FIQ)
+#include <asm/fiq.h>
+#include "omap_wdt_fiq.h"
+#endif
+#endif
 #endif
 
 #include "omap_wdt.h"
 
 static struct platform_device *omap_wdt_dev;
+#if defined(CONFIG_OMAP34XX_WDT3)
+static struct platform_device *omap_wdt3_dev;
+#endif
 
 /* TAG for aggressive power management in WDT */
 #define AGGR_PM_WDT 1
@@ -108,7 +118,16 @@ struct omap_wdt_dev {
 #if defined(AGGR_PM_WDT)
 	unsigned int	clk_enabled;
 #endif
+#if defined(CONFIG_OMAP34XX_WDT3)
+	int		irq;
+#endif
 };
+
+#if defined(CONFIG_OMAP34XX_WDT3_FIQ)
+static struct fiq_handler fh = {
+	.name = "omap_wdt3",
+};
+#endif
 
 #ifdef AGGR_PM_WDT
 static void omap_wdt_sysconfig (struct omap_wdt_dev *wdev, int level)
@@ -214,6 +233,36 @@ static void omap_wdt_disable(struct omap_wdt_dev *wdev)
 		cpu_relax();
 }
 
+#if defined(CONFIG_OMAP34XX_WDT3)
+static void omap_wdt_irq_enable(struct omap_wdt_dev *wdev)
+{
+	void __iomem *base;
+	base = wdev->base;
+	omap_writel(0x1, base + OMAP_WATCHDOG_IER);
+}
+
+static void omap_wdt_irq_disable(struct omap_wdt_dev *wdev)
+{
+	void __iomem *base;
+	base = wdev->base;
+	omap_writel(0x0, base + OMAP_WATCHDOG_IER);
+}
+
+static void omap_wdt_irq_clear(struct omap_wdt_dev *wdev)
+{
+	void __iomem *base;
+	base = wdev->base;
+	omap_writel(0x1, base + OMAP_WATCHDOG_ISR);
+}
+
+static int omap_wdt_irq_pending(struct omap_wdt_dev *wdev)
+{
+	void __iomem *base;
+	base = wdev->base;
+	return (omap_readl(base + OMAP_WATCHDOG_ISR) & 0x1);
+}
+#endif
+
 static void omap_wdt_adjust_timeout(unsigned new_timeout)
 {
 	if (new_timeout < TIMER_MARGIN_MIN)
@@ -237,6 +286,19 @@ static void omap_wdt_set_timeout(struct omap_wdt_dev *wdev)
 		cpu_relax();
 }
 
+static void omap_wdt_set_prescaler(struct omap_wdt_dev *wdev)
+{
+	void __iomem *base;
+	base = wdev->base;
+
+	/* initialize prescaler */
+	while (omap_readl(base + OMAP_WATCHDOG_WPS) & 0x01)
+		cpu_relax();
+	omap_writel((1 << 5) | (PTV << 2), base + OMAP_WATCHDOG_CNTRL);
+	while (omap_readl(base + OMAP_WATCHDOG_WPS) & 0x01)
+		cpu_relax();
+}
+
 /*
  *	Allow only one task to hold it open
  */
@@ -246,8 +308,17 @@ static int omap_wdt_open(struct inode *inode, struct file *file)
 	int err = 1;
 	struct omap_wdt_dev *wdev;
 	void __iomem *base;
+#if defined(CONFIG_OMAP34XX_WDT3)
+	unsigned int minor = iminor(inode);
 
+	if (minor == WATCHDOG_MINOR)
+		wdev = platform_get_drvdata(omap_wdt_dev);
+	else
+		wdev = platform_get_drvdata(omap_wdt3_dev);
+#else
 	wdev = platform_get_drvdata(omap_wdt_dev);
+#endif
+
 	base = wdev->base;
 
 	if (test_and_set_bit(1, (unsigned long *)&(wdev->omap_wdt_users)))
@@ -273,17 +344,21 @@ static int omap_wdt_open(struct inode *inode, struct file *file)
 #if defined(AGGR_PM_WDT)
 	wdev->clk_enabled = 1;
 #endif
-	/* initialize prescaler */
-	while (omap_readl(base + OMAP_WATCHDOG_WPS) & 0x01)
-		cpu_relax();
-	omap_writel((1 << 5) | (PTV << 2), base + OMAP_WATCHDOG_CNTRL);
-	while (omap_readl(base + OMAP_WATCHDOG_WPS) & 0x01)
-		cpu_relax();
+	omap_wdt_set_prescaler(wdev);
 
 	file->private_data = (void *) wdev;
 
 	omap_wdt_set_timeout(wdev);
+#if defined(CONFIG_OMAP34XX_WDT3)
+	if (wdev->irq >= 0)
+		omap_wdt_irq_clear(wdev);
+#endif
 	omap_wdt_enable(wdev);
+	omap_wdt_ping(wdev);
+#if defined(CONFIG_OMAP34XX_WDT3)
+	if (wdev->irq >= 0)
+		omap_wdt_irq_enable(wdev);
+#endif
 	return nonseekable_open(inode, file);
 fail:
 	if (wdev->armwdt_ck)
@@ -305,6 +380,10 @@ static int omap_wdt_release(struct inode *inode, struct file *file)
 	 *      Shut off the timer unless NOWAYOUT is defined.
 	 */
 #ifndef CONFIG_WATCHDOG_NOWAYOUT
+#if defined(CONFIG_OMAP34XX_WDT3)
+	if (wdev->irq >= 0)
+		omap_wdt_irq_disable(wdev);
+#endif
 	omap_wdt_disable(wdev);
 
 	if (cpu_is_omap16xx()) {
@@ -395,6 +474,28 @@ static const struct file_operations omap_wdt_fops = {
 	.release = omap_wdt_release,
 };
 
+#if defined(CONFIG_OMAP34XX_WDT3)
+/* Note: if CONFIG_OMAP34XX_FIQ is defined, this handler is not used.
+ */
+static irqreturn_t omap_wdt_fire(int irq, void *arg)
+{
+	struct omap_wdt_dev *wdev = arg;
+
+	if (omap_wdt_irq_pending(wdev)) {
+		omap_wdt_irq_clear(wdev);
+
+		printk(KERN_CRIT "WDT timeout triggered.\n");
+
+		show_state_filter(0);
+
+		printk(KERN_CRIT "Initiating system reboot.\n");
+		emergency_restart();
+
+		return IRQ_HANDLED;
+	}
+	return IRQ_NONE;
+}
+#endif
 
 static int __init omap_wdt_probe(struct platform_device *pdev)
 {
@@ -407,8 +508,17 @@ static int __init omap_wdt_probe(struct platform_device *pdev)
 	if (!res)
 		return -ENOENT;
 
-	if (omap_wdt_dev)
-		return -EBUSY;
+	if (pdev->id == 2) {
+		if (omap_wdt_dev)
+			return -EBUSY;
+#if defined(CONFIG_OMAP34XX_WDT3)
+	} else if (pdev->id == 3) {
+		if (omap_wdt3_dev)
+			return -EBUSY;
+#endif
+	} else {
+		return -EINVAL;
+	}
 
 	mem = request_mem_region(res->start, res->end - res->start + 1,
 				 pdev->name);
@@ -436,38 +546,58 @@ static int __init omap_wdt_probe(struct platform_device *pdev)
 		if ((ret = wdt_clk_get (wdev, pdev)) != 0)
 			goto fail;	
 		
+#if defined(CONFIG_OMAP34XX_WDT3)
+	if (pdev->id == 2) {
+		wdev->irq = -1;
+	} else if (pdev->id == 3) {
+		wdev->irq = platform_get_irq(pdev, 0);
+		if (wdev->irq < 0) {
+			ret = -ENXIO;
+			goto fail;
+		}
+	}
+#endif
 	wdev->base = (void __iomem *) (mem->start);
 	platform_set_drvdata(pdev, wdev);
 
-	omap_wdt_disable(wdev);
-	omap_wdt_adjust_timeout(timer_margin);
-
-	wdev->omap_wdt_miscdev.parent = &pdev->dev;
-	wdev->omap_wdt_miscdev.minor = WATCHDOG_MINOR;
-	wdev->omap_wdt_miscdev.name = "watchdog";
-	wdev->omap_wdt_miscdev.fops = &omap_wdt_fops;
-
-	ret = misc_register(&(wdev->omap_wdt_miscdev));
-	if (ret)
-		goto fail;
-
-	pr_info("OMAP Watchdog Timer Rev 0x%02x: initial timeout %d sec\n",
-		omap_readl(wdev->base + OMAP_WATCHDOG_REV) & 0xFF,
-		timer_margin);
-
 #if defined(AGGR_PM_WDT)
 	/* Enable clocks for SYSCONFIG setting */
-	if (clk_enable(wdev->mpu_wdt_ick) != 0) {
+	if ((ret = clk_enable(wdev->mpu_wdt_ick)) != 0) {
 		wdev->clk_enabled = 0;
 		goto fail;
 	}
-	if (clk_enable(wdev->mpu_wdt_fck) != 0) {
+	if ((ret = clk_enable(wdev->mpu_wdt_fck)) != 0) {
 		clk_disable(wdev->mpu_wdt_ick);
 		wdev->clk_enabled = 0;
 		goto fail;
 	}
 	wdev->clk_enabled = 1;
 #endif /* #if defined(AGGR_PM_WDT) */
+
+	omap_wdt_disable(wdev);
+	omap_wdt_adjust_timeout(timer_margin);
+
+	wdev->omap_wdt_miscdev.parent = &pdev->dev;
+	if (pdev->id == 2) {
+		wdev->omap_wdt_miscdev.minor = WATCHDOG_MINOR;
+		wdev->omap_wdt_miscdev.name = "watchdog";
+#if defined(CONFIG_OMAP34XX_WDT3)
+	} else if (pdev->id == 3) {
+		wdev->omap_wdt_miscdev.minor = MISC_DYNAMIC_MINOR;
+		wdev->omap_wdt_miscdev.name = "watchdog3";
+#endif
+	}
+	wdev->omap_wdt_miscdev.fops = &omap_wdt_fops;
+
+	ret = misc_register(&(wdev->omap_wdt_miscdev));
+	if (ret)
+		goto fail;
+
+	pr_info("OMAP %s Rev 0x%02x (minor=%d): initial timeout %d sec\n",
+		wdev->omap_wdt_miscdev.name,
+		omap_readl(wdev->base + OMAP_WATCHDOG_REV) & 0xFF,
+		wdev->omap_wdt_miscdev.minor,
+		timer_margin);
 
 	/* SYSCONFIG setting */	
 	if (cpu_is_omap34xx())
@@ -476,13 +606,41 @@ static int __init omap_wdt_probe(struct platform_device *pdev)
 	/* autogate OCP interface clock */
 		omap_writel(0x01, wdev->base + OMAP_WATCHDOG_SYS_CONFIG);
 	
+#if defined(CONFIG_OMAP34XX_WDT3)
+	if (pdev->id == 3) {
+#if defined(CONFIG_OMAP34XX_WDT3_FIQ)
+		ret = claim_fiq(&fh);
+		if (ret) {
+			printk(KERN_ERR "WDT OPEN: FIQ register failed\n");
+			goto fail;
+		}
+
+		set_fiq_handler(&wdt_fiq_start, &wdt_fiq_end - &wdt_fiq_start);
+		INTCPS_ILR(wdev->irq) = 0x1; /* route to FIQ */
+#endif
+		ret = request_irq(wdev->irq, omap_wdt_fire, IRQF_DISABLED,
+				  "omap_wdt", wdev);
+		if (ret) {
+			printk (KERN_ERR "cannot register IRQ%d for watchdog\n",
+				wdev->irq);
+			goto fail;
+		}
+	}
+#endif
+
 #if defined(AGGR_PM_WDT)
 	clk_disable(wdev->mpu_wdt_ick);	/* Disable the interface clock */
 	clk_disable(wdev->mpu_wdt_fck);	/* Disable the functional clock */
 	wdev->clk_enabled = 0;
 #endif /* #if defined(AGGR_PM_WDT) */
 
-	omap_wdt_dev = pdev;
+	if (pdev->id == 2) {
+		omap_wdt_dev = pdev;
+#if defined(CONFIG_OMAP34XX_WDT3)
+	} else if (pdev->id == 3) {
+		omap_wdt3_dev = pdev;
+#endif
+	}
 
 	return 0;
 
@@ -516,6 +674,14 @@ static int omap_wdt_remove(struct platform_device *pdev)
 	struct omap_wdt_dev *wdev;
 	wdev = platform_get_drvdata(pdev);
 
+#if defined(CONFIG_OMAP34XX_WDT3)
+	if (pdev->id == 3) {
+#if defined(CONFIG_OMAP34XX_WDT3_FIQ)
+		release_fiq(&fh);
+#endif
+		free_irq(wdev->irq, wdev);
+	}
+#endif
 	misc_deregister(&(wdev->omap_wdt_miscdev));
 	release_resource(wdev->mem);
 	platform_set_drvdata(pdev, NULL);
@@ -527,6 +693,9 @@ static int omap_wdt_remove(struct platform_device *pdev)
 		clk_put(wdev->mpu_wdt_fck);
 	kfree(wdev);
 	omap_wdt_dev = NULL;
+#if defined(CONFIG_OMAP34XX_WDT3)
+	omap_wdt3_dev = NULL;
+#endif
 	return 0;
 }
 
@@ -543,19 +712,23 @@ static int omap_wdt_suspend(struct platform_device *pdev, pm_message_t state)
 	struct omap_wdt_dev *wdev;
 	wdev = platform_get_drvdata(pdev);
 
-	if (wdev->omap_wdt_users)
+	if (wdev->omap_wdt_users) {
+#if defined(CONFIG_OMAP34XX_WDT3)
+		if (wdev->irq >= 0)
+			omap_wdt_irq_disable(wdev);
+#endif
 		omap_wdt_disable(wdev);
-
 #if defined(AGGR_PM_WDT)
-	if (wdev->clk_enabled) {
-		if (cpu_is_omap34xx())
-			omap_wdt_sysconfig (wdev, OMAP_WDT_SYSCONFIG_LVL2);
-
-		clk_disable(wdev->mpu_wdt_ick);	/* Disable the interface clock */
-		clk_disable(wdev->mpu_wdt_fck);	/* Disable the functional clock */
-		wdev->clk_enabled = 0;
-	}
+		if (wdev->clk_enabled) {
+			if (cpu_is_omap34xx())
+				omap_wdt_sysconfig (wdev,
+						    OMAP_WDT_SYSCONFIG_LVL2);
+			clk_disable(wdev->mpu_wdt_ick);
+			clk_disable(wdev->mpu_wdt_fck);
+			wdev->clk_enabled = 0;
+		}
 #endif /* #if defined(AGGR_PM_WDT) */
+	}
 	return 0;
 }
 
@@ -564,24 +737,37 @@ static int omap_wdt_resume(struct platform_device *pdev)
 	struct omap_wdt_dev *wdev;
 	wdev = platform_get_drvdata(pdev);
 
+	if (wdev->omap_wdt_users) {
 #if defined(AGGR_PM_WDT)
-	if (!wdev->clk_enabled) {
-		if (clk_enable(wdev->mpu_wdt_ick) != 0)	/* Enable the interface clock */
-			goto fail;
-
-		if (clk_enable(wdev->mpu_wdt_fck) != 0)	/* Enable the functional clock */
-			goto fail_1;
-		wdev->clk_enabled = 1;
-	}
-
-	if (cpu_is_omap34xx())
-		omap_wdt_sysconfig (wdev, OMAP_WDT_SYSCONFIG_LVL1);
+		if (!wdev->clk_enabled) {
+			if (clk_enable(wdev->mpu_wdt_ick) != 0)
+				goto fail;
+			if (clk_enable(wdev->mpu_wdt_fck) != 0)
+				goto fail_1;
+			wdev->clk_enabled = 1;
+		}
+		if (cpu_is_omap34xx())
+			omap_wdt_sysconfig (wdev, OMAP_WDT_SYSCONFIG_LVL1);
 #endif /* #if defined(AGGR_PM_WDT) */
 
-	if (wdev->omap_wdt_users) {
+#if defined (CONFIG_OMAP34XX_WDT3) && defined(CONFIG_OMAP34XX_OFFMODE)
+		if (wdev->irq >= 0) {
+			/* need to re-initialize registers */
+			omap_wdt_disable(wdev);
+#if PTV > 0
+			omap_wdt_set_prescaler(wdev);
+#endif
+			omap_wdt_set_timeout(wdev);
+		}
+#endif
 		omap_wdt_enable(wdev);
 		omap_wdt_ping(wdev);
+#if defined(CONFIG_OMAP34XX_WDT3)
+		if (wdev->irq >= 0)
+			omap_wdt_irq_enable(wdev);
+#endif
 	}
+
 	return 0;
 	
 #if defined(AGGR_PM_WDT)

@@ -407,6 +407,7 @@ config ARCH_OMAP
 	select GENERIC_GPIO
 	select GENERIC_TIME
 	select GENERIC_CLOCKEVENTS
+	select FIQ
 	help
 	  Support for TI's OMAP platform (OMAP1, OMAP2 and OMAP3).
 

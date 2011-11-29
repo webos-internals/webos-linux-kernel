@@ -178,6 +178,21 @@ config OMAP_WATCHDOG
 	  Support for TI OMAP1610/OMAP1710/OMAP2420 watchdog.  Say 'Y' here to
 	  enable the OMAP1610/OMAP1710 watchdog timer.
 
+config OMAP34XX_WDT3
+	bool "OMAP IVA2 Watchdog (WDT3)"
+	default n
+	depends on OMAP_WATCHDOG
+	help
+	  Say Y here if to use IVA2 Watchdog (WDT3) instead of MPU
+	  Watchdog (WDT2).
+
+config OMAP34XX_WDT3_FIQ
+        bool "OMAP IVA2 Watchdog (WDT3) FIQ"
+	default n
+	depends on OMAP34XX_WDT3 && FIQ
+	help
+	  Say Y here if to use IVA2 Watchdog (WDT3) with FIQ
+
 config PNX4008_WATCHDOG
 	tristate "PNX4008 Watchdog"
 	depends on ARCH_PNX4008

@@ -347,4 +347,8 @@ extern void omap_init_irq(void);
 #define NR_IRQS                 IH_BOARD_BASE
 #endif
 
+#ifdef CONFIG_FIQ
+#define	FIQ_START		1024
+#endif
+
 #endif
