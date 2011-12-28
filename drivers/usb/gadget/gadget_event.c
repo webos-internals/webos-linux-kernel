@@ -362,6 +362,13 @@ gadget_event_power_state_changed(enum gadget_event_source_type source,
 }
 EXPORT_SYMBOL(gadget_event_power_state_changed);
 
+#ifdef CONFIG_CPU_FREQ_GOV_SCREENSTATE
+int gadget_event_state_current(void) {
+	return the_state.current_mA;
+}
+EXPORT_SYMBOL(gadget_event_state_current);
+#endif
+
 static int __init init(void)
 {
 	int ret = 0;

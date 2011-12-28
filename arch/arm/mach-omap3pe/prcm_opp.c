@@ -1889,5 +1889,7 @@ err_out:
 	return -1;
 }
 
-
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+#include "prcm_opp_ss.c"
+#endif
 

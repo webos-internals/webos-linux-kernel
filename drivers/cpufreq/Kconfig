@@ -53,6 +53,23 @@ config CPU_FREQ_STAT_DETAILS
 
 	  If in doubt, say N.
 
+config CPU_FREQ_OVERRIDE
+	bool "Extra on-demand CPU tweaking options"
+	default y
+	help
+	  This will give options to tweak CPU settings in-demand.
+
+	  If in doubt, say Y.
+
+config CPU_FREQ_OVERRIDE_STRIPOPP
+	bool "Strip OPP1 and OPP2 from available frequencies list"
+	depends on CPU_FREQ_OVERRIDE
+	default y
+	help
+	  This will hide 125MHz and 250MHz from scaling_available_frequencies.
+
+	  If in doubt, say N.
+
 choice
 	prompt "Default CPUFreq governor"
 	default CPU_FREQ_DEFAULT_GOV_USERSPACE if CPU_FREQ_SA1100 || CPU_FREQ_SA1110
@@ -86,6 +103,15 @@ config CPU_FREQ_DEFAULT_GOV_USERSPACE
 	  you to set the CPU frequency manually or when an userspace 
 	  program shall be able to set the CPU dynamically without having
 	  to enable the userspace governor manually.
+
+config CPU_FREQ_DEFAULT_GOV_SCREENSTATE
+        bool "screenstate"
+        select CPU_FREQ_GOV_SCREENSTATE
+        help
+          Use the CPUFreq governor 'screenstate' as default. This will
+	  scale the CPU frequency down when the LCD is off then scale
+	  back to max speed when LCD is powered on.  This also will not
+	  allow to set the CPU frequency manually.
 
 config CPU_FREQ_DEFAULT_GOV_ONDEMAND
 	bool "ondemand"
@@ -161,6 +187,16 @@ config CPU_FREQ_GOV_USERSPACE
 	  For details, take a look at <file:Documentation/cpu-freq/>.
 
 	  If in doubt, say Y.
+
+config CPU_FREQ_GOV_SCREENSTATE
+        tristate "'screenstate' governor for frequency scaling"
+        help
+          Enable this cpufreq governor to scale when LCD is on/off.
+
+          To compile this driver as a module, choose M here: the
+          module will be called cpufreq_screenstate.
+
+          If in doubt, say Y.
 
 config CPU_FREQ_GOV_ONDEMAND
 	tristate "'ondemand' cpufreq policy governor"
