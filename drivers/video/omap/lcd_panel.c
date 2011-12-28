@@ -48,6 +48,9 @@ void cpufreq_gov_screenstate_lcdoff(void);
 #define DPRINTK(format,...)
 #endif
 
+bool omap_fb_state = 1;
+EXPORT_SYMBOL(omap_fb_state);
+
 #define DISPLAY_DEVICE_STATE_ON        1
 #define DISPLAY_DEVICE_STATE_OFF       0
 #define DISPLAY_PANEL_STATE_ON         1
@@ -116,6 +119,7 @@ static void panel_set_state(struct lcd_params *params, unsigned int state)
 		    params->ctrl_ops->ctrl_set_state) {
 			params->ctrl_ops->ctrl_set_state(params->ctrl_dev,
 						DISPLAY_CONTROLLER_STATE_ON);
+			omap_fb_state = 1;
 		}
 
 		/* Panel ON */
@@ -148,6 +152,7 @@ static void panel_set_state(struct lcd_params *params, unsigned int state)
 		    params->bl_ops->bl_set_state) {
 			params->bl_ops->bl_set_state(params->bl_dev,
 						DISPLAY_BACKLIGHT_STATE_OFF);
+			omap_fb_state = 0;
 		}
 
 		/* Panel OFF */

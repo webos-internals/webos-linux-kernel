@@ -255,6 +255,30 @@ static int get_num_sample_records(void) {
 	return count;
 }
 
+static bool ss_enabled = 0;
+static unsigned int sleep_max_freq = 300000;
+extern bool omap_fb_state;
+
+static int cpufreq_target(struct cpufreq_policy *policy, unsigned int freq,
+                                                        unsigned int relation)
+{       
+        int retval = -EINVAL;
+
+        if(omap_fb_state || !ss_enabled) {
+                retval = __cpufreq_driver_target(policy, freq, relation);
+        }
+        else {
+                if(freq <= sleep_max_freq)
+                        retval = __cpufreq_driver_target(policy, freq,
+                                                                relation);
+                else
+                        retval = __cpufreq_driver_target(policy, sleep_max_freq,
+                                                                relation);
+        }
+
+        return retval;
+}               
+
 static void *stats_start(struct seq_file *m, loff_t *pos)
 {
 	struct stats_state *state = kmalloc(sizeof(struct stats_state),  GFP_KERNEL);
@@ -655,6 +679,16 @@ static ssize_t show_sampling_rate_min(struct cpufreq_policy *policy, char *buf)
 	return sprintf (buf, "%u\n", MIN_SAMPLING_RATE);
 }
 
+static ssize_t show_screen_off_max_freq(struct cpufreq_policy *unused, char *buf)
+{
+        return sprintf(buf, "%u\n", sleep_max_freq);
+}
+
+static ssize_t show_screenstate_enable(struct cpufreq_policy *policy, char *buf)
+{
+        return sprintf(buf, "%u\n", ss_enabled);
+}
+
 #define define_one_ro(_name)		\
 static struct freq_attr _name =		\
 __ATTR(_name, 0444, show_##_name, NULL)
@@ -811,6 +845,45 @@ static ssize_t store_max_floor_window(struct cpufreq_policy *unuesd,
 	return count;
 }
 
+static ssize_t store_screen_off_max_freq(struct cpufreq_policy *unuesd,
+                                                const char *buf, size_t count)
+{
+        unsigned int input;
+        int ret;
+        ret = sscanf(buf, "%u", &input);
+
+        if (ret != 1)
+                return -EINVAL;
+
+        if (input < 150000 || input > 2000000) {
+                printk("ondemand-ng: invalid sleep freq\n");
+                return -EINVAL;
+        }
+
+        sleep_max_freq = input;
+
+        return count;
+}
+
+static ssize_t store_screenstate_enable(struct cpufreq_policy *unuesd,
+                                                const char *buf, size_t count)
+{
+        unsigned int input;
+        int ret;
+        ret = sscanf(buf, "%u", &input);
+
+        if (ret != 1)
+                return -EINVAL;
+
+        if (input != 0 && input != 1) {
+                return -EINVAL;
+        }
+
+        ss_enabled = input;
+
+        return count;
+}
+
 #define define_one_rw(_name) \
 static struct freq_attr _name = \
 __ATTR(_name, 0644, show_##_name, store_##_name)
@@ -821,6 +894,8 @@ define_one_rw(ignore_nice_load);
 define_one_rw(powersave_bias);
 define_one_rw(max_tickle_window);
 define_one_rw(max_floor_window);
+define_one_rw(screen_off_max_freq);
+define_one_rw(screenstate_enable);
 
 static struct attribute * dbs_attributes[] = {
 	&sampling_rate_max.attr,
@@ -831,6 +906,8 @@ static struct attribute * dbs_attributes[] = {
 	&powersave_bias.attr,
 	&max_tickle_window.attr,
 	&max_floor_window.attr,
+	&screen_off_max_freq.attr,
+	&screenstate_enable.attr,
 	NULL
 };
 
@@ -1132,7 +1209,7 @@ static void do_floor_state_change(struct work_struct *work)
 			}
 
 			dbs_info->floor_active = 0;
-			__cpufreq_driver_target(policy, dbs_info->freq_save, dbs_info->rel_save);
+			cpufreq_target(policy, dbs_info->freq_save, dbs_info->rel_save);
 
 			unlock_policy_rwsem_write(cpu);
 		}
@@ -1329,7 +1406,7 @@ static void adjust_for_load(struct cpu_dbs_info_s *this_dbs_info)
 				this_dbs_info->rel_save = CPUFREQ_RELATION_H;
 			}
 
-			__cpufreq_driver_target(policy, policy->max,
+			cpufreq_target(policy, policy->max,
 				CPUFREQ_RELATION_H);
 		} else {
 			int freq = powersave_bias_target(policy, policy->max,
@@ -1344,7 +1421,7 @@ static void adjust_for_load(struct cpu_dbs_info_s *this_dbs_info)
 			}
 
 			record_sample(policy->cur, freq, load, policy->cpu);
-			__cpufreq_driver_target(policy, freq,
+			cpufreq_target(policy, freq,
 				CPUFREQ_RELATION_L);
 		}
 		return;
@@ -1381,7 +1458,7 @@ static void adjust_for_load(struct cpu_dbs_info_s *this_dbs_info)
 			}
 
 			record_sample(policy->cur, freq_next, load, policy->cpu);
-			__cpufreq_driver_target(policy, freq_next,
+			cpufreq_target(policy, freq_next,
 					CPUFREQ_RELATION_L);
 		} else {
 			int freq = powersave_bias_target(policy, freq_next,
@@ -1395,7 +1472,7 @@ static void adjust_for_load(struct cpu_dbs_info_s *this_dbs_info)
 					freq = this_dbs_info->freq_floor;
 			}
 
-			__cpufreq_driver_target(policy, freq,
+			cpufreq_target(policy, freq,
 				CPUFREQ_RELATION_L);
 			record_sample(policy->cur, freq, load, policy->cpu);
 		}
@@ -1436,7 +1513,7 @@ static void do_dbs_timer(struct work_struct *work)
 		}
 	} else {
 		record_sample(dbs_info->cur_policy->cur, dbs_info->freq_lo, -1, cpu);
-		__cpufreq_driver_target(dbs_info->cur_policy,
+		cpufreq_target(dbs_info->cur_policy,
 					dbs_info->freq_lo,
 					CPUFREQ_RELATION_H);
 	}
@@ -1636,12 +1713,12 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		mutex_lock(&dbs_mutex);
 		if (policy->max < this_dbs_info->cur_policy->cur) {
 			record_sample(policy->cur, policy->max, -1, policy->cpu);
-			__cpufreq_driver_target(this_dbs_info->cur_policy,
+			cpufreq_target(this_dbs_info->cur_policy,
 			                        policy->max,
 			                        CPUFREQ_RELATION_H);
 		} else if (policy->min > this_dbs_info->cur_policy->cur) {
 			record_sample(policy->cur, policy->min, -1, policy->cpu);
-			__cpufreq_driver_target(this_dbs_info->cur_policy,
+			cpufreq_target(this_dbs_info->cur_policy,
 			                        policy->min,
 			                        CPUFREQ_RELATION_L);
 		}
