@@ -1,0 +1,15 @@
+menuconfig COMPCACHE_DEV
+	bool "Compcache drivers"
+	select LZO_COMPRESS
+	select LZO_DECOMPRESS
+	default y
+
+if COMPCACHE_DEV
+config COMPCACHE
+	tristate "Page cache compression support"
+	default m
+config XVMALLOC
+	tristate "xvmalloc"
+	default m
+
+endif
