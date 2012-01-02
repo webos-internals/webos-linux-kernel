@@ -231,6 +231,8 @@ static struct clkctl_acpu_speed *acpu_freq_tbl;
 static struct clkctl_l2_speed *l2_freq_tbl;
 static unsigned int l2_freq_tbl_size;
 
+#include "override_plug.c"
+
 unsigned long acpuclk_get_rate(int cpu)
 {
 	return drv_state.current_speed[cpu]->acpuclk_khz;

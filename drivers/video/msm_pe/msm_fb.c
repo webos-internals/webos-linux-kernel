@@ -51,6 +51,10 @@
 #include "mdp.h"
 #include "mdp4.h"
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+void cpufreq_override_set_lcd_state(bool state);
+#endif
+
 #ifdef CONFIG_FB_MSM_LOGO
 #define INIT_IMAGE_FILE "/initlogo.rle"
 extern int load_565rle_image(char *filename);
@@ -67,6 +71,11 @@ static struct platform_device *pdev_list[MSM_FB_MAX_DEV_LIST];
 static int pdev_list_cnt;
 
 int vsync_mode = 1;
+
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_TICKLE
+bool msm_fb_state=1;
+EXPORT_SYMBOL(msm_fb_state);
+#endif
 
 #define MAX_BLIT_REQ 256
 
@@ -347,6 +356,9 @@ static ssize_t msm_fb_store_state(struct device *dev,
 		}
 		else {
 			printk(KERN_INFO "msmfb: Resuming msmfb\n");
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_TICKLE
+			msm_fb_state=1;
+#endif
 			acquire_console_sem();
 			ret = msm_fb_resume_sub(mfd);
 			release_console_sem();
@@ -354,6 +366,10 @@ static ssize_t msm_fb_store_state(struct device *dev,
 			//fb_set_suspend(mfd->fbi[0], FBINFO_STATE_RUNNING);
 
 			mfd->suspended = false;
+
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+                        cpufreq_override_set_lcd_state(1);
+#endif
 		}
 
 	}
@@ -364,6 +380,9 @@ static ssize_t msm_fb_store_state(struct device *dev,
 		}
 		else {
 			printk(KERN_INFO "msmfb: Suspending msmfb\n");
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_TICKLE
+			msm_fb_state=0;
+#endif
 			acquire_console_sem();
 			ret = msm_fb_suspend_sub(mfd);
 			release_console_sem();
@@ -374,6 +393,10 @@ static ssize_t msm_fb_store_state(struct device *dev,
 				//fb_set_suspend(mfd->fbi[0], FBINFO_STATE_SUSPENDED);
 				mfd->pdev->dev.power.power_state = PMSG_SUSPEND;
 				mfd->suspended = true;
+
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+                                cpufreq_override_set_lcd_state(0);
+#endif
 			}
 		}
 
