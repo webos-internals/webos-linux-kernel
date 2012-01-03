@@ -18,6 +18,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
+#include <linux/kernel.h>
 #include <asm/arch/nduid.h>
 #include <asm/io.h>
 #if defined(CONFIG_ARCH_OMAP24XX)
@@ -62,6 +63,10 @@ int omap_nduid_get_cpu_id(char *id, unsigned int maxlen)
 	buf[3] = __raw_readl(CONTROL_TAP_DIE_ID_1);
 	buf[4] = __raw_readl(CONTROL_TAP_DIE_ID_2);
 	buf[5] = __raw_readl(CONTROL_TAP_DIE_ID_3);
+
+	printk(KERN_INFO "IDCODE:  0x%04x\n", buf[0]);
+	printk(KERN_INFO "PROD_ID: 0x%04x\n", buf[1]);
+	printk(KERN_INFO "DIE_ID:  0x%04x%04x%04x%04x\n", buf[2], buf[3], buf[4], buf[5]);
 
 	return sizeof(uint32_t) * 6;
 }
