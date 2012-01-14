@@ -4044,23 +4044,23 @@ static int wm8994_suspend(struct platform_device *pdev, pm_message_t state)
 	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
 	struct snd_soc_codec *codec = socdev->card->codec;
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
+	printk(KERN_ERR "%s\n", __FUNCTION__);
 	if (wm8994 && !wm8994->pdata->force_route && !wm8994->pdata->jack_is_mic) {
 		unsigned int val = 0, new_val = 0;
 
 		wm8994_set_bias_level(codec, SND_SOC_BIAS_OFF);
-		wm8994->suspended = true;
 
 		/* Palm: Ensure clocks are disabled and stored in cache
 		* some registers do not take values written to them
 		* when clocking is enabled */
 		val = wm8994_read(codec, WM8994_AIF1_CLOCKING_1);
-		dev_err(codec->dev, "AIF1_CLOCKING_1 value 0x%x", val);
+		dev_err(codec->dev, "AIF1_CLOCKING_1 value 0x%x\n", val);
 		new_val = val & ~WM8994_AIF1CLK_ENA;
 		if (new_val != val)
 			wm8994_write(codec, WM8994_AIF1_CLOCKING_1, new_val);
 
 		val = wm8994_read(codec, WM8994_AIF2_CLOCKING_1);
-		dev_err(codec->dev, "AIF2_CLOCKING_1 value 0x%x", val);
+		dev_err(codec->dev, "AIF2_CLOCKING_1 value 0x%x\n", val);
 		new_val = val & ~WM8994_AIF2CLK_ENA;
 		if (new_val != val)
 			wm8994_write(codec, WM8994_AIF2_CLOCKING_1, new_val);
@@ -4070,10 +4070,8 @@ static int wm8994_suspend(struct platform_device *pdev, pm_message_t state)
 		
 	} else {
 		dev_err(codec->dev, "  We didn't turn off power\n");
-		wm8994->suspended = false;
 	}
 
-	dev_err(codec->dev, "- MEOW %s\n", __FUNCTION__);
 	return 0;
 }
 
@@ -4086,7 +4084,6 @@ static int wm8994_resume(struct platform_device *pdev)
 	int i, ret;
 
 	unsigned int val, mask;
-	wm8994->suspended = false;
 
 	if (wm8994 && wm8994->pdata->force_route && !wm8994->pdata->jack_is_mic){
 		return 0;
@@ -4138,17 +4135,16 @@ static int wm8994_resume(struct platform_device *pdev)
 			dev_warn(codec->dev, "Failed to restore FLL%d: %d\n",
 				 i + 1, ret);
 	}
-	
+
 	if(wm8994->defer_mic_det) {
 		dev_err(codec->dev, "  About to enable defered mic detection\n");
+		printk(KERN_ERR "%s : About to enable defered mic detection\n", __FUNCTION__);
 		snd_soc_dapm_force_enable_pin( codec, "MICBIAS2");
 		wm8958_mic_detect( codec, wm8994->soc_jack, NULL, NULL);
 		wm8994->defer_mic_det = false;
 		snd_soc_dapm_sync(codec);
 	}
 
-
-	dev_err(codec->dev, "- MEOW %s\n", __FUNCTION__);
 	return 0;
 }
 #else
@@ -4649,6 +4645,7 @@ static void wm8958_hp_micdet(u16 status, void *data)
 	}
 	input_sync(wm8994->micdet[0].jack->jack->input_dev);
 	wm8994->micdet[0].jack->jack->type = oldtype;
+	wm8994->pdata->mic_det_inprogress = false;
 }
 
 /**
@@ -4675,8 +4672,16 @@ int wm8958_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 
 	if (control->type != WM8958)
 		return -EINVAL;
+	
 
 	if (jack) {
+		if(wm8994->pdata->suspended){
+			printk(KERN_ERR "%s : setting defer_mic_det to 1\n", __FUNCTION__);
+			wm8994->defer_mic_det = 1;
+			return 0;
+		}
+
+		wm8994->pdata->mic_det_inprogress = true;
 		if (!cb) {
 			dev_dbg(codec->dev, "Using hp micdet callback\n");
 			//cb = wm8958_default_micdet;
@@ -4695,8 +4700,6 @@ int wm8958_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 							2 | WM8958_MICD_ENA,
 							2 | WM8958_MICD_ENA);
 
-		dev_dbg(codec->dev, "Do detection from suspend\n");
-			
 		snd_soc_update_bits(codec,
 					WM8958_MIC_DETECT_1,
 					WM8958_MICD_ENA, 0);
@@ -4706,11 +4709,14 @@ int wm8958_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 					2 | WM8958_MICD_ENA,
 					2 | WM8958_MICD_ENA);
 	} else {
+		wm8994->pdata->mic_det_inprogress = false;
 		//Disable mic detection
-		snd_soc_update_bits(codec,
-							WM8958_MIC_DETECT_1,
-							WM8958_MICD_ENA,
-							0);
+		if(!wm8994->pdata->suspended){
+			snd_soc_update_bits(codec,
+						WM8958_MIC_DETECT_1,
+						WM8958_MICD_ENA,
+						0);
+		}
 	}
 
 	return 0;
@@ -4732,7 +4738,9 @@ static irqreturn_t wm8958_mic_irq(int irq, void *data)
 	int i = 0;
 
 	//msleep(50);
-	
+	if(!wm8994)
+		return IRQ_NONE;
+
 	reg = snd_soc_read(codec, WM8958_MIC_DETECT_3);
 
 	// We are doing this because of the i2c driver after a resume.
@@ -4751,21 +4759,7 @@ static irqreturn_t wm8958_mic_irq(int irq, void *data)
 	}
 
 	dev_info(codec->dev, "MIC DETEC 3 reg = 0x%x\n", reg);
-/*
-	if(wm8994->soc_jack->status)
-	{
-		// Jack is inserted, we need to find out if we have a mic or button pressed.
-		if (wm8994->jack_cb)
-			wm8994->jack_cb(reg, wm8994->jack_cb_data);
-		else
-			dev_warn(codec->dev, "Accessory detection with no callback\n");
-	}else if( !wm8994->soc_jack->status && wm8994->jack_is_mic){ //report mic removal
-		if (wm8994->jack_cb)
-			wm8994->jack_cb(reg, wm8994->jack_cb_data);
-		else
-			dev_warn(codec->dev, "Accessory detection with no callback\n");
-	}
-*/
+
 	// Need to call detect to find outif this is a headset with mic inserted or removed 
     	if(wm8994->soc_jack->status||(!wm8994->soc_jack->status && wm8994->pdata->jack_is_mic)){
 		// Jack is inserted, we need to find out if we have a mic or button pressed.
@@ -4801,7 +4795,6 @@ static int wm8994_codec_probe(struct platform_device *pdev)
 	}
 
 	codec = &wm8994->codec;
-	wm8994->suspended = false;
 
 	mutex_init(&codec->mutex);
 	INIT_LIST_HEAD(&codec->dapm_widgets);

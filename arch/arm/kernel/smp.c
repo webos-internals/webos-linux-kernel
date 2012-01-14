@@ -552,7 +552,8 @@ void smp_send_reschedule(int cpu)
 {
 
 	if (unlikely(cpu_is_offline(cpu))) {
-		WARN_ON(1);
+		printk(KERN_WARNING "%s: not rescheduling offline CPU %d\n",
+			__FUNCTION__, cpu);
 		return;
 	}
 	send_ipi_message(cpumask_of(cpu), IPI_RESCHEDULE);

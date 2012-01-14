@@ -75,6 +75,9 @@ struct pcm_session session_route;
 EXPORT_SYMBOL(session_route);
 static struct snd_kcontrol_new snd_msm_controls[];
 
+static struct snd_ctl_elem_value rx_dev;
+static struct snd_ctl_elem_value tx_dev;
+
 char snddev_name[AUDIO_DEV_CTL_MAX_DEV][44];
 #define MSM_MAX_VOLUME 0x3FFF
 #define MSM_VOLUME_STEP ((MSM_MAX_VOLUME+17)/100) /* 17 added to avoid
@@ -453,6 +456,14 @@ static int msm_device_put(struct snd_kcontrol *kcontrol,
 
 	if (set) {
 		if (!dev_info->opened) {
+                       	if (dev_info->capability & SNDDEV_CAP_RX) {
+			       rx_dev.value.integer.value[0] = 1;
+		               rx_dev.id.numid = ucontrol->id.numid;
+			} else {
+		               tx_dev.value.integer.value[0] = 1;
+		               tx_dev.id.numid = ucontrol->id.numid;
+		        }
+		
 			set_freq = dev_info->sample_rate;
 			if (!msm_device_is_voice(route_cfg.dev_id)) {
 				msm_get_voc_freq(&tx_freq, &rx_freq);
@@ -1262,6 +1273,7 @@ static struct snd_soc_dapm_route tenderloin_dapm_routes[] = {
 
 };
 
+
 #endif
 
 static int jack_notifier_event(struct notifier_block *nb, unsigned long event, void *data)
@@ -1300,7 +1312,7 @@ static int jack_notifier_event(struct notifier_block *nb, unsigned long event, v
 						        0);
 			} else { 
 				dev_err(codec->dev, "  Reporting headphone removed\n");
-                		input_report_switch(wm8994->micdet[0].jack->jack->input_dev,
+                input_report_switch(wm8994->micdet[0].jack->jack->input_dev,
 							    SW_HEADPHONE_INSERT,
 						        0);
 			}
@@ -1442,12 +1454,28 @@ static struct snd_soc_dai_link msm_dai[] = {
 },
 };
 
+static int msm_soc_card_resume_post(struct platform_device *pdev)
+{
+	struct msm_snddev_info dev_info;
+
+	dev_info.capability = SNDDEV_CAP_RX;
+	dev_info.channel_mode = WM_CHANNELS;
+	dev_info.sample_rate = WM_FS;
+	configure_wm_hw(&dev_info);
+	dev_info.capability = SNDDEV_CAP_TX;
+	configure_wm_hw(&dev_info);
+	msm_device_put(NULL, &rx_dev);
+	msm_device_put(NULL, &tx_dev);
+	msleep(100);
+	return 0;
+}
 
 struct snd_soc_card snd_soc_card_msm = {
 	.name = "msm-audio",
 	.dai_link = msm_dai,
 	.num_links = ARRAY_SIZE(msm_dai),
 	.platform = &msm_soc_platform,
+	.resume_post = msm_soc_card_resume_post,
 };
 
 /* msm_audio audio subsystem */

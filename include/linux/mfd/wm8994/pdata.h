@@ -182,6 +182,9 @@ struct wm8994_pdata {
 
 	unsigned int force_route:1;
 	unsigned int jack_is_mic:1;
+	
+	bool suspended;
+	bool mic_det_inprogress;
 };
 
 #endif

@@ -897,11 +897,6 @@ static int soc_suspend(struct device *dev)
 	struct snd_soc_codec *codec = card->codec;
 	int i;
 
-	// BODGE: Brute force ignore_suspend to ease integration with
-	// jack detection stuff.
-	if (codec_dev && pdev)
-		codec_dev->suspend(pdev, PMSG_SUSPEND);
-
 	/* If the initialization of this soc device failed, there is no codec
 	 * associated with it. Just bail out in this case.
 	 */
@@ -971,19 +966,11 @@ static int soc_suspend(struct device *dev)
 				SND_SOC_DAPM_STREAM_SUSPEND);
 	}
 
-	/* If there are paths active then the CODEC will be held with
-	 * bias _ON and should not be suspended. */
+
 	if (codec_dev->suspend) {
-		switch (codec->bias_level) {
-		case SND_SOC_BIAS_STANDBY:
-		case SND_SOC_BIAS_OFF:
-			codec_dev->suspend(pdev, PMSG_SUSPEND);
-			break;
-		default:
-			dev_dbg(socdev->dev, "CODEC is on over suspend\n");
-			break;
-		}
+		codec_dev->suspend(pdev, PMSG_SUSPEND);
 	}
+
 
 	for (i = 0; i < card->num_links; i++) {
 		struct snd_soc_dai *cpu_dai = card->dai_link[i].cpu_dai;
@@ -1038,20 +1025,8 @@ static void soc_resume_deferred(struct work_struct *work)
 			cpu_dai->resume(cpu_dai);
 	}
 
-	/* If the CODEC was idle over suspend then it will have been
-	 * left with bias OFF or STANDBY and suspended so we must now
-	 * resume.  Otherwise the suspend was suppressed.
-	 */
 	if (codec_dev->resume) {
-		switch (codec->bias_level) {
-		case SND_SOC_BIAS_STANDBY:
-		case SND_SOC_BIAS_OFF:
-			codec_dev->resume(pdev);
-			break;
-		default:
-			dev_dbg(socdev->dev, "CODEC was on over suspend\n");
-			break;
-		}
+		codec_dev->resume(pdev);
 	}
 
 	for (i = 0; i < codec->num_dai; i++) {

@@ -101,6 +101,10 @@ void snd_soc_jack_report(struct snd_soc_jack *jack, int status, int mask)
 	/* Report before the DAPM sync to help users updating micbias status */
 	blocking_notifier_call_chain(&jack->notifier, status, jack);
 
+	snd_soc_dapm_sync(codec);
+
+
+
 out:
 	mutex_unlock(&codec->mutex);
 }

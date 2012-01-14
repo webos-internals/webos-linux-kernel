@@ -283,6 +283,11 @@ static int wm8994_device_suspend(struct device *dev)
 		return 0;
 	}
 
+	if(pdata->mic_det_inprogress){
+		return -EBUSY;
+	}
+	pdata->suspended = true;
+
 	/* GPIO configuration state is saved here since we may be configuring
 	 * the GPIO alternate functions even if we're not using the gpiolib
 	 * driver for them.
@@ -296,12 +301,13 @@ static int wm8994_device_suspend(struct device *dev)
 	ret = wm8994_read(wm8994, WM8994_LDO_1, WM8994_NUM_LDO_REGS * 2,
 			  &wm8994->ldo_regs);
 	if (ret < 0)
-		dev_err(dev, "  Failed to save LDO registers: %d\n", ret);
+		dev_err(dev, "Failed to save LDO registers: %d\n", ret);
 
-	if (pdata->wm8994_shutdown && !pdata->jack_is_mic)
+	if (pdata->wm8994_shutdown && !pdata->jack_is_mic){
 		pdata->wm8994_shutdown();
+		
+	}
 
-	dev_err(dev, "- MEOW %s\n", __FUNCTION__);
 	return 0;
 }
 
@@ -310,10 +316,12 @@ static int wm8994_device_resume(struct device *dev)
 	struct wm8994 *wm8994 = dev_get_drvdata(dev);
 	struct wm8994_pdata *pdata = wm8994->dev->platform_data;
 	int i;
-
+	
 	if (pdata && pdata->force_route) {
 		return 0;
 	}
+
+	pdata->suspended = false;
 
 	if (pdata->wm8994_setup && !pdata->jack_is_mic)
 		pdata->wm8994_setup();
@@ -390,9 +398,11 @@ static int wm8994_device_init(struct wm8994 *wm8994, int irq)
 		goto err;
 	}
 
-    if ((pdata)&&(pdata->wm8994_setup))
+	if ((pdata)&&(pdata->wm8994_setup))
 		pdata->wm8994_setup();
 
+	pdata->suspended = false;
+	pdata->mic_det_inprogress = false;
 
 	ret = wm8994_reg_read(wm8994, WM8994_SOFTWARE_RESET);
 	if (ret < 0) {
