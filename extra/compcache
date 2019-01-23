@@ -1,0 +1,12 @@
+# -*- mode: shell-script; -*-
+start on stopped finish
+stop on runlevel [!2]
+console none
+script
+	insmod /media/crypofs/apps/com.unixpsycho.kernel/xvmalloc.ko
+	insmod /media/crypofs/apps/com.unixpsycho.kernel/ramzswap.ko backing_swap=/dev/mapper/store-swap
+	sleep 3
+	swapoff -a
+	swapon /dev/ramzswap0 -p 1
+end script
+

@@ -174,6 +174,7 @@ static int __init omap_cpu_init(struct cpufreq_policy *policy)
 		if (!result)
 			cpufreq_frequency_table_get_attr(freq_table,
 							policy->cpu);
+		policy->max = 1000000;
 	} else
 #endif
 	{

@@ -53,6 +53,23 @@ config CPU_FREQ_STAT_DETAILS
 
 	  If in doubt, say N.
 
+config CPU_FREQ_OVERRIDE
+	bool "Extra on-demand CPU tweaking options"
+	default y
+	help
+	  This will give options to tweak CPU settings in-demand.
+
+	  If in doubt, say Y.
+
+config CPU_FREQ_OVERRIDE_STRIPOPP
+	bool "Strip OPP1 and OPP2 from available frequencies list"
+	depends on CPU_FREQ_OVERRIDE
+	default y
+	help
+	  This will hide 125MHz and 250MHz from scaling_available_frequencies.
+
+	  If in doubt, say N.
+
 choice
 	prompt "Default CPUFreq governor"
 	default CPU_FREQ_DEFAULT_GOV_USERSPACE if CPU_FREQ_SA1100 || CPU_FREQ_SA1110
@@ -86,6 +103,15 @@ config CPU_FREQ_DEFAULT_GOV_USERSPACE
 	  you to set the CPU frequency manually or when an userspace 
 	  program shall be able to set the CPU dynamically without having
 	  to enable the userspace governor manually.
+
+config CPU_FREQ_DEFAULT_GOV_SCREENSTATE
+        bool "screenstate"
+        select CPU_FREQ_GOV_SCREENSTATE
+        help
+          Use the CPUFreq governor 'screenstate' as default. This will
+	  scale the CPU frequency down when the LCD is off then scale
+	  back to max speed when LCD is powered on.  This also will not
+	  allow to set the CPU frequency manually.
 
 config CPU_FREQ_DEFAULT_GOV_ONDEMAND
 	bool "ondemand"
@@ -162,6 +188,16 @@ config CPU_FREQ_GOV_USERSPACE
 
 	  If in doubt, say Y.
 
+config CPU_FREQ_GOV_SCREENSTATE
+        tristate "'screenstate' governor for frequency scaling"
+        help
+          Enable this cpufreq governor to scale when LCD is on/off.
+
+          To compile this driver as a module, choose M here: the
+          module will be called cpufreq_screenstate.
+
+          If in doubt, say Y.
+
 config CPU_FREQ_GOV_ONDEMAND
 	tristate "'ondemand' cpufreq policy governor"
 	select CPU_FREQ_TABLE
@@ -220,5 +256,79 @@ config CPU_FREQ_GOV_CONSERVATIVE
 	  For details, take a look at linux/Documentation/cpu-freq.
 
 	  If in doubt, say N.
+
+config CPU_FREQ_GOV_LAGFREE
+        tristate "'lagfree' cpufreq governor"
+        depends on CPU_FREQ_OVERRIDE
+        help
+          'lagfree' - this driver is rather similar to the 'ondemand'
+          governor both in its source code and its purpose, the difference is
+          its optimisation for better suitability in a battery powered
+          environment.  The frequency is gracefully increased and decreased
+          rather than jumping to 100% when speed is required.
+
+          To compile this driver as a module, choose M here: the
+          module will be called cpufreq_lagfree.
+
+          For details, take a look at linux/Documentation/cpu-freq.
+
+          If in doubt, say N.
+
+config LAGFREE_MAX_LOAD
+        int "Max CPU Load"
+        default 50
+        depends on CPU_FREQ_GOV_LAGFREE
+        help
+          CPU freq will be increased if measured load > max_cpu_load;
+
+config LAGFREE_MIN_LOAD
+        int "Min CPU Load"
+        default 15
+        depends on CPU_FREQ_GOV_LAGFREE
+        help
+          CPU freq will be decrease if measured load < min_cpu_load;
+
+config LAGFREE_FREQ_STEP_DOWN
+        int "Frequency Step Down"
+        default 100000
+        depends on CPU_FREQ_GOV_LAGFREE
+        help
+          Max freqeuncy delta when ramping down.
+
+config LAGFREE_FREQ_SLEEP_MAX
+        int "Max Sleep frequeny"
+        default 300000
+        depends on CPU_FREQ_GOV_LAGFREE
+        help
+          Max freqeuncy for screen off.
+
+config LAGFREE_FREQ_AWAKE_MIN
+        int "Min Awake frequeny"
+        default 150000
+        depends on CPU_FREQ_GOV_LAGFREE
+        help
+          Min freqeuncy for screen on.
+
+config LAGFREE_FREQ_STEP_UP_SLEEP_PERCENT
+        int "Freq step up percent sleep"
+        default 20 
+        depends on CPU_FREQ_GOV_LAGFREE
+        help
+          Frequency percent to step up while screen off.
+
+config CPU_FREQ_MIN_TICKS
+        int "Ticks between governor polling interval."
+        default 10
+        help
+          Minimum number of ticks between polling interval for governors.
+
+          If in doubt, say N.
+
+config CPU_FREQ_SAMPLING_LATENCY_MULTIPLIER
+        int "Sampling rate multiplier for governors."
+        default 1000
+        help
+          Sampling latency rate multiplied by the cpu switch latency.
+          Affects governor polling.
 
 endif	# CPU_FREQ

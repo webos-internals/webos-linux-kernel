@@ -1133,11 +1133,20 @@ static DEVICE_ATTR(mac, S_IRUGO|S_IWUSR, show_ds2784_mac, store_ds2784_mac);
 */
 static struct device *battery_device = NULL;
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+int ds2784_getpercent(int *ret_percent)
+{
+        if (!battery_device) return -1;
+        return ds2784_getpercent_dev(battery_device, ret_percent);
+}
+EXPORT_SYMBOL(ds2784_getpercent);
+#else
 static int ds2784_getpercent(int *ret_percent)
 {
 	if (!battery_device) return -1;
 	return ds2784_getpercent_dev(battery_device, ret_percent);
 }
+#endif
 
 static int ds2784_getvoltage(int *ret_voltage)
 {
@@ -1151,11 +1160,20 @@ static int ds2784_gettemperature(int *ret_temperature)
 	return ds2784_gettemperature_dev(battery_device, ret_temperature);
 }
 
+#ifdef CONFIG_CPU_FREQ_GOV_SCREENSTATE
+int ds2784_getcurrent(int *ret_current)
+{
+        if (!battery_device) return -1;
+        return ds2784_getcurrent_dev(battery_device, ret_current);
+}
+EXPORT_SYMBOL(ds2784_getcurrent);
+#else
 static int ds2784_getcurrent(int *ret_current)
 {
 	if (!battery_device) return -1;
 	return ds2784_getcurrent_dev(battery_device, ret_current);
 }
+#endif
 
 static struct battery_ops ds2784_battery_ops = {
 	.get_percent       = ds2784_getpercent,

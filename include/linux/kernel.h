@@ -104,6 +104,7 @@ struct user;
  * be bitten later when the calling function happens to sleep when it is not
  * supposed to.
  */
+#define CONFIG_PREEMPT_VOLUNTARY
 #ifdef CONFIG_PREEMPT_VOLUNTARY
 extern int cond_resched(void);
 # define might_resched() cond_resched()

@@ -66,7 +66,7 @@ static u8 mpu_iva2_vdd1_volts [2][PRCM_NO_VDD1_OPPS] = {
 	{ 0x1e, 0x24, 0x30, 0x36, 0x3C },    /* OLD 3430 values */
 	/* Vsel corresponding to unused (OPP1), 1.0125V (OPP2),
 				1.2V (OPP3), 1.325V (OPP4), 1.375 (OPP5) */
-	{ 0x21, 0x21, 0x30, 0x3a, 0x3e },    /* NEW 3630 values */
+	{ 0x21, 0x21, 0x30, 0x3e, 0x44 },    /* NEW 3630 values */
 };
 
 static u8 core_l3_vdd2_volts [2][PRCM_NO_VDD2_OPPS] = { /* only 3 OPPs */
@@ -226,7 +226,7 @@ void prcm_set_current_vdd2_opp(u32 opp)
 
 u32 omap3_max_vdd1_opp(void)
 {
-	return 5;
+	return 0;
 
 	/* This function call is used in the bridgedriver.
 	 *
@@ -332,10 +332,10 @@ static struct dpll_param mpu_dpll_param[2][5][PRCM_NO_VDD1_OPPS] = {
 	/* 26M values */
 	/* OPP1(150 Mhz) and OPP2(300 Mhz)*/
 	{{0x12c, 0x0C, 0x07, 0x04}, {0x12c, 0x0C, 0x07, 0x02},
-	/* OPP3(600 Mhz) and OPP4(800 Mhz)*/
-	{0x12c, 0x0C, 0x07, 0x01}, {0x190, 0x0C, 0x07, 0x01},
-	/* OPP5 (1000 Mhz) */
-	{0x1f4, 0x0C, 0x07, 0x01} },
+	/* OPP3(600 Mhz) and OPP4(1000 Mhz)*/
+	{0x12c, 0x0C, 0x07, 0x01}, {0x1f4, 0x0C, 0x07, 0x01},
+	/* OPP5 (1200 Mhz) */
+	{0x258, 0x0C, 0x07, 0x01} },
 	/* 38.4M values */
 	/* OPP1(125 Mhz) and OPP2(250 Mhz)*/
 	{{0x271, 0x2F, 0x03, 0x04}, {0x271, 0x2F, 0x03, 0x02},
@@ -697,10 +697,10 @@ void prcm_scale_finish(void)
 			valid_rate = clk_round_rate(p_vdd1_clk, S600M);
 			break;
 		case PRCM_VDD1_OPP4:
-			valid_rate = clk_round_rate(p_vdd1_clk, S800M);
+			valid_rate = clk_round_rate(p_vdd1_clk, S1000M);
 			break;
 		case PRCM_VDD1_OPP5:
-			valid_rate = clk_round_rate(p_vdd1_clk, S1000M);
+			valid_rate = clk_round_rate(p_vdd1_clk, S1200M);
 			break;
 #else
 		case PRCM_VDD1_OPP2:
@@ -732,8 +732,8 @@ static struct vdd1_arm_dsp_freq_d {
 	{150,  90, CO_VDD1_OPP1, PRCM_VDD1_OPP1},
 	{300, 180, CO_VDD1_OPP2, PRCM_VDD1_OPP2},
 	{600, 360, CO_VDD1_OPP3, PRCM_VDD1_OPP3},
-	{800, 396, CO_VDD1_OPP4, PRCM_VDD1_OPP4},
-	{1000, 430, CO_VDD1_OPP5, PRCM_VDD1_OPP5},
+	{1000, 396, CO_VDD1_OPP4, PRCM_VDD1_OPP4},
+	{1200, 430, CO_VDD1_OPP5, PRCM_VDD1_OPP5},
 };
 static struct vdd2_core_freq_d {
 	unsigned int freq;
@@ -746,7 +746,7 @@ static struct vdd2_core_freq_d {
 };
 
 static unsigned int rnd_rate_vdd1[5] = {
-	S150M, S300M, S600M, S800M, S1000M
+	S150M, S300M, S600M, S1000M, S1200M
 };
 static unsigned int rnd_rate_vdd2[3] = {
 	0, S100M, S200M
@@ -1889,5 +1889,7 @@ err_out:
 	return -1;
 }
 
-
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+#include "prcm_opp_ss.c"
+#endif
 

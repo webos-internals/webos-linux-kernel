@@ -32,6 +32,11 @@
 #define dprintk(msg...) cpufreq_debug_printk(CPUFREQ_DEBUG_CORE, \
 						"cpufreq-core", msg)
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+int cpufreq_override_driver_init(void);
+void cpufreq_override_driver_exit(void);
+#endif
+
 /**
  * The "cpufreq driver" - the arch- or hardware-dependent low
  * level driver of CPUFreq support, and its spinlock. This lock
@@ -1682,6 +1687,18 @@ error_out:
 	return ret;
 }
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+int cpufreq_set_policy(struct cpufreq_policy *policy)
+{
+	struct cpufreq_policy *data = cpufreq_cpu_get(0);
+	__cpufreq_set_policy(data,policy);
+	data->user_policy.min = data->min;
+	data->user_policy.max = data->max;
+	cpufreq_cpu_put(data);
+}
+EXPORT_SYMBOL(cpufreq_set_policy);
+#endif
+
 /**
  *	cpufreq_update_policy - re-evaluate an existing cpufreq policy
  *	@cpu: CPU which shall be re-evaluated
@@ -1831,6 +1848,10 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
 		cpufreq_debug_enable_ratelimit();
 	}
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+	cpufreq_override_driver_init();
+#endif
+
 	return (ret);
 }
 EXPORT_SYMBOL_GPL(cpufreq_register_driver);
@@ -1863,6 +1884,10 @@ int cpufreq_unregister_driver(struct cpufreq_driver *driver)
 	spin_lock_irqsave(&cpufreq_driver_lock, flags);
 	cpufreq_driver = NULL;
 	spin_unlock_irqrestore(&cpufreq_driver_lock, flags);
+
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+	cpufreq_override_driver_exit();
+#endif
 
 	return 0;
 }
