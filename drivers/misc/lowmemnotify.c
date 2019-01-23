@@ -190,7 +190,7 @@ unsigned long memnotify_get_free(void)
 	if (other_free > totalreserve_pages)
 		free += other_free - totalreserve_pages;
 
-	return free;
+	return free + nr_swap_pages;
 }
 EXPORT_SYMBOL(memnotify_get_free);
 
@@ -202,15 +202,13 @@ EXPORT_SYMBOL(memnotify_get_free);
 unsigned long memnotify_get_used(void)
 {
 	unsigned long used_mem;
-	unsigned long used_swap;
 
 	unsigned long free_mem;
 	
 	free_mem = memnotify_get_free();
-	used_swap = total_swap_pages - nr_swap_pages;
-	used_mem = totalram_pages - free_mem;
+	used_mem = totalram_pages + total_swap_pages - free_mem;
 
-	return used_mem + used_swap;
+	return used_mem;
 }
 
 /** 
@@ -227,7 +225,7 @@ int memnotify_threshold(void)
 	int i;
 
 	used = memnotify_get_used();
-	used_ratio = used * 100 / totalram_pages;
+	used_ratio = used * 100 / (totalram_pages + total_swap_pages);
 
 	threshold = THRESHOLD_NORMAL;
 	last_threshold = atomic_read(&memnotify_last_threshold);
@@ -346,7 +344,7 @@ meminfo_show(struct class *class, struct class_attribute *attr, char *buf)
 	int i;
 
 	used = memnotify_get_used();
-	total_mem = totalram_pages;
+	total_mem = totalram_pages + total_swap_pages;
 
 	threshold = memnotify_threshold();
 	last_threshold = atomic_read(&memnotify_last_threshold);
@@ -357,7 +355,7 @@ meminfo_show(struct class *class, struct class_attribute *attr, char *buf)
 		"Used (Mem+Swap): %ldMB\n", MB(used));
 
 	len += scnprintf(buf+len, PAGE_SIZE - len,
-		"Used (Mem): %ldMB\n", MB(totalram_pages-memnotify_get_free()));
+		"Used (Mem): %ldMB\n", MB(totalram_pages + nr_swap_pages - memnotify_get_free()));
 
 	len += scnprintf(buf+len, PAGE_SIZE - len,
 		"Used (Swap): %ldMB\n", MB(total_swap_pages - nr_swap_pages));

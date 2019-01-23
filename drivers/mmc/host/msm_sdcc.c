@@ -884,6 +884,13 @@ msmsdcc_irq(int irq, void *dev_id)
 #if IRQ_DEBUG
 		msmsdcc_print_status(host, "irq0-p", status);
 #endif
+#ifdef CONFIG_MMC_MSM_SDIO_SUPPORT
+                if (status & MCI_SDIOINTROPE) {
+                        if (host->sdcc_suspending)
+                                wake_lock(&host->sdio_suspend_wlock);
+                        mmc_signal_sdio_irq(host->mmc);
+                }
+#endif
 
 		if ((host->plat->dummy52_required) &&
 		    (host->dummy_52_state == DUMMY_52_STATE_SENT)) {
@@ -905,13 +912,6 @@ msmsdcc_irq(int irq, void *dev_id)
 		}
 
 		data = host->curr.data;
-#ifdef CONFIG_MMC_MSM_SDIO_SUPPORT
-		if (status & MCI_SDIOINTROPE) {
-			if (host->sdcc_suspending)
-				wake_lock(&host->sdio_suspend_wlock);
-			mmc_signal_sdio_irq(host->mmc);
-		}
-#endif
 		/*
 		 * Check for proper command response
 		 */
@@ -2054,17 +2054,10 @@ static int msmsdcc_pm_resume(struct device *dev)
 	struct msmsdcc_host *host = mmc_priv(mmc);
 	int rc = 0;
 
-	rc = msmsdcc_runtime_resume(dev);
+	if (!pm_runtime_suspended(dev))
+		rc = msmsdcc_runtime_resume(dev);
 	if (host->plat->status_irq)
 		enable_irq(host->plat->status_irq);
-
-	/* Update the run-time PM status */
-	pm_runtime_disable(dev);
-	rc = pm_runtime_set_active(dev);
-	if (rc < 0)
-		pr_info("%s: %s: failed with error %d", mmc_hostname(mmc),
-				__func__, rc);
-	pm_runtime_enable(dev);
 
 	return rc;
 }

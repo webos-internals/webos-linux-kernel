@@ -14,6 +14,10 @@
 
 #include "base.h"
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+bool cpufreq_override_get_state(void);
+#endif
+
 static struct sysdev_class_attribute *cpu_sysdev_class_attrs[];
 
 struct sysdev_class cpu_sysdev_class = {
@@ -37,23 +41,44 @@ static ssize_t __ref store_online(struct sys_device *dev, struct sysdev_attribut
 				 const char *buf, size_t count)
 {
 	struct cpu *cpu = container_of(dev, struct cpu, sysdev);
-	ssize_t ret;
+	ssize_t ret = 0;
 
 	cpu_hotplug_driver_lock();
+	// uncomment to prove to lusers what actually shuts off the CPU!
+	//printk("CPU SNOOP: process \"%s\" set cpu: %s\n",current->comm,buf[0] == '0' ? "off" : "on");
 	switch (buf[0]) {
 	case '0':
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+		if(cpufreq_override_get_state()) goto out;
+#endif
 		ret = cpu_down(cpu->sysdev.id);
 		if (!ret)
 			kobject_uevent(&dev->kobj, KOBJ_OFFLINE);
 		break;
 	case '1':
-		ret = cpu_up(cpu->sysdev.id);
-		if (!ret)
-			kobject_uevent(&dev->kobj, KOBJ_ONLINE);
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+		if(cpufreq_override_get_state()) {
+			if(strcmp("powerd",current->comm) != 0) {
+#endif
+				ret = cpu_up(cpu->sysdev.id);
+				if (!ret)
+					kobject_uevent(&dev->kobj, KOBJ_ONLINE);
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+			}
+		}
+		else {
+			ret = cpu_up(cpu->sysdev.id);
+			if (!ret)
+				kobject_uevent(&dev->kobj, KOBJ_ONLINE);
+		}
+#endif
 		break;
 	default:
 		ret = -EINVAL;
 	}
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+out:
+#endif
 	cpu_hotplug_driver_unlock();
 
 	if (ret >= 0)

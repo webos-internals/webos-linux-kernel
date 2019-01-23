@@ -35,6 +35,9 @@
 #include <linux/sysfs.h>
 #include <linux/max8903b_charger.h>
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+void cpufreq_override_set_chrg(bool state);
+#endif
 
 static struct max8903b_platform_data	*pdevice_resource;
 static enum max8903b_current  current_limit;
@@ -50,12 +53,18 @@ static int max8903b_current_setup(enum max8903b_current value)
 			/* disable charging */
 			gpio_set_value(pdevice_resource->CEN_N_in, pdevice_resource->CEN_N_in_polarity ? 0 : 1);  /* charger disable */
 			printk(KERN_INFO "%s: ### CHARGE_DISABLE\n", __func__);
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+			cpufreq_override_set_chrg(0);
+#endif
 			break;
 		case CURRENT_ZERO:  // this is for no charger connection.
 			gpio_set_value(pdevice_resource->DCM_in, pdevice_resource->DCM_in_polarity ? 1 : 0); /* usb mode */
 			gpio_set_value(pdevice_resource->USUS_in, pdevice_resource->USUS_in_polarity ? 0 : 1); /* usb suspend */
 			pdevice_resource->suspend_gpio_config();
 			printk(KERN_INFO "%s: CURRENT_ZERO\n", __func__);
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+			cpufreq_override_set_chrg(0);
+#endif
 			break;
 		case CURRENT_100MA:
 			gpio_set_value(pdevice_resource->DCM_in, pdevice_resource->DCM_in_polarity? 1 : 0); /* usb mode */
@@ -81,6 +90,9 @@ static int max8903b_current_setup(enum max8903b_current value)
 			pdevice_resource->set_DC_CHG_Mode_current(value);
 			gpio_set_value(pdevice_resource->CEN_N_in, pdevice_resource->CEN_N_in_polarity ? 1 : 0);  /* charger enable */
 			printk(KERN_INFO "%s: CURRENT_750(4), 900(5), 1000(6), 1400(7), 2000MA(9): %d\n", __func__, value);
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_TURBO_MODE
+			cpufreq_override_set_chrg(1);
+#endif
 			break;
 		default:
 			printk(KERN_INFO "%s: Not supported current setting\n", __func__);

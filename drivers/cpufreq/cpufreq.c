@@ -1816,6 +1816,20 @@ error_out:
 	return ret;
 }
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE
+void cpufreq_set_policy(struct cpufreq_policy *policy, unsigned int cpu)
+{
+        struct cpufreq_policy *data = cpufreq_cpu_get(cpu);
+	lock_policy_rwsem_write(cpu);
+        __cpufreq_set_policy(data, policy);
+	unlock_policy_rwsem_write(cpu);
+        data->user_policy.min = data->min;
+        data->user_policy.max = data->max;
+        cpufreq_cpu_put(data);
+}
+EXPORT_SYMBOL(cpufreq_set_policy);
+#endif
+
 /**
  *	cpufreq_update_policy - re-evaluate an existing cpufreq policy
  *	@cpu: CPU which shall be re-evaluated

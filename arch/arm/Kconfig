@@ -1078,6 +1078,16 @@ config KSAPI
           Scorpion processor supported hardware performance counters on a per
           thread basis or AXI counters on an overall system basis.
 
+config ALLOW_CPU_ALIGNMENT
+	bool "Allow CPU-based alignment handling"
+	default y
+	help
+	  Advanced ARM processors, such as the Cortex series and ARMv7-based
+	  CPUS are capable of performing unaligned accesses for many types of
+	  memory accesses.  Typically, using a cpu-based alignment fixup is
+	  faster than doing such a fixup in software.  For best performance
+	  on advanced CPUs, say Y here.
+
 endmenu
 
 source "arch/arm/common/Kconfig"

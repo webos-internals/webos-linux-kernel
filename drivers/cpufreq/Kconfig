@@ -18,6 +18,50 @@ if CPU_FREQ
 config CPU_FREQ_TABLE
 	tristate
 
+config CPU_FREQ_OVERRIDE
+	bool "Enable CPU options override"
+	default y
+	help
+	  Say Y here
+
+config CPU_FREQ_OVERRIDE_L2_HACK
+	bool "Enable overclock L2 freqs"
+	depends on CPU_FREQ_OVERRIDE
+	default n
+	help
+	  Say Y here
+
+config CPU_FREQ_OVERRIDE_VOLT_CONFIG
+	bool "Enable CPU voltage tweaking"
+	depends on CPU_FREQ_OVERRIDE
+	default y
+	help
+	  Say Y here
+
+config CPU_FREQ_OVERRIDE_TURBO_MODE
+	bool "Enable static dual-core"
+	depends on CPU_FREQ_OVERRIDE
+	default n
+	help
+	  Say Y here
+
+config CPU_FREQ_OVERRIDE_TURBO_MODE_ENABLE
+	bool "Enable static dual-core at boot"
+	depends on CPU_FREQ_OVERRIDE_TURBO_MODE
+	default n
+
+config CPU_FREQ_OVERRIDE_POWERSAVER
+	bool "Enable dual-core power saving mode"
+	depends on CPU_FREQ_OVERRIDE_TURBO_MODE
+	default n
+	help
+	  Say Y here
+
+config CPU_FREQ_OVERRIDE_POWERSAVER_ENABLE
+	bool "Enable dual-core power saving mode at boot"
+	depends on CPU_FREQ_OVERRIDE_POWERSAVER
+	default n
+
 config CPU_FREQ_DEBUG
 	bool "Enable CPUfreq debugging"
 	help
